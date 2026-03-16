@@ -86,6 +86,20 @@ e.g.  "internal/db/db.go::db.Open#Function"
 
 Agents can persist these IDs in their context and look up source code instantly — even after the file changes (as long as the symbol name doesn't change).
 
+When a file is **renamed or moved**, pincherMCP records a `symbol_moves` entry mapping the old ID to the new one. The `symbol` tool transparently redirects stale IDs — agents never get a "not found" error just because a file moved.
+
+### Extraction Confidence
+
+Every symbol carries an `extraction_confidence` score:
+
+| Value | Meaning |
+|---|---|
+| `1.0` | Go `go/ast` — exact byte offsets, full type info |
+| `0.85` | Stable regex (Python, TypeScript, Rust, Java, JS) |
+| `0.70` | Approximate regex (other languages) |
+
+Use this to gate how much you trust the byte-offset retrieval vs. treating source as approximate.
+
 ---
 
 ## Tools (13 total)
@@ -136,17 +150,25 @@ MATCH (f:Function) WHERE f.name =~ '.*Handler.*' RETURN f.name, f.file_path
 -- Find what main() calls (one hop)
 MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = 'main' RETURN g.name, g.file_path LIMIT 20
 
--- Find call chains up to 3 hops deep
-MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name = 'ProcessOrder' RETURN b.name, b.kind
+-- Find call chains up to 3 hops deep, filter results
+MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name = 'ProcessOrder' AND b.kind = 'Function' RETURN b.name, b.kind
 
 -- Count functions by language
 MATCH (f:Function) RETURN COUNT(f) AS total
 
 -- Find all exported Go functions
 MATCH (f:Function) WHERE f.language = 'Go' AND f.is_exported = 'true' RETURN f.name LIMIT 50
+
+-- Named edge variables (get edge metadata)
+MATCH (a:Function)-[r:CALLS]->(b:Function) WHERE a.name = 'main' RETURN a.name, r.kind, b.name
+
+-- Sort by line number
+MATCH (f:Function) WHERE f.file_path STARTS WITH 'internal/' RETURN f.name, f.start_line ORDER BY f.start_line ASC
 ```
 
 **Supported operators:** `=`, `<>`, `>`, `<`, `>=`, `<=`, `=~` (regex), `CONTAINS`, `STARTS WITH`
+
+WHERE filters work on both the start node and result nodes in all query modes (single-hop JOIN, variable-length BFS, and node-only scans).
 
 ---
 
@@ -306,7 +328,7 @@ All numbers on a ~5,000-file Go monorepo (MacBook M2):
 | Symbol retrieval (`symbol` tool) | <1ms | 1 SQL + 1 seek + 1 read |
 | FTS5 search (`search` tool) | <5ms | BM25 ranking via SQLite FTS5 |
 | Single-hop Cypher query | <2ms | JOIN-fused SQL |
-| Multi-hop BFS query (depth 3) | <20ms | Graph BFS in Go |
+| Multi-hop BFS query (depth 3) | <5ms | Recursive CTE — 1 SQL per start node |
 
 ---
 
