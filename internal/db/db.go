@@ -677,8 +677,12 @@ func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int
 		       bm25(symbols_fts) AS score
 		FROM symbols_fts
 		JOIN symbols s ON s.rowid = symbols_fts.rowid
-		WHERE symbols_fts MATCH ? AND s.project_id = ?`
-	args := []any{query, projectID}
+		WHERE symbols_fts MATCH ?`
+	args := []any{query}
+	if projectID != "" {
+		q += " AND s.project_id = ?"
+		args = append(args, projectID)
+	}
 	if kind != "" {
 		q += " AND s.kind = ?"
 		args = append(args, kind)

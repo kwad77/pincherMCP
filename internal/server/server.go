@@ -761,9 +761,14 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	limit := intArg(args, "limit", 20)
 	fieldsArg := str(args, "fields")
 
-	projectID, err := s.resolveProjectID(projectArg)
-	if err != nil {
-		return errResult(err.Error()), nil
+	// project=* searches all indexed projects — no project filter applied.
+	var projectID string
+	if projectArg != "*" {
+		var err error
+		projectID, err = s.resolveProjectID(projectArg)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
 	}
 
 	results, err := s.store.SearchSymbols(projectID, query, kind, language, limit)
