@@ -41,19 +41,25 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .card-value.orange{color:var(--orange)}
 .card-value.purple{color:var(--purple)}
 .card-sub{font-size:12px;color:var(--muted);margin-top:6px}
-.stat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
-.stat-row:last-child{border-bottom:none}
-.stat-name{font-size:13px;color:var(--muted)}
-.stat-val{font-size:13px;font-weight:600;font-family:ui-monospace,monospace}
-.proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s}
+.proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s;position:relative}
 .proj-card:hover{border-color:var(--accent)}
-.proj-name{font-size:15px;font-weight:600;margin-bottom:4px}
+.proj-card.invalid{border-color:rgba(248,81,73,.4)}
+.proj-card.invalid::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--red);border-radius:10px 10px 0 0}
+.proj-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px}
+.proj-name{font-size:15px;font-weight:600}
+.proj-actions{display:flex;gap:6px;flex-shrink:0}
+.proj-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;font-size:11px;padding:3px 8px;transition:all .15s}
+.proj-btn:hover{border-color:var(--accent);color:var(--accent)}
+.proj-btn.danger:hover{border-color:var(--red);color:var(--red)}
+.proj-btn:disabled{opacity:.4;cursor:default}
 .proj-path{font-size:11px;color:var(--muted);margin-bottom:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proj-path.missing{color:var(--red)}
 .proj-stats{display:flex;gap:16px;flex-wrap:wrap}
 .proj-stat{text-align:center}
 .proj-stat-val{font-size:18px;font-weight:700;color:var(--accent)}
 .proj-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .pill{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.2);font-family:ui-monospace,monospace}
+.pill.warn{background:rgba(248,81,73,.1);color:var(--red);border-color:rgba(248,81,73,.3)}
 .empty{color:var(--muted);font-size:13px;padding:24px;text-align:center}
 .refresh{position:fixed;bottom:24px;right:24px;background:var(--accent);color:#0d1117;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s}
 .refresh:hover{opacity:.85}
@@ -63,6 +69,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .loading{animation:pulse 1.5s ease-in-out infinite}
 .footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-top:1px solid var(--border);margin-top:8px}
 .footer a{color:var(--accent);text-decoration:none}
+.toast{position:fixed;bottom:72px;right:24px;background:#161b22;border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;color:var(--text);opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
 </style>
 </head>
 <body>
@@ -106,10 +114,19 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <div class="footer">pincherMCP · <a href="/v1/openapi.json" target="_blank">OpenAPI spec</a> · <a href="/v1/health" target="_blank">Health</a></div>
 
 <button class="refresh" onclick="load()">↻ Refresh</button>
+<div class="toast" id="toast"></div>
 
 <script>
 const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
 const fmtMs = ms => ms < 1 ? '<1ms' : ms+'ms';
+
+function showToast(msg, ok=true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.borderColor = ok ? 'var(--green)' : 'var(--red)';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
 
 function statCard(label, value, cls, sub, cardCls) {
   return ` + "`" + `<div class="card ${cardCls||''}">
@@ -117,6 +134,34 @@ function statCard(label, value, cls, sub, cardCls) {
     <div class="card-value ${cls}">${value}</div>
     ${sub ? ` + "`" + `<div class="card-sub">${sub}</div>` + "`" + ` : ''}
   </div>` + "`" + `;
+}
+
+async function reindex(id, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch('/v1/index', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({path: id})});
+    const d = await r.json();
+    const res = d.result || d;
+    showToast(` + "`" + `Re-indexed: ${res.symbols||0} symbols, ${res.edges||0} edges` + "`" + `);
+    load();
+  } catch(e) {
+    showToast('Re-index failed: '+e.message, false);
+    btn.disabled = false;
+    btn.textContent = '⟳';
+  }
+}
+
+async function deleteProject(id, name) {
+  if (!confirm(` + "`" + `Remove project "${name}" from the index?\n\nThis deletes all symbols, edges, and graph data for this project. The source files are NOT deleted.` + "`" + `)) return;
+  try {
+    const r = await fetch('/v1/projects', {method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+    if (!r.ok) throw new Error(await r.text());
+    showToast(` + "`" + `Project "${name}" removed.` + "`" + `);
+    load();
+  } catch(e) {
+    showToast('Delete failed: '+e.message, false);
+  }
 }
 
 async function load() {
@@ -176,17 +221,34 @@ async function load() {
     if (!projects.length) {
       grid.innerHTML = '<div class="empty">No projects indexed yet. Use the <code>index</code> tool to add a project.</div>';
     } else {
-      grid.innerHTML = projects.map(p => ` + "`" + `
-        <div class="proj-card">
-          <div class="proj-name">${p.Name||p.name||'—'}</div>
-          <div class="proj-path">${p.Path||p.path||''}</div>
-          <div class="proj-stats">
-            <div class="proj-stat"><div class="proj-stat-val">${fmt(p.FileCount||p.file_count||0)}</div><div class="proj-stat-label">Files</div></div>
-            <div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">${fmt(p.SymbolCount||p.symbol_count||0)}</div><div class="proj-stat-label">Symbols</div></div>
-            <div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">${fmt(p.EdgeCount||p.edge_count||0)}</div><div class="proj-stat-label">Edges</div></div>
+      grid.innerHTML = projects.map(p => {
+        const id   = p.ID   || p.id   || '';
+        const name = p.Name || p.name || '—';
+        const path = p.Path || p.path || '';
+        const syms = p.SymCount  || p.sym_count  || 0;
+        const edges= p.EdgeCount || p.edge_count || 0;
+        const files= p.FileCount || p.file_count || 0;
+        const ts   = p.IndexedAt || p.indexed_at || '';
+        // Heuristic: if sym/edge counts are 0 and the path looks stale, flag it
+        const isEmpty = syms === 0 && edges === 0;
+        return ` + "`" + `
+        <div class="proj-card${isEmpty?' invalid':''}">
+          <div class="proj-header">
+            <div class="proj-name">${name}</div>
+            <div class="proj-actions">
+              <button class="proj-btn" title="Re-index this project" onclick="reindex(${JSON.stringify(id)}, this)">⟳ Re-index</button>
+              <button class="proj-btn danger" title="Remove from index" onclick="deleteProject(${JSON.stringify(id)}, ${JSON.stringify(name)})">✕ Remove</button>
+            </div>
           </div>
-          ${p.IndexedAt||p.indexed_at ? ` + "`" + `<div style="margin-top:10px"><span class="pill">indexed ${new Date(p.IndexedAt||p.indexed_at).toLocaleString()}</span></div>` + "`" + ` : ''}
-        </div>` + "`" + `).join('');
+          <div class="proj-path${isEmpty?' missing':''}" title="${path}">${path}${isEmpty?' ⚠ no data — may be stale':''}</div>
+          <div class="proj-stats">
+            <div class="proj-stat"><div class="proj-stat-val">${fmt(files)}</div><div class="proj-stat-label">Files</div></div>
+            <div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">${fmt(syms)}</div><div class="proj-stat-label">Symbols</div></div>
+            <div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">${fmt(edges)}</div><div class="proj-stat-label">Edges</div></div>
+          </div>
+          ${ts ? ` + "`" + `<div style="margin-top:10px"><span class="pill${isEmpty?' warn':''}">indexed ${new Date(ts).toLocaleString()}</span></div>` + "`" + ` : ''}
+        </div>` + "`" + `;
+      }).join('');
     }
   } catch(e) {
     document.getElementById('projects-grid').innerHTML = ` + "`" + `<div class="error">Failed to load projects: ${e.message}</div>` + "`" + `;

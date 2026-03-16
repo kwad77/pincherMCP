@@ -227,7 +227,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(dashboardHTML))
 		return
 	}
-	// GET /v1/projects — idiomatic REST shortcut for the list tool.
+	// GET /v1/projects — list all indexed projects.
 	if path == "projects" && r.Method == http.MethodGet {
 		projects, err := s.store.ListProjects()
 		if err != nil {
@@ -236,6 +236,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"projects": projects})
+		return
+	}
+	// DELETE /v1/projects — remove a project and all its data.
+	if path == "projects" && r.Method == http.MethodDelete {
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"error": "body must be {\"id\":\"<project-id>\"}"})
+			return
+		}
+		if err := s.store.DeleteProject(body.ID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"deleted": body.ID})
 		return
 	}
 
