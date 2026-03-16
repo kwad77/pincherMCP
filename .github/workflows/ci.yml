@@ -26,7 +26,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./... -timeout 120s
+        run: go test ./... -timeout 180s
 
       - name: Build
         run: go build ./cmd/pinch/
@@ -43,7 +43,7 @@ jobs:
           cache: true
 
       - name: Test with coverage
-        run: go test ./... -coverprofile=cover.out -timeout 120s
+        run: go test ./... -coverprofile=cover.out -timeout 180s
 
       - name: Check coverage threshold (85%)
         run: |

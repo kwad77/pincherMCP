@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1591,5 +1593,193 @@ func TestParseArgs_EmptyArguments(t *testing.T) {
 	got := parseArgs(req)
 	if got == nil {
 		t.Fatal("parseArgs returned nil for empty args")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP gateway tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func httpGet(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func httpPost(t *testing.T, srv *Server, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func TestServeHTTP_Health(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/health")
+	if w.Code != http.StatusOK {
+		t.Fatalf("health: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["ok"] != true {
+		t.Errorf("health ok field: got %v, want true", resp["ok"])
+	}
+}
+
+func TestServeHTTP_OpenAPISpec(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/openapi.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("openapi: got %d, want 200", w.Code)
+	}
+	var spec map[string]any
+	json.NewDecoder(w.Body).Decode(&spec)
+	if spec["openapi"] != "3.1.0" {
+		t.Errorf("openapi version: got %v, want 3.1.0", spec["openapi"])
+	}
+	paths, ok := spec["paths"].(map[string]any)
+	if !ok || len(paths) == 0 {
+		t.Error("openapi spec missing paths")
+	}
+}
+
+func TestServeHTTP_Projects(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/projects")
+	if w.Code != http.StatusOK {
+		t.Fatalf("projects: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["projects"]; !ok {
+		t.Error("projects response missing 'projects' key")
+	}
+}
+
+func TestServeHTTP_CORS_Preflight(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodOptions, "/v1/list", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS: got %d, want 204", w.Code)
+	}
+	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Error("CORS origin header missing")
+	}
+}
+
+func TestServeHTTP_MethodNotAllowed(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/list", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /list: got %d, want 405", w.Code)
+	}
+}
+
+func TestServeHTTP_UnknownTool(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpPost(t, srv, "/v1/notarealtool", "{}")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown tool: got %d, want 404", w.Code)
+	}
+}
+
+func TestServeHTTP_PostList(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpPost(t, srv, "/v1/list", "{}")
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /list: got %d, want 200", w.Code)
+	}
+}
+
+func TestServeHTTP_BearerAuth(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetHTTPKey("secret123")
+
+	// No token → 401
+	w := httpGet(t, srv, "/v1/health")
+	// health is after auth check
+	req := httptest.NewRequest(http.MethodPost, "/v1/list", strings.NewReader("{}"))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: got %d, want 401", w.Code)
+	}
+
+	// Wrong token → 401
+	req = httptest.NewRequest(http.MethodPost, "/v1/list", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer wrongtoken")
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token: got %d, want 401", w.Code)
+	}
+
+	// Correct token → 200
+	req = httptest.NewRequest(http.MethodPost, "/v1/list", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer secret123")
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("correct token: got %d, want 200", w.Code)
+	}
+}
+
+func TestServeHTTP_GzipResponse(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("gzip health: got %d, want 200", w.Code)
+	}
+	if w.Header().Get("Content-Encoding") != "gzip" {
+		t.Error("Content-Encoding: gzip header missing when Accept-Encoding: gzip was sent")
+	}
+}
+
+func TestAllowRequest_RateLimit(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetRateLimit(3, time.Minute)
+
+	for i := 0; i < 3; i++ {
+		if !srv.allowRequest("1.2.3.4") {
+			t.Fatalf("request %d should be allowed", i+1)
+		}
+	}
+	if srv.allowRequest("1.2.3.4") {
+		t.Fatal("4th request should be rate-limited")
+	}
+	// Different IP not affected
+	if !srv.allowRequest("5.6.7.8") {
+		t.Fatal("different IP should not be rate-limited")
+	}
+}
+
+func TestServeHTTP_RateLimitedResponse(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetRateLimit(1, time.Minute)
+
+	makeRatedReq := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/list", strings.NewReader("{}"))
+		req.RemoteAddr = "10.0.0.1:1234" // fixed IP so rate window applies
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := makeRatedReq(); w.Code != http.StatusOK {
+		t.Fatalf("first request: got %d, want 200", w.Code)
+	}
+	if w := makeRatedReq(); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request (over limit): got %d, want 429", w.Code)
 	}
 }
