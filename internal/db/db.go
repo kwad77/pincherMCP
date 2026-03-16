@@ -567,16 +567,18 @@ func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
 		if err != nil {
 			return err
 		}
+		defer rows.Close()
 		var ids []string
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
 				return err
 			}
 			ids = append(ids, id)
 		}
-		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 		for _, id := range ids {
 			if _, err := tx.Exec(`DELETE FROM edges WHERE from_id=? OR to_id=?`, id, id); err != nil {
 				return err
