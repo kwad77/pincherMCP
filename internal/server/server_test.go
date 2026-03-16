@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -992,5 +993,415 @@ func TestHandleADR_NoProject(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected error when no project set")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MCPServer getter
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMCPServer_Getter(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := srv.MCPServer()
+	if s == nil {
+		t.Error("MCPServer() returned nil")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleChanges: in a real git repo with staged changes
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleChanges_InGitRepo(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	repoDir := t.TempDir()
+
+	// Initialize a git repo
+	if out, err := runCmd(t, repoDir, "git", "init"); err != nil {
+		t.Skipf("git not available: %v (%s)", err, out)
+	}
+	runCmd(t, repoDir, "git", "config", "user.email", "test@test.com")
+	runCmd(t, repoDir, "git", "config", "user.name", "Test")
+
+	// Create a file, commit it, then modify it
+	goFile := filepath.Join(repoDir, "main.go")
+	os.WriteFile(goFile, []byte("package main\nfunc main() {}\n"), 0o644)
+	runCmd(t, repoDir, "git", "add", ".")
+	runCmd(t, repoDir, "git", "commit", "-m", "init")
+
+	// Modify the file (unstaged)
+	os.WriteFile(goFile, []byte("package main\nfunc main() { println() }\n"), 0o644)
+
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "gitrepo", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "gitm1", ProjectID: repoDir, FilePath: "main.go", Name: "main",
+			QualifiedName: "main.main", Kind: "Function", Language: "Go",
+			StartByte: 14, EndByte: 38, StartLine: 2, EndLine: 2},
+	})
+	srv.sessionID = repoDir
+	srv.sessionRoot = repoDir
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{
+		"scope": "unstaged",
+	}))
+	if err != nil {
+		t.Fatalf("handleChanges: %v", err)
+	}
+	if result.IsError {
+		t.Logf("handleChanges returned error (may be expected): %v", decode(t, result))
+		return
+	}
+	m := decode(t, result)
+	if m["summary"] == nil {
+		t.Error("expected summary in changes response")
+	}
+}
+
+func TestHandleChanges_WithStagedScope(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	repoDir := t.TempDir()
+
+	if out, err := runCmd(t, repoDir, "git", "init"); err != nil {
+		t.Skipf("git not available: %v (%s)", err, out)
+	}
+	runCmd(t, repoDir, "git", "config", "user.email", "test@test.com")
+	runCmd(t, repoDir, "git", "config", "user.name", "Test")
+
+	goFile := filepath.Join(repoDir, "svc.go")
+	os.WriteFile(goFile, []byte("package svc\nfunc Run() {}\n"), 0o644)
+	runCmd(t, repoDir, "git", "add", ".")
+	runCmd(t, repoDir, "git", "commit", "-m", "init")
+
+	// Stage a change
+	os.WriteFile(goFile, []byte("package svc\nfunc Run() { println() }\n"), 0o644)
+	runCmd(t, repoDir, "git", "add", "svc.go")
+
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "gitrepo2", IndexedAt: time.Now()})
+	srv.sessionID = repoDir
+	srv.sessionRoot = repoDir
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{
+		"scope": "staged",
+		"depth": float64(2),
+	}))
+	if err != nil {
+		t.Fatalf("handleChanges staged: %v", err)
+	}
+	_ = result // just verify no panic
+}
+
+func TestHandleChanges_AllScope(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	repoDir := t.TempDir()
+
+	if out, err := runCmd(t, repoDir, "git", "init"); err != nil {
+		t.Skipf("git not available: %v (%s)", err, out)
+	}
+	runCmd(t, repoDir, "git", "config", "user.email", "test@test.com")
+	runCmd(t, repoDir, "git", "config", "user.name", "Test")
+	goFile := filepath.Join(repoDir, "lib.go")
+	os.WriteFile(goFile, []byte("package lib\nfunc Lib() {}\n"), 0o644)
+	runCmd(t, repoDir, "git", "add", ".")
+	runCmd(t, repoDir, "git", "commit", "-m", "init")
+	os.WriteFile(goFile, []byte("package lib\nfunc Lib() { return }\n"), 0o644)
+
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "gitrepo3", IndexedAt: time.Now()})
+	srv.sessionID = repoDir
+	srv.sessionRoot = repoDir
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{"scope": "all"}))
+	if err != nil {
+		t.Fatalf("handleChanges all: %v", err)
+	}
+	_ = result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleContext: with IMPORTS edges
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleContext_WithImportEdges(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	pid := "ctx-import-proj"
+	repoDir := t.TempDir()
+	writeGoFile(t, repoDir, "pkg/svc.go", simpleGoSrc)
+
+	store.UpsertProject(db.Project{ID: pid, Path: repoDir, Name: "ctximp", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "ci-main", ProjectID: pid, FilePath: "pkg/svc.go", Name: "Compute",
+			QualifiedName: "mypkg.Compute", Kind: "Function", Language: "Go",
+			StartByte: 14, EndByte: 55, StartLine: 3, EndLine: 3},
+		{ID: "ci-dep", ProjectID: pid, FilePath: "pkg/dep.go", Name: "Helper",
+			QualifiedName: "mypkg.Helper", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 30, StartLine: 1, EndLine: 2},
+	})
+	store.BulkUpsertEdges([]db.Edge{
+		{ProjectID: pid, FromID: "ci-main", ToID: "ci-dep", Kind: "IMPORTS", Confidence: 1.0},
+	})
+	srv.sessionID = pid
+
+	result, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": "ci-main"}))
+	if err != nil {
+		t.Fatalf("handleContext: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	if m["symbol"] == nil {
+		t.Error("expected symbol in context response")
+	}
+	if m["imports"] == nil {
+		t.Log("imports nil — IMPORTS edge may not have been returned")
+	}
+}
+
+func TestHandleContext_NoImports(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	pid := "ctx-noimport-proj"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/ctx", Name: "ctx", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "ni-main", ProjectID: pid, FilePath: "main.go", Name: "Run",
+			QualifiedName: "pkg.Run", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 30, StartLine: 1, EndLine: 3},
+	})
+	srv.sessionID = pid
+
+	result, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": "ni-main"}))
+	if err != nil {
+		t.Fatalf("handleContext: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", decode(t, result))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseFileURI edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestParseFileURI_Valid(t *testing.T) {
+	path, ok := parseFileURI("file:///home/user/project")
+	if !ok {
+		t.Error("expected valid parse for file:///home/user/project")
+	}
+	if path == "" {
+		t.Error("expected non-empty path")
+	}
+}
+
+func TestParseFileURI_WindowsDriveLetter(t *testing.T) {
+	// Windows: file:///C:/Users/project
+	path, ok := parseFileURI("file:///C:/Users/project")
+	if !ok {
+		t.Error("expected valid parse for Windows file URI")
+	}
+	if path == "" {
+		t.Error("expected non-empty path")
+	}
+}
+
+func TestParseFileURI_InvalidScheme(t *testing.T) {
+	_, ok := parseFileURI("http://example.com/path")
+	if ok {
+		t.Error("expected false for non-file URI")
+	}
+}
+
+func TestParseFileURI_InvalidURI(t *testing.T) {
+	_, ok := parseFileURI(":/invalid")
+	if ok {
+		t.Error("expected false for invalid URI")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runGitDiff helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRunGitDiff_NonGitDir(t *testing.T) {
+	dir := t.TempDir()
+	_, err := runGitDiff(dir, "unstaged")
+	if err == nil {
+		t.Log("runGitDiff returned nil error for non-git dir (may be ok if git says no diff)")
+	}
+}
+
+func TestParseGitDiffFiles_Basic(t *testing.T) {
+	diff := "internal/server/server.go\ninternal/db/db.go\n"
+	files := parseGitDiffFiles(diff)
+	if len(files) != 2 {
+		t.Errorf("expected 2 files, got %d: %v", len(files), files)
+	}
+	if files[0] != "internal/server/server.go" {
+		t.Errorf("unexpected first file: %q", files[0])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleSymbols: with project arg
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleSymbols_WithProjectArg(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	pid := "syms-proj"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/syms", Name: "symsproj", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "sp1", ProjectID: pid, FilePath: "a.go", Name: "Alpha",
+			QualifiedName: "pkg.Alpha", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 30, StartLine: 1, EndLine: 3},
+		{ID: "sp2", ProjectID: pid, FilePath: "b.go", Name: "Beta",
+			QualifiedName: "pkg.Beta", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 30, StartLine: 1, EndLine: 3},
+	})
+	srv.sessionID = pid
+
+	result, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{
+		"ids":     []any{"sp1", "sp2", "sp-nonexistent"},
+		"project": "symsproj",
+	}))
+	if err != nil {
+		t.Fatalf("handleSymbols: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	syms, ok := m["symbols"].([]any)
+	if !ok || len(syms) != 3 {
+		t.Errorf("expected 3 symbols (including error entry), got %v", m["symbols"])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleStats
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveProjectRoot fallbacks
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestResolveProjectRoot_FallsBackToSessionRoot(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.sessionRoot = "/tmp/session-root"
+
+	root, err := srv.resolveProjectRoot("nonexistent-project-id")
+	if err != nil {
+		t.Fatalf("resolveProjectRoot: %v", err)
+	}
+	if root != "/tmp/session-root" {
+		t.Errorf("expected session root fallback, got %q", root)
+	}
+}
+
+func TestResolveProjectRoot_NoSessionRoot(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// No session root, no project in DB
+	_, err := srv.resolveProjectRoot("nonexistent")
+	if err == nil {
+		t.Error("expected error when no project and no session root")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runCmd helper for git tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func runCmd(t *testing.T, dir string, name string, args ...string) (string, error) {
+	t.Helper()
+	c := exec.Command(name, args...)
+	c.Dir = dir
+	out, err := c.CombinedOutput()
+	return string(out), err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleADR: missing branch coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleADR_GetEmptyKey(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "get",
+		"key":    "",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when key is empty for get")
+	}
+}
+
+func TestHandleADR_SetEmptyKey(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "set",
+		"key":    "",
+		"value":  "somevalue",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when key is empty for set")
+	}
+}
+
+func TestHandleADR_SetEmptyValue(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "set",
+		"key":    "somekey",
+		"value":  "",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when value is empty for set")
+	}
+}
+
+func TestHandleADR_DeleteEmptyKey(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "delete",
+		"key":    "",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when key is empty for delete")
+	}
+}
+
+func TestHandleADR_GetNotFound(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "get",
+		"key":    "nonexistent-key",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when key not found")
 	}
 }

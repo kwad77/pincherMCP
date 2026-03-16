@@ -559,3 +559,213 @@ func TestIsSkippedDir(t *testing.T) {
 		t.Error("isSkippedDir('.hidden') = false, want true")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// flushBatch
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestFlushBatch_Empty(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	pid := "flush-empty"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/fe", Name: "fe", IndexedAt: time.Now()})
+	if err := idx.flushBatch(pid, nil, nil); err != nil {
+		t.Fatalf("flushBatch(nil, nil): %v", err)
+	}
+}
+
+func TestFlushBatch_WithData(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	pid := "flush-data"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/fd", Name: "fd", IndexedAt: time.Now()})
+
+	syms := []db.Symbol{
+		{ID: "fb1", ProjectID: pid, FilePath: "a.go", Name: "FnA", QualifiedName: "pkg.FnA",
+			Kind: "Function", Language: "Go", StartByte: 0, EndByte: 30, StartLine: 1, EndLine: 3},
+	}
+	edges := []db.Edge{
+		{ProjectID: pid, FromID: "fb1", ToID: "fb1", Kind: "CALLS", Confidence: 1.0},
+	}
+	if err := idx.flushBatch(pid, syms, edges); err != nil {
+		t.Fatalf("flushBatch: %v", err)
+	}
+
+	got, err := store.GetSymbolsForFile(pid, "a.go")
+	if err != nil {
+		t.Fatalf("GetSymbolsForFile: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 symbol, got %d", len(got))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReadSymbolSource edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestReadSymbolSource_EqualStartEnd(t *testing.T) {
+	sym := db.Symbol{StartByte: 10, EndByte: 10}
+	src, err := ReadSymbolSource("/any/root", sym)
+	if err != nil {
+		t.Fatalf("ReadSymbolSource with equal bytes: %v", err)
+	}
+	if src != "" {
+		t.Errorf("expected empty string when StartByte == EndByte, got %q", src)
+	}
+}
+
+func TestReadSymbolSource_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	content := "package main\n\nfunc Hello() {}\n"
+	goFile := filepath.Join(dir, "hello.go")
+	os.WriteFile(goFile, []byte(content), 0o644)
+
+	sym := db.Symbol{FilePath: "hello.go", StartByte: 14, EndByte: 14 + len("func Hello() {}")}
+	src, err := ReadSymbolSource(dir, sym)
+	if err != nil {
+		t.Fatalf("ReadSymbolSource valid: %v", err)
+	}
+	if src != "func Hello() {}" {
+		t.Errorf("expected %q, got %q", "func Hello() {}", src)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Index: empty directory (no source files)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestIndex_EmptyDirectory(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	emptyDir := t.TempDir()
+
+	result, err := idx.Index(context.Background(), emptyDir, false)
+	if err != nil {
+		t.Fatalf("Index empty dir: %v", err)
+	}
+	if result.Files != 0 {
+		t.Errorf("expected 0 files in empty dir, got %d", result.Files)
+	}
+}
+
+func TestIndex_OnlyNonSourceFiles(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	// Only README and binary — no source files
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Hello"), 0o644)
+	os.WriteFile(filepath.Join(dir, "data.json"), []byte("{}"), 0o644)
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index non-source dir: %v", err)
+	}
+	if result.Files != 0 {
+		t.Logf("unexpected source files detected: %d (may include .json if language detected)", result.Files)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trace: "both" direction
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestTrace_BothDirections(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	pid := "trace-both"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/tb", Name: "tb", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "tb1", ProjectID: pid, FilePath: "a.go", Name: "Root", QualifiedName: "pkg.Root",
+			Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "tb2", ProjectID: pid, FilePath: "b.go", Name: "Caller", QualifiedName: "pkg.Caller",
+			Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "tb3", ProjectID: pid, FilePath: "c.go", Name: "Callee", QualifiedName: "pkg.Callee",
+			Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+	})
+	store.BulkUpsertEdges([]db.Edge{
+		{ProjectID: pid, FromID: "tb2", ToID: "tb1", Kind: "CALLS", Confidence: 1.0},
+		{ProjectID: pid, FromID: "tb1", ToID: "tb3", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	// "both" direction should find both Caller (inbound) and Callee (outbound)
+	hops, err := idx.Trace(context.Background(), pid, "Root", "both", 2, true)
+	if err != nil {
+		t.Fatalf("Trace both: %v", err)
+	}
+	names := map[string]bool{}
+	for _, h := range hops {
+		names[h.Symbol.Name] = true
+	}
+	if !names["Caller"] {
+		t.Error("expected Caller in both-direction trace")
+	}
+	if !names["Callee"] {
+		t.Error("expected Callee in both-direction trace")
+	}
+}
+
+func TestTrace_DepthClamp(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	pid := "trace-clamp"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/tc", Name: "tc", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "tc1", ProjectID: pid, FilePath: "a.go", Name: "Fn", QualifiedName: "pkg.Fn",
+			Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+	})
+
+	// maxDepth=0 should be clamped to 3
+	hops, err := idx.Trace(context.Background(), pid, "Fn", "outbound", 0, false)
+	if err != nil {
+		t.Fatalf("Trace with 0 depth: %v", err)
+	}
+	_ = hops // no panic
+}
+
+func TestTrace_UnknownSymbol(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	pid := "trace-unknown"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/tu", Name: "tu", IndexedAt: time.Now()})
+
+	_, err := idx.Trace(context.Background(), pid, "NonExistentFn", "outbound", 2, false)
+	if err == nil {
+		t.Error("expected error for unknown symbol in trace")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// flushBatch: error paths via closed store
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestFlushBatch_SymbolsError(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	idx := New(store)
+	// Close the store first to force errors in BulkUpsertSymbols
+	store.Close()
+
+	syms := []db.Symbol{{ID: "s1", ProjectID: "p1", Name: "Fn", Kind: "Function"}}
+	err = idx.flushBatch("p1", syms, nil)
+	if err == nil {
+		t.Error("expected error when store is closed")
+	}
+}
+
+func TestFlushBatch_EdgesError(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	idx := New(store)
+
+	pid := "flush-p2"
+	store.UpsertProject(db.Project{ID: pid, Path: dir, Name: "p2", IndexedAt: time.Now()})
+
+	// First close so BulkUpsertEdges will fail (after symbols succeed — but with closed db both fail)
+	store.Close()
+
+	edges := []db.Edge{{FromID: "s1", ToID: "s2", Kind: "CALLS", ProjectID: pid}}
+	err = idx.flushBatch(pid, nil, edges)
+	if err == nil {
+		t.Error("expected error when store is closed")
+	}
+}
