@@ -126,6 +126,39 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .sessions-table tr:hover td{background:rgba(22,27,34,.6)}
 .mono{font-family:ui-monospace,monospace;font-size:11px}
 
+/* ── Projection banner ── */
+.proj-banner{background:linear-gradient(135deg,rgba(63,185,80,.08) 0%,rgba(88,166,255,.08) 100%);border:1px solid rgba(63,185,80,.25);border-radius:10px;padding:20px 24px;margin-bottom:32px;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.proj-banner-icon{font-size:28px;flex-shrink:0}
+.proj-banner-body{flex:1;min-width:200px}
+.proj-banner-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.proj-banner-rate{font-size:28px;font-weight:700;color:var(--green);letter-spacing:-1px;line-height:1}
+.proj-banner-sub{font-size:12px;color:var(--muted);margin-top:4px}
+.proj-banner-pills{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.proj-banner-pill{background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.25);border-radius:20px;color:var(--green);font-size:12px;font-weight:600;padding:4px 12px}
+.proj-banner-pill.blue{background:rgba(88,166,255,.12);border-color:rgba(88,166,255,.25);color:var(--accent)}
+
+/* ── Project detail panel ── */
+.detail-panel{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:20px;margin-top:16px;display:none}
+.detail-panel.open{display:block}
+.detail-panel-title{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
+.detail-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0 4px}
+.detail-close:hover{color:var(--text)}
+.detail-section{margin-bottom:16px}
+.detail-section-label{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.lang-bar{display:flex;gap:6px;flex-wrap:wrap}
+.lang-chip{background:rgba(163,113,247,.12);border:1px solid rgba(163,113,247,.25);border-radius:6px;color:var(--purple);font-size:11px;font-family:ui-monospace,monospace;padding:3px 8px}
+.ep-list,.hotspot-list{list-style:none;margin:0;padding:0}
+.ep-list li,.hotspot-list li{border-bottom:1px solid rgba(48,54,61,.4);font-size:12px;font-family:ui-monospace,monospace;padding:5px 0;color:var(--text)}
+.ep-list li:last-child,.hotspot-list li:last-child{border-bottom:none}
+.hotspot-calls{color:var(--muted);font-size:11px;margin-left:8px}
+
+/* ── Progress bar ── */
+.progress-wrap{background:rgba(48,54,61,.5);border-radius:4px;height:4px;margin-top:8px;overflow:hidden;display:none}
+.progress-wrap.active{display:block}
+.progress-bar{background:linear-gradient(90deg,var(--accent),var(--purple));height:100%;transition:width .3s;border-radius:4px}
+.progress-label{font-size:11px;color:var(--muted);margin-top:4px;display:none}
+.progress-label.active{display:block}
+
 /* ── Misc ── */
 .empty{color:var(--muted);font-size:13px;padding:24px;text-align:center}
 .error{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);border-radius:8px;padding:16px;color:var(--red);font-size:13px;margin-bottom:16px}
@@ -172,6 +205,7 @@ main{max-width:1200px;margin:0 auto;padding:32px}
   <div class="grid grid-4" id="session-cards"><div class="loading">Loading…</div></div>
   <p class="section-title">All-Time ROI</p>
   <div class="grid grid-4" id="alltime-cards"><div class="loading">Loading…</div></div>
+  <div id="projection-banner"></div>
   <p class="section-title">Token Savings History</p>
   <div class="sparkline-card">
     <div class="sparkline-meta">
@@ -190,6 +224,13 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <main>
   <p class="section-title">Indexed Projects</p>
   <div class="grid grid-2" id="projects-grid"><div class="loading">Loading…</div></div>
+  <div class="detail-panel" id="proj-detail-panel">
+    <div class="detail-panel-title">
+      <span id="proj-detail-name">Project Details</span>
+      <button class="detail-close" onclick="closeDetail()" title="Close">&#x2715;</button>
+    </div>
+    <div id="proj-detail-body"><div class="loading">Loading…</div></div>
+  </div>
 </main>
 </div>
 
@@ -366,9 +407,10 @@ async function loadProjects() {
       const cardCls=isEmpty?' invalid':isStale?' stale':'';
       const pillCls=isEmpty?' warn':isStale?' stale-pill':'';
       const statusMsg=isEmpty?' \u26a0 no data \u2014 may be a ghost project':isStale?' \u26a0 index is '+Math.floor(ageHours)+'h old \u2014 consider re-indexing':'';
-      return '<div class="proj-card'+cardCls+'">'+
+      return '<div class="proj-card'+cardCls+'" id="pcard-'+esc(id)+'">'+
         '<div class="proj-header"><div class="proj-name">'+esc(name)+'</div>'+
         '<div class="proj-actions">'+
+        '<button class="proj-btn" onclick="openDetail('+JSON.stringify(id)+','+JSON.stringify(name)+')">&#x2699; Details</button>'+
         '<button class="proj-btn" onclick="reindex('+JSON.stringify(id)+',this)">\u27f3 Re-index</button>'+
         '<button class="proj-btn danger" onclick="deleteProject('+JSON.stringify(id)+','+JSON.stringify(name)+')">\u2715 Remove</button>'+
         '</div></div>'+
@@ -378,6 +420,8 @@ async function loadProjects() {
         '<div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">'+fmt(syms)+'</div><div class="proj-stat-label">Symbols</div></div>'+
         '<div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">'+fmt(edges)+'</div><div class="proj-stat-label">Edges</div></div>'+
         '</div>'+
+        '<div class="progress-wrap" id="prog-'+esc(id)+'"><div class="progress-bar" id="progbar-'+esc(id)+'" style="width:0%"></div></div>'+
+        '<div class="progress-label" id="proglabel-'+esc(id)+'"></div>'+
         (ts?'<div style="margin-top:10px" title="'+esc(new Date(ts).toLocaleString())+'"><span class="pill'+pillCls+'">indexed '+timeAgo(ts)+'</span></div>':'')+
         '</div>';
     }).join('');
@@ -389,15 +433,43 @@ async function loadProjects() {
 async function reindex(id, btn) {
   btn.disabled=true; btn.textContent='…';
   const card=btn.closest('.proj-card');
+  const progWrap=document.getElementById('prog-'+id);
+  const progBar=document.getElementById('progbar-'+id);
+  const progLabel=document.getElementById('proglabel-'+id);
   if(card) card.classList.add('indexing');
+  if(progWrap){ progWrap.classList.add('active'); }
+  if(progLabel){ progLabel.classList.add('active'); progLabel.textContent='Starting…'; }
+
+  // Poll progress every 600ms while indexing
+  let pct=0, ticker=setInterval(()=>{
+    pct=Math.min(pct+Math.random()*8+2, 92);
+    if(progBar) progBar.style.width=pct.toFixed(0)+'%';
+    fetch('/v1/index-progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:id})})
+      .then(r=>r.json()).then(d=>{
+        const p=d.result||d;
+        if(p.files_done!=null&&p.files_total>0){
+          pct=Math.round(p.files_done/p.files_total*100);
+          if(progBar) progBar.style.width=pct+'%';
+          if(progLabel) progLabel.textContent=p.files_done+' / '+p.files_total+' files';
+        }
+      }).catch(()=>{});
+  }, 600);
+
   try {
     const d = await fetch('/v1/index',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:id})}).then(r=>r.json());
+    clearInterval(ticker);
+    if(progBar) progBar.style.width='100%';
+    if(progLabel) progLabel.textContent='Done';
     const res=d.result||d;
     showToast('Re-indexed: '+(res.symbols||0)+' symbols, '+(res.edges||0)+' edges');
+    setTimeout(()=>{ if(progWrap) progWrap.classList.remove('active'); if(progLabel) progLabel.classList.remove('active'); }, 1500);
     loadProjects();
   } catch(e) {
+    clearInterval(ticker);
     showToast('Re-index failed: '+e.message, false);
     if(card) card.classList.remove('indexing');
+    if(progWrap) progWrap.classList.remove('active');
+    if(progLabel) progLabel.classList.remove('active');
     btn.disabled=false; btn.textContent='\u27f3';
   }
 }
@@ -546,10 +618,85 @@ async function loadSessions() {
   } catch(e) { wrap.innerHTML='<div class="error">Failed to load sessions: '+esc(e.message)+'</div>'; }
 }
 
+// ── Cost projection ────────────────────────────────────────────────────────
+async function loadProjection() {
+  const el=document.getElementById('projection-banner');
+  if(!el) return;
+  try {
+    const data=await fetch('/v1/sessions').then(r=>r.json());
+    const sessions=data.sessions||[];
+    if(sessions.length<2){el.innerHTML='';return;}
+    // Parse cost strings like "$0.1234"
+    const parseDollar=s=>parseFloat(String(s).replace(/[^0-9.]/g,''))||0;
+    const totalCost=sessions.reduce((a,s)=>a+parseDollar(s.cost_avoided),0);
+    const totalSaved=sessions.reduce((a,s)=>a+(s.tokens_saved||0),0);
+    const totalCalls=sessions.reduce((a,s)=>a+(s.calls||0),0);
+    // Date range from oldest to newest
+    const dates=sessions.map(s=>new Date(s.started_at)).filter(d=>!isNaN(d));
+    if(!dates.length||totalCost===0){el.innerHTML='';return;}
+    const oldest=Math.min(...dates.map(d=>d.getTime()));
+    const newest=Math.max(...dates.map(d=>d.getTime()));
+    const days=Math.max((newest-oldest)/86400000, 1);
+    const monthlyRate=(totalCost/days)*30;
+    const dailyRate=totalCost/days;
+    const rateStr=monthlyRate<0.01?('<$0.01/mo'):'$'+monthlyRate.toFixed(2)+'/mo';
+    const dailyStr=dailyRate<0.001?('<$0.01/day'):'$'+dailyRate.toFixed(3)+'/day';
+    el.innerHTML='<div class="proj-banner">'+
+      '<div class="proj-banner-icon">\ud83d\udcc8</div>'+
+      '<div class="proj-banner-body">'+
+        '<div class="proj-banner-title">Projected Savings Rate</div>'+
+        '<div class="proj-banner-rate">~'+rateStr+'</div>'+
+        '<div class="proj-banner-sub">Based on '+sessions.length+' sessions over '+Math.round(days)+' days \u00b7 '+dailyStr+' avg</div>'+
+      '</div>'+
+      '<div class="proj-banner-pills">'+
+        '<div class="proj-banner-pill">'+fmt(totalSaved)+' tokens saved</div>'+
+        '<div class="proj-banner-pill blue">'+totalCalls+' tool calls</div>'+
+      '</div>'+
+    '</div>';
+  } catch(e) { document.getElementById('projection-banner').innerHTML=''; }
+}
+
+// ── Project deep-dive ──────────────────────────────────────────────────────
+let _detailOpenId=null;
+async function openDetail(id, name) {
+  const panel=document.getElementById('proj-detail-panel');
+  const body=document.getElementById('proj-detail-body');
+  const title=document.getElementById('proj-detail-name');
+  // Toggle off if same project clicked again
+  if(_detailOpenId===id && panel.classList.contains('open')){ closeDetail(); return; }
+  _detailOpenId=id;
+  panel.classList.add('open');
+  title.textContent=name+' — Architecture';
+  body.innerHTML='<div class="loading">Loading architecture…</div>';
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+  try {
+    const data=await fetch('/v1/architecture',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:id})}).then(r=>r.json());
+    const d=data.result||data;
+    const langs=d.languages||[];
+    const eps=d.entry_points||[];
+    const hotspots=d.hotspot_functions||d.hotspots||[];
+    body.innerHTML=
+      (langs.length?'<div class="detail-section"><div class="detail-section-label">Languages</div>'+
+        '<div class="lang-bar">'+langs.map(l=>'<span class="lang-chip">'+esc(l.language||l)+(l.file_count?' \u00b7 '+l.file_count+' files':'')+'</span>').join('')+'</div></div>':'')+
+      (eps.length?'<div class="detail-section"><div class="detail-section-label">Entry Points</div>'+
+        '<ul class="ep-list">'+eps.slice(0,8).map(e=>'<li>'+esc(e.name||e)+(e.file?' <span style="color:var(--muted)">'+esc(e.file)+'</span>':'')+'</li>').join('')+'</ul></div>':'')+
+      (hotspots.length?'<div class="detail-section"><div class="detail-section-label">Hotspot Functions</div>'+
+        '<ul class="hotspot-list">'+hotspots.slice(0,10).map(h=>'<li>'+esc(h.name||h)+'<span class="hotspot-calls">'+(h.call_count!=null?h.call_count+' calls':'')+'</span></li>').join('')+'</ul></div>':'')+
+      (!langs.length&&!eps.length&&!hotspots.length?'<div class="empty">No architecture data available. Re-index the project first.</div>':'');
+  } catch(e) { body.innerHTML='<div class="error">Failed to load architecture: '+esc(e.message)+'</div>'; }
+}
+
+function closeDetail() {
+  _detailOpenId=null;
+  document.getElementById('proj-detail-panel').classList.remove('open');
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 load();
 populateSearchProjects();
+loadProjection();
 setInterval(load, 30000);
+setInterval(loadProjection, 60000);
 
 // Restore tab from URL hash
 const hash=(location.hash||'').replace('#','');

@@ -250,6 +250,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"sessions": rows})
 		return
 	}
+	// POST /v1/index-progress — live file progress for a running index job.
+	if path == "index-progress" && r.Method == http.MethodPost {
+		var body struct {
+			Project string `json:"project"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		projectID := body.Project
+		if projectID == "" {
+			projectID = s.sessionID
+		}
+		done, total, active := s.indexer.GetProgress(projectID)
+		json.NewEncoder(w).Encode(map[string]any{
+			"project":     projectID,
+			"files_done":  done,
+			"files_total": total,
+			"active":      active,
+		})
+		return
+	}
 	// GET /v1/projects — list all indexed projects.
 	if path == "projects" && r.Method == http.MethodGet {
 		projects, err := s.store.ListProjects()

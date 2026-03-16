@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/boyter/gocodewalker"
@@ -26,11 +27,18 @@ import (
 	"github.com/zeebo/xxh3"
 )
 
+// IndexProgress tracks live file-processing progress for a running index job.
+type IndexProgress struct {
+	FilesDone  atomic.Int64
+	FilesTotal atomic.Int64
+}
+
 // Indexer manages repository indexing for pincherMCP.
 type Indexer struct {
-	store  *db.Store
-	mu     sync.Mutex
-	active map[string]bool // projectID → indexing in progress
+	store    *db.Store
+	mu       sync.Mutex
+	active   map[string]bool         // projectID → indexing in progress
+	progress sync.Map                // projectID → *IndexProgress
 }
 
 // New creates a new Indexer.
@@ -39,6 +47,19 @@ func New(store *db.Store) *Indexer {
 		store:  store,
 		active: make(map[string]bool),
 	}
+}
+
+// GetProgress returns current file progress for the given project ID.
+// Returns (done, total, active). If not currently indexing, active=false.
+func (idx *Indexer) GetProgress(projectID string) (done, total int64, active bool) {
+	idx.mu.Lock()
+	active = idx.active[projectID]
+	idx.mu.Unlock()
+	if v, ok := idx.progress.Load(projectID); ok {
+		p := v.(*IndexProgress)
+		return p.FilesDone.Load(), p.FilesTotal.Load(), active
+	}
+	return 0, 0, active
 }
 
 // IndexResult summarises a completed indexing run.
@@ -72,10 +93,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	}
 	idx.active[projectID] = true
 	idx.mu.Unlock()
+	prog := &IndexProgress{}
+	idx.progress.Store(projectID, prog)
 	defer func() {
 		idx.mu.Lock()
 		delete(idx.active, projectID)
 		idx.mu.Unlock()
+		idx.progress.Delete(projectID)
 	}()
 
 	start := time.Now()
@@ -141,9 +165,10 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		}
 
 		totalFiles++
+		prog.FilesTotal.Add(1)
 		wg.Add(1)
 		go func(path, relPath, hash string, content []byte) {
-			defer wg.Done()
+			defer func() { prog.FilesDone.Add(1); wg.Done() }()
 
 			lang := ast.DetectLanguage(path)
 			if lang == "" {
