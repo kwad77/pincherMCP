@@ -445,6 +445,18 @@ func (s *Server) resolveProjectID(projectArg string) (string, error) {
 		if s.sessionID == "" {
 			return "", fmt.Errorf("no project specified and no session project detected")
 		}
+		// Auto-index the session project on first use if it isn't in the DB yet.
+		// This makes every tool work out-of-the-box without an explicit `index` call.
+		if s.sessionRoot != "" {
+			if p, _ := s.store.GetProject(s.sessionID); p == nil {
+				slog.Info("pincher.auto_index.start", "path", s.sessionRoot)
+				if _, err := s.indexer.Index(context.Background(), s.sessionRoot, false); err != nil {
+					slog.Warn("pincher.auto_index.err", "err", err)
+					return s.sessionID, fmt.Errorf("project not yet indexed — auto-index failed (%v). Run the `index` tool manually to retry", err)
+				}
+				slog.Info("pincher.auto_index.done", "path", s.sessionRoot)
+			}
+		}
 		return s.sessionID, nil
 	}
 	// Accept either a name or ID
