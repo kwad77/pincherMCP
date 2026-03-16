@@ -1,0 +1,10 @@
+*.exe
+*.db
+*.db-wal
+*.db-shm
+cover*.out
+cover*.html
+.git
+.claude
+.mcp.json
+CLAUDE.md
