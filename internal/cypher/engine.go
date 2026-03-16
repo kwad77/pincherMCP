@@ -826,7 +826,7 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 	FROM reach r
 	JOIN symbols s ON s.id = r.id
 	WHERE r.depth >= ? AND r.id != ?
-	GROUP BY r.id
+	GROUP BY s.id
 	ORDER BY min_depth
 	LIMIT ?`
 
