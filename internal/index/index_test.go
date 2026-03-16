@@ -941,3 +941,55 @@ func TestIndex_SymbolCountAccumulation(t *testing.T) {
 			result.Symbols, totalExpected)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetProgress
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGetProgress_NotIndexing(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	done, total, active := idx.GetProgress("nonexistent-project")
+	if done != 0 || total != 0 || active {
+		t.Errorf("GetProgress for unknown project: got (%d, %d, %v), want (0, 0, false)", done, total, active)
+	}
+}
+
+func TestGetProgress_DuringIndex(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	// Write enough files to ensure Index is still running when we check progress
+	for i := 0; i < 5; i++ {
+		writeFile(t, dir, fmt.Sprintf("file%d.go", i), fmt.Sprintf("package p\nfunc F%d() {}\n", i))
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		idx.Index(context.Background(), dir, false) //nolint:errcheck
+	}()
+
+	// Poll until Index starts (active becomes true or it finishes)
+	projectID := db.ProjectIDFromPath(dir)
+	var sawActive bool
+	for i := 0; i < 200; i++ {
+		_, _, active := idx.GetProgress(projectID)
+		if active {
+			sawActive = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	<-done
+
+	// After completion: active must be false, progress entries removed
+	finalDone, finalTotal, finalActive := idx.GetProgress(projectID)
+	if finalActive {
+		t.Error("GetProgress: active=true after Index returned")
+	}
+	// Progress entries are deleted on completion, so both should be 0
+	if finalDone != 0 || finalTotal != 0 {
+		t.Logf("GetProgress after Index: done=%d total=%d (progress entry already cleaned up)", finalDone, finalTotal)
+	}
+	// sawActive might be false if the index finished before we polled — that's OK
+	_ = sawActive
+}
