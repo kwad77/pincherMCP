@@ -1,10 +1,13 @@
 package db
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +104,80 @@ func TestOpen_Idempotent(t *testing.T) {
 		t.Fatalf("Open 2: %v", err)
 	}
 	s2.Close()
+}
+
+func TestMigrate_UpgradeFromV1(t *testing.T) {
+	// Simulate a pre-versioning database that is at schema v1 (baseline only,
+	// no extraction_confidence column, no symbol_moves table).
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pincher.db")
+
+	// Build a v1-era database using a raw connection — apply the baseline schema
+	// then pin schema_version to 1 (before any migrations ran).
+	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := raw.Exec(schema); err != nil {
+		raw.Close()
+		t.Fatalf("baseline schema: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		raw.Close()
+		t.Fatalf("create schema_version: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO schema_version(version) VALUES(1)`); err != nil {
+		raw.Close()
+		t.Fatalf("seed schema_version: %v", err)
+	}
+	raw.Close()
+
+	// Now open via the normal path — migrate() must detect v1 and apply
+	// all pending migrations (v1→v2, v2→v3, …).
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open after v1 seed: %v", err)
+	}
+	defer s.Close()
+
+	// Verify the final version equals 1 + len(schemaMigrations).
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	want := 1 + len(schemaMigrations)
+	if version != want {
+		t.Errorf("version = %d, want %d", version, want)
+	}
+
+	// Spot-check: extraction_confidence column must exist (migration 0).
+	if _, err := s.db.Exec(`INSERT INTO symbols(id,project_id,file_path,name,qualified_name,kind,language,start_byte,end_byte,start_line,end_line,extraction_confidence) VALUES('x','p','f.go','X','X','func','Go',0,1,1,1,0.85)`); err != nil {
+		t.Errorf("extraction_confidence column missing after migration: %v", err)
+	}
+
+	// Spot-check: symbol_moves table must exist (migration 1).
+	if _, err := s.db.Exec(`INSERT INTO symbol_moves(old_id,new_id,project_id,moved_at) VALUES('old','new','p',0)`); err != nil {
+		t.Errorf("symbol_moves table missing after migration: %v", err)
+	}
+}
+
+func TestMigrate_VersionTracked(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	// Version must be 1 (baseline) + number of migrations applied.
+	want := 1 + len(schemaMigrations)
+	if version != want {
+		t.Errorf("schema_version = %d, want %d", version, want)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

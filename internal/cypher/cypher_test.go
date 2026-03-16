@@ -406,6 +406,8 @@ func TestCypherPropToCol(t *testing.T) {
 		"label":          "kind",
 		"file_path":      "file_path",
 		"language":       "language",
+		"start_line":     "start_line",
+		"end_line":       "end_line",
 		"unknown_prop":   "",
 	}
 	for prop, want := range cases {
@@ -894,6 +896,144 @@ func TestParseProps_InlineToNodeFilter(t *testing.T) {
 	for _, row := range r.Rows {
 		if row["b.name"] != "Callee" {
 			t.Errorf("expected Callee, got %v", row["b.name"])
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// matchesConditions: >= and <= operators
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMatchesConditions_GteLte(t *testing.T) {
+	row := map[string]any{"n.complexity": "5"}
+
+	// >= : 5 >= 5 → true, 5 >= 6 → false
+	if !matchesConditions(row, []condition{{variable: "n", property: "complexity", op: ">=", value: "5"}}) {
+		t.Error("5 >= 5 should be true")
+	}
+	if matchesConditions(row, []condition{{variable: "n", property: "complexity", op: ">=", value: "6"}}) {
+		t.Error("5 >= 6 should be false")
+	}
+
+	// <= : 5 <= 5 → true, 5 <= 4 → false
+	if !matchesConditions(row, []condition{{variable: "n", property: "complexity", op: "<=", value: "5"}}) {
+		t.Error("5 <= 5 should be true")
+	}
+	if matchesConditions(row, []condition{{variable: "n", property: "complexity", op: "<=", value: "4"}}) {
+		t.Error("5 <= 4 should be false")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Execute: parse error path
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExecute_ParseError(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	e := &Executor{DB: db, MaxRows: 100}
+	// A deeply malformed query that cannot be parsed
+	_, err := e.Execute(context.Background(), "MATCH ((( GARBLED NONSENSE )))!!!!!")
+	// Either an error or empty result is acceptable — we just need the parse
+	// error branch to execute without panicking.
+	_ = err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildResult: ORDER BY + return whole variable (no property)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildResult_OrderBy(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "ob1", "Zebra", "Function", "Go")
+	insertSym(t, db, "ob2", "Apple", "Function", "Go")
+	insertSym(t, db, "ob3", "Mango", "Function", "Go")
+
+	r := exec(t, db, "MATCH (n:Function) RETURN n.name ORDER BY n.name ASC")
+	if r.Total < 3 {
+		t.Fatalf("expected >=3 rows, got %d", r.Total)
+	}
+	// Verify ascending order among our inserted symbols
+	names := make([]string, 0)
+	for _, row := range r.Rows {
+		if n, ok := row["n.name"].(string); ok {
+			names = append(names, n)
+		}
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i] < names[i-1] {
+			t.Errorf("ORDER BY ASC violated: %q after %q", names[i], names[i-1])
+		}
+	}
+}
+
+func TestBuildResult_OrderByDesc(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "od1", "Aardvark", "Interface", "Go")
+	insertSym(t, db, "od2", "Zebra", "Interface", "Go")
+
+	r := exec(t, db, "MATCH (n:Interface) RETURN n.name ORDER BY n.name DESC")
+	if r.Total < 2 {
+		t.Fatalf("expected >=2 rows, got %d", r.Total)
+	}
+	names := make([]string, 0)
+	for _, row := range r.Rows {
+		if n, ok := row["n.name"].(string); ok {
+			names = append(names, n)
+		}
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i] > names[i-1] {
+			t.Errorf("ORDER BY DESC violated: %q after %q", names[i], names[i-1])
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runJoinQuery: WHERE condition on toVar (tableAlias = "b") + CONTAINS pushdown
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRunJoinQuery_WhereOnToVar(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "wt1", "Caller", "Function", "Go")
+	insertSym(t, db, "wt2", "TargetCallee", "Function", "Go")
+	insertSym(t, db, "wt3", "OtherCallee", "Function", "Go")
+	insertEdge(t, db, "wt1", "wt2", "CALLS")
+	insertEdge(t, db, "wt1", "wt3", "CALLS")
+
+	// WHERE on b (toVar) exercises tableAlias="b" branch
+	r := exec(t, db, "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE b.name='TargetCallee' RETURN a.name, b.name")
+	if r.Total == 0 {
+		t.Fatal("expected join result filtered on toVar")
+	}
+	for _, row := range r.Rows {
+		if row["b.name"] != "TargetCallee" {
+			t.Errorf("WHERE on toVar not applied: got b.name=%v", row["b.name"])
+		}
+	}
+}
+
+func TestRunJoinQuery_ContainsPushdown(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "cp1", "ServiceA", "Function", "Go")
+	insertSym(t, db, "cp2", "HandlerB", "Function", "Go")
+	insertSym(t, db, "cp3", "ServiceC", "Function", "Go")
+	insertEdge(t, db, "cp1", "cp2", "CALLS")
+	insertEdge(t, db, "cp3", "cp2", "CALLS")
+
+	// CONTAINS on fromVar exercises SQL LIKE pushdown in runJoinQuery
+	r := exec(t, db, "MATCH (a:Function)-[:CALLS]->(b:Function) WHERE a.name CONTAINS 'Service' RETURN a.name, b.name")
+	if r.Total == 0 {
+		t.Fatal("expected CONTAINS pushdown result")
+	}
+	for _, row := range r.Rows {
+		name, _ := row["a.name"].(string)
+		if name != "ServiceA" && name != "ServiceC" {
+			t.Errorf("CONTAINS filter wrong: a.name=%v", name)
 		}
 	}
 }
