@@ -47,6 +47,18 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	return e.run(ctx, q)
 }
 
+// symCols is the canonical SELECT column list for the symbols table.
+// Keep in sync with db.symSelectFrom and cypher.symRow.
+const symCols = `id, project_id, file_path, name, qualified_name, kind, language,
+	start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity,
+	extraction_confidence`
+
+// inPlaceholders returns a comma-separated "?,?,..." string for n items.
+func inPlaceholders(n int) string {
+	s := strings.Repeat("?,", n)
+	return s[:len(s)-1]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Query AST
 // ─────────────────────────────────────────────────────────────────────────────
@@ -533,10 +545,7 @@ func (e *Executor) run(ctx context.Context, q *queryAST) (*Result, error) {
 
 // runNodeScan handles: MATCH (n:Kind) WHERE ... RETURN ...
 func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*Result, error) {
-	sqlQ := `SELECT id, project_id, file_path, name, qualified_name, kind, language,
-		start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity,
-		extraction_confidence
-		FROM symbols WHERE 1=1`
+	sqlQ := "SELECT " + symCols + " FROM symbols WHERE 1=1"
 	var args []any
 
 	if e.ProjectID != "" {
@@ -605,9 +614,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	edgeFilter := ""
 	var edgeArgs []any
 	if len(pat.edgeKinds) > 0 {
-		placeholders := strings.Repeat("?,", len(pat.edgeKinds))
-		placeholders = placeholders[:len(placeholders)-1]
-		edgeFilter = " AND e.kind IN (" + placeholders + ")"
+		edgeFilter = " AND e.kind IN (" + inPlaceholders(len(pat.edgeKinds)) + ")"
 		for _, k := range pat.edgeKinds {
 			edgeArgs = append(edgeArgs, k)
 		}
@@ -712,10 +719,7 @@ type bfsHop struct {
 // GROUP BY id + MIN(depth) returns each reachable node once at its shortest depth.
 func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Result, error) {
 	// Find start nodes
-	startQ := `SELECT id, project_id, file_path, name, qualified_name, kind, language,
-		start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity,
-		extraction_confidence
-		FROM symbols WHERE 1=1`
+	startQ := "SELECT " + symCols + " FROM symbols WHERE 1=1"
 	var startArgs []any
 
 	if e.ProjectID != "" {
@@ -796,8 +800,7 @@ done:
 // within [minHops, maxHops] steps along edges of the given kinds.
 // This replaces the old Go BFS loop that issued one SQL call per node per depth.
 func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string, minHops, maxHops int, projectID string, maxRows int) ([]bfsHop, error) {
-	in := strings.Repeat("?,", len(kinds))
-	in = in[:len(in)-1]
+	in := inPlaceholders(len(kinds))
 
 	projectFilter := ""
 	if projectID != "" {
