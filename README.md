@@ -1,46 +1,96 @@
-# pincherMCP
+<div align="center">
+  <img src="assets/banner.svg" alt="pincherMCP" width="900"/>
+</div>
+
+<div align="center">
 
 [![CI](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml)
-[![Go 1.24](https://img.shields.io/badge/go-1.24-blue.svg)](https://golang.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Go 1.24](https://img.shields.io/badge/go-1.24-00ADD8?logo=go&logoColor=white)](https://golang.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
+[![Coverage](https://img.shields.io/badge/coverage-~90%25-22c55e.svg)](#development)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
 
-> The fastest, most token-efficient codebase intelligence server — single binary, no cloud dependencies, works with any LLM. Docker image available.
+**The fastest, most token-efficient codebase intelligence server.**
+Single binary · No cloud dependencies · Any LLM · HTTP REST or MCP stdio
 
-pincherMCP fuses the best ideas from three codebases into one lean Go binary:
+</div>
 
-| Source | Innovation borrowed |
-|---|---|
-| [codebase-memory-mcp](https://github.com/nicholasgasior/codebase-memory-mcp) | Knowledge graph, Cypher queries, incremental re-index |
-| [jcodemunch-mcp](https://github.com/jgravelle/jcodemunch-mcp) | Byte-offset O(1) symbol retrieval, `_meta` token budget envelope |
-| [Code-Index-MCP](https://github.com/ViperJuice/Code-Index-MCP) | FTS5 BM25 full-text search, file-watch auto-reindex |
+---
 
-All three indexes — **byte-offset store**, **knowledge graph**, **FTS5 search** — are populated in a **single AST parse pass** from one shared `symbols` table. No duplication, no sync overhead.
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Why pincherMCP?](#why-pinchermcp)
+- [Architecture](#architecture)
+- [Tools (14 total)](#tools-14-total)
+- [Platform Agnostic — HTTP REST API](#platform-agnostic--http-rest-api)
+- [Cypher Query Examples](#cypher-query-examples)
+- [Token Savings in Detail](#token-savings-in-detail)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Language Support](#language-support)
+- [Performance](#performance)
+- [Development](#development)
+
+---
+
+## Quick Start
+
+```bash
+# 1. Build
+git clone https://github.com/kwad77/pincherMCP && cd pincherMCP
+go build -o pincher ./cmd/pinch/
+
+# 2. Add to Claude Code (~/.claude/mcp.json)
+# { "mcpServers": { "pincher": { "type": "stdio", "command": "/path/to/pincher" } } }
+
+# 3. Index your project and start querying
+# Use pincher index with path "/path/to/your/project"
+# Use pincher search with query "processPayment"
+# Use pincher symbol with id "src/payments/processor.go::payments.processPayment#Function"
+```
+
+Or run as an HTTP server any language can call:
+
+```bash
+pincher --http :8080 --http-key mysecrettoken
+curl -s http://localhost:8080/v1/health
+# {"ok":true,"version":"pincher"}
+```
 
 ---
 
 ## Why pincherMCP?
 
-### The problem with existing tools
+### Comparison with existing tools
 
-- **codebase-memory-mcp** — great graph queries, but no byte-offset retrieval (re-parses files on every read) and no full-text search
-- **jcodemunch-mcp** — brilliant O(1) symbol retrieval, but Python overhead, no graph traversal, full re-parse on every change
-- **Code-Index-MCP** — excellent FTS5 search, but requires Docker, Python, and optionally a paid Qdrant/OpenAI API
+| | codebase-memory-mcp | jcodemunch-mcp | Code-Index-MCP | **pincherMCP** |
+|---|:---:|:---:|:---:|:---:|
+| Byte-offset O(1) retrieval | ✗ | ✓ | ✗ | ✓ |
+| Knowledge graph + Cypher | ✓ | ✗ | ✗ | ✓ |
+| FTS5 BM25 search | ✗ | ✗ | ✓ | ✓ |
+| Incremental re-index | ✓ | ✗ | ✓ | ✓ |
+| HTTP REST gateway | ✗ | ✗ | ✗ | ✓ |
+| Token budget metadata | ✗ | ✓ | ✗ | ✓ |
+| Persistent ROI tracking | ✗ | ✗ | ✗ | ✓ |
+| Single binary, no runtime | ✗ | ✗ | ✗ | ✓ |
+| Docker required | ✗ | ✗ | ✓ | optional |
 
 ### What pincherMCP does differently
 
 ```
-One parse → three indexes, zero overhead
-One binary → no Docker, no Python, no external services
-One response → always includes token cost metadata
-Any LLM → HTTP REST API works with GPT-4, Gemini, Copilot, Cursor, CI/CD
+One parse  →  three indexes, zero overhead
+One binary →  no Docker, no Python, no external services
+One call   →  always returns token cost metadata
+Any LLM   →  HTTP REST works with GPT-4, Gemini, Copilot, Cursor, CI/CD
 ```
 
-Every tool response includes a `_meta` field so agents know exactly what they spent and saved:
+Every tool response includes a `_meta` envelope so agents track exactly what they spent and saved:
 
 ```json
 {
-  "name": "mySymbol",
-  "source": "func mySymbol() { ... }",
+  "name": "processPayment",
+  "source": "func processPayment(amount float64) error { ... }",
   "_meta": {
     "tokens_used":  312,
     "tokens_saved": 14800,
@@ -50,7 +100,7 @@ Every tool response includes a `_meta` field so agents know exactly what they sp
 }
 ```
 
-Savings are now **persisted across sessions** — every reconnect accumulates into a running all-time total, giving enterprises proof of ROI over time.
+Savings persist across sessions — every reconnect accumulates into a running all-time total, giving enterprises auditable proof of ROI.
 
 ---
 
