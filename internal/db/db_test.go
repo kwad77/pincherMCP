@@ -650,3 +650,68 @@ func TestFormatSize(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DB accessor
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDB_Accessor(t *testing.T) {
+	store := newTestStore(t)
+	if store.DB() == nil {
+		t.Error("DB() should return non-nil *sql.DB")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetSymbolsByQN
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGetSymbolsByQN(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-qn"
+	store.UpsertProject(Project{ID: pid, Path: "/tmp/qn", Name: "qn"})
+	store.BulkUpsertSymbols([]Symbol{
+		{ID: "qn1", ProjectID: pid, FilePath: "a.go", Name: "Foo",
+			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 5},
+	})
+	results, err := store.GetSymbolsByQN(pid, "pkg.Foo")
+	if err != nil {
+		t.Fatalf("GetSymbolsByQN: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected to find symbol by qualified name")
+	}
+}
+
+func TestGetSymbolsByQN_NotFound(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-qn2"
+	store.UpsertProject(Project{ID: pid, Path: "/tmp/qn2", Name: "qn2"})
+	results, err := store.GetSymbolsByQN(pid, "pkg.NonExistent")
+	if err != nil {
+		t.Fatalf("GetSymbolsByQN: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProjectIDFromPath
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestProjectIDFromPath(t *testing.T) {
+	id := ProjectIDFromPath("/home/user/myproject")
+	if id == "" {
+		t.Error("ProjectIDFromPath returned empty string")
+	}
+	id2 := ProjectIDFromPath("/home/user/myproject")
+	if id != id2 {
+		t.Error("ProjectIDFromPath should be deterministic")
+	}
+	id3 := ProjectIDFromPath("/home/user/otherproject")
+	if id == id3 {
+		t.Error("different paths should give different IDs")
+	}
+}
