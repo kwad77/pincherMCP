@@ -925,6 +925,9 @@ func (s *Store) GraphStats(projectID string) (symCount, edgeCount int, kindCount
 		}
 		kindCounts[k] = c
 	}
+	if err = rows.Err(); err != nil {
+		return
+	}
 
 	erows, err3 := s.db.Query(`SELECT kind, COUNT(*) FROM edges WHERE project_id=? GROUP BY kind`, projectID)
 	if err3 != nil {
@@ -940,6 +943,7 @@ func (s *Store) GraphStats(projectID string) (symCount, edgeCount int, kindCount
 		}
 		edgeKindCounts[k] = c
 	}
+	err = erows.Err()
 	return
 }
 
