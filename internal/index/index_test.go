@@ -2,9 +2,11 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pincherMCP/pincher/internal/db"
 )
@@ -359,6 +361,179 @@ func TestRiskLabel(t *testing.T) {
 		if got != c.want {
 			t.Errorf("riskLabel(%d) = %q, want %q", c.depth, got, c.want)
 		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// hasChanges
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHasChanges_NewerFile(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+
+	// IndexedAt is well in the past — file is newer
+	p := db.Project{
+		ID:        "proj",
+		Path:      dir,
+		Name:      "proj",
+		IndexedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if !idx.hasChanges(p) {
+		t.Error("hasChanges should return true when source file is newer than IndexedAt")
+	}
+}
+
+func TestHasChanges_OlderFile(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+
+	// IndexedAt is in the future — no files are newer
+	p := db.Project{
+		ID:        "proj",
+		Path:      dir,
+		Name:      "proj",
+		IndexedAt: time.Now().Add(24 * time.Hour),
+	}
+	if idx.hasChanges(p) {
+		t.Error("hasChanges should return false when all source files are older than IndexedAt")
+	}
+}
+
+func TestHasChanges_NoSourceFiles(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+	dir := t.TempDir()
+	writeFile(t, dir, "README.md", "# readme\n")
+	writeFile(t, dir, "data.json", "{}\n")
+
+	p := db.Project{
+		ID:        "proj",
+		Path:      dir,
+		Name:      "proj",
+		IndexedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if idx.hasChanges(p) {
+		t.Error("hasChanges should return false when there are no source files")
+	}
+}
+
+func TestHasChanges_NonExistentDir(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+
+	p := db.Project{
+		ID:        "proj",
+		Path:      "/nonexistent/path/that/does/not/exist",
+		Name:      "proj",
+		IndexedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if idx.hasChanges(p) {
+		t.Error("hasChanges should return false for nonexistent directory")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Watch
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestWatch_CancelImmediately(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	done := make(chan struct{})
+	go func() {
+		idx.Watch(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected: Watch exits when context is cancelled
+	case <-time.After(3 * time.Second):
+		t.Error("Watch did not exit when context was cancelled")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReadSymbolSource edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestReadSymbolSource_NegativeSize(t *testing.T) {
+	// StartByte > EndByte → size <= 0, should return empty (file must exist to reach that path)
+	dir := t.TempDir()
+	writeFile(t, dir, "x.go", "package x\nfunc X() {}\n")
+	sym := db.Symbol{FilePath: "x.go", StartByte: 100, EndByte: 50}
+	got, err := ReadSymbolSource(dir, sym)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty for negative-size symbol, got %q", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Index edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestIndex_NonSourceFiles(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	// Write only non-source files
+	writeFile(t, dir, "README.md", "# readme\n")
+	writeFile(t, dir, "data.json", `{"key":"value"}`)
+	writeFile(t, dir, ".gitignore", "*.tmp\n")
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if result.Files != 0 {
+		t.Errorf("expected 0 files indexed for non-source files, got %d", result.Files)
+	}
+}
+
+func TestIndex_EmptyGoFile(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "empty.go", "package empty\n")
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	// File is indexed (counted), but no symbols extracted from an empty package decl
+	_ = result
+}
+
+func TestIndex_LargeGoFile(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	// Build a Go file with many symbols to exercise the buffer flush path
+	src := "package bigpkg\n\n"
+	for i := 0; i < 30; i++ {
+		src += fmt.Sprintf("func Fn%d() int { return %d }\n\n", i, i)
+	}
+	writeFile(t, dir, "big.go", src)
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if result.Symbols < 30 {
+		t.Errorf("expected at least 30 symbols, got %d", result.Symbols)
 	}
 }
 
