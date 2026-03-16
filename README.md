@@ -1,6 +1,6 @@
 # pincherMCP
 
-> The fastest, most token-efficient codebase intelligence server — single binary, no Docker, no cloud dependencies, works with any LLM.
+> The fastest, most token-efficient codebase intelligence server — single binary, no cloud dependencies, works with any LLM. Docker image available.
 
 pincherMCP fuses the best ideas from three codebases into one lean Go binary:
 
@@ -128,7 +128,7 @@ The schema is versioned (`schema_version` table). Upgrading the binary applies a
 
 | Tool | What it does |
 |---|---|
-| `search` | FTS5 BM25 full-text search across names, signatures, and docstrings. Supports wildcards (`auth*`), phrases (`"process order"`), AND/OR. Filter by `kind`, `language`, or `fields` (selective projection). |
+| `search` | FTS5 BM25 full-text search across names, signatures, and docstrings. Supports wildcards (`auth*`), phrases (`"process order"`), AND/OR. Filter by `kind`, `language`, or `fields` (selective projection). Use `project=*` to search all indexed repos in one call. |
 | `query` | Execute Cypher-like graph queries. Sub-ms for single-hop patterns via SQL JOIN fusion. Variable-length paths via recursive CTE. Scoped to a single project. |
 | `trace` | Call-path trace — who calls this function, or what does it call. BFS via recursive CTE. Returns hops grouped by depth with CRITICAL/HIGH/MEDIUM/LOW risk labels. |
 
@@ -151,7 +151,11 @@ pincherMCP works with any LLM, IDE, or CI/CD pipeline — not just Claude Code.
 Start with the `--http` flag to expose all 14 tools over REST:
 
 ```bash
+# Unauthenticated (safe for localhost-only)
 pincher --http :8080
+
+# With bearer token auth (recommended for shared/remote deployments)
+pincher --http :8080 --http-key mysecrettoken
 ```
 
 Then call any tool from any HTTP client:
@@ -160,26 +164,39 @@ Then call any tool from any HTTP client:
 # Index a repository
 curl -s -X POST http://localhost:8080/v1/index \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer mysecrettoken" \
+  -H "Accept-Encoding: gzip" \
   -d '{"path": "/path/to/your/project"}' | jq .
 
-# Search for symbols
+# Search for symbols — field projection + gzip compression
 curl -s -X POST http://localhost:8080/v1/search \
   -H "Content-Type: application/json" \
+  -H "Accept-Encoding: gzip" \
   -d '{"query": "processPayment", "project": "myproject", "fields": "id,name,file_path"}' | jq .
+
+# Search across ALL indexed repos in one call
+curl -s -X POST http://localhost:8080/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "processPayment", "project": "*"}' | jq .
 
 # Execute a Cypher graph query
 curl -s -X POST http://localhost:8080/v1/query \
   -H "Content-Type: application/json" \
   -d '{"cypher": "MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = '\''main'\'' RETURN g.name LIMIT 10", "project": "myproject"}' | jq .
 
-# Liveness probe (for K8s / load balancers)
+# Auto-discover the full API spec (Postman/Cursor-importable)
+curl http://localhost:8080/v1/openapi.json | jq .
+
+# Liveness probe — no auth required (for K8s / load balancers)
 curl http://localhost:8080/v1/health
 ```
+
+Responses are gzip-compressed when `Accept-Encoding: gzip` is sent — typically ~65% smaller payloads.
 
 **Works with:**
 - OpenAI / GPT-4 function calling
 - Google Gemini tool use
-- GitHub Copilot / Cursor custom tools
+- GitHub Copilot / Cursor custom tools (import `GET /v1/openapi.json`)
 - Any CI/CD pipeline (GitHub Actions, Jenkins, etc.)
 - Browser-based tools (CORS headers included)
 - Custom integrations — any language that can make HTTP requests
@@ -217,7 +234,7 @@ MATCH (f:Function) WHERE f.file_path STARTS WITH 'internal/' RETURN f.name, f.st
 
 **Supported operators:** `=`, `<>`, `>`, `<`, `>=`, `<=`, `=~` (regex), `CONTAINS`, `STARTS WITH`
 
-All queries are scoped to a single project — cross-project data leakage is impossible.
+All `query` and `trace` calls are scoped to a single project — cross-project data leakage is impossible. Use `search` with `project=*` for intentional cross-repo discovery.
 
 ---
 
@@ -327,11 +344,31 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 # Run with both stdio MCP and HTTP REST
 pincher --http :8080
 
+# With bearer token auth (recommended for shared deployments)
+pincher --http :8080 --http-key mysecrettoken
+
 # Or HTTP-only (no Claude Code needed)
 pincher --http :8080 --data-dir /var/pincher
 ```
 
-Point any OpenAI-compatible tool at `http://localhost:8080/v1/`.
+Point any OpenAI-compatible tool at `http://localhost:8080/v1/`. Import `GET /v1/openapi.json` directly into Postman or Cursor for auto-generated typed calls.
+
+### Docker
+
+```bash
+# Pull and run
+docker build -t pincher .
+docker run -p 8080:8080 -v /my/data:/data pincher
+
+# With auth key
+docker run -p 8080:8080 -v /my/data:/data pincher --http :8080 --http-key mysecrettoken
+
+# Mount a repo for indexing
+docker run -p 8080:8080 \
+  -v /my/data:/data \
+  -v /path/to/repo:/repo:ro \
+  pincher
+```
 
 ---
 
@@ -476,6 +513,7 @@ These persist in SQLite and are retrievable in any future session, from any conn
 ```
 pincherMCP/
 ├── cmd/pinch/main.go            # Entry point — flags, wires db + indexer + server
+├── Dockerfile                   # Multi-stage scratch image (~10MB), CGO_ENABLED=0
 ├── internal/
 │   ├── db/db.go                 # SQLite store: schema v4, migrations, CRUD, FTS5, graph ops, sessions
 │   ├── ast/
@@ -483,7 +521,7 @@ pincherMCP/
 │   │   └── languages.go         # Extension → language detection (20+ languages)
 │   ├── cypher/engine.go         # Cypher-to-SQL translation (tokenizer → parser → 3 query paths)
 │   ├── index/indexer.go         # Indexing pipeline: walk → hash → extract → store → watch → move tracking
-│   └── server/server.go         # 14 MCP tools + HTTP REST gateway + session persistence
+│   └── server/server.go         # 14 MCP tools, HTTP REST gateway, gzip, OpenAPI spec, bearer auth, session persistence
 └── go.mod
 ```
 
@@ -494,6 +532,7 @@ pincher --version                    # print version and exit
 pincher --data-dir /custom/path      # override database directory
 pincher --verbose                    # enable verbose logging to stderr
 pincher --http :8080                 # also listen for HTTP REST on :8080
+pincher --http-key mysecrettoken     # require bearer token on all HTTP requests
 ```
 
 ### Test coverage
