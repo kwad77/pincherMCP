@@ -222,6 +222,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(s.openAPISpec())
 		return
 	}
+	// GET /v1/projects — idiomatic REST shortcut for the list tool.
+	if path == "projects" && r.Method == http.MethodGet {
+		projects, err := s.store.ListProjects()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"projects": projects})
+		return
+	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed — use POST /v1/{tool}"}`, http.StatusMethodNotAllowed)
