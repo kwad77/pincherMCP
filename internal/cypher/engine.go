@@ -407,9 +407,15 @@ func (p *parser) parseOneCondition() (condition, error) {
 
 	// Operator
 	switch p.peek().value {
-	case "=", "<>", ">", "<", ">=", "<=", "=~":
+	case "=", "<>", ">", "<", ">=", "<=":
 		c.op = p.next().value
 		c.value = p.next().value
+	case "=~":
+		c.op = p.next().value
+		c.value = p.next().value
+		if _, err := regexp.Compile(c.value); err != nil {
+			return c, fmt.Errorf("invalid regex pattern %q: %w", c.value, err)
+		}
 	case "CONTAINS":
 		p.next()
 		c.op = "CONTAINS"

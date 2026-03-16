@@ -1245,33 +1245,35 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	p, _ := s.store.GetProject(projectID)
 
 	// Language breakdown
-	langRows, _ := s.store.DB().QueryContext(ctx,
-		`SELECT language, COUNT(*) FROM symbols WHERE project_id=? GROUP BY language ORDER BY COUNT(*) DESC LIMIT 20`,
-		projectID)
 	langs := make(map[string]int)
-	if langRows != nil {
+	if langRows, err := s.store.DB().QueryContext(ctx,
+		`SELECT language, COUNT(*) FROM symbols WHERE project_id=? GROUP BY language ORDER BY COUNT(*) DESC LIMIT 20`,
+		projectID); err == nil {
+		defer langRows.Close()
 		for langRows.Next() {
 			var lang string
 			var cnt int
-			_ = langRows.Scan(&lang, &cnt)
-			langs[lang] = cnt
+			if scanErr := langRows.Scan(&lang, &cnt); scanErr == nil {
+				langs[lang] = cnt
+			}
 		}
-		langRows.Close()
+		_ = langRows.Err()
 	}
 
 	// Entry points
-	epRows, _ := s.store.DB().QueryContext(ctx,
-		`SELECT name, file_path, start_line FROM symbols WHERE project_id=? AND is_entry_point=1 LIMIT 20`,
-		projectID)
 	var entryPoints []map[string]any
-	if epRows != nil {
+	if epRows, err := s.store.DB().QueryContext(ctx,
+		`SELECT name, file_path, start_line FROM symbols WHERE project_id=? AND is_entry_point=1 LIMIT 20`,
+		projectID); err == nil {
+		defer epRows.Close()
 		for epRows.Next() {
 			var name, fp string
 			var line int
-			_ = epRows.Scan(&name, &fp, &line)
-			entryPoints = append(entryPoints, map[string]any{"name": name, "file_path": fp, "start_line": line})
+			if scanErr := epRows.Scan(&name, &fp, &line); scanErr == nil {
+				entryPoints = append(entryPoints, map[string]any{"name": name, "file_path": fp, "start_line": line})
+			}
 		}
-		epRows.Close()
+		_ = epRows.Err()
 	}
 
 	// Hotspots (most-called)

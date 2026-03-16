@@ -139,6 +139,14 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 
 	// Process files
 	for fileJob := range fileListQueue {
+		// Respect context cancellation (e.g. graceful shutdown).
+		// Drain the remaining channel items so the walker goroutine can exit.
+		if ctx.Err() != nil {
+			go func() { for range fileListQueue {} }()
+			wg.Wait()
+			return nil, ctx.Err()
+		}
+
 		path := fileJob.Location
 		if !ast.IsSourceFile(path) {
 			continue

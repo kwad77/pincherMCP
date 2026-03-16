@@ -796,8 +796,8 @@ func (s *Store) DetectAndRecordMoves(projectID string, newSyms []Symbol) error {
 				`SELECT id FROM symbols WHERE project_id=? AND qualified_name=? AND kind=? AND id != ?`,
 				projectID, sym.QualifiedName, sym.Kind, sym.ID,
 			).Scan(&oldID)
-			if err == sql.ErrNoRows || err != nil {
-				continue
+			if err != nil {
+				continue // includes sql.ErrNoRows (no prior symbol at this QN)
 			}
 			_, _ = tx.Exec(
 				`INSERT INTO symbol_moves(old_id, new_id, project_id, moved_at)
