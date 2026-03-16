@@ -610,39 +610,22 @@ func (s *Store) GetSymbol(id string) (*Symbol, error) {
 
 // GetSymbolsByName finds symbols by short name across a project.
 func (s *Store) GetSymbolsByName(projectID, name string, limit int) ([]Symbol, error) {
-	rows, err := s.db.Query(symSelectFrom+` WHERE project_id=? AND name=? LIMIT ?`, projectID, name, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanManySymbols(rows)
+	return s.querySymbols(symSelectFrom+` WHERE project_id=? AND name=? LIMIT ?`, projectID, name, limit)
 }
 
 // GetSymbolsByQN finds symbols by qualified name in a project.
 func (s *Store) GetSymbolsByQN(projectID, qn string) ([]Symbol, error) {
-	rows, err := s.db.Query(symSelectFrom+` WHERE project_id=? AND qualified_name=?`, projectID, qn)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanManySymbols(rows)
+	return s.querySymbols(symSelectFrom+` WHERE project_id=? AND qualified_name=?`, projectID, qn)
 }
 
 // GetSymbolsForFile returns all symbols in a file ordered by byte offset.
 func (s *Store) GetSymbolsForFile(projectID, filePath string) ([]Symbol, error) {
-	rows, err := s.db.Query(
-		symSelectFrom+` WHERE project_id=? AND file_path=? ORDER BY start_byte`,
-		projectID, filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanManySymbols(rows)
+	return s.querySymbols(symSelectFrom+` WHERE project_id=? AND file_path=? ORDER BY start_byte`, projectID, filePath)
 }
 
 // GetHotspots returns the most-called symbols (highest in-degree) for a project.
 func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
-	rows, err := s.db.Query(`
+	return s.querySymbols(`
 		SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
 		       s.signature, s.return_type, s.docstring, s.parent,
@@ -651,11 +634,6 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 		FROM symbols s
 		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
 		ORDER BY cnt DESC LIMIT ?`, projectID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanManySymbols(rows)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1094,6 +1072,16 @@ const symSelectFrom = `
 	       complexity, is_exported, is_test, is_entry_point, file_hash,
 	       extraction_confidence
 	FROM symbols`
+
+// querySymbols runs q with args and returns all symbols scanned from the result set.
+func (s *Store) querySymbols(q string, args ...any) ([]Symbol, error) {
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanManySymbols(rows)
+}
 
 func scanOneSymbol(row *sql.Row) (*Symbol, error) {
 	var sym Symbol
