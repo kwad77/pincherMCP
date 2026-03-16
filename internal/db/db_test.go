@@ -1945,3 +1945,57 @@ func TestMigrate_SchemaVersionAfterReopen(t *testing.T) {
 		t.Errorf("version after reopen=%d, want %d (same as first open)", v2, v1)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DataDir — idempotency
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDataDir_CalledTwice_Idempotent(t *testing.T) {
+	d1, err1 := DataDir()
+	d2, err2 := DataDir()
+	if err1 != nil || err2 != nil {
+		t.Fatalf("DataDir errors: %v, %v", err1, err2)
+	}
+	if d1 != d2 {
+		t.Errorf("DataDir not idempotent: %q != %q", d1, d2)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProjectIDFromPath
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestProjectIDFromPath_AbsolutePassthrough(t *testing.T) {
+	// An already-absolute path should come back as-is (after filepath.Abs no-op)
+	dir := t.TempDir()
+	id := ProjectIDFromPath(dir)
+	if id != dir {
+		t.Errorf("ProjectIDFromPath(%q) = %q, want same", dir, id)
+	}
+}
+
+func TestProjectIDFromPath_RelativeResolved(t *testing.T) {
+	// A relative path must be resolved to an absolute path
+	id := ProjectIDFromPath(".")
+	if id == "." {
+		t.Error("ProjectIDFromPath('.') returned '.', want absolute path")
+	}
+	if !filepath.IsAbs(id) {
+		t.Errorf("ProjectIDFromPath('.') = %q, want absolute", id)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ListADRs — empty project
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestListADRs_EmptyProject(t *testing.T) {
+	store := newTestStore(t)
+	adrs, err := store.ListADRs("no-such-project")
+	if err != nil {
+		t.Fatalf("ListADRs: %v", err)
+	}
+	if len(adrs) != 0 {
+		t.Errorf("ListADRs nonexistent project: got %d, want 0", len(adrs))
+	}
+}
