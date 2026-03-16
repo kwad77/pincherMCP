@@ -418,6 +418,10 @@ type Hop struct {
 // Trace performs BFS from a named symbol, returning the call chain.
 // direction: "outbound" (what it calls), "inbound" (what calls it), "both"
 // maxDepth: 1-5
+//
+// Implementation: delegates to db.TraceViaCTE which issues at most 2 SQL
+// recursive CTE queries regardless of graph size, replacing the old approach
+// that issued O(nodes × depth × 2) individual SQL round trips.
 func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction string, maxDepth int, addRisk bool) ([]Hop, error) {
 	if maxDepth <= 0 || maxDepth > 5 {
 		maxDepth = 3
@@ -434,62 +438,28 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 	start := starts[0]
 
 	edgeKinds := []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
-	visited := map[string]bool{start.ID: true}
-	queue := []db.Symbol{start}
-	var hops []Hop
 
-	for depth := 1; depth <= maxDepth && len(queue) > 0; depth++ {
-		var nextQueue []db.Symbol
-		for _, node := range queue {
-			var edges []db.Edge
-			var edgeErr error
-
-			if direction == "outbound" || direction == "both" {
-				e, err := idx.store.EdgesFrom(node.ID, edgeKinds)
-				if err == nil {
-					edges = append(edges, e...)
-				}
-				edgeErr = err
-			}
-			if direction == "inbound" || direction == "both" {
-				e, err := idx.store.EdgesTo(node.ID, edgeKinds)
-				if err == nil {
-					edges = append(edges, e...)
-				}
-				if edgeErr == nil {
-					edgeErr = err
-				}
-			}
-
-			for _, edge := range edges {
-				targetID := edge.ToID
-				if edge.ToID == node.ID {
-					// inbound edge (from EdgesTo): neighbor is the source
-					targetID = edge.FromID
-				}
-				if visited[targetID] {
-					continue
-				}
-				visited[targetID] = true
-
-				sym, getErr := idx.store.GetSymbol(targetID)
-				if getErr != nil || sym == nil {
-					continue
-				}
-				nextQueue = append(nextQueue, *sym)
-				risk := ""
-				if addRisk {
-					risk = riskLabel(depth)
-				}
-				hops = append(hops, Hop{Symbol: *sym, Depth: depth, Via: edge.Kind, Risk: risk})
-				if len(hops) >= 500 {
-					goto done
-				}
-			}
-		}
-		queue = nextQueue
+	// Single CTE traversal per direction (max 2 SQL calls total for "both").
+	traceResults, err := idx.store.TraceViaCTE(start.ID, direction, edgeKinds, maxDepth)
+	if err != nil {
+		return nil, err
 	}
-done:
+
+	var hops []Hop
+	for _, tr := range traceResults {
+		sym, getErr := idx.store.GetSymbol(tr.SymbolID)
+		if getErr != nil || sym == nil {
+			continue
+		}
+		risk := ""
+		if addRisk {
+			risk = riskLabel(tr.Depth)
+		}
+		hops = append(hops, Hop{Symbol: *sym, Depth: tr.Depth, Via: tr.ViaKind, Risk: risk})
+		if len(hops) >= 500 {
+			break
+		}
+	}
 	return hops, nil
 }
 

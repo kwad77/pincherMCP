@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -676,6 +677,94 @@ func (s *Store) queryEdges(col, id string, kinds []string) ([]Edge, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// TraceResult is one hop returned by TraceViaCTE.
+type TraceResult struct {
+	SymbolID string
+	Depth    int
+	ViaKind  string
+}
+
+// TraceViaCTE returns all symbols reachable from startID within maxDepth steps
+// using a single recursive CTE per direction (max 2 SQL calls for "both").
+// direction: "outbound" | "inbound" | "both"
+// Results are deduplicated: each symbol ID appears once at its minimum depth.
+func (s *Store) TraceViaCTE(startID, direction string, edgeKinds []string, maxDepth int) ([]TraceResult, error) {
+	in := strings.Repeat("?,", len(edgeKinds))
+	in = in[:len(in)-1]
+
+	byID := make(map[string]TraceResult)
+
+	runDir := func(dir string) error {
+		var joinCond string
+		if dir == "outbound" {
+			joinCond = "e.from_id = r.id"
+		} else {
+			joinCond = "e.to_id = r.id"
+		}
+		var selectNeighbor string
+		if dir == "outbound" {
+			selectNeighbor = "e.to_id"
+		} else {
+			selectNeighbor = "e.from_id"
+		}
+
+		q := `WITH RECURSIVE reach(id, depth, via) AS (
+			SELECT ?, 0, ''
+			UNION ALL
+			SELECT ` + selectNeighbor + `, r.depth + 1, e.kind
+			FROM reach r
+			JOIN edges e ON ` + joinCond + ` AND e.kind IN (` + in + `)
+			WHERE r.depth < ?
+		)
+		SELECT id, MIN(depth) AS depth, via
+		FROM reach
+		WHERE id != ? AND depth > 0
+		GROUP BY id
+		ORDER BY depth
+		LIMIT 500`
+
+		args := []any{startID}
+		for _, k := range edgeKinds {
+			args = append(args, k)
+		}
+		args = append(args, maxDepth, startID)
+
+		rows, err := s.db.Query(q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r TraceResult
+			if err := rows.Scan(&r.SymbolID, &r.Depth, &r.ViaKind); err != nil {
+				return err
+			}
+			// Keep minimum depth when merging outbound + inbound
+			if existing, ok := byID[r.SymbolID]; !ok || r.Depth < existing.Depth {
+				byID[r.SymbolID] = r
+			}
+		}
+		return rows.Err()
+	}
+
+	if direction == "outbound" || direction == "both" {
+		if err := runDir("outbound"); err != nil {
+			return nil, err
+		}
+	}
+	if direction == "inbound" || direction == "both" {
+		if err := runDir("inbound"); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make([]TraceResult, 0, len(byID))
+	for _, r := range byID {
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // GraphStats returns node and edge counts grouped by kind.

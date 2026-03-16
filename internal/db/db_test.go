@@ -860,3 +860,148 @@ func TestGraphStats_EmptyProject(t *testing.T) {
 	}
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TraceViaCTE
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestTraceViaCTE_Outbound(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	caller := testSymbol("s1", "Caller", "Function", "p1", "a.go")
+	callee := testSymbol("s2", "Callee", "Function", "p1", "b.go")
+	s.BulkUpsertSymbols([]Symbol{caller, callee})
+	s.BulkUpsertEdges([]Edge{{ProjectID: "p1", FromID: "s1", ToID: "s2", Kind: "CALLS", Confidence: 1.0}})
+
+	results, err := s.TraceViaCTE("s1", "outbound", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE: %v", err)
+	}
+	if len(results) != 1 || results[0].SymbolID != "s2" {
+		t.Errorf("expected [s2], got %v", results)
+	}
+	if results[0].Depth != 1 {
+		t.Errorf("expected depth 1, got %d", results[0].Depth)
+	}
+	if results[0].ViaKind != "CALLS" {
+		t.Errorf("expected via CALLS, got %q", results[0].ViaKind)
+	}
+}
+
+func TestTraceViaCTE_Inbound(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	caller := testSymbol("s1", "Caller", "Function", "p1", "a.go")
+	callee := testSymbol("s2", "Callee", "Function", "p1", "b.go")
+	s.BulkUpsertSymbols([]Symbol{caller, callee})
+	s.BulkUpsertEdges([]Edge{{ProjectID: "p1", FromID: "s1", ToID: "s2", Kind: "CALLS", Confidence: 1.0}})
+
+	results, err := s.TraceViaCTE("s2", "inbound", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE: %v", err)
+	}
+	if len(results) != 1 || results[0].SymbolID != "s1" {
+		t.Errorf("expected [s1], got %v", results)
+	}
+}
+
+func TestTraceViaCTE_Both(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	root := testSymbol("root", "Root", "Function", "p1", "root.go")
+	caller := testSymbol("caller", "Caller", "Function", "p1", "caller.go")
+	callee := testSymbol("callee", "Callee", "Function", "p1", "callee.go")
+	s.BulkUpsertSymbols([]Symbol{root, caller, callee})
+	s.BulkUpsertEdges([]Edge{
+		{ProjectID: "p1", FromID: "caller", ToID: "root", Kind: "CALLS", Confidence: 1.0},
+		{ProjectID: "p1", FromID: "root", ToID: "callee", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	results, err := s.TraceViaCTE("root", "both", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, r := range results {
+		ids[r.SymbolID] = true
+	}
+	if !ids["caller"] {
+		t.Error("expected caller in both-direction trace")
+	}
+	if !ids["callee"] {
+		t.Error("expected callee in both-direction trace")
+	}
+}
+
+func TestTraceViaCTE_MultiHop(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	a := testSymbol("a", "A", "Function", "p1", "a.go")
+	b := testSymbol("b", "B", "Function", "p1", "b.go")
+	c := testSymbol("c", "C", "Function", "p1", "c.go")
+	s.BulkUpsertSymbols([]Symbol{a, b, c})
+	s.BulkUpsertEdges([]Edge{
+		{ProjectID: "p1", FromID: "a", ToID: "b", Kind: "CALLS", Confidence: 1.0},
+		{ProjectID: "p1", FromID: "b", ToID: "c", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	results, err := s.TraceViaCTE("a", "outbound", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE: %v", err)
+	}
+	ids := map[string]int{}
+	for _, r := range results {
+		ids[r.SymbolID] = r.Depth
+	}
+	if ids["b"] != 1 {
+		t.Errorf("expected B at depth 1, got %d", ids["b"])
+	}
+	if ids["c"] != 2 {
+		t.Errorf("expected C at depth 2, got %d", ids["c"])
+	}
+}
+
+func TestTraceViaCTE_DepthLimit(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	a := testSymbol("a", "A", "Function", "p1", "a.go")
+	b := testSymbol("b", "B", "Function", "p1", "b.go")
+	c := testSymbol("c", "C", "Function", "p1", "c.go")
+	s.BulkUpsertSymbols([]Symbol{a, b, c})
+	s.BulkUpsertEdges([]Edge{
+		{ProjectID: "p1", FromID: "a", ToID: "b", Kind: "CALLS", Confidence: 1.0},
+		{ProjectID: "p1", FromID: "b", ToID: "c", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	// maxDepth=1 should only find b, not c
+	results, err := s.TraceViaCTE("a", "outbound", []string{"CALLS"}, 1)
+	if err != nil {
+		t.Fatalf("TraceViaCTE: %v", err)
+	}
+	for _, r := range results {
+		if r.SymbolID == "c" {
+			t.Error("c should be out of reach at maxDepth=1")
+		}
+	}
+}
+
+func TestTraceViaCTE_NoEdges(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	sym := testSymbol("iso", "Isolated", "Function", "p1", "iso.go")
+	s.BulkUpsertSymbols([]Symbol{sym})
+
+	results, err := s.TraceViaCTE("iso", "both", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no results for isolated node, got %d", len(results))
+	}
+}
