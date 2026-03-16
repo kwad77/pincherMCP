@@ -16,6 +16,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -152,6 +153,14 @@ func (s *Server) setRoot(path string) {
 	s.sessionID = db.ProjectIDFromPath(path)
 }
 
+// gzipResponseWriter wraps an http.ResponseWriter, routing writes through a gzip.Writer.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) { return g.gz.Write(b) }
+
 // ServeHTTP makes Server implement http.Handler.
 //
 // Route: POST /v1/{tool}  — call any registered tool with a JSON body.
@@ -162,11 +171,19 @@ func (s *Server) setRoot(path string) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept-Encoding")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+
+	// Transparently compress responses when the client supports it.
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		w = &gzipResponseWriter{ResponseWriter: w, gz: gz}
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
