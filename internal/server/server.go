@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1032,11 +1033,13 @@ func runGitDiff(root, scope string) (string, error) {
 	case "all":
 		args = append(args, "HEAD")
 	}
-	// Use os.ReadFile pattern — avoid exec import for now
-	// In production, use os/exec. This is a placeholder.
-	_ = root
-	_ = args
-	return "", nil
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func parseGitDiffFiles(diff string) []string {
