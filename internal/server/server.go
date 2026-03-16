@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -44,6 +45,12 @@ type Server struct {
 	sessionRoot    string
 	sessionProject string // derived from sessionRoot
 	sessionID      string // db.ProjectIDFromPath(sessionRoot)
+
+	// Session-level savings accumulators (atomic for goroutine safety).
+	statsCalls       int64
+	statsTokensUsed  int64
+	statsTokensSaved int64
+	statsLatencyMS   int64
 }
 
 // New creates and registers all 12 MCP tools.
@@ -308,6 +315,17 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleADR)
+
+	// 13. stats
+	s.addTool(&mcp.Tool{
+		Name:        "stats",
+		Description: "Session savings summary: cumulative tokens used, tokens saved, cost avoided, and call count since the server started. Also shows per-project index size (files, symbols, edges). Useful for tracking how much context budget pincherMCP has saved.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"project":{"type":"string","description":"Project to include in index size breakdown. Defaults to session project."}
+			}
+		}`),
+	}, s.handleStats)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -341,7 +359,7 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"skipped":    result.Skipped,
 		"duration_ms": result.DurationMS,
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -408,7 +426,7 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"is_exported":   sym.IsExported,
 		"source":        source,
 	}
-	return jsonResultWithMeta(data, start, tokensSaved), nil
+	return s.jsonResultWithMeta(data, start, tokensSaved), nil
 }
 
 func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -456,7 +474,7 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		"symbols": results,
 		"count":   len(results),
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -500,7 +518,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		"symbol":  map[string]any{"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "source": source},
 		"imports": imports,
 	}
-	return jsonResultWithMeta(data, start, tokensSaved), nil
+	return s.jsonResultWithMeta(data, start, tokensSaved), nil
 }
 
 func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -549,7 +567,7 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"count":   len(rows),
 		"query":   query,
 	}
-	return jsonResultWithMeta(data, start, tokensSaved), nil
+	return s.jsonResultWithMeta(data, start, tokensSaved), nil
 }
 
 func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -580,7 +598,7 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"rows":    result.Rows,
 		"total":   result.Total,
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -648,7 +666,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if addRisk {
 		data["risk_summary"] = riskCounts
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -743,7 +761,7 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 			"low":             riskCounts["LOW"],
 		},
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -808,7 +826,7 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 		"node_kinds":      kindCounts,
 		"edge_kinds":      edgeKindCounts,
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -832,7 +850,7 @@ func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"node_kinds":      kindCounts,
 		"edge_kinds":      edgeKindCounts,
 	}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -854,7 +872,7 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		})
 	}
 	data := map[string]any{"projects": rows, "count": len(rows)}
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -914,7 +932,56 @@ func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		return errResult(fmt.Sprintf("unknown action %q", action)), nil
 	}
 
-	return jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, 0), nil
+}
+
+func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	args := parseArgs(req)
+	projectArg := str(args, "project")
+
+	calls := atomic.LoadInt64(&s.statsCalls)
+	tokensUsed := atomic.LoadInt64(&s.statsTokensUsed)
+	tokensSaved := atomic.LoadInt64(&s.statsTokensSaved)
+	totalLatency := atomic.LoadInt64(&s.statsLatencyMS)
+
+	totalCostAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
+
+	avgLatency := int64(0)
+	if calls > 0 {
+		avgLatency = totalLatency / calls
+	}
+
+	session := map[string]any{
+		"calls":              calls,
+		"tokens_used":        tokensUsed,
+		"tokens_saved":       tokensSaved,
+		"total_cost_avoided": fmt.Sprintf("$%.4f", totalCostAvoided),
+		"avg_latency_ms":     avgLatency,
+	}
+
+	// Per-project index breakdown
+	var projectData map[string]any
+	if pid, err := s.resolveProjectID(projectArg); err == nil {
+		if p, err := s.store.GetProject(pid); err == nil && p != nil {
+			symCount, edgeCount, kindCounts, _, _ := s.store.GraphStats(pid)
+			projectData = map[string]any{
+				"name":        p.Name,
+				"path":        p.Path,
+				"files":       p.FileCount,
+				"symbols":     symCount,
+				"edges":       edgeCount,
+				"node_kinds":  kindCounts,
+				"indexed_at":  p.IndexedAt.Format(time.RFC3339),
+			}
+		}
+	}
+
+	data := map[string]any{
+		"session": session,
+		"project": projectData,
+	}
+	return s.jsonResultWithMeta(data, start, 0), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -924,7 +991,7 @@ func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 // baseCostPer1M is the approximate cost per 1M tokens for Claude Sonnet (USD).
 const baseCostPer1M = 3.0
 
-func jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *mcp.CallToolResult {
+func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *mcp.CallToolResult {
 	latency := time.Since(start).Milliseconds()
 
 	// Estimate tokens in this response
@@ -940,6 +1007,12 @@ func jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *
 		"latency_ms":   latency,
 		"cost_avoided": fmt.Sprintf("$%.4f", costAvoided),
 	}
+
+	// Accumulate session stats
+	atomic.AddInt64(&s.statsCalls, 1)
+	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
+	atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
+	atomic.AddInt64(&s.statsLatencyMS, latency)
 
 	out, _ := json.MarshalIndent(data, "", "  ")
 	return &mcp.CallToolResult{

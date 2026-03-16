@@ -88,7 +88,7 @@ Agents can persist these IDs in their context and look up source code instantly 
 
 ---
 
-## Tools (12 total)
+## Tools (13 total)
 
 ### Indexing & Discovery
 
@@ -121,6 +121,7 @@ Agents can persist these IDs in their context and look up source code instantly 
 | `architecture` | High-level orientation: languages, entry points, hotspot functions (most-called), graph stats. Call this first on an unfamiliar project. |
 | `schema` | Knowledge graph schema: node kind counts, edge kind counts. Use before `query` to understand what's indexed. |
 | `adr` | Architecture Decision Records — persistent key/value store per project. `get`, `set`, `list`, `delete`. Record stack decisions, patterns, conventions. |
+| `stats` | Session savings summary: cumulative tokens used/saved, cost avoided, call count, and avg latency since server start. Also shows the current project's index size (files, symbols, edges). |
 
 ---
 
