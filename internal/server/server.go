@@ -363,7 +363,8 @@ func (s *Server) registerTools() {
 				"project":{"type":"string"},
 				"kind":{"type":"string","description":"Filter by symbol kind: Function|Method|Class|Interface|Enum|Type|Variable|Module"},
 				"language":{"type":"string","description":"Filter by language: Go|Python|TypeScript|etc"},
-				"limit":{"type":"integer","description":"Max results (default 20)"}
+				"limit":{"type":"integer","description":"Max results (default 20)"},
+				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."}
 			}
 		}`),
 	}, s.handleSearch)
@@ -690,6 +691,7 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	kind := str(args, "kind")
 	language := str(args, "language")
 	limit := intArg(args, "limit", 20)
+	fieldsArg := str(args, "fields")
 
 	projectID, err := s.resolveProjectID(projectArg)
 	if err != nil {
@@ -701,20 +703,43 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return errResult(fmt.Sprintf("search error: %v", err)), nil
 	}
 
+	// Build field allow-set for projection (nil = all fields).
+	var fieldSet map[string]bool
+	if fieldsArg != "" {
+		fieldSet = make(map[string]bool)
+		for _, f := range strings.Split(fieldsArg, ",") {
+			fieldSet[strings.TrimSpace(f)] = true
+		}
+	}
+
+	allFields := map[string]any{}
 	var rows []map[string]any
 	for _, r := range results {
-		rows = append(rows, map[string]any{
-			"id":                    r.Symbol.ID,
-			"name":                  r.Symbol.Name,
-			"qualified_name":        r.Symbol.QualifiedName,
-			"kind":                  r.Symbol.Kind,
-			"language":              r.Symbol.Language,
-			"file_path":             r.Symbol.FilePath,
-			"start_line":            r.Symbol.StartLine,
-			"signature":             r.Symbol.Signature,
-			"score":                 r.Score,
-			"extraction_confidence": r.Symbol.ExtractionConfidence,
-		})
+		allFields["id"] = r.Symbol.ID
+		allFields["name"] = r.Symbol.Name
+		allFields["qualified_name"] = r.Symbol.QualifiedName
+		allFields["kind"] = r.Symbol.Kind
+		allFields["language"] = r.Symbol.Language
+		allFields["file_path"] = r.Symbol.FilePath
+		allFields["start_line"] = r.Symbol.StartLine
+		allFields["signature"] = r.Symbol.Signature
+		allFields["score"] = r.Score
+		allFields["extraction_confidence"] = r.Symbol.ExtractionConfidence
+
+		if fieldSet == nil {
+			// Copy all fields
+			row := make(map[string]any, len(allFields))
+			for k, v := range allFields {
+				row[k] = v
+			}
+			rows = append(rows, row)
+		} else {
+			row := make(map[string]any, len(fieldSet))
+			for f := range fieldSet {
+				row[f] = allFields[f]
+			}
+			rows = append(rows, row)
+		}
 	}
 
 	// Token savings: symbols returned as stubs instead of full file reads.
