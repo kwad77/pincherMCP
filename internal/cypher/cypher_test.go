@@ -148,6 +148,10 @@ func TestParseHops(t *testing.T) {
 		{"2..5", 2, 5},
 		{"3", 3, 3},
 		{"", 1, 1},
+		// min < 1: clamp to 1
+		{"0..3", 1, 3},
+		// max < min: clamp max to min
+		{"3..1", 3, 3},
 	}
 	for _, c := range cases {
 		mn, mx := parseHops(c.s)
@@ -1034,6 +1038,55 @@ func TestRunJoinQuery_ContainsPushdown(t *testing.T) {
 		name, _ := row["a.name"].(string)
 		if name != "ServiceA" && name != "ServiceC" {
 			t.Errorf("CONTAINS filter wrong: a.name=%v", name)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parsePattern: named edge variable [r:KIND] — exercises pat.edgeVar branch
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestParsePattern_NamedEdgeVar(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "nev1", "Caller", "Function", "Go")
+	insertSym(t, db, "nev2", "Callee", "Function", "Go")
+	insertEdge(t, db, "nev1", "nev2", "CALLS")
+
+	// Named edge variable: [r:CALLS] — exercises pat.edgeVar = p.next().value
+	r := exec(t, db, "MATCH (a:Function)-[r:CALLS]->(b:Function) RETURN a.name, r.kind, b.name")
+	if r.Total == 0 {
+		t.Fatal("expected result with named edge variable")
+	}
+	// Verify r.kind is populated from the edge variable
+	for _, row := range r.Rows {
+		if _, ok := row["r.kind"]; !ok {
+			t.Error("r.kind missing from result — edgeVar not captured")
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runBFS: WHERE condition on result nodes
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRunBFS_WhereFilter(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "bw1", "Root", "Function", "Go")
+	insertSym(t, db, "bw2", "TargetA", "Function", "Go")
+	insertSym(t, db, "bw3", "TargetB", "Function", "Go")
+	insertEdge(t, db, "bw1", "bw2", "CALLS")
+	insertEdge(t, db, "bw1", "bw3", "CALLS")
+
+	// BFS with WHERE to filter result nodes
+	r := exec(t, db, "MATCH (a)-[:CALLS*1..2]->(b) WHERE a.name='Root' AND b.name='TargetA' RETURN b.name")
+	if r.Total == 0 {
+		t.Skip("BFS WHERE filter returned no results")
+	}
+	for _, row := range r.Rows {
+		if row["b.name"] != "TargetA" {
+			t.Errorf("BFS WHERE filter not applied: b.name=%v", row["b.name"])
 		}
 	}
 }

@@ -786,6 +786,9 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 				m[k] = v
 			}
 			m["_hop"] = hop.depth
+			if !matchesConditions(m, q.conditions) {
+				continue
+			}
 			resultRows = append(resultRows, m)
 			if len(resultRows) >= e.maxRows()*2 {
 				goto done
