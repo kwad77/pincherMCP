@@ -191,7 +191,8 @@ CREATE TABLE IF NOT EXISTS edges (
     to_id      TEXT    NOT NULL,
     kind       TEXT    NOT NULL,
     confidence REAL    DEFAULT 1.0,
-    properties TEXT
+    properties TEXT,
+    UNIQUE(project_id, from_id, to_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_edge_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edge_to   ON edges(to_id);
