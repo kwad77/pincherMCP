@@ -341,21 +341,22 @@ async function load() {
   }
 
   try {
-    const r = await fetch('/v1/stats', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-    const data = await r.json();
-    const s = (data.result||data).session || {};
-    const a = (data.result||data).all_time || {};
+    const data = await fetch('/v1/stats').then(r=>r.json());
+    const s = data.session || {};
+    const a = data.all_time || {};
+    const sessAge = s.last_seen ? ' \u00b7 '+timeAgo(s.last_seen) : '';
+    const sessStart = s.started_at ? 'started '+timeAgo(s.started_at) : 'this session';
     document.getElementById('session-cards').innerHTML =
-      statCard('Tool Calls', fmt(s.calls||0), 'blue', 'this session', '') +
+      statCard('Tool Calls', fmt(s.calls||0), 'blue', sessStart, '') +
       statCard('Tokens Saved', fmt(s.tokens_saved||0), 'green', 'vs reading full files', 'green') +
-      statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange') +
-      statCard('Avg Latency', fmtMs(s.avg_latency_ms||0), 'purple', 'per tool call', 'purple');
-    document.getElementById('alltime-cards').innerHTML = a.calls ?
+      statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed'+sessAge, 'purple') +
+      statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange');
+    document.getElementById('alltime-cards').innerHTML = (a.calls||0) > 0 ?
       statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
       statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
       statCard('Total Cost Avoided', a.total_cost_avoided||'$0.0000', 'orange', 'provable ROI', 'orange') +
       statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple') :
-      '<div class="empty">No previous sessions recorded yet.</div>';
+      '<div class="empty">No sessions recorded yet.</div>';
   } catch(e) {
     document.getElementById('error-box').innerHTML = '<div class="error">Failed to load stats: '+esc(e.message)+'</div>';
   }

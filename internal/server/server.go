@@ -227,6 +227,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(dashboardHTML))
 		return
 	}
+	// GET /v1/stats — dashboard-safe stats reader. Reads from DB only; never
+	// touches in-memory atomic counters so it doesn't pollute the MCP session.
+	if path == "stats" && r.Method == http.MethodGet {
+		// Latest session (MCP process, flushed every 10s)
+		var sess map[string]any
+		if rows, err := s.store.GetSessions(1); err == nil && len(rows) > 0 {
+			r0 := rows[0]
+			sess = map[string]any{
+				"calls":              r0.Calls,
+				"tokens_used":        r0.TokensUsed,
+				"tokens_saved":       r0.TokensSaved,
+				"total_cost_avoided": fmt.Sprintf("$%.4f", r0.CostAvoided),
+				"started_at":         r0.StartedAt.Format(time.RFC3339),
+				"last_seen":          r0.LastSeen.Format(time.RFC3339),
+			}
+		}
+		// All-time cumulative
+		var allTime map[string]any
+		if atCalls, atUsed, atSaved, atCost, err := s.store.GetAllTimeSavings(); err == nil {
+			allTime = map[string]any{
+				"calls":              atCalls,
+				"tokens_used":        atUsed,
+				"tokens_saved":       atSaved,
+				"total_cost_avoided": fmt.Sprintf("$%.4f", atCost),
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"session": sess, "all_time": allTime})
+		return
+	}
 	// GET /v1/sessions — per-session savings history for sparkline chart.
 	if path == "sessions" && r.Method == http.MethodGet {
 		sessions, err := s.store.GetSessions(90) // last 90 sessions
