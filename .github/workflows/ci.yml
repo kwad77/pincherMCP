@@ -12,7 +12,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            test-flags: -timeout 120s
+          - os: macos-latest
+            test-flags: -timeout 120s
+          - os: windows-latest
+            # Windows SQLite I/O is ~10x slower; serialize package execution
+            test-flags: -timeout 300s -p 1
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +33,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./... -timeout 180s
+        run: go test ./... ${{ matrix.test-flags }}
 
       - name: Build
         run: go build ./cmd/pinch/
@@ -43,7 +50,7 @@ jobs:
           cache: true
 
       - name: Test with coverage
-        run: go test ./... -coverprofile=cover.out -timeout 180s
+        run: go test ./... -coverprofile=cover.out -timeout 120s
 
       - name: Check coverage threshold (85%)
         run: |
