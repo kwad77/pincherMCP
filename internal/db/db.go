@@ -52,8 +52,10 @@ func Open(dir string) (*Store, error) {
 	path := filepath.Join(dir, "pincher.db")
 	// WAL mode + normal sync = best throughput/durability tradeoff.
 	// cache_size=-65536 = 64 MB page cache.
+	// busy_timeout=5000ms prevents immediate failure when a write lock is held
+	// (e.g. watcher auto-index overlapping a manual index call).
 	dsn := fmt.Sprintf(
-		"file:%s?_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON&_cache_size=-65536",
+		"file:%s?_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON&_cache_size=-65536&_busy_timeout=5000",
 		path,
 	)
 	db, err := sql.Open("sqlite", dsn)
@@ -77,10 +79,64 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// migrate applies the schema (idempotent — IF NOT EXISTS throughout).
+// schemaMigrations is an ordered list of incremental SQL migrations applied
+// after the baseline schema. migrations[i] upgrades version (i+1) → (i+2).
+// To add a schema change: append a SQL string here and bump nothing else —
+// the version number is derived from the slice length automatically.
+//
+// Rules:
+//   - Never edit an existing entry (deployed databases have already run it).
+//   - Each entry must be idempotent where possible (use IF NOT EXISTS / IF EXISTS).
+//   - Keep entries small and focused (one logical change per entry).
+var schemaMigrations = []string{
+	// v1 → v2: extraction_confidence column on symbols lets callers distinguish
+	// go/ast-exact results (1.0) from regex-approximate results (0.6–0.9).
+	`ALTER TABLE symbols ADD COLUMN extraction_confidence REAL NOT NULL DEFAULT 1.0`,
+}
+
+// migrate applies the baseline schema then runs any pending numbered migrations.
+//
+// Versioning: a single-row schema_version table tracks how far migrations have
+// been applied. New databases start at v1 (baseline). Existing databases that
+// pre-date this system also start at v1 because the baseline schema is fully
+// idempotent (IF NOT EXISTS throughout) — running it on an existing database
+// is always safe.
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(schema)
-	return err
+	// Step 1: apply baseline DDL — safe to run on any existing database.
+	if _, err := s.db.Exec(schema); err != nil {
+		return fmt.Errorf("baseline schema: %w", err)
+	}
+
+	// Step 2: bootstrap version-tracking table.
+	if _, err := s.db.Exec(
+		`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
+	); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
+	// Insert v1 only if the table is empty (fresh DB or pre-versioning DB).
+	if _, err := s.db.Exec(
+		`INSERT INTO schema_version(version) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version)`,
+	); err != nil {
+		return fmt.Errorf("init schema_version: %w", err)
+	}
+
+	// Step 3: read current version.
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	// Step 4: apply any migrations the database hasn't seen yet.
+	for i := version - 1; i < len(schemaMigrations); i++ {
+		if _, err := s.db.Exec(schemaMigrations[i]); err != nil {
+			return fmt.Errorf("schema migration v%d→v%d: %w", i+1, i+2, err)
+		}
+		next := i + 2
+		if _, err := s.db.Exec(`UPDATE schema_version SET version = ?`, next); err != nil {
+			return fmt.Errorf("bump schema version to %d: %w", next, err)
+		}
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,11 +292,12 @@ type Symbol struct {
 	ReturnType    string
 	Docstring     string
 	Parent        string
-	Complexity    int
-	IsExported    bool
-	IsTest        bool
-	IsEntryPoint  bool
-	FileHash      string
+	Complexity             int
+	IsExported             bool
+	IsTest                 bool
+	IsEntryPoint           bool
+	FileHash               string
+	ExtractionConfidence   float64 // 1.0 = AST-exact (Go); <1.0 = regex-approximate
 }
 
 // MakeSymbolID produces the stable, human-readable symbol ID.
@@ -372,8 +429,9 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 			(id, project_id, file_path, name, qualified_name, kind, language,
 			 start_byte, end_byte, start_line, end_line,
 			 signature, return_type, docstring, parent,
-			 complexity, is_exported, is_test, is_entry_point, file_hash)
-		VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?)`)
+			 complexity, is_exported, is_test, is_entry_point, file_hash,
+			 extraction_confidence)
+		VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -381,12 +439,16 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 
 	for i := range syms {
 		sym := &syms[i]
+		conf := sym.ExtractionConfidence
+		if conf == 0 {
+			conf = 1.0 // default: exact (callers that don't set it are Go/AST)
+		}
 		_, err := stmt.Exec(
 			sym.ID, sym.ProjectID, sym.FilePath, sym.Name, sym.QualifiedName, sym.Kind, sym.Language,
 			sym.StartByte, sym.EndByte, sym.StartLine, sym.EndLine,
 			ns(sym.Signature), ns(sym.ReturnType), ns(sym.Docstring), ns(sym.Parent),
 			sym.Complexity, bi(sym.IsExported), bi(sym.IsTest), bi(sym.IsEntryPoint),
-			ns(sym.FileHash),
+			ns(sym.FileHash), conf,
 		)
 		if err != nil {
 			return err
@@ -473,7 +535,8 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 		SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
 		       s.signature, s.return_type, s.docstring, s.parent,
-		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash
+		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
+		       s.extraction_confidence
 		FROM symbols s
 		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
 		ORDER BY cnt DESC LIMIT ?`, projectID, limit)
@@ -499,6 +562,7 @@ func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
 		       s.signature, s.return_type, s.docstring, s.parent,
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
+		       s.extraction_confidence,
 		       bm25(symbols_fts) AS score
 		FROM symbols_fts
 		JOIN symbols s ON s.rowid = symbols_fts.rowid
@@ -737,7 +801,8 @@ const symSelectFrom = `
 	SELECT id, project_id, file_path, name, qualified_name, kind, language,
 	       start_byte, end_byte, start_line, end_line,
 	       signature, return_type, docstring, parent,
-	       complexity, is_exported, is_test, is_entry_point, file_hash
+	       complexity, is_exported, is_test, is_entry_point, file_hash,
+	       extraction_confidence
 	FROM symbols`
 
 func scanOneSymbol(row *sql.Row) (*Symbol, error) {
@@ -749,6 +814,7 @@ func scanOneSymbol(row *sql.Row) (*Symbol, error) {
 		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
 		&sig, &ret, &doc, &par,
 		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
+		&sym.ExtractionConfidence,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -787,6 +853,7 @@ func scanSymbolRowsRow(rows *sql.Rows, sym *Symbol) error {
 		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
 		&sig, &ret, &doc, &par,
 		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
+		&sym.ExtractionConfidence,
 	); err != nil {
 		return err
 	}
@@ -805,12 +872,24 @@ func scanSymbolRowsRow(rows *sql.Rows, sym *Symbol) error {
 func scanSymbolRow(rows *sql.Rows, sym *Symbol, score *float64) error {
 	var sig, ret, doc, par, fh sql.NullString
 	var isExp, isTest, isEntry int64
-	return rows.Scan(
+	if err := rows.Scan(
 		&sym.ID, &sym.ProjectID, &sym.FilePath, &sym.Name, &sym.QualifiedName, &sym.Kind, &sym.Language,
 		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
 		&sig, &ret, &doc, &par,
-		&sym.Complexity, &isExp, &isTest, &isEntry, &fh, score,
-	)
+		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
+		&sym.ExtractionConfidence, score,
+	); err != nil {
+		return err
+	}
+	sym.Signature = sig.String
+	sym.ReturnType = ret.String
+	sym.Docstring = doc.String
+	sym.Parent = par.String
+	sym.FileHash = fh.String
+	sym.IsExported = isExp != 0
+	sym.IsTest = isTest != 0
+	sym.IsEntryPoint = isEntry != 0
+	return nil
 }
 
 // ns converts empty string to nil for SQL NULL columns.

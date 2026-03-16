@@ -177,9 +177,10 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 					Parent:        s.Parent,
 					Complexity:    s.Complexity,
 					IsExported:    s.IsExported,
-					IsTest:        s.IsTest,
-					IsEntryPoint:  s.IsEntryPoint,
-					FileHash:      hash,
+					IsTest:               s.IsTest,
+					IsEntryPoint:         s.IsEntryPoint,
+					FileHash:             hash,
+					ExtractionConfidence: s.ExtractionConfidence,
 				}
 				syms = append(syms, sym)
 			}

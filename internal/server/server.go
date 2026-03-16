@@ -422,9 +422,10 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"signature":     sym.Signature,
 		"return_type":   sym.ReturnType,
 		"docstring":     sym.Docstring,
-		"complexity":    sym.Complexity,
-		"is_exported":   sym.IsExported,
-		"source":        source,
+		"complexity":             sym.Complexity,
+		"is_exported":            sym.IsExported,
+		"extraction_confidence":  sym.ExtractionConfidence,
+		"source":                 source,
 	}
 	return s.jsonResultWithMeta(data, start, tokensSaved), nil
 }
@@ -547,20 +548,25 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	var rows []map[string]any
 	for _, r := range results {
 		rows = append(rows, map[string]any{
-			"id":             r.Symbol.ID,
-			"name":           r.Symbol.Name,
-			"qualified_name": r.Symbol.QualifiedName,
-			"kind":           r.Symbol.Kind,
-			"language":       r.Symbol.Language,
-			"file_path":      r.Symbol.FilePath,
-			"start_line":     r.Symbol.StartLine,
-			"signature":      r.Symbol.Signature,
-			"score":          r.Score,
+			"id":                    r.Symbol.ID,
+			"name":                  r.Symbol.Name,
+			"qualified_name":        r.Symbol.QualifiedName,
+			"kind":                  r.Symbol.Kind,
+			"language":              r.Symbol.Language,
+			"file_path":             r.Symbol.FilePath,
+			"start_line":            r.Symbol.StartLine,
+			"signature":             r.Symbol.Signature,
+			"score":                 r.Score,
+			"extraction_confidence": r.Symbol.ExtractionConfidence,
 		})
 	}
 
-	// Token savings: returned only symbol stubs, not full file contents
-	tokensSaved := db.ApproxTokens(strings.Repeat("x", len(results)*2000))
+	// Token savings: symbols returned as stubs instead of full file reads.
+	// Estimate full-context cost (~2 KB per symbol in context) minus actual payload.
+	responseJSON, _ := json.Marshal(rows)
+	const avgSymbolContext = 2000 // chars an agent would read without search
+	fullContextEst := len(results) * avgSymbolContext
+	tokensSaved := max(0, db.ApproxTokens(strings.Repeat("x", fullContextEst))-db.ApproxTokens(string(responseJSON)))
 
 	data := map[string]any{
 		"results": rows,

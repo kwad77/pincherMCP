@@ -482,20 +482,21 @@ func parseHops(s string) (min, max int) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type symRow struct {
-	ID            string
-	ProjectID     string
-	FilePath      string
-	Name          string
-	QualifiedName string
-	Kind          string
-	Language      string
-	StartByte     int
-	EndByte       int
-	StartLine     int
-	EndLine       int
-	IsExported    bool
-	IsEntryPoint  bool
-	Complexity    int
+	ID                   string
+	ProjectID            string
+	FilePath             string
+	Name                 string
+	QualifiedName        string
+	Kind                 string
+	Language             string
+	StartByte            int
+	EndByte              int
+	StartLine            int
+	EndLine              int
+	IsExported           bool
+	IsEntryPoint         bool
+	Complexity           int
+	ExtractionConfidence float64
 }
 
 func (e *Executor) maxRows() int {
@@ -532,7 +533,8 @@ func (e *Executor) run(ctx context.Context, q *queryAST) (*Result, error) {
 // runNodeScan handles: MATCH (n:Kind) WHERE ... RETURN ...
 func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*Result, error) {
 	sqlQ := `SELECT id, project_id, file_path, name, qualified_name, kind, language,
-		start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity
+		start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity,
+		extraction_confidence
 		FROM symbols WHERE 1=1`
 	var args []any
 
@@ -619,8 +621,10 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	sqlQ := `SELECT
 		a.id, a.project_id, a.file_path, a.name, a.qualified_name, a.kind, a.language,
 		a.start_byte, a.end_byte, a.start_line, a.end_line, a.is_exported, a.is_entry_point, a.complexity,
+		a.extraction_confidence,
 		b.id, b.project_id, b.file_path, b.name, b.qualified_name, b.kind, b.language,
 		b.start_byte, b.end_byte, b.start_line, b.end_line, b.is_exported, b.is_entry_point, b.complexity,
+		b.extraction_confidence,
 		e.kind, e.confidence
 		FROM edges e
 		JOIN symbols a ON a.id = e.from_id
@@ -709,7 +713,8 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Result, error) {
 	// Find start nodes
 	startQ := `SELECT id, project_id, file_path, name, qualified_name, kind, language,
-		start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity
+		start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity,
+		extraction_confidence
 		FROM symbols WHERE 1=1`
 	var startArgs []any
 
@@ -805,13 +810,15 @@ func (e *Executor) edgeNeighbors(ctx context.Context, fromID string, kinds []str
 	var args []any
 	if direction == "outbound" {
 		sqlQ = `SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
-			s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity
+			s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity,
+			s.extraction_confidence
 			FROM edges e JOIN symbols s ON s.id=e.to_id
 			WHERE e.from_id=? AND e.kind IN (` + in + `) LIMIT 100`
 		args = []any{fromID}
 	} else {
 		sqlQ = `SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
-			s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity
+			s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity,
+			s.extraction_confidence
 			FROM edges e JOIN symbols s ON s.id=e.from_id
 			WHERE e.to_id=? AND e.kind IN (` + in + `) LIMIT 100`
 		args = []any{fromID}
@@ -956,6 +963,7 @@ func scanSymRow(rows *sql.Rows) (*symRow, error) {
 	if err := rows.Scan(
 		&n.ID, &n.ProjectID, &n.FilePath, &n.Name, &n.QualifiedName, &n.Kind, &n.Language,
 		&n.StartByte, &n.EndByte, &n.StartLine, &n.EndLine, &isExp, &isEntry, &n.Complexity,
+		&n.ExtractionConfidence,
 	); err != nil {
 		return nil, err
 	}
@@ -971,8 +979,10 @@ func scanJoinRow(rows *sql.Rows) (a, b *symRow, edgeKind string, conf float64, e
 	err = rows.Scan(
 		&a.ID, &a.ProjectID, &a.FilePath, &a.Name, &a.QualifiedName, &a.Kind, &a.Language,
 		&a.StartByte, &a.EndByte, &a.StartLine, &a.EndLine, &isExpA, &isEntryA, &a.Complexity,
+		&a.ExtractionConfidence,
 		&b.ID, &b.ProjectID, &b.FilePath, &b.Name, &b.QualifiedName, &b.Kind, &b.Language,
 		&b.StartByte, &b.EndByte, &b.StartLine, &b.EndLine, &isExpB, &isEntryB, &b.Complexity,
+		&b.ExtractionConfidence,
 		&edgeKind, &conf,
 	)
 	a.IsExported = isExpA != 0
@@ -995,9 +1005,10 @@ func symRowToMap(varName string, n *symRow) map[string]any {
 		prefix + "end_line":       n.EndLine,
 		prefix + "start_byte":     n.StartByte,
 		prefix + "end_byte":       n.EndByte,
-		prefix + "is_exported":    n.IsExported,
-		prefix + "is_entry_point": n.IsEntryPoint,
-		prefix + "complexity":     n.Complexity,
+		prefix + "is_exported":            n.IsExported,
+		prefix + "is_entry_point":         n.IsEntryPoint,
+		prefix + "complexity":             n.Complexity,
+		prefix + "extraction_confidence":  n.ExtractionConfidence,
 	}
 }
 

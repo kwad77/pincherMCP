@@ -715,3 +715,148 @@ func TestProjectIDFromPath(t *testing.T) {
 		t.Error("different paths should give different IDs")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DataDir
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDataDir_ReturnsPath(t *testing.T) {
+	dir, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	if dir == "" {
+		t.Error("DataDir returned empty string")
+	}
+	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+		t.Errorf("DataDir %q does not exist after call", dir)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BulkUpsertEdges
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBulkUpsertEdges_WithProperties(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-edge-props"
+	store.UpsertProject(testProject(pid))
+	store.BulkUpsertSymbols([]Symbol{
+		{ID: "ep1", ProjectID: pid, FilePath: "a.go", Name: "A", QualifiedName: "pkg.A", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "ep2", ProjectID: pid, FilePath: "b.go", Name: "B", QualifiedName: "pkg.B", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+	})
+	edges := []Edge{
+		{ProjectID: pid, FromID: "ep1", ToID: "ep2", Kind: "CALLS", Confidence: 0.9,
+			Properties: map[string]any{"line": 5}},
+	}
+	if err := store.BulkUpsertEdges(edges); err != nil {
+		t.Fatalf("BulkUpsertEdges with properties: %v", err)
+	}
+	got, err := store.EdgesFrom("ep1", []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("EdgesFrom: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 edge, got %d", len(got))
+	}
+}
+
+func TestBulkUpsertEdges_Empty(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.BulkUpsertEdges(nil); err != nil {
+		t.Fatalf("BulkUpsertEdges(nil): %v", err)
+	}
+	if err := store.BulkUpsertEdges([]Edge{}); err != nil {
+		t.Fatalf("BulkUpsertEdges([]): %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteProject
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDeleteProject_RemovesAll(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-del"
+	store.UpsertProject(testProject(pid))
+	store.BulkUpsertSymbols([]Symbol{
+		{ID: "dp1", ProjectID: pid, FilePath: "a.go", Name: "A", QualifiedName: "pkg.A", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "dp2", ProjectID: pid, FilePath: "b.go", Name: "B", QualifiedName: "pkg.B", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+	})
+	store.BulkUpsertEdges([]Edge{
+		{ProjectID: pid, FromID: "dp1", ToID: "dp2", Kind: "CALLS", Confidence: 1.0},
+	})
+	if err := store.DeleteProject(pid); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	p, err := store.GetProject(pid)
+	if err != nil {
+		t.Fatalf("GetProject after delete: %v", err)
+	}
+	if p != nil {
+		t.Error("project should be nil after deletion")
+	}
+	syms, _ := store.GetSymbolsForFile(pid, "a.go")
+	if len(syms) != 0 {
+		t.Errorf("expected 0 symbols after deletion, got %d", len(syms))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteSymbolsForFile
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GraphStats
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGraphStats_WithData(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-gs"
+	store.UpsertProject(testProject(pid))
+	store.BulkUpsertSymbols([]Symbol{
+		{ID: "gs1", ProjectID: pid, FilePath: "a.go", Name: "Fn1", QualifiedName: "p.Fn1", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "gs2", ProjectID: pid, FilePath: "a.go", Name: "T1", QualifiedName: "p.T1", Kind: "Class", Language: "Go", StartByte: 20, EndByte: 50, StartLine: 5, EndLine: 10},
+		{ID: "gs3", ProjectID: pid, FilePath: "b.go", Name: "Fn2", QualifiedName: "p.Fn2", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+	})
+	store.BulkUpsertEdges([]Edge{
+		{ProjectID: pid, FromID: "gs1", ToID: "gs3", Kind: "CALLS", Confidence: 1.0},
+		{ProjectID: pid, FromID: "gs2", ToID: "gs1", Kind: "CALLS", Confidence: 1.0},
+	})
+	symCount, edgeCount, kindCounts, edgeKindCounts, err := store.GraphStats(pid)
+	if err != nil {
+		t.Fatalf("GraphStats: %v", err)
+	}
+	if symCount != 3 {
+		t.Errorf("expected 3 symbols, got %d", symCount)
+	}
+	if edgeCount != 2 {
+		t.Errorf("expected 2 edges, got %d", edgeCount)
+	}
+	if kindCounts["Function"] != 2 {
+		t.Errorf("expected 2 Function kinds, got %d", kindCounts["Function"])
+	}
+	if kindCounts["Class"] != 1 {
+		t.Errorf("expected 1 Class kind, got %d", kindCounts["Class"])
+	}
+	if edgeKindCounts["CALLS"] != 2 {
+		t.Errorf("expected 2 CALLS edges, got %d", edgeKindCounts["CALLS"])
+	}
+}
+
+func TestGraphStats_EmptyProject(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-gs-empty"
+	store.UpsertProject(testProject(pid))
+	symCount, edgeCount, kindCounts, edgeKindCounts, err := store.GraphStats(pid)
+	if err != nil {
+		t.Fatalf("GraphStats: %v", err)
+	}
+	if symCount != 0 || edgeCount != 0 {
+		t.Errorf("expected 0 counts, got sym=%d edge=%d", symCount, edgeCount)
+	}
+	if len(kindCounts) != 0 || len(edgeKindCounts) != 0 {
+		t.Error("expected empty kind maps for empty project")
+	}
+}
+

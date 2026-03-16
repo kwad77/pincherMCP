@@ -47,6 +47,10 @@ type ExtractedSymbol struct {
 	IsTest        bool
 	IsEntryPoint  bool
 	Complexity    int
+	// ExtractionConfidence is set by Extract() based on the parser used.
+	// 1.0 = AST-exact (Go). 0.85 = stable regex (Python, TS, Rust, Java).
+	// 0.70 = approximate regex (Ruby, PHP, C, C++, C#, Kotlin, Swift).
+	ExtractionConfidence float64
 }
 
 // ExtractedEdge is a raw call/import relationship found during extraction.
@@ -64,38 +68,67 @@ type FileResult struct {
 	Module  string // module/package name
 }
 
+// extractionConfidence maps language to parser reliability score.
+//   - 1.00: go/ast (exact — every symbol, exact byte offsets)
+//   - 0.85: stable regex grammars — well-tested for Python, TS/JS, Rust, Java
+//   - 0.70: approximate regex — heuristic patterns for Ruby, PHP, C/C++, C#, Kotlin, Swift
+var extractionConfidence = map[string]float64{
+	"Go":         1.00,
+	"Python":     0.85,
+	"JavaScript": 0.85,
+	"JSX":        0.85,
+	"TypeScript": 0.85,
+	"TSX":        0.85,
+	"Rust":       0.85,
+	"Java":       0.85,
+	"Ruby":       0.70,
+	"PHP":        0.70,
+	"C":          0.70,
+	"C++":        0.70,
+	"C#":         0.70,
+	"Kotlin":     0.70,
+	"Swift":      0.70,
+}
+
 // Extract dispatches to the appropriate language extractor.
 // source is the raw file content; language is the detected language string.
 // relPath is the file path relative to the project root (used for qualified names).
+// Each returned symbol has ExtractionConfidence set based on the parser used.
 func Extract(source []byte, language, relPath string) *FileResult {
+	var result *FileResult
 	switch language {
 	case "Go":
-		return extractGo(source, relPath)
+		result = extractGo(source, relPath)
 	case "Python":
-		return extractPython(source, relPath)
+		result = extractPython(source, relPath)
 	case "JavaScript", "JSX":
-		return extractJavaScript(source, relPath)
+		result = extractJavaScript(source, relPath)
 	case "TypeScript", "TSX":
-		return extractTypeScript(source, relPath)
+		result = extractTypeScript(source, relPath)
 	case "Rust":
-		return extractRust(source, relPath)
+		result = extractRust(source, relPath)
 	case "Java":
-		return extractJava(source, relPath)
+		result = extractJava(source, relPath)
 	case "Ruby":
-		return extractRuby(source, relPath)
+		result = extractRuby(source, relPath)
 	case "PHP":
-		return extractPHP(source, relPath)
+		result = extractPHP(source, relPath)
 	case "C", "C++":
-		return extractC(source, relPath)
+		result = extractC(source, relPath)
 	case "C#":
-		return extractCSharp(source, relPath)
+		result = extractCSharp(source, relPath)
 	case "Kotlin":
-		return extractKotlin(source, relPath)
+		result = extractKotlin(source, relPath)
 	case "Swift":
-		return extractSwift(source, relPath)
+		result = extractSwift(source, relPath)
 	default:
 		return &FileResult{}
 	}
+	conf := extractionConfidence[language]
+	for i := range result.Symbols {
+		result.Symbols[i].ExtractionConfidence = conf
+	}
+	return result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
