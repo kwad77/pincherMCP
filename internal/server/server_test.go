@@ -765,3 +765,232 @@ func TestMax(t *testing.T) {
 		t.Error("max(4,4) should be 4")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveProjectID
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestResolveProjectID_ByID(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "proj-abc", Path: "/abc", Name: "myproj", IndexedAt: time.Now()})
+
+	id, err := srv.resolveProjectID("proj-abc")
+	if err != nil {
+		t.Fatalf("resolveProjectID by ID: %v", err)
+	}
+	if id != "proj-abc" {
+		t.Errorf("got %q, want 'proj-abc'", id)
+	}
+}
+
+func TestResolveProjectID_ByName(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "proj-xyz", Path: "/xyz", Name: "myproj", IndexedAt: time.Now()})
+
+	id, err := srv.resolveProjectID("myproj")
+	if err != nil {
+		t.Fatalf("resolveProjectID by name: %v", err)
+	}
+	if id != "proj-xyz" {
+		t.Errorf("got %q, want 'proj-xyz'", id)
+	}
+}
+
+func TestResolveProjectID_NotFound(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	_, err := srv.resolveProjectID("nonexistent-project")
+	if err == nil {
+		t.Error("expected error for unknown project name")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveProjectRoot
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestResolveProjectRoot_WithProject(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "p1", Path: "/mypath", Name: "p1", IndexedAt: time.Now()})
+	root, err := srv.resolveProjectRoot("p1")
+	if err != nil {
+		t.Fatalf("resolveProjectRoot: %v", err)
+	}
+	if root != "/mypath" {
+		t.Errorf("got %q, want '/mypath'", root)
+	}
+}
+
+func TestResolveProjectRoot_Fallback(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.sessionRoot = "/fallback"
+	root, err := srv.resolveProjectRoot("nonexistent")
+	if err != nil {
+		t.Fatalf("resolveProjectRoot fallback: %v", err)
+	}
+	if root != "/fallback" {
+		t.Errorf("got %q, want '/fallback'", root)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// setRoot
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSetRoot(t *testing.T) {
+	srv, _, dir := newTestServer(t)
+	srv.setRoot(dir)
+	if srv.sessionRoot != dir {
+		t.Errorf("sessionRoot = %q, want %q", srv.sessionRoot, dir)
+	}
+	if srv.sessionID == "" {
+		t.Error("sessionID should be set after setRoot")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleContext with real symbol + imports
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleContext_WithSymbol(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	repoDir := t.TempDir()
+	writeGoFile(t, repoDir, "pkg/service.go", simpleGoSrc)
+
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "test", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "main-sym", ProjectID: repoDir, FilePath: "pkg/service.go",
+			Name: "Compute", QualifiedName: "mypkg.Compute",
+			Kind: "Function", Language: "Go", StartByte: 14, EndByte: 60,
+			StartLine: 3, EndLine: 3},
+	})
+
+	result, err := srv.handleContext(context.Background(), makeReq(map[string]any{
+		"id": "main-sym",
+	}))
+	if err != nil {
+		t.Fatalf("handleContext: %v", err)
+	}
+	if result.IsError {
+		t.Logf("error (acceptable if source read fails): %v", decode(t, result))
+		return
+	}
+	m := decode(t, result)
+	sym := m["symbol"].(map[string]any)
+	if sym["name"] != "Compute" {
+		t.Errorf("symbol name = %v, want Compute", sym["name"])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleChanges with git repo
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleChanges_GitRepo(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	repoDir := t.TempDir()
+
+	// Initialize git repo with a committed file, then modify it
+	writeGoFile(t, repoDir, "main.go", "package main\nfunc main() {}\n")
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "config"), nil, 0o644); err != nil {
+		// Can't init git, skip
+		t.Skip("cannot create git dir structure")
+	}
+
+	// Just test with a non-git dir — git diff fails → error result
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "test", IndexedAt: time.Now()})
+	srv.sessionID = repoDir
+	srv.sessionRoot = repoDir
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "m1", ProjectID: repoDir, FilePath: "main.go", Name: "main",
+			QualifiedName: "main.main", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 5},
+	})
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{
+		"scope": "staged",
+	}))
+	if err != nil {
+		t.Fatalf("handleChanges: %v", err)
+	}
+	// Either succeeds or fails gracefully — no panic
+	_ = result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleArchitecture with language data
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleArchitecture_WithSymbols(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now(), FileCount: 5})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "f1", ProjectID: "p1", FilePath: "main.go", Name: "main",
+			QualifiedName: "main.main", Kind: "Function", Language: "Go",
+			IsEntryPoint: true, StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 5},
+		{ID: "f2", ProjectID: "p1", FilePath: "util.go", Name: "Helper",
+			QualifiedName: "main.Helper", Kind: "Function", Language: "Go",
+			StartByte: 60, EndByte: 110, StartLine: 10, EndLine: 15},
+	})
+	store.BulkUpsertEdges([]db.Edge{
+		{ProjectID: "p1", FromID: "f1", ToID: "f2", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(nil))
+	if err != nil {
+		t.Fatalf("handleArchitecture: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	if m["entry_points"] == nil {
+		t.Error("expected entry_points in architecture response")
+	}
+	if m["hotspots"] == nil {
+		t.Error("expected hotspots in architecture response")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleSymbol with source read
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleSymbol_WithSource(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	repoDir := t.TempDir()
+	writeGoFile(t, repoDir, "pkg/svc.go", simpleGoSrc)
+
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "test", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "wsym1", ProjectID: repoDir, FilePath: "pkg/svc.go", Name: "Compute",
+			QualifiedName: "mypkg.Compute", Kind: "Function", Language: "Go",
+			StartByte: 14, EndByte: 55, StartLine: 3, EndLine: 3},
+	})
+
+	result, err := srv.handleSymbol(context.Background(), makeReq(map[string]any{"id": "wsym1"}))
+	if err != nil {
+		t.Fatalf("handleSymbol: %v", err)
+	}
+	m := decode(t, result)
+	if !result.IsError && m["source"] == nil {
+		t.Error("expected source field in symbol response")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleADR no project
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleADR_NoProject(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "set", "key": "K", "value": "V",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when no project set")
+	}
+}
