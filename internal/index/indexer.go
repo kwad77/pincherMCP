@@ -95,12 +95,11 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	walker := gocodewalker.NewFileWalker(absPath, fileListQueue)
 	walker.ExcludeDirectory = skippedDirSlice()
 
-	// Start walker in background; close channel when done
+	// Start walker in background; gocodewalker closes the channel when done.
 	go func() {
 		if err := walker.Start(); err != nil {
 			slog.Debug("pincher.walk.start.err", "err", err)
 		}
-		close(fileListQueue)
 	}()
 
 	var (
@@ -234,13 +233,11 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// Final flush
 	bufMu.Lock()
 	if len(symBuf) > 0 || len(edgeBuf) > 0 {
-		if flushErr := idx.flushBatch(projectID, symBuf, edgeBuf); flushErr != nil {
-			slog.Warn("pincher.index.final_flush.err", "err", flushErr)
-		}
 		totalSymbols += len(symBuf)
 		totalEdges += len(edgeBuf)
-		symBuf = nil
-		edgeBuf = nil
+		if flushErr := idx.flushBuffers(projectID, &symBuf, &edgeBuf); flushErr != nil {
+			slog.Warn("pincher.index.final_flush.err", "err", flushErr)
+		}
 	}
 	bufMu.Unlock()
 
