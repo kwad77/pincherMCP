@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1873,5 +1874,74 @@ func TestGetAllTimeSavings_Aggregates(t *testing.T) {
 	}
 	if cost < 0.044 || cost > 0.046 {
 		t.Errorf("total cost_avoided=%v, want ~0.045", cost)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// withTx and migrate coverage tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestWithTx_RollbackOnError(t *testing.T) {
+	s := newTestStore(t)
+	// Insert a project, then roll it back via an error in withTx.
+	intentionalErr := fmt.Errorf("intentional rollback")
+	err := s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`INSERT INTO projects(id, path, name, indexed_at) VALUES(?,?,?,?)`,
+			"proj-rollback", "/tmp/rollback", "rollback", 0); err != nil {
+			return err
+		}
+		return intentionalErr // triggers rollback
+	})
+	if err != intentionalErr {
+		t.Fatalf("withTx returned %v, want intentionalErr", err)
+	}
+	// Project must NOT be in DB (rollback succeeded)
+	p, _ := s.GetProject("proj-rollback")
+	if p != nil {
+		t.Error("project survived rollback — withTx did not roll back correctly")
+	}
+}
+
+func TestWithTx_CommitOnSuccess(t *testing.T) {
+	s := newTestStore(t)
+	err := s.withTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO projects(id, path, name, indexed_at) VALUES(?,?,?,?)`,
+			"proj-commit", "/tmp/commit", "commit", 0)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("withTx commit: %v", err)
+	}
+	p, err := s.GetProject("proj-commit")
+	if err != nil {
+		t.Fatalf("GetProject after commit: %v", err)
+	}
+	if p == nil {
+		t.Error("project not found after successful withTx commit")
+	}
+}
+
+func TestMigrate_SchemaVersionAfterReopen(t *testing.T) {
+	dir := t.TempDir()
+	// Open once — migrates to latest version
+	s1, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open 1: %v", err)
+	}
+	var v1 int
+	_ = s1.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v1)
+	s1.Close()
+
+	// Reopen — migrate() must be idempotent; version must stay the same
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open 2: %v", err)
+	}
+	defer s2.Close()
+	var v2 int
+	_ = s2.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v2)
+
+	if v2 != v1 {
+		t.Errorf("version after reopen=%d, want %d (same as first open)", v2, v1)
 	}
 }
