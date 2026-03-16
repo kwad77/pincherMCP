@@ -811,6 +811,26 @@ func TestDetectLanguage_AdditionalExtensions(t *testing.T) {
 		{"main.c", "C"},
 		{"main.cpp", "C++"},
 		{"main.sh", "Bash"},
+		// Previously untested language variants
+		{"script.pyw", "Python"},
+		{"module.mjs", "JavaScript"},
+		{"util.cjs", "JavaScript"},
+		{"build.rake", "Ruby"},
+		{"defs.h", "C"},
+		{"lib.cxx", "C++"},
+		{"lib.cc", "C++"},
+		{"lib.hh", "C++"},
+		{"lib.hpp", "C++"},
+		{"build.kts", "Kotlin"},
+		{"Main.scala", "Scala"},
+		{"util.lua", "Lua"},
+		{"lib.zig", "Zig"},
+		{"app.ex", "Elixir"},
+		{"mix.exs", "Elixir"},
+		{"algo.hs", "Haskell"},
+		{"widget.dart", "Dart"},
+		{"analysis.r", "R"},
+		{"deploy.bash", "Bash"},
 	}
 	for _, tc := range cases {
 		got := DetectLanguage(tc.file)
@@ -1018,5 +1038,56 @@ func TestExtractGroup_NoSubgroups(t *testing.T) {
 	got := extractGroup(m, "ignored")
 	if got != "" {
 		t.Errorf("expected empty string for no subgroups, got %q", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildGoSignature: multi-parameter groups and channel/func types
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExtractGo_MultiParamSignature(t *testing.T) {
+	// Function with two distinct parameter groups — exercises the i>0 branch
+	// in buildGoSignature that emits ", " between groups.
+	src := []byte(`package pkg
+
+func MultiParam(a int, b string) bool { return false }
+`)
+	result := Extract(src, "Go", "pkg/multi.go")
+	if result == nil || len(result.Symbols) == 0 {
+		t.Fatal("expected symbols")
+	}
+	var sig string
+	for _, s := range result.Symbols {
+		if s.Name == "MultiParam" {
+			sig = s.Signature
+		}
+	}
+	if sig == "" {
+		t.Error("expected signature for MultiParam")
+	}
+	// Both parameters should appear in the signature
+	if !strings.Contains(sig, "a") || !strings.Contains(sig, "b") {
+		t.Errorf("signature missing params: %q", sig)
+	}
+}
+
+func TestExtractGo_ChannelParamType(t *testing.T) {
+	// Channel parameter type triggers goTypeToString default "?" branch.
+	src := []byte(`package pkg
+
+func Consume(ch chan int) {}
+func Send(ch chan<- string) {}
+`)
+	result := Extract(src, "Go", "pkg/chan.go")
+	if result == nil || len(result.Symbols) == 0 {
+		t.Fatal("expected symbols from channel param file")
+	}
+	// Just verify no panic and symbols are extracted
+	names := make(map[string]bool)
+	for _, s := range result.Symbols {
+		names[s.Name] = true
+	}
+	if !names["Consume"] || !names["Send"] {
+		t.Error("expected Consume and Send symbols")
 	}
 }

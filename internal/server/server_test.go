@@ -1441,3 +1441,35 @@ func TestHandleSymbol_StaleIDRedirect(t *testing.T) {
 		t.Errorf("expected MyFn, got %v", m["name"])
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// intArg / boolArgDefault / strSlice: uncovered branches
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestIntArg_NonFloatFallsToDefault(t *testing.T) {
+	// When the value is not a float64, intArg should return the default.
+	m := map[string]any{"depth": "notanumber"}
+	if got := intArg(m, "depth", 42); got != 42 {
+		t.Errorf("intArg with non-float64 = %d, want 42", got)
+	}
+}
+
+func TestBoolArgDefault_NonBoolFallsToDefault(t *testing.T) {
+	// When the value is present but not a bool, boolArgDefault returns def.
+	m := map[string]any{"flag": "notabool"}
+	if got := boolArgDefault(m, "flag", true); !got {
+		t.Errorf("boolArgDefault with non-bool = %v, want true (default)", got)
+	}
+	if got := boolArgDefault(m, "flag", false); got {
+		t.Errorf("boolArgDefault with non-bool = %v, want false (default)", got)
+	}
+}
+
+func TestStrSlice_NonStringValuesSkipped(t *testing.T) {
+	// Values that aren't strings should be skipped.
+	m := map[string]any{"ids": []any{"a", 42, "b", nil, "c"}}
+	got := strSlice(m, "ids")
+	if len(got) != 3 {
+		t.Errorf("strSlice with mixed types = %v, want [a b c]", got)
+	}
+}
