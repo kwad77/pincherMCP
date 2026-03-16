@@ -19,7 +19,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -148,6 +150,96 @@ func (s *Server) setRoot(path string) {
 	s.sessionRoot = path
 	s.sessionProject = db.ProjectNameFromPath(path)
 	s.sessionID = db.ProjectIDFromPath(path)
+}
+
+// ServeHTTP makes Server implement http.Handler.
+//
+// Route: POST /v1/{tool}  — call any registered tool with a JSON body.
+// Route: GET  /v1/health  — liveness probe (returns {"ok":true}).
+//
+// This enables any HTTP client (OpenAI, Gemini, Cursor, CI/CD pipelines)
+// to use pincherMCP without the MCP stdio protocol.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/v1/")
+	if path == "health" {
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": "pincher"})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed — use POST /v1/{tool}"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	handler, ok := s.handlers[path]
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": fmt.Sprintf("unknown tool %q — available: index, symbol, symbols, context, search, query, trace, changes, architecture, schema, list, adr, health, stats", path),
+		})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MB limit
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{"error": "failed to read request body"})
+		return
+	}
+	if len(body) == 0 {
+		body = []byte("{}")
+	}
+
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Name:      path,
+			Arguments: json.RawMessage(body),
+		},
+	}
+
+	result, err := handler(r.Context(), req)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+
+	if result.IsError {
+		w.WriteHeader(http.StatusBadRequest)
+	}
+
+	// Extract the text content from the MCP result and re-emit as JSON.
+	if len(result.Content) > 0 {
+		if tc, ok := result.Content[0].(*mcp.TextContent); ok {
+			w.Write([]byte(tc.Text))
+			return
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]any{"error": "empty result"})
+}
+
+// ListenAndServeHTTP starts an HTTP server on addr (e.g. ":8080").
+// It blocks until ctx is cancelled or the listener fails.
+func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
+	srv := &http.Server{Addr: addr, Handler: s}
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+	slog.Info("pincher.http.listen", "addr", addr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 func parseFileURI(uri string) (string, bool) {

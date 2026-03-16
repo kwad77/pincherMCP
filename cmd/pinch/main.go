@@ -22,6 +22,7 @@ func main() {
 		showVersion = flag.Bool("version", false, "Print version and exit")
 		dataDir     = flag.String("data-dir", "", "Override data directory (default: platform-appropriate)")
 		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
+		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080). Enables any HTTP client to call all tools via POST /v1/{tool}.")
 	)
 	flag.Parse()
 
@@ -65,6 +66,15 @@ func main() {
 	// Start background file watcher and session persistence flusher
 	go idx.Watch(ctx)
 	srv.StartSessionFlusher(ctx)
+
+	// Optionally run HTTP server for platform-agnostic access.
+	if *httpAddr != "" {
+		go func() {
+			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {
+				log.Printf("pincherMCP: http server error: %v", err)
+			}
+		}()
+	}
 
 	// Run MCP server over stdio
 	if err := srv.MCPServer().Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
