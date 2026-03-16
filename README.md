@@ -162,10 +162,10 @@ MATCH (f:Function) WHERE f.language = 'Go' AND f.is_exported = 'true' RETURN f.n
 ```bash
 git clone https://github.com/yourorg/pincherMCP
 cd pincherMCP
-go build -o pincher ./cmd/pincher
+go build -o pinch ./cmd/pinch
 
 # Windows
-go build -o pincher.exe ./cmd/pincher
+go build -o pinch.exe ./cmd/pinch
 ```
 
 ### Add to Claude Code
@@ -177,7 +177,7 @@ Edit `~/.claude/mcp.json`:
   "mcpServers": {
     "pincher": {
       "type": "stdio",
-      "command": "/path/to/pincher"
+      "command": "/path/to/pinch"
     }
   }
 }
@@ -192,7 +192,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "pincher": {
       "type": "stdio",
-      "command": "C:\\path\\to\\pincher.exe"
+      "command": "C:\\path\\to\\pinch.exe"
     }
   }
 }
@@ -349,7 +349,7 @@ These persist in the SQLite database and are retrievable in any future session.
 
 ```
 pincherMCP/
-├── cmd/pincher/main.go          # Entry point — wires db + indexer + server
+├── cmd/pinch/main.go            # Entry point — wires db + indexer + server
 ├── internal/
 │   ├── db/db.go                 # SQLite store: schema, CRUD, FTS5, graph ops
 │   ├── ast/
@@ -364,10 +364,10 @@ pincherMCP/
 ### CLI flags
 
 ```
-pincher --help
-pincher --version
-pincher --data-dir /custom/path    # override database directory
-pincher --verbose                  # enable verbose logging to stderr
+pinch --help
+pinch --version
+pinch --data-dir /custom/path    # override database directory
+pinch --verbose                  # enable verbose logging to stderr
 ```
 
 ---
