@@ -820,6 +820,9 @@ type TraceResult struct {
 // direction: "outbound" | "inbound" | "both"
 // Results are deduplicated: each symbol ID appears once at its minimum depth.
 func (s *Store) TraceViaCTE(startID, direction string, edgeKinds []string, maxDepth int) ([]TraceResult, error) {
+	if len(edgeKinds) == 0 {
+		return nil, fmt.Errorf("TraceViaCTE: edgeKinds must not be empty")
+	}
 	in := strings.Repeat("?,", len(edgeKinds))
 	in = in[:len(in)-1]
 
