@@ -769,8 +769,9 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		source, _ = index.ReadSymbolSource(root, *sym)
 	}
 
-	// Estimate token savings vs. reading the whole file
-	var fileSizeBytes int
+	// Estimate token savings vs. reading the whole file.
+	// Baseline: agent would read the entire file to find this symbol.
+	fileSizeBytes := avgFileSize // conservative fallback
 	if root != "" {
 		if fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(sym.FilePath))); err == nil {
 			fileSizeBytes = int(fi.Size())
@@ -875,7 +876,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// Find IMPORTS edges from this symbol
 	importEdges, _ := s.store.EdgesFrom(sym.ID, []string{"IMPORTS"})
 	var imports []map[string]any
-	tokensSaved := 0
+	var importPaths []string
 	for _, e := range importEdges {
 		imp, err := s.store.GetSymbol(e.ToID)
 		if err != nil || imp == nil {
@@ -889,14 +890,18 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 			"file_path": imp.FilePath,
 			"source":    impSource,
 		})
-		tokensSaved += db.ApproxTokens(impSource) // we fetched only what's needed
+		importPaths = append(importPaths, imp.FilePath)
 	}
 
+	// Savings = would have read the full source file + every import file; gave only symbols.
+	// Include the primary symbol's file in the baseline.
+	allPaths := append([]string{sym.FilePath}, importPaths...)
 	data := map[string]any{
 		"symbol":  map[string]any{"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "source": source},
 		"imports": imports,
 	}
-	return s.jsonResultWithMeta(data, start, tokensSaved), nil
+	responseJSON, _ := json.Marshal(data)
+	return s.jsonResultWithMeta(data, start, savedVsFileSizes(root, allPaths, responseJSON)), nil
 }
 
 func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1427,15 +1432,14 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	s.flushSession()
 
 	// If this process has no live MCP session (e.g. HTTP-only dashboard server),
-	// read the most recent session from DB so the dashboard shows real data.
+	// read the most recent session row from DB so "This Session" shows real data.
 	if calls == 0 {
-		if atCalls, atUsed, atSaved, _, err := s.store.GetAllTimeSavings(); err == nil && atCalls > 0 {
-			if atSaved > 0 || atUsed > 0 {
-				tokensUsed = atUsed
-				tokensSaved = atSaved
-				calls = atCalls
-				totalCostAvoided = float64(atSaved) / 1_000_000.0 * baseCostPer1M
-			}
+		if rows, err := s.store.GetSessions(1); err == nil && len(rows) > 0 {
+			r := rows[0]
+			calls = r.Calls
+			tokensUsed = r.TokensUsed
+			tokensSaved = r.TokensSaved
+			totalCostAvoided = r.CostAvoided
 		}
 	}
 
