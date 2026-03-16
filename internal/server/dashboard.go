@@ -1,7 +1,7 @@
 package server
 
 // dashboardHTML is the self-contained stats dashboard served at GET /v1/dashboard.
-// Fetches /v1/stats and /v1/projects live; no external dependencies.
+// Fetches all data live from /v1/* endpoints; no external dependencies.
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,8 +15,8 @@ const dashboardHTML = `<!DOCTYPE html>
   --text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;
   --green:#3fb950;--purple:#a371f7;--orange:#f0883e;--red:#f85149;
 }
-body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;min-height:100vh;padding:0}
-header{background:linear-gradient(135deg,#0d1117 0%,#1a1f2e 100%);border-bottom:1px solid var(--border);padding:24px 32px;display:flex;align-items:center;gap:16px}
+body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;min-height:100vh}
+header{background:linear-gradient(135deg,#0d1117 0%,#1a1f2e 100%);border-bottom:1px solid var(--border);padding:20px 32px;display:flex;align-items:center;gap:16px}
 header svg{flex-shrink:0}
 header h1{font-size:22px;font-weight:700;letter-spacing:-.5px}
 header h1 span{color:var(--accent)}
@@ -24,6 +24,15 @@ header p{color:var(--muted);font-size:13px;margin-top:3px}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.4px}
 .badge-green{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
 .badge-blue{background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.25)}
+
+/* ── Tab nav ── */
+.tab-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 32px;display:flex;gap:0}
+.tab-btn{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;font-weight:500;padding:12px 18px;transition:color .15s,border-color .15s}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-pane{display:none}
+.tab-pane.active{display:block}
+
 main{max-width:1200px;margin:0 auto;padding:32px}
 .section-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
 .grid{display:grid;gap:16px;margin-bottom:32px}
@@ -41,13 +50,21 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .card-value.orange{color:var(--orange)}
 .card-value.purple{color:var(--purple)}
 .card-sub{font-size:12px;color:var(--muted);margin-top:6px}
+
+/* ── Sparkline ── */
+.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px}
+.sparkline-card svg{width:100%;height:80px;display:block}
+.sparkline-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.sparkline-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+.sparkline-legend{font-size:11px;color:var(--muted)}
+
+/* ── Project cards ── */
 .proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s;position:relative}
 .proj-card:hover{border-color:var(--accent)}
 .proj-card.invalid{border-color:rgba(248,81,73,.4)}
 .proj-card.invalid::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--red);border-radius:10px 10px 0 0}
 .proj-card.stale{border-color:rgba(240,136,62,.4)}
 .proj-card.stale::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--orange);border-radius:10px 10px 0 0}
-.pill.stale-pill{background:rgba(240,136,62,.1);color:var(--orange);border-color:rgba(240,136,62,.3)}
 .proj-card.indexing{pointer-events:none;opacity:.6}
 .proj-card.indexing::after{content:'Indexing\2026';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--accent);background:rgba(13,17,23,.7);border-radius:10px;animation:pulse 1.2s ease-in-out infinite}
 .proj-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px}
@@ -63,24 +80,61 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .proj-stat{text-align:center}
 .proj-stat-val{font-size:18px;font-weight:700;color:var(--accent)}
 .proj-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+
+/* ── Pills ── */
 .pill{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.2);font-family:ui-monospace,monospace}
 .pill.warn{background:rgba(248,81,73,.1);color:var(--red);border-color:rgba(248,81,73,.3)}
+.pill.stale-pill{background:rgba(240,136,62,.1);color:var(--orange);border-color:rgba(240,136,62,.3)}
+
+/* ── Search tab ── */
+.search-bar{display:flex;gap:10px;margin-bottom:24px}
+.search-input{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;padding:10px 14px;outline:none;transition:border-color .15s}
+.search-input:focus{border-color:var(--accent)}
+.search-select{background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:10px 12px;cursor:pointer}
+.search-btn{background:var(--accent);border:none;border-radius:8px;color:#0d1117;cursor:pointer;font-size:13px;font-weight:600;padding:10px 20px;transition:opacity .15s}
+.search-btn:hover{opacity:.85}
+.result-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:10px}
+.result-name{font-size:14px;font-weight:600;color:var(--accent);margin-bottom:2px}
+.result-meta{font-size:11px;color:var(--muted);margin-bottom:8px}
+.result-snippet{background:#0d1117;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;overflow-x:auto;padding:10px 12px;white-space:pre;color:var(--text)}
+
+/* ── ADR tab ── */
+.adr-toolbar{display:flex;gap:10px;margin-bottom:20px;align-items:center}
+.adr-select{background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:8px 12px;flex:1;max-width:400px}
+.btn{background:var(--accent);border:none;border-radius:8px;color:#0d1117;cursor:pointer;font-size:13px;font-weight:600;padding:8px 16px;transition:opacity .15s}
+.btn:hover{opacity:.85}
+.btn.secondary{background:var(--surface);border:1px solid var(--border);color:var(--text)}
+.btn.secondary:hover{border-color:var(--accent);opacity:1}
+.btn.danger-btn{background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.3);color:var(--red)}
+.adr-row{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start}
+.adr-key{font-family:ui-monospace,monospace;font-size:12px;color:var(--accent);font-weight:600;min-width:140px;padding-top:2px}
+.adr-val{flex:1;font-size:13px;color:var(--text);white-space:pre-wrap;word-break:break-word}
+.adr-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;transition:color .15s;flex-shrink:0}
+.adr-del:hover{color:var(--red)}
+.adr-form{background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:16px;margin-bottom:16px;display:none}
+.adr-form.open{display:block}
+.adr-form input,.adr-form textarea{background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;padding:8px 10px;width:100%;margin-bottom:10px;outline:none;font-family:inherit}
+.adr-form textarea{min-height:80px;resize:vertical}
+.adr-form input:focus,.adr-form textarea:focus{border-color:var(--accent)}
+.adr-form-actions{display:flex;gap:8px}
+
+/* ── Sessions table ── */
+.sessions-table{width:100%;border-collapse:collapse;font-size:13px}
+.sessions-table th{border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.5px;padding:8px 12px;text-align:left;text-transform:uppercase}
+.sessions-table td{border-bottom:1px solid rgba(48,54,61,.5);padding:10px 12px;vertical-align:middle}
+.sessions-table tr:last-child td{border-bottom:none}
+.sessions-table tr:hover td{background:rgba(22,27,34,.6)}
+.mono{font-family:ui-monospace,monospace;font-size:11px}
+
+/* ── Misc ── */
 .empty{color:var(--muted);font-size:13px;padding:24px;text-align:center}
-.refresh{position:fixed;bottom:24px;right:24px;background:var(--accent);color:#0d1117;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s}
-.refresh:hover{opacity:.85}
 .error{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);border-radius:8px;padding:16px;color:var(--red);font-size:13px;margin-bottom:16px}
-.loading{color:var(--muted);font-size:13px;padding:8px 0}
+.loading{color:var(--muted);font-size:13px;padding:8px 0;animation:pulse 1.5s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.loading{animation:pulse 1.5s ease-in-out infinite}
 .footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-top:1px solid var(--border);margin-top:8px}
 .footer a{color:var(--accent);text-decoration:none}
-.toast{position:fixed;bottom:72px;right:24px;background:#161b22;border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;color:var(--text);opacity:0;transition:opacity .3s;pointer-events:none}
+.toast{position:fixed;bottom:24px;right:24px;background:#161b22;border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;color:var(--text);opacity:0;transition:opacity .3s;pointer-events:none;z-index:100}
 .toast.show{opacity:1}
-.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px}
-.sparkline-card svg{width:100%;height:80px;display:block}
-.sparkline-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.sparkline-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
-.sparkline-legend{font-size:11px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -102,21 +156,24 @@ main{max-width:1200px;margin:0 auto;padding:32px}
   </div>
 </header>
 
+<nav class="tab-bar">
+  <button class="tab-btn active" onclick="showTab('overview')">Overview</button>
+  <button class="tab-btn" onclick="showTab('projects')">Projects</button>
+  <button class="tab-btn" onclick="showTab('search')">Search</button>
+  <button class="tab-btn" onclick="showTab('adrs')">ADRs</button>
+  <button class="tab-btn" onclick="showTab('sessions')">Sessions</button>
+</nav>
+
+<!-- OVERVIEW -->
+<div id="tab-overview" class="tab-pane active">
 <main>
   <div id="error-box"></div>
-
   <p class="section-title">This Session</p>
-  <div class="grid grid-4" id="session-cards">
-    <div class="loading">Loading session stats…</div>
-  </div>
-
+  <div class="grid grid-4" id="session-cards"><div class="loading">Loading…</div></div>
   <p class="section-title">All-Time ROI</p>
-  <div class="grid grid-4" id="alltime-cards">
-    <div class="loading">Loading all-time stats…</div>
-  </div>
-
+  <div class="grid grid-4" id="alltime-cards"><div class="loading">Loading…</div></div>
   <p class="section-title">Token Savings History</p>
-  <div class="sparkline-card" id="sparkline-card">
+  <div class="sparkline-card">
     <div class="sparkline-meta">
       <span class="sparkline-title">Tokens saved per session</span>
       <span class="sparkline-legend" id="sparkline-legend">—</span>
@@ -125,21 +182,71 @@ main{max-width:1200px;margin:0 auto;padding:32px}
       <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Loading…</text>
     </svg>
   </div>
-
-  <p class="section-title">Indexed Projects</p>
-  <div class="grid grid-2" id="projects-grid">
-    <div class="loading">Loading projects…</div>
-  </div>
 </main>
+</div>
 
-<div class="footer">pincherMCP · <a href="/v1/openapi.json" target="_blank">OpenAPI spec</a> · <a href="/v1/health" target="_blank">Health</a></div>
+<!-- PROJECTS -->
+<div id="tab-projects" class="tab-pane">
+<main>
+  <p class="section-title">Indexed Projects</p>
+  <div class="grid grid-2" id="projects-grid"><div class="loading">Loading…</div></div>
+</main>
+</div>
 
-<button class="refresh" onclick="load()">↻ Refresh</button>
+<!-- SEARCH -->
+<div id="tab-search" class="tab-pane">
+<main>
+  <p class="section-title">Symbol Search</p>
+  <div class="search-bar">
+    <input class="search-input" id="search-q" type="text" placeholder="Search symbols… (e.g. handleSearch, auth*, &quot;token validation&quot;)" onkeydown="if(event.key==='Enter')doSearch()"/>
+    <select class="search-select" id="search-kind">
+      <option value="">All kinds</option>
+      <option>Function</option><option>Method</option><option>Class</option>
+      <option>Interface</option><option>Type</option><option>Variable</option>
+    </select>
+    <select class="search-select" id="search-proj"><option value="">All projects</option></select>
+    <button class="search-btn" onclick="doSearch()">Search</button>
+  </div>
+  <div id="search-results"></div>
+</main>
+</div>
+
+<!-- ADRs -->
+<div id="tab-adrs" class="tab-pane">
+<main>
+  <p class="section-title">Architecture Decision Records</p>
+  <div class="adr-toolbar">
+    <select class="adr-select" id="adr-proj" onchange="loadADRs()"><option value="">Select a project…</option></select>
+    <button class="btn secondary" onclick="toggleADRForm()">+ Add Entry</button>
+  </div>
+  <div class="adr-form" id="adr-form">
+    <input id="adr-key" type="text" placeholder="Key (e.g. PURPOSE, STACK, PATTERNS)"/>
+    <textarea id="adr-val" placeholder="Value…"></textarea>
+    <div class="adr-form-actions">
+      <button class="btn" onclick="saveADR()">Save</button>
+      <button class="btn secondary" onclick="toggleADRForm()">Cancel</button>
+    </div>
+  </div>
+  <div id="adr-list"><div class="empty">Select a project to view its ADRs.</div></div>
+</main>
+</div>
+
+<!-- SESSIONS -->
+<div id="tab-sessions" class="tab-pane">
+<main>
+  <p class="section-title">Session History</p>
+  <div id="sessions-table-wrap"><div class="loading">Loading…</div></div>
+</main>
+</div>
+
+<div class="footer">pincherMCP · <a href="/v1/openapi.json" target="_blank">OpenAPI</a> · <a href="/v1/health" target="_blank">Health</a></div>
 <div class="toast" id="toast"></div>
 
 <script>
+// ── Utilities ──────────────────────────────────────────────────────────────
 const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
 const fmtMs = ms => ms < 1 ? '<1ms' : ms+'ms';
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 function timeAgo(iso) {
   if (!iso) return '—';
   const secs = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -155,188 +262,298 @@ function showToast(msg, ok=true) {
   t.textContent = msg;
   t.style.borderColor = ok ? 'var(--green)' : 'var(--red)';
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+  setTimeout(() => t.classList.remove('show'), 2800);
 }
 
+// ── Tab navigation ─────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    if (b.textContent.toLowerCase().startsWith(name === 'adrs' ? 'adr' : name)) b.classList.add('active');
+  });
+  location.hash = name;
+  if (name === 'sessions') loadSessions();
+  if (name === 'adrs') loadADRProjects();
+  if (name === 'search') document.getElementById('search-q').focus();
+}
+
+// ── Stat card helper ───────────────────────────────────────────────────────
 function statCard(label, value, cls, sub, cardCls) {
-  return ` + "`" + `<div class="card ${cardCls||''}">
-    <div class="card-label">${label}</div>
-    <div class="card-value ${cls}">${value}</div>
-    ${sub ? ` + "`" + `<div class="card-sub">${sub}</div>` + "`" + ` : ''}
-  </div>` + "`" + `;
+  return '<div class="card '+(cardCls||'')+'"><div class="card-label">'+esc(label)+'</div><div class="card-value '+cls+'">'+esc(value)+'</div>'+(sub?'<div class="card-sub">'+esc(sub)+'</div>':'')+'</div>';
 }
 
-async function reindex(id, btn) {
-  btn.disabled = true;
-  btn.textContent = '…';
-  const card = btn.closest('.proj-card');
-  if (card) card.classList.add('indexing');
-  try {
-    const r = await fetch('/v1/index', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({path: id})});
-    const d = await r.json();
-    const res = d.result || d;
-    showToast('Re-indexed: '+(res.symbols||0)+' symbols, '+(res.edges||0)+' edges');
-    load();
-  } catch(e) {
-    showToast('Re-index failed: '+e.message, false);
-    if (card) card.classList.remove('indexing');
-    btn.disabled = false;
-    btn.textContent = '\u27f3';
-  }
-}
-
-async function deleteProject(id, name) {
-  if (!confirm(` + "`" + `Remove project "${name}" from the index?\n\nThis deletes all symbols, edges, and graph data for this project. The source files are NOT deleted.` + "`" + `)) return;
-  try {
-    const r = await fetch('/v1/projects', {method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
-    if (!r.ok) throw new Error(await r.text());
-    showToast(` + "`" + `Project "${name}" removed.` + "`" + `);
-    load();
-  } catch(e) {
-    showToast('Delete failed: '+e.message, false);
-  }
-}
-
+// ── Overview ───────────────────────────────────────────────────────────────
 async function load() {
   document.getElementById('last-refresh').textContent = 'refreshing…';
-  const errBox = document.getElementById('error-box');
-  errBox.innerHTML = '';
+  document.getElementById('error-box').innerHTML = '';
 
-  // Health
   try {
     const h = await fetch('/v1/health').then(r=>r.json());
     const hb = document.getElementById('health-badge');
-    hb.textContent = '● online';
-    hb.className = 'badge badge-green';
+    hb.textContent = '● online'; hb.className = 'badge badge-green';
     document.getElementById('ver').textContent = h.version ? 'v'+h.version : '';
   } catch(e) {
     document.getElementById('health-badge').textContent = '● offline';
     document.getElementById('health-badge').style.color = 'var(--red)';
   }
 
-  // Stats
   try {
     const r = await fetch('/v1/stats', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
     const data = await r.json();
-    const result = data.result || data;
-    const s = result.session || {};
-    const a = result.all_time || {};
-
-    const sc = document.getElementById('session-cards');
-    sc.innerHTML =
+    const s = (data.result||data).session || {};
+    const a = (data.result||data).all_time || {};
+    document.getElementById('session-cards').innerHTML =
       statCard('Tool Calls', fmt(s.calls||0), 'blue', 'this session', '') +
       statCard('Tokens Saved', fmt(s.tokens_saved||0), 'green', 'vs reading full files', 'green') +
       statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange') +
       statCard('Avg Latency', fmtMs(s.avg_latency_ms||0), 'purple', 'per tool call', 'purple');
-
-    const ac = document.getElementById('alltime-cards');
-    if (a.calls) {
-      ac.innerHTML =
-        statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
-        statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
-        statCard('Total Cost Avoided', a.total_cost_avoided||'$0.0000', 'orange', 'provable ROI', 'orange') +
-        statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple');
-    } else {
-      ac.innerHTML = '<div class="empty">No previous sessions recorded yet — stats accumulate after tool calls.</div>';
-    }
+    document.getElementById('alltime-cards').innerHTML = a.calls ?
+      statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
+      statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
+      statCard('Total Cost Avoided', a.total_cost_avoided||'$0.0000', 'orange', 'provable ROI', 'orange') +
+      statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple') :
+      '<div class="empty">No previous sessions recorded yet.</div>';
   } catch(e) {
-    errBox.innerHTML = ` + "`" + `<div class="error">Failed to load stats: ${e.message}</div>` + "`" + `;
-    document.getElementById('session-cards').innerHTML = '<div class="empty">—</div>';
-    document.getElementById('alltime-cards').innerHTML = '<div class="empty">—</div>';
+    document.getElementById('error-box').innerHTML = '<div class="error">Failed to load stats: '+esc(e.message)+'</div>';
   }
 
-  // Projects
-  try {
-    const r = await fetch('/v1/projects');
-    const data = await r.json();
-    const projects = data.projects || [];
-    const grid = document.getElementById('projects-grid');
-    if (!projects.length) {
-      grid.innerHTML = '<div class="empty">No projects indexed yet. Use the <code>index</code> tool to add a project.</div>';
-    } else {
-      grid.innerHTML = projects.map(p => {
-        const id    = p.ID   || p.id   || '';
-        const name  = p.Name || p.name || '—';
-        const path  = p.Path || p.path || '';
-        const syms  = p.SymCount  || p.sym_count  || 0;
-        const edges = p.EdgeCount || p.edge_count || 0;
-        const files = p.FileCount || p.file_count || 0;
-        const ts    = p.IndexedAt || p.indexed_at || '';
-        const isEmpty  = syms === 0 && edges === 0;
-        const ageHours = ts ? (Date.now() - new Date(ts)) / 3600000 : 0;
-        const isStale  = !isEmpty && ageHours > STALE_HOURS;
-        const cardCls  = isEmpty ? ' invalid' : isStale ? ' stale' : '';
-        const pillCls  = isEmpty ? ' warn' : isStale ? ' stale-pill' : '';
-        const statusMsg = isEmpty ? ' \u26a0 no data \u2014 may be a ghost project'
-                        : isStale ? ' \u26a0 index is ' + Math.floor(ageHours) + 'h old \u2014 consider re-indexing' : '';
-        return ` + "`" + `
-        <div class="proj-card${cardCls}">
-          <div class="proj-header">
-            <div class="proj-name">${name}</div>
-            <div class="proj-actions">
-              <button class="proj-btn" title="Re-index this project" onclick="reindex(${JSON.stringify(id)}, this)">⟳ Re-index</button>
-              <button class="proj-btn danger" title="Remove from index" onclick="deleteProject(${JSON.stringify(id)}, ${JSON.stringify(name)})">✕ Remove</button>
-            </div>
-          </div>
-          <div class="proj-path${isEmpty||isStale?' missing':''}" title="${path}">${path}${statusMsg}</div>
-          <div class="proj-stats">
-            <div class="proj-stat"><div class="proj-stat-val">${fmt(files)}</div><div class="proj-stat-label">Files</div></div>
-            <div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">${fmt(syms)}</div><div class="proj-stat-label">Symbols</div></div>
-            <div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">${fmt(edges)}</div><div class="proj-stat-label">Edges</div></div>
-          </div>
-          ${ts ? ` + "`" + `<div style="margin-top:10px" title="${new Date(ts).toLocaleString()}"><span class="pill${pillCls}">indexed ${timeAgo(ts)}</span></div>` + "`" + ` : ''}
-        </div>` + "`" + `;
-      }).join('');
-    }
-  } catch(e) {
-    document.getElementById('projects-grid').innerHTML = ` + "`" + `<div class="error">Failed to load projects: ${e.message}</div>` + "`" + `;
-  }
-
+  loadProjects();
+  loadSparkline();
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
 async function loadSparkline() {
   try {
-    const r = await fetch('/v1/sessions');
-    const data = await r.json();
-    const sessions = (data.sessions || []).slice().reverse(); // oldest first
+    const data = await fetch('/v1/sessions').then(r=>r.json());
+    const sessions = (data.sessions||[]).slice().reverse();
     const svg = document.getElementById('sparkline-svg');
     const legend = document.getElementById('sparkline-legend');
-    if (!sessions.length) {
-      svg.innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">No sessions recorded yet</text>';
-      return;
-    }
-    const vals = sessions.map(s => s.tokens_saved || 0);
+    if (!sessions.length) { svg.innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">No sessions yet</text>'; return; }
+    const vals = sessions.map(s => s.tokens_saved||0);
     const maxVal = Math.max(...vals, 1);
-    const W = 800, H = 80, pad = 4;
-    const xStep = vals.length < 2 ? W : (W - pad*2) / (vals.length - 1);
-    const points = vals.map((v, i) => {
-      const x = pad + i * xStep;
-      const y = H - pad - ((v / maxVal) * (H - pad*2));
-      return x.toFixed(1) + ',' + y.toFixed(1);
-    }).join(' ');
-    // Area fill
-    const first = pad.toFixed(1) + ',' + H;
-    const last = (pad + (vals.length-1)*xStep).toFixed(1) + ',' + H;
-    svg.innerHTML =
-      '<defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#58a6ff" stop-opacity=".3"/><stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/></linearGradient></defs>' +
-      '<polygon points="' + first + ' ' + points + ' ' + last + '" fill="url(#sg)"/>' +
-      '<polyline points="' + points + '" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-    // Dot on last point
-    const lastX = pad + (vals.length-1)*xStep;
-    const lastY = H - pad - ((vals[vals.length-1] / maxVal) * (H - pad*2));
-    svg.innerHTML += '<circle cx="'+lastX.toFixed(1)+'" cy="'+lastY.toFixed(1)+'" r="3" fill="#58a6ff"/>';
+    const W=800, H=80, pad=4;
+    const xStep = vals.length < 2 ? W : (W-pad*2)/(vals.length-1);
+    const pts = vals.map((v,i) => (pad+i*xStep).toFixed(1)+','+(H-pad-((v/maxVal)*(H-pad*2))).toFixed(1)).join(' ');
+    const f = pad.toFixed(1)+','+H, l = (pad+(vals.length-1)*xStep).toFixed(1)+','+H;
+    const lx = pad+(vals.length-1)*xStep, ly = H-pad-((vals[vals.length-1]/maxVal)*(H-pad*2));
+    svg.innerHTML = '<defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#58a6ff" stop-opacity=".3"/><stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/></linearGradient></defs>'+
+      '<polygon points="'+f+' '+pts+' '+l+'" fill="url(#sg)"/>'+
+      '<polyline points="'+pts+'" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'+
+      '<circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="3" fill="#58a6ff"/>';
     const total = vals.reduce((a,b)=>a+b,0);
-    legend.textContent = fmt(total) + ' total · ' + sessions.length + ' sessions · peak ' + fmt(maxVal) + '/session';
+    legend.textContent = fmt(total)+' total \u00b7 '+sessions.length+' sessions \u00b7 peak '+fmt(maxVal)+'/session';
   } catch(e) {
-    document.getElementById('sparkline-svg').innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Could not load session history</text>';
+    document.getElementById('sparkline-svg').innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Could not load history</text>';
   }
 }
 
+// ── Projects ───────────────────────────────────────────────────────────────
+async function loadProjects() {
+  try {
+    const data = await fetch('/v1/projects').then(r=>r.json());
+    const projects = data.projects || [];
+    const grid = document.getElementById('projects-grid');
+    if (!projects.length) { grid.innerHTML = '<div class="empty">No projects indexed yet.</div>'; return; }
+    grid.innerHTML = projects.map(p => {
+      const id=p.ID||p.id||'', name=p.Name||p.name||'—', path=p.Path||p.path||'';
+      const syms=p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0, files=p.FileCount||p.file_count||0;
+      const ts=p.IndexedAt||p.indexed_at||'';
+      const isEmpty=syms===0&&edges===0;
+      const ageHours=ts?(Date.now()-new Date(ts))/3600000:0;
+      const isStale=!isEmpty&&ageHours>STALE_HOURS;
+      const cardCls=isEmpty?' invalid':isStale?' stale':'';
+      const pillCls=isEmpty?' warn':isStale?' stale-pill':'';
+      const statusMsg=isEmpty?' \u26a0 no data \u2014 may be a ghost project':isStale?' \u26a0 index is '+Math.floor(ageHours)+'h old \u2014 consider re-indexing':'';
+      return '<div class="proj-card'+cardCls+'">'+
+        '<div class="proj-header"><div class="proj-name">'+esc(name)+'</div>'+
+        '<div class="proj-actions">'+
+        '<button class="proj-btn" onclick="reindex('+JSON.stringify(id)+',this)">\u27f3 Re-index</button>'+
+        '<button class="proj-btn danger" onclick="deleteProject('+JSON.stringify(id)+','+JSON.stringify(name)+')">\u2715 Remove</button>'+
+        '</div></div>'+
+        '<div class="proj-path'+(isEmpty||isStale?' missing':'')+'" title="'+esc(path)+'">'+esc(path)+esc(statusMsg)+'</div>'+
+        '<div class="proj-stats">'+
+        '<div class="proj-stat"><div class="proj-stat-val">'+fmt(files)+'</div><div class="proj-stat-label">Files</div></div>'+
+        '<div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">'+fmt(syms)+'</div><div class="proj-stat-label">Symbols</div></div>'+
+        '<div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">'+fmt(edges)+'</div><div class="proj-stat-label">Edges</div></div>'+
+        '</div>'+
+        (ts?'<div style="margin-top:10px" title="'+esc(new Date(ts).toLocaleString())+'"><span class="pill'+pillCls+'">indexed '+timeAgo(ts)+'</span></div>':'')+
+        '</div>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('projects-grid').innerHTML = '<div class="error">Failed to load projects: '+esc(e.message)+'</div>';
+  }
+}
+
+async function reindex(id, btn) {
+  btn.disabled=true; btn.textContent='…';
+  const card=btn.closest('.proj-card');
+  if(card) card.classList.add('indexing');
+  try {
+    const d = await fetch('/v1/index',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:id})}).then(r=>r.json());
+    const res=d.result||d;
+    showToast('Re-indexed: '+(res.symbols||0)+' symbols, '+(res.edges||0)+' edges');
+    loadProjects();
+  } catch(e) {
+    showToast('Re-index failed: '+e.message, false);
+    if(card) card.classList.remove('indexing');
+    btn.disabled=false; btn.textContent='\u27f3';
+  }
+}
+
+async function deleteProject(id, name) {
+  if(!confirm('Remove project "'+name+'" from the index?\n\nThis deletes all symbols, edges, and graph data. Source files are NOT deleted.')) return;
+  try {
+    const r=await fetch('/v1/projects',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+    if(!r.ok) throw new Error(await r.text());
+    showToast('Project "'+name+'" removed.');
+    loadProjects();
+  } catch(e) { showToast('Delete failed: '+e.message, false); }
+}
+
+// ── Search ─────────────────────────────────────────────────────────────────
+async function populateSearchProjects() {
+  try {
+    const data = await fetch('/v1/projects').then(r=>r.json());
+    const sel = document.getElementById('search-proj');
+    (data.projects||[]).forEach(p => {
+      const o=document.createElement('option');
+      o.value=p.ID||p.id||''; o.textContent=p.Name||p.name||o.value;
+      sel.appendChild(o);
+    });
+  } catch(e) {}
+}
+
+async function doSearch() {
+  const q=document.getElementById('search-q').value.trim();
+  if(!q){showToast('Enter a search query',false);return;}
+  const kind=document.getElementById('search-kind').value;
+  const proj=document.getElementById('search-proj').value;
+  const out=document.getElementById('search-results');
+  out.innerHTML='<div class="loading">Searching…</div>';
+  try {
+    const body={query:q};
+    if(kind) body.kind=kind;
+    if(proj) body.project=proj;
+    const data=await fetch('/v1/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    const results=(data.result||data).results||[];
+    if(!results.length){out.innerHTML='<div class="empty">No results for "'+esc(q)+'"</div>';return;}
+    out.innerHTML=results.map(r=>
+      '<div class="result-card">'+
+      '<div class="result-name">'+esc(r.name||'')+'</div>'+
+      '<div class="result-meta">'+
+        '<span class="pill">'+esc(r.kind||'')+'</span> &nbsp;'+
+        esc(r.file_path||'')+(r.start_line?' :'+r.start_line:'')+
+        (r.language?' &nbsp;<span class="pill">'+esc(r.language)+'</span>':'')+
+      '</div>'+
+      (r.snippet?'<div class="result-snippet">'+esc(r.snippet)+'</div>':
+        r.signature?'<div class="result-snippet">'+esc(r.signature)+'</div>':'')+
+      '</div>'
+    ).join('');
+  } catch(e) { out.innerHTML='<div class="error">Search failed: '+esc(e.message)+'</div>'; }
+}
+
+// ── ADRs ───────────────────────────────────────────────────────────────────
+async function loadADRProjects() {
+  try {
+    const data=await fetch('/v1/projects').then(r=>r.json());
+    const sel=document.getElementById('adr-proj');
+    const cur=sel.value;
+    while(sel.options.length>1) sel.remove(1);
+    (data.projects||[]).forEach(p=>{
+      const o=document.createElement('option');
+      o.value=p.ID||p.id||''; o.textContent=p.Name||p.name||o.value;
+      sel.appendChild(o);
+    });
+    if(cur) sel.value=cur;
+    if(sel.value) loadADRs();
+  } catch(e) {}
+}
+
+async function loadADRs() {
+  const proj=document.getElementById('adr-proj').value;
+  const list=document.getElementById('adr-list');
+  if(!proj){list.innerHTML='<div class="empty">Select a project to view its ADRs.</div>';return;}
+  list.innerHTML='<div class="loading">Loading…</div>';
+  try {
+    const data=await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',project:proj})}).then(r=>r.json());
+    const entries=(data.result||data).entries||[];
+    if(!entries.length){list.innerHTML='<div class="empty">No ADR entries yet. Add the first one above.</div>';return;}
+    list.innerHTML=entries.map(e=>
+      '<div class="adr-row">'+
+      '<div class="adr-key">'+esc(e.key||'')+'</div>'+
+      '<div class="adr-val">'+esc(e.value||'')+'</div>'+
+      '<button class="adr-del" title="Delete" onclick="deleteADR('+JSON.stringify(e.key||'')+')">&#x2715;</button>'+
+      '</div>'
+    ).join('');
+  } catch(e) { list.innerHTML='<div class="error">Failed to load ADRs: '+esc(e.message)+'</div>'; }
+}
+
+function toggleADRForm() {
+  const f=document.getElementById('adr-form');
+  f.classList.toggle('open');
+  if(f.classList.contains('open')) document.getElementById('adr-key').focus();
+  else { document.getElementById('adr-key').value=''; document.getElementById('adr-val').value=''; }
+}
+
+async function saveADR() {
+  const proj=document.getElementById('adr-proj').value;
+  const key=document.getElementById('adr-key').value.trim();
+  const val=document.getElementById('adr-val').value.trim();
+  if(!proj){showToast('Select a project first',false);return;}
+  if(!key||!val){showToast('Key and value are required',false);return;}
+  try {
+    await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set',project:proj,key,value:val})});
+    showToast('ADR saved.');
+    toggleADRForm();
+    loadADRs();
+  } catch(e) { showToast('Save failed: '+e.message, false); }
+}
+
+async function deleteADR(key) {
+  if(!confirm('Delete ADR entry "'+key+'"?')) return;
+  const proj=document.getElementById('adr-proj').value;
+  try {
+    await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete',project:proj,key})});
+    showToast('Entry "'+key+'" deleted.');
+    loadADRs();
+  } catch(e) { showToast('Delete failed: '+e.message, false); }
+}
+
+// ── Sessions ───────────────────────────────────────────────────────────────
+async function loadSessions() {
+  const wrap=document.getElementById('sessions-table-wrap');
+  wrap.innerHTML='<div class="loading">Loading…</div>';
+  try {
+    const data=await fetch('/v1/sessions').then(r=>r.json());
+    const sessions=data.sessions||[];
+    if(!sessions.length){wrap.innerHTML='<div class="empty">No sessions recorded yet.</div>';return;}
+    wrap.innerHTML='<table class="sessions-table"><thead><tr>'+
+      '<th>Started</th><th>Last Seen</th><th>Calls</th><th>Tokens Saved</th><th>Tokens Used</th><th>Cost Avoided</th>'+
+      '</tr></thead><tbody>'+
+      sessions.map(s=>
+        '<tr>'+
+        '<td title="'+esc(s.session_id)+'">'+timeAgo(s.started_at)+'</td>'+
+        '<td>'+timeAgo(s.last_seen)+'</td>'+
+        '<td>'+fmt(s.calls||0)+'</td>'+
+        '<td style="color:var(--green)">'+fmt(s.tokens_saved||0)+'</td>'+
+        '<td>'+fmt(s.tokens_used||0)+'</td>'+
+        '<td style="color:var(--orange)">'+esc(s.cost_avoided||'$0.0000')+'</td>'+
+        '</tr>'
+      ).join('')+
+      '</tbody></table>';
+  } catch(e) { wrap.innerHTML='<div class="error">Failed to load sessions: '+esc(e.message)+'</div>'; }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
 load();
-loadSparkline();
-setInterval(load, 30000); // auto-refresh every 30s
-setInterval(loadSparkline, 60000); // sparkline refreshes every 60s
+populateSearchProjects();
+setInterval(load, 30000);
+
+// Restore tab from URL hash
+const hash=(location.hash||'').replace('#','');
+if(['overview','projects','search','adrs','sessions'].includes(hash)) showTab(hash);
 </script>
 </body>
 </html>`
