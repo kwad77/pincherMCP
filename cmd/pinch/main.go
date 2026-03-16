@@ -62,8 +62,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Start background file watcher
+	// Start background file watcher and session persistence flusher
 	go idx.Watch(ctx)
+	srv.StartSessionFlusher(ctx)
 
 	// Run MCP server over stdio
 	if err := srv.MCPServer().Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {

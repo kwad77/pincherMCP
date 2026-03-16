@@ -1091,3 +1091,25 @@ func Send(ch chan<- string) {}
 		t.Error("expected Consume and Send symbols")
 	}
 }
+
+func TestExtractGo_CallOnIndexExpr(t *testing.T) {
+	// Index-expression callee: fns[0]() triggers goCalleeToString default branch → ""
+	// The extractor must not panic; it simply skips the unresolvable call.
+	src := []byte(`package pkg
+
+func RunAll(fns []func()) {
+	fns[0]()
+}
+`)
+	result := Extract(src, "Go", "pkg/idx.go")
+	if result == nil || len(result.Symbols) == 0 {
+		t.Fatal("expected symbols from index-expr callee file")
+	}
+	names := make(map[string]bool)
+	for _, s := range result.Symbols {
+		names[s.Name] = true
+	}
+	if !names["RunAll"] {
+		t.Error("expected RunAll symbol")
+	}
+}

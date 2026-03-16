@@ -1,0 +1,1265 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>server: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/pincherMCP/pincher/internal/server/server.go (90.7%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// Package server implements the pincherMCP MCP server with all 12 tools.
+//
+// Every tool response includes a "_meta" envelope (jcodemunch-mcp pattern):
+//
+//        {
+//          "result": { ... },
+//          "_meta": {
+//            "tokens_used":  450,
+//            "tokens_saved": 12300,
+//            "latency_ms":   3,
+//            "cost_avoided": "$0.0012"
+//          }
+//        }
+//
+// This lets agents track context consumption and remaining budget.
+package server
+
+import (
+        "context"
+        "encoding/json"
+        "fmt"
+        "net/url"
+        "os"
+        "os/exec"
+        "path/filepath"
+        "strings"
+        "sync"
+        "sync/atomic"
+        "time"
+
+        "github.com/modelcontextprotocol/go-sdk/mcp"
+        "github.com/pincherMCP/pincher/internal/cypher"
+        "github.com/pincherMCP/pincher/internal/db"
+        "github.com/pincherMCP/pincher/internal/index"
+)
+
+// Server is the pincherMCP MCP server.
+type Server struct {
+        mcp      *mcp.Server
+        store    *db.Store
+        indexer  *index.Indexer
+        handlers map[string]mcp.ToolHandler
+
+        sessionOnce    sync.Once
+        sessionRoot    string
+        sessionProject string // derived from sessionRoot
+        sessionID      string // db.ProjectIDFromPath(sessionRoot)
+
+        // Session-level savings accumulators (atomic for goroutine safety).
+        statsCalls       int64
+        statsTokensUsed  int64
+        statsTokensSaved int64
+        statsLatencyMS   int64
+}
+
+// New creates and registers all 12 MCP tools.
+func New(store *db.Store, indexer *index.Indexer, version string) *Server <span class="cov8" title="1">{
+        s := &amp;Server{
+                store:    store,
+                indexer:  indexer,
+                handlers: make(map[string]mcp.ToolHandler),
+        }
+        s.mcp = mcp.NewServer(
+                &amp;mcp.Implementation{Name: "pincher", Version: version},
+                &amp;mcp.ServerOptions{
+                        InitializedHandler:      s.onInit,
+                        RootsListChangedHandler: s.onRoots,
+                },
+        )
+        s.registerTools()
+        return s
+}</span>
+
+// MCPServer returns the underlying *mcp.Server.
+func (s *Server) MCPServer() *mcp.Server <span class="cov8" title="1">{ return s.mcp }</span>
+
+func (s *Server) onInit(ctx context.Context, req *mcp.InitializedRequest) <span class="cov0" title="0">{
+        s.sessionOnce.Do(func() </span><span class="cov0" title="0">{
+                s.detectRoot(ctx, req.Session)
+        }</span>)
+}
+
+func (s *Server) onRoots(ctx context.Context, req *mcp.RootsListChangedRequest) <span class="cov0" title="0">{
+        s.sessionOnce.Do(func() </span><span class="cov0" title="0">{
+                s.detectRoot(ctx, req.Session)
+        }</span>)
+}
+
+func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) <span class="cov0" title="0">{
+        if session != nil </span><span class="cov0" title="0">{
+                if result, err := session.ListRoots(ctx, nil); err == nil &amp;&amp; len(result.Roots) &gt; 0 </span><span class="cov0" title="0">{
+                        if path, ok := parseFileURI(result.Roots[0].URI); ok </span><span class="cov0" title="0">{
+                                s.setRoot(path)
+                                return
+                        }</span>
+                }
+        }
+        <span class="cov0" title="0">if cwd, err := os.Getwd(); err == nil </span><span class="cov0" title="0">{
+                s.setRoot(cwd)
+        }</span>
+}
+
+func (s *Server) setRoot(path string) <span class="cov8" title="1">{
+        s.sessionRoot = path
+        s.sessionProject = db.ProjectNameFromPath(path)
+        s.sessionID = db.ProjectIDFromPath(path)
+}</span>
+
+func parseFileURI(uri string) (string, bool) <span class="cov8" title="1">{
+        u, err := url.Parse(uri)
+        if err != nil || u.Scheme != "file" </span><span class="cov8" title="1">{
+                return "", false
+        }</span>
+        <span class="cov8" title="1">p := u.Path
+        if len(p) &gt;= 3 &amp;&amp; p[0] == '/' &amp;&amp; p[2] == ':' </span><span class="cov8" title="1">{
+                p = p[1:]
+        }</span>
+        <span class="cov8" title="1">return filepath.FromSlash(p), true</span>
+}
+
+// resolveProjectID returns the project ID for the given name/ID, falling back to session project.
+func (s *Server) resolveProjectID(projectArg string) (string, error) <span class="cov8" title="1">{
+        if projectArg == "" </span><span class="cov8" title="1">{
+                if s.sessionID == "" </span><span class="cov8" title="1">{
+                        return "", fmt.Errorf("no project specified and no session project detected")
+                }</span>
+                <span class="cov8" title="1">return s.sessionID, nil</span>
+        }
+        // Accept either a name or ID
+        <span class="cov8" title="1">p, err := s.store.GetProject(projectArg)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">if p != nil </span><span class="cov8" title="1">{
+                return p.ID, nil
+        }</span>
+        // Try matching by name
+        <span class="cov8" title="1">all, err := s.store.ListProjects()
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">for _, proj := range all </span><span class="cov8" title="1">{
+                if proj.Name == projectArg </span><span class="cov8" title="1">{
+                        return proj.ID, nil
+                }</span>
+        }
+        <span class="cov8" title="1">return "", fmt.Errorf("project %q not found — use `list` to see available projects", projectArg)</span>
+}
+
+// resolveProjectRoot returns the filesystem root for a project.
+func (s *Server) resolveProjectRoot(projectID string) (string, error) <span class="cov8" title="1">{
+        p, err := s.store.GetProject(projectID)
+        if err != nil || p == nil </span><span class="cov8" title="1">{
+                if s.sessionRoot != "" </span><span class="cov8" title="1">{
+                        return s.sessionRoot, nil
+                }</span>
+                <span class="cov8" title="1">return "", fmt.Errorf("project not found")</span>
+        }
+        <span class="cov8" title="1">return p.Path, nil</span>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool registration
+// ─────────────────────────────────────────────────────────────────────────────
+
+func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) <span class="cov8" title="1">{
+        s.mcp.AddTool(tool, handler)
+        s.handlers[tool.Name] = handler
+}</span>
+
+func (s *Server) registerTools() <span class="cov8" title="1">{
+        // 1. index
+        s.addTool(&amp;mcp.Tool{
+                Name:        "index",
+                Description: "Index a repository. Extracts symbols with byte offsets, builds knowledge graph, and populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files). Set force=true to re-parse everything. Returns counts and latency.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","properties":{
+                                "path":{"type":"string","description":"Absolute path to the repository root. Defaults to session project root."},
+                                "force":{"type":"boolean","description":"If true, re-parse all files even if unchanged."}
+                        }
+                }`),
+        }, s.handleIndex)
+
+        // 2. symbol
+        s.addTool(&amp;mcp.Tool{
+                Name:        "symbol",
+                Description: "Retrieve source code for a symbol by its stable ID using O(1) byte-offset seeking. No re-parsing. Format: '{file_path}::{qualified_name}#{kind}'. Use `search` first to find the ID. Returns source, signature, location, and token savings metadata.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["id"],"properties":{
+                                "id":{"type":"string","description":"Stable symbol ID. Format: '{file_path}::{qualified_name}#{kind}'"},
+                                "project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+                        }
+                }`),
+        }, s.handleSymbol)
+
+        // 3. symbols (batch)
+        s.addTool(&amp;mcp.Tool{
+                Name:        "symbols",
+                Description: "Batch retrieve source code for multiple symbols in one call. Use instead of calling `symbol` in a loop. Minimises round trips. Returns array of {id, source, signature, file_path, start_line}.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["ids"],"properties":{
+                                "ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
+                                "project":{"type":"string"}
+                        }
+                }`),
+        }, s.handleSymbols)
+
+        // 4. context
+        s.addTool(&amp;mcp.Tool{
+                Name:        "context",
+                Description: "Get a symbol plus its direct imports as a minimal-token context bundle. Use this instead of reading entire files — ~90% token reduction. Returns {symbol: {source, ...}, imports: [{source, ...}]}.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["id"],"properties":{
+                                "id":{"type":"string","description":"Symbol ID to fetch with its imports."},
+                                "project":{"type":"string"}
+                        }
+                }`),
+        }, s.handleContext)
+
+        // 5. search
+        s.addTool(&amp;mcp.Tool{
+                Name:        "search",
+                Description: "Full-text search across symbol names, qualified names, signatures, and docstrings. Uses FTS5 BM25 ranking. Supports wildcards (auth*) and phrase queries (\"process order\"). Filter by kind (Function/Class/etc) or language.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["query"],"properties":{
+                                "query":{"type":"string","description":"FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR."},
+                                "project":{"type":"string"},
+                                "kind":{"type":"string","description":"Filter by symbol kind: Function|Method|Class|Interface|Enum|Type|Variable|Module"},
+                                "language":{"type":"string","description":"Filter by language: Go|Python|TypeScript|etc"},
+                                "limit":{"type":"integer","description":"Max results (default 20)"}
+                        }
+                }`),
+        }, s.handleSearch)
+
+        // 6. query
+        s.addTool(&amp;mcp.Tool{
+                Name:        "query",
+                Description: "Execute a Cypher-like graph query. Sub-ms for single-hop patterns. Supports: MATCH (n:Kind) WHERE n.name='x' RETURN n.name; MATCH (a)-[:CALLS]-&gt;(b) RETURN a.name,b.name; MATCH (a)-[:CALLS*1..3]-&gt;(b) WHERE a.name='main' RETURN b.name; WHERE with =, =~(regex), CONTAINS, &gt;, &lt; operators.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["cypher"],"properties":{
+                                "cypher":{"type":"string","description":"Cypher query. Example: MATCH (f:Function)-[:CALLS]-&gt;(g) WHERE f.name='main' RETURN g.name LIMIT 20"},
+                                "project":{"type":"string"},
+                                "max_rows":{"type":"integer","description":"Max rows (default 200, max 10000)"}
+                        }
+                }`),
+        }, s.handleQuery)
+
+        // 7. trace
+        s.addTool(&amp;mcp.Tool{
+                Name:        "trace",
+                Description: "BFS call-path trace: who calls this function, or what does it call. Returns hops with risk labels (CRITICAL=depth1, HIGH=depth2, MEDIUM=depth3, LOW=depth4+). Use search first to find the exact function name.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["name"],"properties":{
+                                "name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder')"},
+                                "project":{"type":"string"},
+                                "direction":{"type":"string","enum":["outbound","inbound","both"],"description":"outbound=what it calls, inbound=what calls it. Default: both"},
+                                "depth":{"type":"integer","description":"BFS depth 1-5 (default 3)"},
+                                "risk":{"type":"boolean","description":"Add CRITICAL/HIGH/MEDIUM/LOW risk labels (default true)"}
+                        }
+                }`),
+        }, s.handleTrace)
+
+        // 8. changes
+        s.addTool(&amp;mcp.Tool{
+                Name:        "changes",
+                Description: "Map git diff to affected symbols and compute blast radius. Runs `git diff` in the project directory, finds which symbols changed, then BFS-traces the impact. Returns changed_symbols, impacted (with risk), and summary.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","properties":{
+                                "project":{"type":"string"},
+                                "scope":{"type":"string","enum":["unstaged","staged","all"],"description":"Which diff to analyse (default: unstaged)"},
+                                "depth":{"type":"integer","description":"Blast radius BFS depth 1-5 (default 3)"}
+                        }
+                }`),
+        }, s.handleChanges)
+
+        // 9. architecture
+        s.addTool(&amp;mcp.Tool{
+                Name:        "architecture",
+                Description: "High-level codebase orientation. Returns languages, entry points, top packages, hotspot functions (most called), and graph statistics. Call this first when exploring an unfamiliar project.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","properties":{
+                                "project":{"type":"string"}
+                        }
+                }`),
+        }, s.handleArchitecture)
+
+        // 10. schema
+        s.addTool(&amp;mcp.Tool{
+                Name:        "schema",
+                Description: "Knowledge graph schema: node kind counts, edge kind counts, total symbols, total edges. Use before query to understand what's indexed.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","properties":{
+                                "project":{"type":"string"}
+                        }
+                }`),
+        }, s.handleSchema)
+
+        // 11. list
+        s.addTool(&amp;mcp.Tool{
+                Name:        "list",
+                Description: "List all indexed projects with stats: name, path, file count, symbol count, edge count, last indexed timestamp.",
+                InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+        }, s.handleList)
+
+        // 12. adr
+        s.addTool(&amp;mcp.Tool{
+                Name:        "adr",
+                Description: "Architecture Decision Records — persistent project knowledge store. actions: get (retrieve value), set (store value), list (all entries), delete (remove). Use to record stack decisions, architectural patterns, team conventions.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","required":["action"],"properties":{
+                                "action":{"type":"string","enum":["get","set","list","delete"]},
+                                "project":{"type":"string"},
+                                "key":{"type":"string","description":"ADR key (e.g. 'PURPOSE', 'STACK', 'PATTERNS')"},
+                                "value":{"type":"string","description":"ADR value (required for action=set)"}
+                        }
+                }`),
+        }, s.handleADR)
+
+        // 13. stats
+        s.addTool(&amp;mcp.Tool{
+                Name:        "stats",
+                Description: "Session savings summary: cumulative tokens used, tokens saved, cost avoided, and call count since the server started. Also shows per-project index size (files, symbols, edges). Useful for tracking how much context budget pincherMCP has saved.",
+                InputSchema: json.RawMessage(`{
+                        "type":"object","properties":{
+                                "project":{"type":"string","description":"Project to include in index size breakdown. Defaults to session project."}
+                        }
+                }`),
+        }, s.handleStats)
+}</span>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        path := str(args, "path")
+        if path == "" </span><span class="cov8" title="1">{
+                path = s.sessionRoot
+        }</span>
+        <span class="cov8" title="1">if path == "" </span><span class="cov8" title="1">{
+                return errResult("path is required (no session root detected)"), nil
+        }</span>
+        <span class="cov8" title="1">force := boolArg(args, "force")
+
+        result, err := s.indexer.Index(ctx, path, force)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(fmt.Sprintf("index error: %v", err)), nil
+        }</span>
+
+        <span class="cov8" title="1">data := map[string]any{
+                "project":    result.Project,
+                "path":       result.Path,
+                "files":      result.Files,
+                "symbols":    result.Symbols,
+                "edges":      result.Edges,
+                "skipped":    result.Skipped,
+                "duration_ms": result.DurationMS,
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        id := str(args, "id")
+        if id == "" </span><span class="cov8" title="1">{
+                return errResult("id is required"), nil
+        }</span>
+        <span class="cov8" title="1">projectArg := str(args, "project")
+
+        sym, err := s.store.GetSymbol(id)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(fmt.Sprintf("db error: %v", err)), nil
+        }</span>
+        <span class="cov8" title="1">if sym == nil </span><span class="cov8" title="1">{
+                // Stale ID? Check symbol_moves for a redirect (handles file renames/moves).
+                if newID, ok := s.store.ResolveStaleID(s.sessionID, id); ok </span><span class="cov8" title="1">{
+                        sym, err = s.store.GetSymbol(newID)
+                        if err != nil </span><span class="cov0" title="0">{
+                                return errResult(fmt.Sprintf("db error resolving stale id: %v", err)), nil
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">if sym == nil </span><span class="cov8" title="1">{
+                return errResult(fmt.Sprintf("symbol %q not found", id)), nil
+        }</span>
+
+        // Resolve project root for byte-offset seek
+        <span class="cov8" title="1">projectID := sym.ProjectID
+        if projectArg != "" </span><span class="cov0" title="0">{
+                if pid, err := s.resolveProjectID(projectArg); err == nil </span><span class="cov0" title="0">{
+                        projectID = pid
+                }</span>
+        }
+        <span class="cov8" title="1">root, err := s.resolveProjectRoot(projectID)
+        if err != nil </span><span class="cov0" title="0">{
+                root = s.sessionRoot
+        }</span>
+
+        // O(1) byte-offset retrieval — the pincherMCP core innovation
+        <span class="cov8" title="1">source := ""
+        if root != "" </span><span class="cov8" title="1">{
+                source, _ = index.ReadSymbolSource(root, *sym)
+        }</span>
+
+        // Estimate token savings vs. reading the whole file
+        <span class="cov8" title="1">var fileSizeBytes int
+        if root != "" </span><span class="cov8" title="1">{
+                if fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(sym.FilePath))); err == nil </span><span class="cov8" title="1">{
+                        fileSizeBytes = int(fi.Size())
+                }</span>
+        }
+        <span class="cov8" title="1">symbolBytes := sym.EndByte - sym.StartByte
+        tokensSaved := db.ApproxTokens(strings.Repeat("x", max(0, fileSizeBytes-symbolBytes)))
+
+        data := map[string]any{
+                "id":            sym.ID,
+                "name":          sym.Name,
+                "qualified_name": sym.QualifiedName,
+                "kind":          sym.Kind,
+                "language":      sym.Language,
+                "file_path":     sym.FilePath,
+                "start_line":    sym.StartLine,
+                "end_line":      sym.EndLine,
+                "start_byte":    sym.StartByte,
+                "end_byte":      sym.EndByte,
+                "signature":     sym.Signature,
+                "return_type":   sym.ReturnType,
+                "docstring":     sym.Docstring,
+                "complexity":             sym.Complexity,
+                "is_exported":            sym.IsExported,
+                "extraction_confidence":  sym.ExtractionConfidence,
+                "source":                 source,
+        }
+        return s.jsonResultWithMeta(data, start, tokensSaved), nil</span>
+}
+
+func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        ids := strSlice(args, "ids")
+        if len(ids) == 0 </span><span class="cov8" title="1">{
+                return errResult("ids array is required"), nil
+        }</span>
+
+        <span class="cov8" title="1">projectArg := str(args, "project")
+        root := s.sessionRoot
+        if projectArg != "" </span><span class="cov8" title="1">{
+                if pid, err := s.resolveProjectID(projectArg); err == nil </span><span class="cov8" title="1">{
+                        if r, err := s.resolveProjectRoot(pid); err == nil </span><span class="cov8" title="1">{
+                                root = r
+                        }</span>
+                }
+        }
+
+        <span class="cov8" title="1">var results []map[string]any
+        for _, id := range ids </span><span class="cov8" title="1">{
+                sym, err := s.store.GetSymbol(id)
+                if err != nil || sym == nil </span><span class="cov8" title="1">{
+                        results = append(results, map[string]any{"id": id, "error": "not found"})
+                        continue</span>
+                }
+                <span class="cov8" title="1">source := ""
+                if root != "" </span><span class="cov8" title="1">{
+                        source, _ = index.ReadSymbolSource(root, *sym)
+                }</span>
+                <span class="cov8" title="1">results = append(results, map[string]any{
+                        "id":         sym.ID,
+                        "name":       sym.Name,
+                        "kind":       sym.Kind,
+                        "file_path":  sym.FilePath,
+                        "start_line": sym.StartLine,
+                        "signature":  sym.Signature,
+                        "source":     source,
+                })</span>
+        }
+
+        <span class="cov8" title="1">data := map[string]any{
+                "symbols": results,
+                "count":   len(results),
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        id := str(args, "id")
+        if id == "" </span><span class="cov8" title="1">{
+                return errResult("id is required"), nil
+        }</span>
+
+        <span class="cov8" title="1">sym, err := s.store.GetSymbol(id)
+        if err != nil || sym == nil </span><span class="cov8" title="1">{
+                return errResult(fmt.Sprintf("symbol %q not found", id)), nil
+        }</span>
+
+        <span class="cov8" title="1">root, _ := s.resolveProjectRoot(sym.ProjectID)
+        source, _ := index.ReadSymbolSource(root, *sym)
+
+        // Find IMPORTS edges from this symbol
+        importEdges, _ := s.store.EdgesFrom(sym.ID, []string{"IMPORTS"})
+        var imports []map[string]any
+        tokensSaved := 0
+        for _, e := range importEdges </span><span class="cov8" title="1">{
+                imp, err := s.store.GetSymbol(e.ToID)
+                if err != nil || imp == nil </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+                <span class="cov8" title="1">impSource, _ := index.ReadSymbolSource(root, *imp)
+                imports = append(imports, map[string]any{
+                        "id":        imp.ID,
+                        "name":      imp.Name,
+                        "kind":      imp.Kind,
+                        "file_path": imp.FilePath,
+                        "source":    impSource,
+                })
+                tokensSaved += db.ApproxTokens(impSource)</span> // we fetched only what's needed
+        }
+
+        <span class="cov8" title="1">data := map[string]any{
+                "symbol":  map[string]any{"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "source": source},
+                "imports": imports,
+        }
+        return s.jsonResultWithMeta(data, start, tokensSaved), nil</span>
+}
+
+func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        query := str(args, "query")
+        if query == "" </span><span class="cov0" title="0">{
+                return errResult("query is required"), nil
+        }</span>
+        <span class="cov8" title="1">projectArg := str(args, "project")
+        kind := str(args, "kind")
+        language := str(args, "language")
+        limit := intArg(args, "limit", 20)
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(err.Error()), nil
+        }</span>
+
+        <span class="cov8" title="1">results, err := s.store.SearchSymbols(projectID, query, kind, language, limit)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(fmt.Sprintf("search error: %v", err)), nil
+        }</span>
+
+        <span class="cov8" title="1">var rows []map[string]any
+        for _, r := range results </span><span class="cov8" title="1">{
+                rows = append(rows, map[string]any{
+                        "id":                    r.Symbol.ID,
+                        "name":                  r.Symbol.Name,
+                        "qualified_name":        r.Symbol.QualifiedName,
+                        "kind":                  r.Symbol.Kind,
+                        "language":              r.Symbol.Language,
+                        "file_path":             r.Symbol.FilePath,
+                        "start_line":            r.Symbol.StartLine,
+                        "signature":             r.Symbol.Signature,
+                        "score":                 r.Score,
+                        "extraction_confidence": r.Symbol.ExtractionConfidence,
+                })
+        }</span>
+
+        // Token savings: symbols returned as stubs instead of full file reads.
+        // Estimate full-context cost (~2 KB per symbol in context) minus actual payload.
+        <span class="cov8" title="1">responseJSON, _ := json.Marshal(rows)
+        const avgSymbolContext = 2000 // chars an agent would read without search
+        fullContextEst := len(results) * avgSymbolContext
+        tokensSaved := max(0, db.ApproxTokens(strings.Repeat("x", fullContextEst))-db.ApproxTokens(string(responseJSON)))
+
+        data := map[string]any{
+                "results": rows,
+                "count":   len(rows),
+                "query":   query,
+        }
+        return s.jsonResultWithMeta(data, start, tokensSaved), nil</span>
+}
+
+func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        cql := str(args, "cypher")
+        if cql == "" </span><span class="cov8" title="1">{
+                return errResult("cypher query is required"), nil
+        }</span>
+        <span class="cov8" title="1">projectArg := str(args, "project")
+        maxRows := intArg(args, "max_rows", 200)
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(err.Error()), nil
+        }</span>
+        <span class="cov8" title="1">_ = projectID // Cypher executor uses the DB directly
+
+        exec := &amp;cypher.Executor{DB: s.store.DB(), MaxRows: maxRows}
+        result, err := exec.Execute(ctx, cql)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(fmt.Sprintf("cypher error: %v", err)), nil
+        }</span>
+
+        <span class="cov8" title="1">data := map[string]any{
+                "columns": result.Columns,
+                "rows":    result.Rows,
+                "total":   result.Total,
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        name := str(args, "name")
+        if name == "" </span><span class="cov8" title="1">{
+                return errResult("name is required"), nil
+        }</span>
+        <span class="cov8" title="1">projectArg := str(args, "project")
+        direction := str(args, "direction")
+        if direction == "" </span><span class="cov8" title="1">{
+                direction = "both"
+        }</span>
+        <span class="cov8" title="1">depth := intArg(args, "depth", 3)
+        addRisk := boolArgDefault(args, "risk", true)
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(err.Error()), nil
+        }</span>
+
+        <span class="cov8" title="1">hops, err := s.indexer.Trace(ctx, projectID, name, direction, depth, addRisk)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(fmt.Sprintf("trace error: %v", err)), nil
+        }</span>
+
+        // Group by depth
+        <span class="cov8" title="1">byDepth := make(map[int][]map[string]any)
+        riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for _, h := range hops </span><span class="cov8" title="1">{
+                entry := map[string]any{
+                        "id":         h.Symbol.ID,
+                        "name":       h.Symbol.Name,
+                        "kind":       h.Symbol.Kind,
+                        "file_path":  h.Symbol.FilePath,
+                        "start_line": h.Symbol.StartLine,
+                        "via":        h.Via,
+                }
+                if addRisk </span><span class="cov8" title="1">{
+                        entry["risk"] = h.Risk
+                        riskCounts[h.Risk]++
+                }</span>
+                <span class="cov8" title="1">byDepth[h.Depth] = append(byDepth[h.Depth], entry)</span>
+        }
+
+        <span class="cov8" title="1">var hopsList []map[string]any
+        for d := 1; d &lt;= depth; d++ </span><span class="cov8" title="1">{
+                if nodes, ok := byDepth[d]; ok </span><span class="cov8" title="1">{
+                        hop := map[string]any{"depth": d, "nodes": nodes}
+                        if addRisk </span><span class="cov8" title="1">{
+                                hop["risk"] = riskLabel(d)
+                        }</span>
+                        <span class="cov8" title="1">hopsList = append(hopsList, hop)</span>
+                }
+        }
+
+        <span class="cov8" title="1">data := map[string]any{
+                "root":      name,
+                "direction": direction,
+                "hops":      hopsList,
+                "total":     len(hops),
+        }
+        if addRisk </span><span class="cov8" title="1">{
+                data["risk_summary"] = riskCounts
+        }</span>
+        <span class="cov8" title="1">return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+
+        projectArg := str(args, "project")
+        scope := str(args, "scope")
+        if scope == "" </span><span class="cov8" title="1">{
+                scope = "unstaged"
+        }</span>
+        <span class="cov8" title="1">depth := intArg(args, "depth", 3)
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(err.Error()), nil
+        }</span>
+        <span class="cov8" title="1">root, err := s.resolveProjectRoot(projectID)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(err.Error()), nil
+        }</span>
+
+        // Run git diff
+        <span class="cov8" title="1">diffOutput, diffErr := runGitDiff(root, scope)
+        if diffErr != nil </span><span class="cov8" title="1">{
+                return errResult(fmt.Sprintf("git diff failed: %v", diffErr)), nil
+        }</span>
+
+        // Parse changed files from diff
+        <span class="cov8" title="1">changedFiles := parseGitDiffFiles(diffOutput)
+
+        // Find symbols in changed files
+        var changedSymbols []db.Symbol
+        for _, f := range changedFiles </span><span class="cov8" title="1">{
+                syms, err := s.store.GetSymbolsForFile(projectID, f)
+                if err != nil </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+                <span class="cov8" title="1">changedSymbols = append(changedSymbols, syms...)</span>
+        }
+
+        // BFS trace for blast radius
+        <span class="cov8" title="1">var impacted []map[string]any
+        seen := make(map[string]bool)
+        for _, sym := range changedSymbols </span><span class="cov8" title="1">{
+                hops, err := s.indexer.Trace(ctx, projectID, sym.Name, "inbound", depth, true)
+                if err != nil </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+                <span class="cov8" title="1">for _, h := range hops </span><span class="cov0" title="0">{
+                        if seen[h.Symbol.ID] </span><span class="cov0" title="0">{
+                                continue</span>
+                        }
+                        <span class="cov0" title="0">seen[h.Symbol.ID] = true
+                        impacted = append(impacted, map[string]any{
+                                "id":         h.Symbol.ID,
+                                "name":       h.Symbol.Name,
+                                "kind":       h.Symbol.Kind,
+                                "file_path":  h.Symbol.FilePath,
+                                "risk":       h.Risk,
+                                "changed_by": sym.Name,
+                        })</span>
+                }
+        }
+
+        // Build risk summary
+        <span class="cov8" title="1">riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for _, item := range impacted </span><span class="cov0" title="0">{
+                if r, ok := item["risk"].(string); ok </span><span class="cov0" title="0">{
+                        riskCounts[r]++
+                }</span>
+        }
+
+        <span class="cov8" title="1">var changedSymNames []map[string]any
+        for _, sym := range changedSymbols </span><span class="cov8" title="1">{
+                changedSymNames = append(changedSymNames, map[string]any{
+                        "id": sym.ID, "name": sym.Name, "kind": sym.Kind, "file_path": sym.FilePath,
+                })
+        }</span>
+
+        <span class="cov8" title="1">data := map[string]any{
+                "changed_files":   changedFiles,
+                "changed_symbols": changedSymNames,
+                "impacted":        impacted,
+                "summary": map[string]any{
+                        "changed_files":   len(changedFiles),
+                        "changed_symbols": len(changedSymbols),
+                        "total_impacted":  len(impacted),
+                        "critical":        riskCounts["CRITICAL"],
+                        "high":            riskCounts["HIGH"],
+                        "medium":          riskCounts["MEDIUM"],
+                        "low":             riskCounts["LOW"],
+                },
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+        projectArg := str(args, "project")
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(err.Error()), nil
+        }</span>
+
+        <span class="cov8" title="1">p, _ := s.store.GetProject(projectID)
+
+        // Language breakdown
+        langRows, _ := s.store.DB().QueryContext(ctx,
+                `SELECT language, COUNT(*) FROM symbols WHERE project_id=? GROUP BY language ORDER BY COUNT(*) DESC LIMIT 20`,
+                projectID)
+        langs := make(map[string]int)
+        if langRows != nil </span><span class="cov8" title="1">{
+                for langRows.Next() </span><span class="cov8" title="1">{
+                        var lang string
+                        var cnt int
+                        _ = langRows.Scan(&amp;lang, &amp;cnt)
+                        langs[lang] = cnt
+                }</span>
+                <span class="cov8" title="1">langRows.Close()</span>
+        }
+
+        // Entry points
+        <span class="cov8" title="1">epRows, _ := s.store.DB().QueryContext(ctx,
+                `SELECT name, file_path, start_line FROM symbols WHERE project_id=? AND is_entry_point=1 LIMIT 20`,
+                projectID)
+        var entryPoints []map[string]any
+        if epRows != nil </span><span class="cov8" title="1">{
+                for epRows.Next() </span><span class="cov8" title="1">{
+                        var name, fp string
+                        var line int
+                        _ = epRows.Scan(&amp;name, &amp;fp, &amp;line)
+                        entryPoints = append(entryPoints, map[string]any{"name": name, "file_path": fp, "start_line": line})
+                }</span>
+                <span class="cov8" title="1">epRows.Close()</span>
+        }
+
+        // Hotspots (most-called)
+        <span class="cov8" title="1">hotspots, _ := s.store.GetHotspots(projectID, 10)
+        var hotspotMaps []map[string]any
+        for _, h := range hotspots </span><span class="cov8" title="1">{
+                hotspotMaps = append(hotspotMaps, map[string]any{
+                        "name": h.Name, "kind": h.Kind, "file_path": h.FilePath,
+                })
+        }</span>
+
+        // Graph stats
+        <span class="cov8" title="1">_, _, kindCounts, edgeKindCounts, _ := s.store.GraphStats(projectID)
+
+        data := map[string]any{
+                "project":         p,
+                "languages":       langs,
+                "entry_points":    entryPoints,
+                "hotspots":        hotspotMaps,
+                "node_kinds":      kindCounts,
+                "edge_kinds":      edgeKindCounts,
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+        projectArg := str(args, "project")
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(err.Error()), nil
+        }</span>
+
+        <span class="cov8" title="1">symCount, edgeCount, kindCounts, edgeKindCounts, err := s.store.GraphStats(projectID)
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(fmt.Sprintf("stats error: %v", err)), nil
+        }</span>
+
+        <span class="cov8" title="1">data := map[string]any{
+                "symbols":         symCount,
+                "edges":           edgeCount,
+                "node_kinds":      kindCounts,
+                "edge_kinds":      edgeKindCounts,
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        projects, err := s.store.ListProjects()
+        if err != nil </span><span class="cov0" title="0">{
+                return errResult(fmt.Sprintf("list error: %v", err)), nil
+        }</span>
+        <span class="cov8" title="1">var rows []map[string]any
+        for _, p := range projects </span><span class="cov8" title="1">{
+                rows = append(rows, map[string]any{
+                        "id":         p.ID,
+                        "name":       p.Name,
+                        "path":       p.Path,
+                        "files":      p.FileCount,
+                        "symbols":    p.SymCount,
+                        "edges":      p.EdgeCount,
+                        "indexed_at": p.IndexedAt.Format(time.RFC3339),
+                })
+        }</span>
+        <span class="cov8" title="1">data := map[string]any{"projects": rows, "count": len(rows)}
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+        action := str(args, "action")
+        projectArg := str(args, "project")
+        key := str(args, "key")
+        value := str(args, "value")
+
+        projectID, err := s.resolveProjectID(projectArg)
+        if err != nil </span><span class="cov8" title="1">{
+                return errResult(err.Error()), nil
+        }</span>
+
+        <span class="cov8" title="1">var data map[string]any
+        switch action </span>{
+        case "get":<span class="cov8" title="1">
+                if key == "" </span><span class="cov8" title="1">{
+                        return errResult("key is required for action=get"), nil
+                }</span>
+                <span class="cov8" title="1">val, ok, err := s.store.GetADR(projectID, key)
+                if err != nil </span><span class="cov0" title="0">{
+                        return errResult(err.Error()), nil
+                }</span>
+                <span class="cov8" title="1">if !ok </span><span class="cov8" title="1">{
+                        return errResult(fmt.Sprintf("ADR key %q not found", key)), nil
+                }</span>
+                <span class="cov8" title="1">data = map[string]any{"key": key, "value": val}</span>
+
+        case "set":<span class="cov8" title="1">
+                if key == "" || value == "" </span><span class="cov8" title="1">{
+                        return errResult("key and value are required for action=set"), nil
+                }</span>
+                <span class="cov8" title="1">if err := s.store.SetADR(projectID, key, value); err != nil </span><span class="cov0" title="0">{
+                        return errResult(err.Error()), nil
+                }</span>
+                <span class="cov8" title="1">data = map[string]any{"key": key, "stored": true}</span>
+
+        case "list":<span class="cov8" title="1">
+                entries, err := s.store.ListADRs(projectID)
+                if err != nil </span><span class="cov0" title="0">{
+                        return errResult(err.Error()), nil
+                }</span>
+                <span class="cov8" title="1">data = map[string]any{"entries": entries}</span>
+
+        case "delete":<span class="cov8" title="1">
+                if key == "" </span><span class="cov8" title="1">{
+                        return errResult("key is required for action=delete"), nil
+                }</span>
+                <span class="cov8" title="1">if err := s.store.DeleteADR(projectID, key); err != nil </span><span class="cov0" title="0">{
+                        return errResult(err.Error()), nil
+                }</span>
+                <span class="cov8" title="1">data = map[string]any{"key": key, "deleted": true}</span>
+
+        default:<span class="cov8" title="1">
+                return errResult(fmt.Sprintf("unknown action %q", action)), nil</span>
+        }
+
+        <span class="cov8" title="1">return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) <span class="cov8" title="1">{
+        start := time.Now()
+        args := parseArgs(req)
+        projectArg := str(args, "project")
+
+        calls := atomic.LoadInt64(&amp;s.statsCalls)
+        tokensUsed := atomic.LoadInt64(&amp;s.statsTokensUsed)
+        tokensSaved := atomic.LoadInt64(&amp;s.statsTokensSaved)
+        totalLatency := atomic.LoadInt64(&amp;s.statsLatencyMS)
+
+        totalCostAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
+
+        avgLatency := int64(0)
+        if calls &gt; 0 </span><span class="cov8" title="1">{
+                avgLatency = totalLatency / calls
+        }</span>
+
+        <span class="cov8" title="1">session := map[string]any{
+                "calls":              calls,
+                "tokens_used":        tokensUsed,
+                "tokens_saved":       tokensSaved,
+                "total_cost_avoided": fmt.Sprintf("$%.4f", totalCostAvoided),
+                "avg_latency_ms":     avgLatency,
+        }
+
+        // Per-project index breakdown
+        var projectData map[string]any
+        if pid, err := s.resolveProjectID(projectArg); err == nil </span><span class="cov8" title="1">{
+                if p, err := s.store.GetProject(pid); err == nil &amp;&amp; p != nil </span><span class="cov8" title="1">{
+                        symCount, edgeCount, kindCounts, _, _ := s.store.GraphStats(pid)
+                        projectData = map[string]any{
+                                "name":        p.Name,
+                                "path":        p.Path,
+                                "files":       p.FileCount,
+                                "symbols":     symCount,
+                                "edges":       edgeCount,
+                                "node_kinds":  kindCounts,
+                                "indexed_at":  p.IndexedAt.Format(time.RFC3339),
+                        }
+                }</span>
+        }
+
+        <span class="cov8" title="1">data := map[string]any{
+                "session": session,
+                "project": projectData,
+        }
+        return s.jsonResultWithMeta(data, start, 0), nil</span>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _meta envelope (jcodemunch-mcp pattern)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// baseCostPer1M is the approximate cost per 1M tokens for Claude Sonnet (USD).
+const baseCostPer1M = 3.0
+
+func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *mcp.CallToolResult <span class="cov8" title="1">{
+        latency := time.Since(start).Milliseconds()
+
+        // Estimate tokens in this response
+        b, _ := json.Marshal(data)
+        tokensUsed := db.ApproxTokens(string(b))
+
+        // Cost avoided by not sending tokensSaved tokens to the model
+        costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
+
+        data["_meta"] = map[string]any{
+                "tokens_used":  tokensUsed,
+                "tokens_saved": tokensSaved,
+                "latency_ms":   latency,
+                "cost_avoided": fmt.Sprintf("$%.4f", costAvoided),
+        }
+
+        // Accumulate session stats
+        atomic.AddInt64(&amp;s.statsCalls, 1)
+        atomic.AddInt64(&amp;s.statsTokensUsed, int64(tokensUsed))
+        atomic.AddInt64(&amp;s.statsTokensSaved, int64(tokensSaved))
+        atomic.AddInt64(&amp;s.statsLatencyMS, latency)
+
+        out, _ := json.MarshalIndent(data, "", "  ")
+        return &amp;mcp.CallToolResult{
+                Content: []mcp.Content{&amp;mcp.TextContent{Text: string(out)}},
+        }
+}</span>
+
+func errResult(msg string) *mcp.CallToolResult <span class="cov8" title="1">{
+        return &amp;mcp.CallToolResult{
+                Content: []mcp.Content{&amp;mcp.TextContent{Text: msg}},
+                IsError: true,
+        }
+}</span>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Argument helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func parseArgs(req *mcp.CallToolRequest) map[string]any <span class="cov8" title="1">{
+        if len(req.Params.Arguments) == 0 </span><span class="cov8" title="1">{
+                return map[string]any{}
+        }</span>
+        <span class="cov8" title="1">var m map[string]any
+        _ = json.Unmarshal(req.Params.Arguments, &amp;m)
+        if m == nil </span><span class="cov8" title="1">{
+                m = map[string]any{}
+        }</span>
+        <span class="cov8" title="1">return m</span>
+}
+
+func str(args map[string]any, key string) string <span class="cov8" title="1">{
+        v, _ := args[key].(string)
+        return v
+}</span>
+
+func strSlice(args map[string]any, key string) []string <span class="cov8" title="1">{
+        v, ok := args[key]
+        if !ok </span><span class="cov8" title="1">{
+                return nil
+        }</span>
+        <span class="cov8" title="1">arr, ok := v.([]any)
+        if !ok </span><span class="cov0" title="0">{
+                return nil
+        }</span>
+        <span class="cov8" title="1">var out []string
+        for _, item := range arr </span><span class="cov8" title="1">{
+                if s, ok := item.(string); ok </span><span class="cov8" title="1">{
+                        out = append(out, s)
+                }</span>
+        }
+        <span class="cov8" title="1">return out</span>
+}
+
+func intArg(args map[string]any, key string, def int) int <span class="cov8" title="1">{
+        v, ok := args[key]
+        if !ok </span><span class="cov8" title="1">{
+                return def
+        }</span>
+        <span class="cov8" title="1">if f, ok := v.(float64); ok </span><span class="cov8" title="1">{
+                return int(f)
+        }</span>
+        <span class="cov0" title="0">return def</span>
+}
+
+func boolArg(args map[string]any, key string) bool <span class="cov8" title="1">{
+        v, _ := args[key].(bool)
+        return v
+}</span>
+
+func boolArgDefault(args map[string]any, key string, def bool) bool <span class="cov8" title="1">{
+        v, ok := args[key]
+        if !ok </span><span class="cov8" title="1">{
+                return def
+        }</span>
+        <span class="cov8" title="1">b, ok := v.(bool)
+        if !ok </span><span class="cov0" title="0">{
+                return def
+        }</span>
+        <span class="cov8" title="1">return b</span>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Git helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func runGitDiff(root, scope string) (string, error) <span class="cov8" title="1">{
+        args := []string{"diff", "--name-only"}
+        switch scope </span>{
+        case "staged":<span class="cov8" title="1">
+                args = append(args, "--cached")</span>
+        case "all":<span class="cov8" title="1">
+                args = append(args, "HEAD")</span>
+        }
+        <span class="cov8" title="1">cmd := exec.Command("git", args...)
+        cmd.Dir = root
+        out, err := cmd.Output()
+        if err != nil </span><span class="cov8" title="1">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">return string(out), nil</span>
+}
+
+func parseGitDiffFiles(diff string) []string <span class="cov8" title="1">{
+        var files []string
+        for _, line := range strings.Split(diff, "\n") </span><span class="cov8" title="1">{
+                line = strings.TrimSpace(line)
+                if line != "" &amp;&amp; !strings.HasPrefix(line, "#") </span><span class="cov8" title="1">{
+                        files = append(files, line)
+                }</span>
+        }
+        <span class="cov8" title="1">return files</span>
+}
+
+func riskLabel(depth int) string <span class="cov8" title="1">{
+        switch depth </span>{
+        case 1:<span class="cov8" title="1">
+                return "CRITICAL"</span>
+        case 2:<span class="cov8" title="1">
+                return "HIGH"</span>
+        case 3:<span class="cov8" title="1">
+                return "MEDIUM"</span>
+        default:<span class="cov8" title="1">
+                return "LOW"</span>
+        }
+}
+
+func max(a, b int) int <span class="cov8" title="1">{
+        if a &gt; b </span><span class="cov8" title="1">{
+                return a
+        }</span>
+        <span class="cov8" title="1">return b</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

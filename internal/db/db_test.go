@@ -1174,3 +1174,573 @@ func TestDetectAndRecordMoves_Empty(t *testing.T) {
 		t.Fatalf("DetectAndRecordMoves empty: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteSymbolsForFile
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDeleteSymbolsForFile_RemovesSymbolsAndEdges(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("dsf"))
+
+	a := testSymbol("dsf::A#Function", "A", "Function", "dsf", "a.go")
+	b := testSymbol("dsf::B#Function", "B", "Function", "dsf", "b.go")
+	if err := s.BulkUpsertSymbols([]Symbol{a, b}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.BulkUpsertEdges([]Edge{
+		{ProjectID: "dsf", FromID: a.ID, ToID: b.ID, Kind: "CALLS"},
+	}); err != nil {
+		t.Fatalf("upsert edges: %v", err)
+	}
+
+	if err := s.DeleteSymbolsForFile("dsf", "a.go"); err != nil {
+		t.Fatalf("DeleteSymbolsForFile: %v", err)
+	}
+
+	// Symbol A should be gone
+	got, err := s.GetSymbol(a.ID)
+	if err != nil {
+		t.Fatalf("GetSymbol: %v", err)
+	}
+	if got != nil {
+		t.Error("symbol A still exists after DeleteSymbolsForFile")
+	}
+
+	// Symbol B should still exist (different file)
+	gotB, err := s.GetSymbol(b.ID)
+	if err != nil {
+		t.Fatalf("GetSymbol B: %v", err)
+	}
+	if gotB == nil {
+		t.Error("symbol B should still exist")
+	}
+
+	// Edge from A should be gone
+	var edgeCount int
+	s.db.QueryRow(`SELECT COUNT(*) FROM edges WHERE from_id=? OR to_id=?`, a.ID, a.ID).Scan(&edgeCount)
+	if edgeCount != 0 {
+		t.Errorf("edges referencing deleted symbol still exist: count=%d", edgeCount)
+	}
+}
+
+func TestDeleteSymbolsForFile_EmptyFile(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("dsf2"))
+	// Deleting symbols for a file that has no symbols should not error.
+	if err := s.DeleteSymbolsForFile("dsf2", "nonexistent.go"); err != nil {
+		t.Errorf("DeleteSymbolsForFile nonexistent: %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GraphStats
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGraphStats_Kinds(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("gs"))
+
+	fn := testSymbol("gs::Fn#Function", "Fn", "Function", "gs", "f.go")
+	cl := testSymbol("gs::Cls#Class", "Cls", "Class", "gs", "f.go")
+	cl.Kind = "Class"
+	if err := s.BulkUpsertSymbols([]Symbol{fn, cl}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.BulkUpsertEdges([]Edge{
+		{ProjectID: "gs", FromID: fn.ID, ToID: cl.ID, Kind: "CALLS"},
+	}); err != nil {
+		t.Fatalf("upsert edges: %v", err)
+	}
+
+	symCount, edgeCount, kindCounts, edgeKindCounts, err := s.GraphStats("gs")
+	if err != nil {
+		t.Fatalf("GraphStats: %v", err)
+	}
+	if symCount != 2 {
+		t.Errorf("symCount=%d, want 2", symCount)
+	}
+	if edgeCount != 1 {
+		t.Errorf("edgeCount=%d, want 1", edgeCount)
+	}
+	if kindCounts["Function"] != 1 {
+		t.Errorf("Function kind count=%d, want 1", kindCounts["Function"])
+	}
+	if kindCounts["Class"] != 1 {
+		t.Errorf("Class kind count=%d, want 1", kindCounts["Class"])
+	}
+	if edgeKindCounts["CALLS"] != 1 {
+		t.Errorf("CALLS edge count=%d, want 1", edgeKindCounts["CALLS"])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SearchSymbols — kind and language filters
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSearchSymbols_KindFilterCombined(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("ssk"))
+
+	fn := testSymbol("ssk::ProcessOrder#Function", "ProcessOrder", "Function", "ssk", "f.go")
+	cl := testSymbol("ssk::OrderService#Class", "OrderService", "Class", "ssk", "f.go")
+	cl.Kind = "Class"
+	cl.Name = "OrderService"
+	cl.QualifiedName = "OrderService"
+
+	if err := s.BulkUpsertSymbols([]Symbol{fn, cl}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Search with kind=Function should only return Function kinds
+	results, err := s.SearchSymbols("ssk", "Order*", "Function", "", 10)
+	if err != nil {
+		t.Fatalf("SearchSymbols: %v", err)
+	}
+	for _, r := range results {
+		if r.Symbol.Kind != "Function" {
+			t.Errorf("kind filter violated: got kind=%q", r.Symbol.Kind)
+		}
+	}
+
+	// Search with kind=Class should only return Class kinds
+	results, err = s.SearchSymbols("ssk", "Order*", "Class", "", 10)
+	if err != nil {
+		t.Fatalf("SearchSymbols Class: %v", err)
+	}
+	for _, r := range results {
+		if r.Symbol.Kind != "Class" {
+			t.Errorf("Class filter violated: got kind=%q", r.Symbol.Kind)
+		}
+	}
+}
+
+func TestSearchSymbols_LanguageFilter(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("ssl"))
+
+	goSym := testSymbol("ssl::Handler#Function", "Handler", "Function", "ssl", "f.go")
+	goSym.Language = "Go"
+
+	pySym := testSymbol("ssl::handler#Function", "handler", "Function", "ssl", "f.py")
+	pySym.Language = "Python"
+	pySym.Name = "handler"
+	pySym.QualifiedName = "handler"
+
+	if err := s.BulkUpsertSymbols([]Symbol{goSym, pySym}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	results, err := s.SearchSymbols("ssl", "handler*", "", "Go", 10)
+	if err != nil {
+		t.Fatalf("SearchSymbols: %v", err)
+	}
+	for _, r := range results {
+		if r.Symbol.Language != "Go" {
+			t.Errorf("language filter violated: got language=%q", r.Symbol.Language)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetHotspots
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGetHotspots_TopCalled(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("hot2"))
+
+	caller := testSymbol("hot2::Caller#Function", "Caller", "Function", "hot2", "f.go")
+	callee := testSymbol("hot2::Callee#Function", "Callee", "Function", "hot2", "f.go")
+	if err := s.BulkUpsertSymbols([]Symbol{caller, callee}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// callee is called twice
+	if err := s.BulkUpsertEdges([]Edge{
+		{ProjectID: "hot2", FromID: caller.ID, ToID: callee.ID, Kind: "CALLS"},
+		{ProjectID: "hot2", FromID: callee.ID, ToID: callee.ID, Kind: "CALLS"}, // self-call
+	}); err != nil {
+		t.Fatalf("upsert edges: %v", err)
+	}
+
+	hotspots, err := s.GetHotspots("hot2", 5)
+	if err != nil {
+		t.Fatalf("GetHotspots: %v", err)
+	}
+	if len(hotspots) == 0 {
+		t.Fatal("expected at least one hotspot")
+	}
+	// Callee has 2 in-edges, so it should be top hotspot
+	if hotspots[0].Name != "Callee" {
+		t.Errorf("top hotspot=%q, want Callee", hotspots[0].Name)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TraceViaCTE — direction variants
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestTraceViaCTE_InboundDirection(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("tr"))
+
+	caller := testSymbol("tr::Caller#Function", "Caller", "Function", "tr", "f.go")
+	callee := testSymbol("tr::Callee#Function", "Callee", "Function", "tr", "f.go")
+	if err := s.BulkUpsertSymbols([]Symbol{caller, callee}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.BulkUpsertEdges([]Edge{
+		{ProjectID: "tr", FromID: caller.ID, ToID: callee.ID, Kind: "CALLS"},
+	}); err != nil {
+		t.Fatalf("upsert edges: %v", err)
+	}
+
+	// Inbound trace from callee — should find caller
+	results, err := s.TraceViaCTE(callee.ID, "inbound", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE inbound: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.SymbolID == caller.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("inbound trace from Callee should find Caller, got %v", results)
+	}
+}
+
+func TestTraceViaCTE_BothDirections(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("trb"))
+
+	a := testSymbol("trb::A#Function", "A", "Function", "trb", "f.go")
+	b := testSymbol("trb::B#Function", "B", "Function", "trb", "f.go")
+	c := testSymbol("trb::C#Function", "C", "Function", "trb", "f.go")
+	if err := s.BulkUpsertSymbols([]Symbol{a, b, c}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.BulkUpsertEdges([]Edge{
+		{ProjectID: "trb", FromID: a.ID, ToID: b.ID, Kind: "CALLS"}, // A calls B
+		{ProjectID: "trb", FromID: c.ID, ToID: b.ID, Kind: "CALLS"}, // C calls B
+	}); err != nil {
+		t.Fatalf("upsert edges: %v", err)
+	}
+
+	// Both directions from B — outbound: nothing, inbound: A and C
+	results, err := s.TraceViaCTE(b.ID, "both", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTE both: %v", err)
+	}
+	ids := make(map[string]bool)
+	for _, r := range results {
+		ids[r.SymbolID] = true
+	}
+	if !ids[a.ID] {
+		t.Error("both trace should find A (inbound caller)")
+	}
+	if !ids[c.ID] {
+		t.Error("both trace should find C (inbound caller)")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BulkUpsertSymbols — ExtractionConfidence default
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBulkUpsertSymbols_DefaultConfidence(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("buc"))
+
+	sym := testSymbol("buc::Fn#Function", "Fn", "Function", "buc", "f.go")
+	sym.ExtractionConfidence = 0 // should default to 1.0
+
+	if err := s.BulkUpsertSymbols([]Symbol{sym}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+	got, err := s.GetSymbol(sym.ID)
+	if err != nil {
+		t.Fatalf("GetSymbol: %v", err)
+	}
+	if got == nil {
+		t.Fatal("symbol not found")
+	}
+	if got.ExtractionConfidence != 1.0 {
+		t.Errorf("ExtractionConfidence=%f, want 1.0 (default)", got.ExtractionConfidence)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ListADRs — multiple entries
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestListADRs_MultipleEntries(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("adr"))
+
+	entries := map[string]string{
+		"PURPOSE": "code intelligence MCP",
+		"STACK":   "Go + SQLite",
+		"TEAM":    "platform",
+	}
+	for k, v := range entries {
+		if err := s.SetADR("adr", k, v); err != nil {
+			t.Fatalf("SetADR %s: %v", k, v)
+		}
+	}
+
+	got, err := s.ListADRs("adr")
+	if err != nil {
+		t.Fatalf("ListADRs: %v", err)
+	}
+	if len(got) != len(entries) {
+		t.Errorf("ListADRs count=%d, want %d", len(got), len(entries))
+	}
+	for k, want := range entries {
+		if got[k] != want {
+			t.Errorf("ADR[%q]=%q, want %q", k, got[k], want)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ListProjects — multiple projects
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestListProjects_Multiple(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"lp1", "lp2", "lp3"} {
+		if err := s.UpsertProject(testProject(id)); err != nil {
+			t.Fatalf("UpsertProject %s: %v", id, err)
+		}
+	}
+
+	projects, err := s.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) < 3 {
+		t.Errorf("ListProjects count=%d, want >=3", len(projects))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetProject — not found returns nil
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGetProject_MissingID(t *testing.T) {
+	s := newTestStore(t)
+	got, err := s.GetProject("nonexistent-project-xyz")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got != nil {
+		t.Error("GetProject nonexistent should return nil")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HealthCheck + formatStaleness
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHealthCheck_NoProject(t *testing.T) {
+	s := newTestStore(t)
+	report, err := s.HealthCheck("")
+	if err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+	if report == nil {
+		t.Fatal("report is nil")
+	}
+	if report.SchemaVersion <= 0 {
+		t.Errorf("SchemaVersion=%d, want >0", report.SchemaVersion)
+	}
+	if report.Project != nil {
+		t.Errorf("Project should be nil for empty projectID")
+	}
+}
+
+func TestHealthCheck_WithProject(t *testing.T) {
+	s := newTestStore(t)
+	p := testProject("hp1")
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	// Insert a Go symbol so coverage has something to aggregate.
+	sym := testSymbol("hp1::Fn#Function", "Fn", "Function", "hp1", "main.go")
+	sym.ExtractionConfidence = 1.0
+	if err := s.BulkUpsertSymbols([]Symbol{sym}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	report, err := s.HealthCheck("hp1")
+	if err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+	if report.Project == nil {
+		t.Fatal("expected Project in report")
+	}
+	if report.Project.ID != "hp1" {
+		t.Errorf("Project.ID=%q, want hp1", report.Project.ID)
+	}
+	if report.StalenessHuman == "" {
+		t.Error("StalenessHuman should not be empty")
+	}
+	if len(report.Coverage) == 0 {
+		t.Error("Coverage should have at least one entry")
+	}
+	// Go symbols with confidence=1.0 should be AST-parsed
+	for _, lc := range report.Coverage {
+		if lc.Language == "Go" && lc.Parser != "AST" {
+			t.Errorf("Go Parser=%q, want AST", lc.Parser)
+		}
+	}
+}
+
+func TestHealthCheck_RegexLanguageCoverage(t *testing.T) {
+	s := newTestStore(t)
+	p := testProject("hpr")
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	sym := testSymbol("hpr::Fn#Function", "Fn", "Function", "hpr", "main.py")
+	sym.Language = "Python"
+	sym.ExtractionConfidence = 0.85 // regex extraction
+	if err := s.BulkUpsertSymbols([]Symbol{sym}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	report, err := s.HealthCheck("hpr")
+	if err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+	for _, lc := range report.Coverage {
+		if lc.Language == "Python" && lc.Parser != "Regex" {
+			t.Errorf("Python Parser=%q, want Regex (confidence=0.85)", lc.Parser)
+		}
+	}
+}
+
+func TestFormatStaleness(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{10 * time.Second, "10s"},
+		{59 * time.Second, "59s"},
+		{time.Minute, "1m"},
+		{59 * time.Minute, "59m"},
+		{time.Hour, "1h"},
+		{23 * time.Hour, "23h"},
+		{24 * time.Hour, "1d"},
+		{72 * time.Hour, "3d"},
+	}
+	for _, tc := range cases {
+		got := formatStaleness(tc.d)
+		if got != tc.want {
+			t.Errorf("formatStaleness(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DataDir
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDataDir_ReturnsNonEmpty(t *testing.T) {
+	dir, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	if dir == "" {
+		t.Error("DataDir returned empty string")
+	}
+	// Must be a directory that exists after the call
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("DataDir path does not exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("DataDir %q is not a directory", dir)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteProject
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDeleteProject_ClearsSymbols(t *testing.T) {
+	s := newTestStore(t)
+	p := testProject("del-syms")
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	sym := testSymbol("del-syms::Fn#Function", "Fn", "Function", "del-syms", "f.go")
+	if err := s.BulkUpsertSymbols([]Symbol{sym}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	if err := s.DeleteProject("del-syms"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+
+	// Project should be gone
+	got, err := s.GetProject("del-syms")
+	if err != nil {
+		t.Fatalf("GetProject after delete: %v", err)
+	}
+	if got != nil {
+		t.Error("project still exists after DeleteProject")
+	}
+
+	// Symbols should be gone
+	sym2, err := s.GetSymbol(sym.ID)
+	if err != nil {
+		t.Fatalf("GetSymbol after delete: %v", err)
+	}
+	if sym2 != nil {
+		t.Error("symbol still exists after DeleteProject")
+	}
+}
+
+func TestDeleteProject_NonExistent(t *testing.T) {
+	s := newTestStore(t)
+	// Deleting a project that doesn't exist should not error.
+	if err := s.DeleteProject("does-not-exist"); err != nil {
+		t.Errorf("DeleteProject nonexistent: %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// migrate — schema version tracking
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestMigrate_SchemaVersion(t *testing.T) {
+	s := newTestStore(t)
+	// After Open(), schema_version should be at the latest version.
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	expected := 1 + len(schemaMigrations)
+	if version != expected {
+		t.Errorf("schema version=%d, want %d", version, expected)
+	}
+}
+
+func TestMigrate_Idempotent(t *testing.T) {
+	s := newTestStore(t)
+	// Running migrate() again on an already-migrated DB should be safe.
+	if err := s.migrate(); err != nil {
+		t.Fatalf("second migrate(): %v", err)
+	}
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	expected := 1 + len(schemaMigrations)
+	if version != expected {
+		t.Errorf("schema version after re-migrate=%d, want %d", version, expected)
+	}
+}

@@ -63,7 +63,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 - **`internal/index/indexer.go`** — Indexing pipeline. `Index()` walks files concurrently (goroutine per file, `sync.WaitGroup`), hashes with xxh3, skips unchanged files, calls `ast.Extract`, converts to `db.Symbol`/`db.Edge`, flushes in batches. Per-project mutex (`idx.active` map + `idx.mu`) prevents concurrent index of the same project. `Watch()` polls all projects every 2s (active) or 30s (idle). On re-index, detects file moves by matching `(qualified_name, kind)` across projects and records redirects in `symbol_moves`.
 
-- **`internal/server/server.go`** — MCP server. All 14 tools are registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats (`statsCalls`, `statsTokensUsed`, `statsTokensSaved`). `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list on connection.
+- **`internal/server/server.go`** — MCP server. All 14 tools are registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats (`statsCalls`, `statsTokensUsed`, `statsTokensSaved`). `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list on connection. The `cypher.Executor` is initialised with `ProjectID` so all three query paths (node scan, JOIN, BFS) are scoped to the resolved project.
 
 ### The 14 MCP tools
 
@@ -118,5 +118,4 @@ To add a schema change:
 ## Known Architectural Limitations (tracked, not yet fixed)
 
 - **Regex gap**: 19 non-Go languages use regex extraction (~80% accuracy). `extraction_confidence` field surfaces this to callers. Full fix = tree-sitter bindings (no CGO path; planned next sprint).
-- **BFS N×depth SQL queries**: `runBFS` in `cypher/engine.go` issues one SQL query per node per depth level. Planned fix: replace with a single recursive CTE query.
 - **Session stats are ephemeral**: `statsCalls`/`statsTokensUsed`/`statsTokensSaved` reset on reconnect. A `sessions` table for persistent aggregation is planned.

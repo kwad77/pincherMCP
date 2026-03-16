@@ -35,6 +35,9 @@ import (
 	"github.com/pincherMCP/pincher/internal/index"
 )
 
+// sessionFlushInterval controls how often in-memory session stats are persisted to SQLite.
+const sessionFlushInterval = 60 * time.Second
+
 // Server is the pincherMCP MCP server.
 type Server struct {
 	mcp      *mcp.Server
@@ -47,6 +50,11 @@ type Server struct {
 	sessionProject string // derived from sessionRoot
 	sessionID      string // db.ProjectIDFromPath(sessionRoot)
 
+	// persistentSessionID is a stable identifier for this process invocation,
+	// used as the primary key in the sessions table for persistent ROI tracking.
+	persistentSessionID string
+	sessionStartedAt    time.Time
+
 	// Session-level savings accumulators (atomic for goroutine safety).
 	statsCalls       int64
 	statsTokensUsed  int64
@@ -56,10 +64,13 @@ type Server struct {
 
 // New creates and registers all 14 MCP tools.
 func New(store *db.Store, indexer *index.Indexer, version string) *Server {
+	now := time.Now()
 	s := &Server{
-		store:    store,
-		indexer:  indexer,
-		handlers: make(map[string]mcp.ToolHandler),
+		store:               store,
+		indexer:             indexer,
+		handlers:            make(map[string]mcp.ToolHandler),
+		persistentSessionID: fmt.Sprintf("sess-%d", now.UnixNano()),
+		sessionStartedAt:    now,
 	}
 	s.mcp = mcp.NewServer(
 		&mcp.Implementation{Name: "pincher", Version: version},
@@ -70,6 +81,38 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	)
 	s.registerTools()
 	return s
+}
+
+// StartSessionFlusher launches a background goroutine that persists session
+// stats to SQLite every sessionFlushInterval. Call this after New().
+func (s *Server) StartSessionFlusher(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(sessionFlushInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				s.flushSession() // final flush on shutdown
+				return
+			case <-t.C:
+				s.flushSession()
+			}
+		}
+	}()
+}
+
+// flushSession persists current in-memory session stats to the sessions table.
+func (s *Server) flushSession() {
+	calls := atomic.LoadInt64(&s.statsCalls)
+	if calls == 0 {
+		return // nothing to record yet
+	}
+	tokensUsed := atomic.LoadInt64(&s.statsTokensUsed)
+	tokensSaved := atomic.LoadInt64(&s.statsTokensSaved)
+	costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
+	if err := s.store.RecordSession(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided); err != nil {
+		slog.Warn("pincher.session.flush.err", "err", err)
+	}
 }
 
 // MCPServer returns the underlying *mcp.Server.
@@ -1022,6 +1065,20 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"avg_latency_ms":     avgLatency,
 	}
 
+	// Flush current session to DB so all-time totals are fresh.
+	s.flushSession()
+
+	// All-time cumulative savings across all sessions.
+	var allTime map[string]any
+	if atCalls, atUsed, atSaved, atCost, err := s.store.GetAllTimeSavings(); err == nil {
+		allTime = map[string]any{
+			"calls":              atCalls,
+			"tokens_used":        atUsed,
+			"tokens_saved":       atSaved,
+			"total_cost_avoided": fmt.Sprintf("$%.4f", atCost),
+		}
+	}
+
 	// Per-project index breakdown
 	var projectData map[string]any
 	if pid, err := s.resolveProjectID(projectArg); err == nil {
@@ -1040,8 +1097,9 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 
 	data := map[string]any{
-		"session": session,
-		"project": projectData,
+		"session":  session,
+		"all_time": allTime,
+		"project":  projectData,
 	}
 	return s.jsonResultWithMeta(data, start, 0), nil
 }

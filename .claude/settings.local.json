@@ -18,11 +18,17 @@
       "mcp__codebase-memory-mcp__get_graph_schema",
       "mcp__codebase-memory-mcp__get_architecture",
       "Read(//c/Users/kevin/**)",
-      "Read(//c/Users/kevin/AppData/Roaming/Claude/**)"
+      "Read(//c/Users/kevin/AppData/Roaming/Claude/**)",
+      "Bash(find:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go tool:*)",
+      "Bash(git add:*)",
+      "mcp__pincher__stats"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "pincher"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

@@ -106,6 +106,20 @@ var schemaMigrations = []string{
 		PRIMARY KEY (old_id, project_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_sym_qnkind ON symbols(project_id, qualified_name, kind)`,
+
+	// v3 → v4: sessions table records per-session savings so ROI is provable
+	// across reconnects and over time. Each row is one MCP connection (session_id
+	// is generated at startup). The server upserts this row periodically so data
+	// survives even without a clean shutdown.
+	`CREATE TABLE IF NOT EXISTS sessions (
+		session_id   TEXT    NOT NULL PRIMARY KEY,
+		started_at   INTEGER NOT NULL,
+		last_seen    INTEGER NOT NULL,
+		calls        INTEGER NOT NULL DEFAULT 0,
+		tokens_used  INTEGER NOT NULL DEFAULT 0,
+		tokens_saved INTEGER NOT NULL DEFAULT 0,
+		cost_avoided REAL    NOT NULL DEFAULT 0.0
+	)`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -1037,6 +1051,32 @@ func (s *Store) ListADRs(projectID string) (map[string]string, error) {
 func (s *Store) DeleteADR(projectID, key string) error {
 	_, err := s.db.Exec(`DELETE FROM adrs WHERE project_id=? AND key=?`, projectID, key)
 	return err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session savings persistence
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RecordSession upserts the current session's cumulative stats. Call this
+// periodically (e.g. every 60 s) and on graceful shutdown. It is idempotent —
+// calling it repeatedly with updated values is safe.
+func (s *Store) RecordSession(sessionID string, startedAt time.Time, calls, tokensUsed, tokensSaved int64, costAvoided float64) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO sessions(session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, startedAt.Unix(), time.Now().Unix(), calls, tokensUsed, tokensSaved, costAvoided,
+	)
+	return err
+}
+
+// GetAllTimeSavings returns the cumulative savings across all recorded sessions.
+func (s *Store) GetAllTimeSavings() (calls, tokensUsed, tokensSaved int64, costAvoided float64, err error) {
+	err = s.db.QueryRow(
+		`SELECT COALESCE(SUM(calls),0), COALESCE(SUM(tokens_used),0),
+		        COALESCE(SUM(tokens_saved),0), COALESCE(SUM(cost_avoided),0.0)
+		 FROM sessions`,
+	).Scan(&calls, &tokensUsed, &tokensSaved, &costAvoided)
+	return
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
