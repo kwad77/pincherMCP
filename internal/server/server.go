@@ -377,6 +377,15 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return errResult(fmt.Sprintf("db error: %v", err)), nil
 	}
 	if sym == nil {
+		// Stale ID? Check symbol_moves for a redirect (handles file renames/moves).
+		if newID, ok := s.store.ResolveStaleID(s.sessionID, id); ok {
+			sym, err = s.store.GetSymbol(newID)
+			if err != nil {
+				return errResult(fmt.Sprintf("db error resolving stale id: %v", err)), nil
+			}
+		}
+	}
+	if sym == nil {
 		return errResult(fmt.Sprintf("symbol %q not found", id)), nil
 	}
 

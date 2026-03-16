@@ -297,6 +297,13 @@ func (idx *Indexer) flushBuffers(projectID string, syms *[]db.Symbol, edges *[]d
 }
 
 func (idx *Indexer) flushBatch(projectID string, syms []db.Symbol, edges []db.Edge) error {
+	// Detect file moves before upserting (non-fatal: a failure just means
+	// stale IDs won't redirect, but indexing still succeeds).
+	if len(syms) > 0 {
+		if err := idx.store.DetectAndRecordMoves(projectID, syms); err != nil {
+			slog.Debug("pincher.move_detection.error", "project", projectID, "err", err)
+		}
+	}
 	if err := idx.store.BulkUpsertSymbols(syms); err != nil {
 		return fmt.Errorf("upsert symbols: %w", err)
 	}

@@ -1405,3 +1405,39 @@ func TestHandleADR_GetNotFound(t *testing.T) {
 		t.Error("expected error when key not found")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleSymbol: stale ID resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleSymbol_StaleIDRedirect(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: t.TempDir(), Name: "p1", IndexedAt: time.Now()})
+
+	// Insert a symbol at the new path
+	newSym := db.Symbol{
+		ID: "new/path.go::MyFn#Function", ProjectID: "p1",
+		FilePath: "new/path.go", Name: "MyFn", QualifiedName: "MyFn", Kind: "Function",
+		Language: "Go", ExtractionConfidence: 1.0,
+	}
+	store.BulkUpsertSymbols([]db.Symbol{newSym})
+
+	// Record a move: old-id → new-id
+	store.RecordSymbolMove("p1", "old/path.go::MyFn#Function", newSym.ID)
+
+	// Lookup via stale old ID
+	result, err := srv.handleSymbol(context.Background(), makeReq(map[string]any{
+		"id": "old/path.go::MyFn#Function",
+	}))
+	if err != nil {
+		t.Fatalf("handleSymbol: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success via stale redirect, got error: %v", result.Content)
+	}
+	m := decode(t, result)
+	if m["name"] != "MyFn" {
+		t.Errorf("expected MyFn, got %v", m["name"])
+	}
+}

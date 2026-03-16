@@ -1005,3 +1005,95 @@ func TestTraceViaCTE_NoEdges(t *testing.T) {
 		t.Errorf("expected no results for isolated node, got %d", len(results))
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Symbol move tracking
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRecordSymbolMove_Basic(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	if err := s.RecordSymbolMove("p1", "old-id", "new-id"); err != nil {
+		t.Fatalf("RecordSymbolMove: %v", err)
+	}
+	newID, ok := s.ResolveStaleID("p1", "old-id")
+	if !ok {
+		t.Fatal("expected stale ID to resolve")
+	}
+	if newID != "new-id" {
+		t.Errorf("expected new-id, got %q", newID)
+	}
+}
+
+func TestResolveStaleID_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	_, ok := s.ResolveStaleID("p1", "nonexistent")
+	if ok {
+		t.Error("expected false for nonexistent stale ID")
+	}
+}
+
+func TestRecordSymbolMove_Upsert(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.RecordSymbolMove("p1", "old-id", "new-id-1")
+	// Second call should update new_id
+	if err := s.RecordSymbolMove("p1", "old-id", "new-id-2"); err != nil {
+		t.Fatalf("RecordSymbolMove upsert: %v", err)
+	}
+	newID, _ := s.ResolveStaleID("p1", "old-id")
+	if newID != "new-id-2" {
+		t.Errorf("expected updated new-id-2, got %q", newID)
+	}
+}
+
+func TestDetectAndRecordMoves_DetectsMove(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	// Original symbol at old path
+	old := testSymbol("old/path.go::MyFn#Function", "MyFn", "Function", "p1", "old/path.go")
+	old.QualifiedName = "MyFn"
+	s.BulkUpsertSymbols([]Symbol{old})
+
+	// Same qualified name + kind, new path (file moved)
+	newSym := testSymbol("new/path.go::MyFn#Function", "MyFn", "Function", "p1", "new/path.go")
+	newSym.QualifiedName = "MyFn"
+
+	if err := s.DetectAndRecordMoves("p1", []Symbol{newSym}); err != nil {
+		t.Fatalf("DetectAndRecordMoves: %v", err)
+	}
+
+	newID, ok := s.ResolveStaleID("p1", old.ID)
+	if !ok {
+		t.Fatal("expected move to be recorded")
+	}
+	if newID != newSym.ID {
+		t.Errorf("expected %q, got %q", newSym.ID, newID)
+	}
+}
+
+func TestDetectAndRecordMoves_NoMove(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	// Brand new symbol — no existing symbol with same QN+kind
+	newSym := testSymbol("path.go::BrandNew#Function", "BrandNew", "Function", "p1", "path.go")
+	newSym.QualifiedName = "BrandNew"
+
+	if err := s.DetectAndRecordMoves("p1", []Symbol{newSym}); err != nil {
+		t.Fatalf("DetectAndRecordMoves: %v", err)
+	}
+	_, ok := s.ResolveStaleID("p1", newSym.ID)
+	if ok {
+		t.Error("no move should be recorded for brand-new symbol")
+	}
+}
+
+func TestDetectAndRecordMoves_Empty(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.DetectAndRecordMoves("p1", nil); err != nil {
+		t.Fatalf("DetectAndRecordMoves empty: %v", err)
+	}
+}

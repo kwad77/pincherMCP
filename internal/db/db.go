@@ -93,6 +93,19 @@ var schemaMigrations = []string{
 	// v1 → v2: extraction_confidence column on symbols lets callers distinguish
 	// go/ast-exact results (1.0) from regex-approximate results (0.6–0.9).
 	`ALTER TABLE symbols ADD COLUMN extraction_confidence REAL NOT NULL DEFAULT 1.0`,
+
+	// v2 → v3: symbol_moves table tracks stale IDs so agents holding an old
+	// symbol ID (from before a file was moved/renamed) can still resolve it.
+	// The index on (project_id, qualified_name, kind) supports move detection
+	// queries that look up existing symbols by qualified name.
+	`CREATE TABLE IF NOT EXISTS symbol_moves (
+		old_id     TEXT    NOT NULL,
+		new_id     TEXT    NOT NULL,
+		project_id TEXT    NOT NULL,
+		moved_at   INTEGER NOT NULL,
+		PRIMARY KEY (old_id, project_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_sym_qnkind ON symbols(project_id, qualified_name, kind)`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -677,6 +690,67 @@ func (s *Store) queryEdges(col, id string, kinds []string) ([]Edge, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Symbol move tracking — stale ID resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RecordSymbolMove persists an old_id → new_id mapping so agents holding
+// stale IDs from before a file move can still resolve them.
+func (s *Store) RecordSymbolMove(projectID, oldID, newID string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO symbol_moves(old_id, new_id, project_id, moved_at)
+		 VALUES (?,?,?,?)
+		 ON CONFLICT(old_id, project_id) DO UPDATE SET new_id=excluded.new_id, moved_at=excluded.moved_at`,
+		oldID, newID, projectID, time.Now().Unix(),
+	)
+	return err
+}
+
+// ResolveStaleID looks up a new ID for a stale symbol ID.
+// Returns (newID, true) if a redirect exists, ("", false) otherwise.
+func (s *Store) ResolveStaleID(projectID, oldID string) (string, bool) {
+	var newID string
+	err := s.db.QueryRow(
+		`SELECT new_id FROM symbol_moves WHERE old_id=? AND project_id=?`,
+		oldID, projectID,
+	).Scan(&newID)
+	if err != nil {
+		return "", false
+	}
+	return newID, true
+}
+
+// DetectAndRecordMoves checks whether any of the incoming symbols previously
+// existed under a different ID (same qualified_name + kind, different file_path).
+// When a match is found it records old_id → new_id in symbol_moves.
+// Non-fatal: errors are returned but callers typically log and continue.
+func (s *Store) DetectAndRecordMoves(projectID string, newSyms []Symbol) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	for i := range newSyms {
+		sym := &newSyms[i]
+		var oldID string
+		err := tx.QueryRow(
+			`SELECT id FROM symbols WHERE project_id=? AND qualified_name=? AND kind=? AND id != ?`,
+			projectID, sym.QualifiedName, sym.Kind, sym.ID,
+		).Scan(&oldID)
+		if err == sql.ErrNoRows || err != nil {
+			continue
+		}
+		_, _ = tx.Exec(
+			`INSERT INTO symbol_moves(old_id, new_id, project_id, moved_at)
+			 VALUES (?,?,?,?)
+			 ON CONFLICT(old_id, project_id) DO UPDATE SET new_id=excluded.new_id, moved_at=excluded.moved_at`,
+			oldID, sym.ID, projectID, time.Now().Unix(),
+		)
+	}
+	return tx.Commit()
 }
 
 // TraceResult is one hop returned by TraceViaCTE.
