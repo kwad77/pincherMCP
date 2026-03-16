@@ -852,11 +852,11 @@ func (s *Store) TraceViaCTE(startID, direction string, edgeKinds []string, maxDe
 			JOIN edges e ON ` + joinCond + ` AND e.kind IN (` + in + `)
 			WHERE r.depth < ?
 		)
-		SELECT id, MIN(depth) AS depth, via
+		SELECT id, MIN(depth) AS depth, MIN(via) AS via
 		FROM reach
 		WHERE id != ? AND depth > 0
 		GROUP BY id
-		ORDER BY depth
+		ORDER BY MIN(depth)
 		LIMIT 500`
 
 		args := []any{startID}
