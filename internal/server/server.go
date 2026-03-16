@@ -912,9 +912,14 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
-	// Token savings: symbols returned as stubs instead of full file reads.
+	// Token savings: each result came from a file the agent would have read in full.
 	responseJSON, _ := json.Marshal(rows)
-	tokensSaved := savedVsFullRead(len(results), responseJSON)
+	var filePaths []string
+	for _, r := range results {
+		filePaths = append(filePaths, r.Symbol.FilePath)
+	}
+	root, _ := s.resolveProjectRoot(projectID)
+	tokensSaved := savedVsFileSizes(root, filePaths, responseJSON)
 
 	data := map[string]any{
 		"results": rows,
@@ -1008,6 +1013,11 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 
 	responseJSON, _ := json.Marshal(hopsList)
+	var tracedPaths []string
+	for _, h := range hops {
+		tracedPaths = append(tracedPaths, h.Symbol.FilePath)
+	}
+	traceRoot, _ := s.resolveProjectRoot(projectID)
 	data := map[string]any{
 		"root":      name,
 		"direction": direction,
@@ -1017,7 +1027,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if addRisk {
 		data["risk_summary"] = riskCounts
 	}
-	return s.jsonResultWithMeta(data, start, savedVsFullRead(len(hops), responseJSON)), nil
+	return s.jsonResultWithMeta(data, start, savedVsFileSizes(traceRoot, tracedPaths, responseJSON)), nil
 }
 
 func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1406,14 +1416,36 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 // baseCostPer1M is the approximate cost per 1M tokens for Claude Sonnet (USD).
 const baseCostPer1M = 3.0
 
-// avgSymbolContext is the estimated chars an agent would read from a file to
-// understand one symbol without pincherMCP (roughly one avg Go function + context).
-const avgSymbolContext = 2000
+// avgFileSize is the estimated chars in a typical source file an agent would
+// have to read to locate a symbol without pincherMCP. Real files in this repo
+// average ~33KB; 20KB is a conservative cross-language estimate.
+const avgFileSize = 20_000
 
-// savedVsFullRead returns estimated tokens saved: (N symbols × avgSymbolContext) minus
-// the actual payload size. This is the core token-savings accounting for graph tools.
+// savedVsFullRead returns estimated tokens saved: (N symbols × avgFileSize) minus
+// the actual payload size. The baseline is "read the whole file per symbol",
+// which is what an agent does without a code graph.
 func savedVsFullRead(count int, payloadBytes []byte) int {
-	return max(0, db.ApproxTokens(strings.Repeat("x", count*avgSymbolContext))-db.ApproxTokens(string(payloadBytes)))
+	return max(0, db.ApproxTokens(strings.Repeat("x", count*avgFileSize))-db.ApproxTokens(string(payloadBytes)))
+}
+
+// savedVsFileSizes returns estimated tokens saved using actual file sizes looked
+// up from the filesystem. More accurate than savedVsFullRead for tools that
+// know which files are being accessed.
+func savedVsFileSizes(root string, filePaths []string, payloadBytes []byte) int {
+	total := 0
+	seen := make(map[string]bool)
+	for _, fp := range filePaths {
+		if seen[fp] {
+			continue
+		}
+		seen[fp] = true
+		if fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(fp))); err == nil {
+			total += int(fi.Size())
+		} else {
+			total += avgFileSize
+		}
+	}
+	return max(0, db.ApproxTokens(strings.Repeat("x", total))-db.ApproxTokens(string(payloadBytes)))
 }
 
 func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *mcp.CallToolResult {
