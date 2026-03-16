@@ -772,7 +772,7 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 	for _, start := range startNodes {
 		hops, err := e.bfsViaCTE(ctx, start.ID, edgeKinds, pat.minHops, maxDepth, e.ProjectID, e.maxRows())
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("bfs traversal from %q: %w", start.ID, err)
 		}
 		for _, hop := range hops {
 			m := make(map[string]any)
