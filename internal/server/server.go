@@ -621,8 +621,7 @@ func (s *Server) registerTools() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	path := str(args, "path")
 	if path == "" {
@@ -651,8 +650,7 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 }
 
 func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	id := str(args, "id")
 	if id == "" {
@@ -728,8 +726,7 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 }
 
 func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	ids := strSlice(args, "ids")
 	if len(ids) == 0 {
@@ -776,8 +773,7 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 }
 
 func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	id := str(args, "id")
 	if id == "" {
@@ -820,8 +816,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 }
 
 func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	query := str(args, "query")
 	if query == "" {
@@ -903,8 +898,7 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 }
 
 func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	cql := str(args, "cypher")
 	if cql == "" {
@@ -932,8 +926,7 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 }
 
 func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	name := str(args, "name")
 	if name == "" {
@@ -999,8 +992,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 }
 
 func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	projectArg := str(args, "project")
 	scope := str(args, "scope")
@@ -1094,8 +1086,7 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 }
 
 func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	projectID, errRes := s.mustProject(args)
 	if errRes != nil {
@@ -1158,8 +1149,7 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 }
 
 func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 
 	projectID, errRes := s.mustProject(args)
 	if errRes != nil {
@@ -1203,8 +1193,7 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 }
 
 func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 	action := str(args, "action")
 	key := str(args, "key")
 	value := str(args, "value")
@@ -1262,8 +1251,7 @@ func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 }
 
 func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 	projectArg := str(args, "project")
 
 	// Resolve project — optional; health without a project still returns schema version + db path.
@@ -1298,8 +1286,7 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 }
 
 func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start := time.Now()
-	args := parseArgs(req)
+	start, args := beginCall(req)
 	projectArg := str(args, "project")
 
 	calls := atomic.LoadInt64(&s.statsCalls)
@@ -1407,6 +1394,11 @@ func errResult(msg string) *mcp.CallToolResult {
 // ─────────────────────────────────────────────────────────────────────────────
 // Argument helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+// beginCall combines the two-line handler preamble into one.
+func beginCall(req *mcp.CallToolRequest) (time.Time, map[string]any) {
+	return time.Now(), parseArgs(req)
+}
 
 func parseArgs(req *mcp.CallToolRequest) map[string]any {
 	if len(req.Params.Arguments) == 0 {
