@@ -747,12 +747,19 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	return s.jsonResultWithMeta(data, start, tokensSaved), nil
 }
 
+// maxBatchSymbols caps the number of IDs accepted by the symbols batch tool
+// to prevent unbounded DB query loops and excessive memory usage.
+const maxBatchSymbols = 100
+
 func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, args := beginCall(req)
 
 	ids := strSlice(args, "ids")
 	if len(ids) == 0 {
 		return errResult("ids array is required"), nil
+	}
+	if len(ids) > maxBatchSymbols {
+		return errResult(fmt.Sprintf("too many ids: max %d per call, got %d", maxBatchSymbols, len(ids))), nil
 	}
 
 	projectArg := str(args, "project")
