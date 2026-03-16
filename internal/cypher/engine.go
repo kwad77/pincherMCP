@@ -709,7 +709,18 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	return buildResult(resultRows, q)
 }
 
+// bfsHop is one reachable node found by the recursive CTE traversal.
+type bfsHop struct {
+	node  *symRow
+	depth int
+}
+
 // runBFS handles variable-length path queries: MATCH (a)-[:CALLS*1..3]->(b)
+//
+// Implementation: one SQL recursive CTE per start node — collapses the old
+// N×depth×width round-trip loop into a single query per start node.
+// UNION ALL + depth < maxHops guarantees termination even in cyclic graphs.
+// GROUP BY id + MIN(depth) returns each reachable node once at its shortest depth.
 func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Result, error) {
 	// Find start nodes
 	startQ := `SELECT id, project_id, file_path, name, qualified_name, kind, language,
@@ -762,86 +773,85 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 
 	var resultRows []map[string]any
 	for _, start := range startNodes {
-		visited := map[string]bool{start.ID: true}
-		queue := []*symRow{start}
-
-		for depth := 1; depth <= maxDepth && len(queue) > 0; depth++ {
-			var nextQueue []*symRow
-			for _, node := range queue {
-				neighbors, err := e.edgeNeighbors(ctx, node.ID, edgeKinds, "outbound")
-				if err != nil {
-					continue
-				}
-				for _, neighbor := range neighbors {
-					if visited[neighbor.ID] {
-						continue
-					}
-					visited[neighbor.ID] = true
-					nextQueue = append(nextQueue, neighbor)
-
-					if depth >= pat.minHops {
-						m := make(map[string]any)
-						for k, v := range symRowToMap(pat.fromVar, start) {
-							m[k] = v
-						}
-						for k, v := range symRowToMap(pat.toVar, neighbor) {
-							m[k] = v
-						}
-						m["_hop"] = depth
-						resultRows = append(resultRows, m)
-						if len(resultRows) >= e.maxRows()*2 {
-							goto done
-						}
-					}
-				}
+		hops, err := e.bfsViaCTE(ctx, start.ID, edgeKinds, pat.minHops, maxDepth)
+		if err != nil {
+			continue
+		}
+		for _, hop := range hops {
+			m := make(map[string]any)
+			for k, v := range symRowToMap(pat.fromVar, start) {
+				m[k] = v
 			}
-			queue = nextQueue
+			for k, v := range symRowToMap(pat.toVar, hop.node) {
+				m[k] = v
+			}
+			m["_hop"] = hop.depth
+			resultRows = append(resultRows, m)
+			if len(resultRows) >= e.maxRows()*2 {
+				goto done
+			}
 		}
 	}
 done:
 	return buildResult(resultRows, q)
 }
 
-func (e *Executor) edgeNeighbors(ctx context.Context, fromID string, kinds []string, direction string) ([]*symRow, error) {
+// bfsViaCTE uses a single recursive CTE to find all nodes reachable from startID
+// within [minHops, maxHops] steps along edges of the given kinds.
+// This replaces the old Go BFS loop that issued one SQL call per node per depth.
+func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string, minHops, maxHops int) ([]bfsHop, error) {
 	in := strings.Repeat("?,", len(kinds))
 	in = in[:len(in)-1]
 
-	var sqlQ string
-	var args []any
-	if direction == "outbound" {
-		sqlQ = `SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
-			s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity,
-			s.extraction_confidence
-			FROM edges e JOIN symbols s ON s.id=e.to_id
-			WHERE e.from_id=? AND e.kind IN (` + in + `) LIMIT 100`
-		args = []any{fromID}
-	} else {
-		sqlQ = `SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
-			s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity,
-			s.extraction_confidence
-			FROM edges e JOIN symbols s ON s.id=e.from_id
-			WHERE e.to_id=? AND e.kind IN (` + in + `) LIMIT 100`
-		args = []any{fromID}
-	}
+	// UNION ALL + WHERE depth < maxHops terminates even on cyclic graphs.
+	// GROUP BY id + MIN(depth) returns each reachable node once at shortest path.
+	cteQ := `WITH RECURSIVE reach(id, depth) AS (
+		SELECT ?, 0
+		UNION ALL
+		SELECT e.to_id, r.depth + 1
+		FROM reach r
+		JOIN edges e ON e.from_id = r.id AND e.kind IN (` + in + `)
+		WHERE r.depth < ?
+	)
+	SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
+		s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity,
+		s.extraction_confidence, MIN(r.depth) AS min_depth
+	FROM reach r
+	JOIN symbols s ON s.id = r.id
+	WHERE r.depth >= ? AND r.id != ?
+	GROUP BY r.id
+	ORDER BY min_depth
+	LIMIT 1000`
+
+	args := []any{startID}
 	for _, k := range kinds {
 		args = append(args, k)
 	}
+	args = append(args, maxHops, minHops, startID)
 
-	rows, err := e.DB.QueryContext(ctx, sqlQ, args...)
+	rows, err := e.DB.QueryContext(ctx, cteQ, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []*symRow
+	var hops []bfsHop
 	for rows.Next() {
-		n, err := scanSymRow(rows)
-		if err != nil {
+		var n symRow
+		var isExp, isEntry int64
+		var depth int
+		if err := rows.Scan(
+			&n.ID, &n.ProjectID, &n.FilePath, &n.Name, &n.QualifiedName, &n.Kind, &n.Language,
+			&n.StartByte, &n.EndByte, &n.StartLine, &n.EndLine, &isExp, &isEntry, &n.Complexity,
+			&n.ExtractionConfidence, &depth,
+		); err != nil {
 			return nil, err
 		}
-		out = append(out, n)
+		n.IsExported = isExp != 0
+		n.IsEntryPoint = isEntry != 0
+		hops = append(hops, bfsHop{node: &n, depth: depth})
 	}
-	return out, rows.Err()
+	return hops, rows.Err()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
