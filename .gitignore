@@ -2,3 +2,12 @@
 *.db
 *.db-wal
 *.db-shm
+
+# Claude Code — local AI assistant config (machine-specific)
+.claude/
+CLAUDE.md
+.mcp.json
+
+# Coverage reports
+cover*.out
+cover*.html
