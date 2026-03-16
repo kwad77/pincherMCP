@@ -1068,14 +1068,7 @@ func scanOneSymbol(row *sql.Row) (*Symbol, error) {
 	if err != nil {
 		return nil, err
 	}
-	sym.Signature = sig.String
-	sym.ReturnType = ret.String
-	sym.Docstring = doc.String
-	sym.Parent = par.String
-	sym.FileHash = fh.String
-	sym.IsExported = isExp != 0
-	sym.IsTest = isTest != 0
-	sym.IsEntryPoint = isEntry != 0
+	fillSymbol(&sym, sig, ret, doc, par, fh, isExp, isTest, isEntry)
 	return &sym, nil
 }
 
@@ -1103,14 +1096,7 @@ func scanSymbolRowsRow(rows *sql.Rows, sym *Symbol) error {
 	); err != nil {
 		return err
 	}
-	sym.Signature = sig.String
-	sym.ReturnType = ret.String
-	sym.Docstring = doc.String
-	sym.Parent = par.String
-	sym.FileHash = fh.String
-	sym.IsExported = isExp != 0
-	sym.IsTest = isTest != 0
-	sym.IsEntryPoint = isEntry != 0
+	fillSymbol(sym, sig, ret, doc, par, fh, isExp, isTest, isEntry)
 	return nil
 }
 
@@ -1127,6 +1113,12 @@ func scanSymbolRow(rows *sql.Rows, sym *Symbol, score *float64) error {
 	); err != nil {
 		return err
 	}
+	fillSymbol(sym, sig, ret, doc, par, fh, isExp, isTest, isEntry)
+	return nil
+}
+
+// fillSymbol sets the NullString and bool fields on sym after a Scan call.
+func fillSymbol(sym *Symbol, sig, ret, doc, par, fh sql.NullString, isExp, isTest, isEntry int64) {
 	sym.Signature = sig.String
 	sym.ReturnType = ret.String
 	sym.Docstring = doc.String
@@ -1135,7 +1127,6 @@ func scanSymbolRow(rows *sql.Rows, sym *Symbol, score *float64) error {
 	sym.IsExported = isExp != 0
 	sym.IsTest = isTest != 0
 	sym.IsEntryPoint = isEntry != 0
-	return nil
 }
 
 // ns converts empty string to nil for SQL NULL columns.
