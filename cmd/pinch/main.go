@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pincherMCP/pincher/internal/db"
@@ -24,6 +25,7 @@ func main() {
 		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
 		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080). Enables any HTTP client to call all tools via POST /v1/{tool}.")
 		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments).")
+		httpRate    = flag.Int("http-rate", 0, "Max HTTP requests per IP per minute. 0 = unlimited.")
 	)
 	flag.Parse()
 
@@ -72,6 +74,9 @@ func main() {
 	if *httpAddr != "" {
 		if *httpKey != "" {
 			srv.SetHTTPKey(*httpKey)
+		}
+		if *httpRate > 0 {
+			srv.SetRateLimit(*httpRate, time.Minute)
 		}
 		go func() {
 			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {

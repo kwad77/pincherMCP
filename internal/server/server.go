@@ -50,6 +50,12 @@ type Server struct {
 	version  string
 	httpKey  string // optional bearer token; empty = no auth required
 
+	// HTTP rate limiting — sliding window per remote IP.
+	rateMu      sync.Mutex
+	rateWindows map[string][]time.Time // IP → request timestamps in current window
+	rateLimit   int                    // max requests per window; 0 = unlimited
+	rateWindow  time.Duration          // window size (default 1 minute)
+
 	sessionOnce    sync.Once
 	sessionRoot    string
 	sessionProject string // derived from sessionRoot
@@ -191,6 +197,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Rate limiting — per remote IP sliding window.
+	ip, _, _ := strings.Cut(r.RemoteAddr, ":")
+	if !s.allowRequest(ip) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{"error": fmt.Sprintf("rate limit exceeded — max %d requests per %s", s.rateLimit, s.rateWindow)})
+		return
+	}
+
 	// Transparently compress responses when the client supports it.
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
@@ -296,6 +310,38 @@ func (s *Server) openAPISpec() map[string]any {
 // SetHTTPKey configures a required bearer token for all HTTP requests.
 // If key is empty, authentication is disabled (suitable for localhost-only deployments).
 func (s *Server) SetHTTPKey(key string) { s.httpKey = key }
+
+// SetRateLimit caps HTTP requests to limit per window duration per remote IP.
+// limit=0 disables rate limiting. Typical: SetRateLimit(60, time.Minute).
+func (s *Server) SetRateLimit(limit int, window time.Duration) {
+	s.rateLimit = limit
+	s.rateWindow = window
+	s.rateWindows = make(map[string][]time.Time)
+}
+
+// allowRequest returns true if the remote IP is within its rate limit window.
+func (s *Server) allowRequest(ip string) bool {
+	if s.rateLimit <= 0 {
+		return true
+	}
+	now := time.Now()
+	cutoff := now.Add(-s.rateWindow)
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	// Prune expired timestamps.
+	ts := s.rateWindows[ip]
+	i := 0
+	for i < len(ts) && ts[i].Before(cutoff) {
+		i++
+	}
+	ts = ts[i:]
+	if len(ts) >= s.rateLimit {
+		s.rateWindows[ip] = ts
+		return false
+	}
+	s.rateWindows[ip] = append(ts, now)
+	return true
+}
 
 func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 	srv := &http.Server{Addr: addr, Handler: s}
