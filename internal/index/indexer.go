@@ -246,15 +246,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 
 	duration := time.Since(start)
 
-	// Update project stats
+	// Update project stats — use DB totals so incremental runs reflect the full graph.
+	dbSyms, dbEdges, _, _, _ := idx.store.GraphStats(projectID)
+	// File count: total files walked this run + skipped (unchanged) files.
+	dbFiles := totalFiles + totalSkipped
 	if err := idx.store.UpsertProject(db.Project{
 		ID:        projectID,
 		Path:      absPath,
 		Name:      projectName,
 		IndexedAt: start,
-		FileCount: totalFiles,
-		SymCount:  totalSymbols,
-		EdgeCount: totalEdges,
+		FileCount: dbFiles,
+		SymCount:  dbSyms,
+		EdgeCount: dbEdges,
 	}); err != nil {
 		slog.Warn("pincher.index.update_project.err", "err", err)
 	}
