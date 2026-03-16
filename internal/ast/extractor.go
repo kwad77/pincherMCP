@@ -760,14 +760,26 @@ func findBlockEnd(source []byte, startOffset int, blockChar byte) int {
 		}
 		return min(end, len(source))
 	}
-	// Brace-delimited
+	// Brace-delimited: find the matching close character.
+	var closeChar byte
+	switch blockChar {
+	case '{':
+		closeChar = '}'
+	case '(':
+		closeChar = ')'
+	case '[':
+		closeChar = ']'
+	default:
+		// Unknown delimiter: scan to end of source.
+		return len(source)
+	}
 	depth := 0
 	started := false
 	for i := startOffset; i < len(source); i++ {
 		if source[i] == blockChar {
 			depth++
 			started = true
-		} else if source[i] == blockChar+2 { // '}' is '{'+2
+		} else if source[i] == closeChar {
 			depth--
 			if started && depth == 0 {
 				return i + 1
