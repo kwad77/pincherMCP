@@ -1,5 +1,9 @@
 # pincherMCP
 
+[![CI](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml)
+[![Go 1.24](https://img.shields.io/badge/go-1.24-blue.svg)](https://golang.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 > The fastest, most token-efficient codebase intelligence server — single binary, no cloud dependencies, works with any LLM. Docker image available.
 
 pincherMCP fuses the best ideas from three codebases into one lean Go binary:
@@ -183,6 +187,9 @@ curl -s -X POST http://localhost:8080/v1/search \
 curl -s -X POST http://localhost:8080/v1/query \
   -H "Content-Type: application/json" \
   -d '{"cypher": "MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = '\''main'\'' RETURN g.name LIMIT 10", "project": "myproject"}' | jq .
+
+# List all indexed projects (idiomatic GET — no body needed)
+curl http://localhost:8080/v1/projects | jq .
 
 # Auto-discover the full API spec (Postman/Cursor-importable)
 curl http://localhost:8080/v1/openapi.json | jq .
@@ -533,6 +540,7 @@ pincher --data-dir /custom/path      # override database directory
 pincher --verbose                    # enable verbose logging to stderr
 pincher --http :8080                 # also listen for HTTP REST on :8080
 pincher --http-key mysecrettoken     # require bearer token on all HTTP requests
+pincher --http-rate 60               # rate limit: 60 requests/IP/minute (0 = unlimited)
 ```
 
 ### Test coverage
