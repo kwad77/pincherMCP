@@ -221,7 +221,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			edgeBuf = append(edgeBuf, edges...)
 			// Flush when buffer is large enough
 			if len(symBuf) >= 500 {
-				if flushErr := idx.flushBuffers(projectID, relPath, hash, &symBuf, &edgeBuf); flushErr != nil {
+				if flushErr := idx.flushBuffers(projectID, &symBuf, &edgeBuf); flushErr != nil {
 					slog.Warn("pincher.index.flush.err", "err", flushErr)
 				}
 			}
@@ -281,7 +281,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 }
 
 // flushBuffers writes accumulated symbols and edges to the DB then resets the slices.
-func (idx *Indexer) flushBuffers(projectID, relPath, hash string, syms *[]db.Symbol, edges *[]db.Edge) error {
+func (idx *Indexer) flushBuffers(projectID string, syms *[]db.Symbol, edges *[]db.Edge) error {
 	if err := idx.flushBatch(projectID, *syms, *edges); err != nil {
 		return err
 	}
