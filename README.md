@@ -1,8 +1,8 @@
 # pincherMCP
 
-> The fastest, most token-efficient MCP server for codebase intelligence — single binary, no Docker, no cloud dependencies.
+> The fastest, most token-efficient codebase intelligence server — single binary, no Docker, no cloud dependencies, works with any LLM.
 
-pincherMCP fuses the best ideas from three codebases into one:
+pincherMCP fuses the best ideas from three codebases into one lean Go binary:
 
 | Source | Innovation borrowed |
 |---|---|
@@ -28,9 +28,10 @@ All three indexes — **byte-offset store**, **knowledge graph**, **FTS5 search*
 One parse → three indexes, zero overhead
 One binary → no Docker, no Python, no external services
 One response → always includes token cost metadata
+Any LLM → HTTP REST API works with GPT-4, Gemini, Copilot, Cursor, CI/CD
 ```
 
-Every tool response includes a `_meta` field at the top level so agents can track exactly how many tokens they consumed and how many they saved:
+Every tool response includes a `_meta` field so agents know exactly what they spent and saved:
 
 ```json
 {
@@ -44,6 +45,8 @@ Every tool response includes a `_meta` field at the top level so agents can trac
   }
 }
 ```
+
+Savings are now **persisted across sessions** — every reconnect accumulates into a running all-time total, giving enterprises proof of ROI over time.
 
 ---
 
@@ -81,13 +84,11 @@ Every symbol gets a stable, human-readable ID that survives re-indexing:
 ```
 "{file_path}::{qualified_name}#{kind}"
 
-e.g.  "internal/db/db.go::db.*Store.Open#Method"
+e.g.  "internal/db/db.go::db.Open#Function"
       "src/auth/jwt.ts::AuthService.verify#Method"
 ```
 
-Agents can persist these IDs in their context and look up source code instantly — even after the file changes (as long as the symbol name doesn't change).
-
-When a file is **renamed or moved**, pincherMCP records a `symbol_moves` entry mapping the old ID to the new one. The `symbol` tool transparently redirects stale IDs — agents never get a "not found" error just because a file moved.
+Agents can persist these IDs in their context and retrieve source code instantly — even after the file changes. When a file is **renamed or moved**, pincherMCP records a `symbol_moves` redirect. The `symbol` tool transparently resolves stale IDs — agents never get a "not found" just because a file moved.
 
 ### Extraction Confidence
 
@@ -99,22 +100,20 @@ Every symbol carries an `extraction_confidence` score:
 | `0.85` | Python, JavaScript, JSX, TypeScript, TSX, Rust, Java — stable regex |
 | `0.70` | Ruby, PHP, C, C++, C#, Kotlin, Swift — approximate regex |
 
-Languages in the "detected" category (Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, R) are recognized for file filtering but **no symbols are extracted** from them — those files are skipped during indexing.
-
 ### Schema Migrations
 
-The database schema is versioned. New columns and tables are added via append-only migrations tracked in a `schema_version` table — existing databases upgrade automatically on next `pinch` startup without data loss.
+The schema is versioned (`schema_version` table). Upgrading the binary applies any pending migrations automatically — **no data loss, no manual steps**. Currently at **v4** (adds the `sessions` table for persistent savings tracking).
 
 ---
 
-## Tools (13 total)
+## Tools (14 total)
 
 ### Indexing & Discovery
 
 | Tool | What it does |
 |---|---|
-| `index` | Index a repo. One AST pass populates all three layers. Incremental by default (xxh3 content hash skips unchanged files). |
-| `list` | List all indexed projects with stats (files, symbols, edges, last indexed). |
+| `index` | Index a repo. One AST pass populates all three layers. Incremental by default (xxh3 content hash skips unchanged files). `force=true` to re-parse everything. |
+| `list` | List all indexed projects with stats: files, symbols, edges, last indexed timestamp. |
 | `changes` | Map `git diff` to affected symbols and compute blast radius. Scope: `unstaged` (default), `staged`, or `all`. Returns changed symbols + impacted callers with CRITICAL/HIGH/MEDIUM/LOW risk labels. |
 
 ### Symbol Retrieval
@@ -125,22 +124,67 @@ The database schema is versioned. New columns and tables are added via append-on
 | `symbols` | Batch retrieve multiple symbols in one call. Use instead of calling `symbol` in a loop. | ~95% per symbol |
 | `context` | Symbol + all its direct imports as a minimal bundle. ~90% token reduction vs. reading files. | ~90% |
 
-### Search
+### Search & Query
 
 | Tool | What it does |
 |---|---|
-| `search` | FTS5 BM25 full-text search across names, signatures, and docstrings. Supports wildcards (`auth*`), phrases (`"process order"`), AND/OR. Filter by `kind` or `language`. |
-| `query` | Execute Cypher-like graph queries. Sub-ms for single-hop patterns via SQL JOIN fusion. Variable-length via recursive CTE. |
-| `trace` | Call-path trace — who calls this function, or what does it call. Uses recursive CTE (max 2 SQL calls). Returns hops grouped by depth with risk labels. |
+| `search` | FTS5 BM25 full-text search across names, signatures, and docstrings. Supports wildcards (`auth*`), phrases (`"process order"`), AND/OR. Filter by `kind`, `language`, or `fields` (selective projection). |
+| `query` | Execute Cypher-like graph queries. Sub-ms for single-hop patterns via SQL JOIN fusion. Variable-length paths via recursive CTE. Scoped to a single project. |
+| `trace` | Call-path trace — who calls this function, or what does it call. BFS via recursive CTE. Returns hops grouped by depth with CRITICAL/HIGH/MEDIUM/LOW risk labels. |
 
 ### Architecture & Knowledge
 
 | Tool | What it does |
 |---|---|
-| `architecture` | High-level orientation: language breakdown, entry points, hotspot functions (most-called), graph stats. Call this first on an unfamiliar project. |
-| `schema` | Knowledge graph schema: node kind counts, edge kind counts. Use before `query` to understand what's indexed. |
-| `adr` | Architecture Decision Records — persistent key/value store per project. Actions: `get`, `set`, `list`, `delete`. Record stack decisions, patterns, conventions. |
-| `stats` | Session savings summary: cumulative tokens used/saved, cost avoided, call count, avg latency since server start. Also shows the current project's index size. |
+| `architecture` | High-level orientation: language breakdown, entry points, hotspot functions (most-called), graph stats. Start here on an unfamiliar project. |
+| `schema` | Knowledge graph schema: node kind counts, edge kind counts, total symbols and edges. Use before `query` to understand what's indexed. |
+| `adr` | Architecture Decision Records — persistent key/value store per project. Actions: `get`, `set`, `list`, `delete`. Record stack decisions, patterns, conventions that survive context resets. |
+| `health` | Diagnostic report: schema version, index staleness (time since last index), and per-language extraction coverage. Use to detect stale indexes before trusting results. |
+| `stats` | Session and **all-time** savings summary: tokens used/saved, cost avoided, call count, avg latency. `all_time` persists across reconnects — enterprises can prove ROI over weeks/months. |
+
+---
+
+## Platform Agnostic — HTTP REST API
+
+pincherMCP works with any LLM, IDE, or CI/CD pipeline — not just Claude Code.
+
+Start with the `--http` flag to expose all 14 tools over REST:
+
+```bash
+pincher --http :8080
+```
+
+Then call any tool from any HTTP client:
+
+```bash
+# Index a repository
+curl -s -X POST http://localhost:8080/v1/index \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/path/to/your/project"}' | jq .
+
+# Search for symbols
+curl -s -X POST http://localhost:8080/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "processPayment", "project": "myproject", "fields": "id,name,file_path"}' | jq .
+
+# Execute a Cypher graph query
+curl -s -X POST http://localhost:8080/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"cypher": "MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = '\''main'\'' RETURN g.name LIMIT 10", "project": "myproject"}' | jq .
+
+# Liveness probe (for K8s / load balancers)
+curl http://localhost:8080/v1/health
+```
+
+**Works with:**
+- OpenAI / GPT-4 function calling
+- Google Gemini tool use
+- GitHub Copilot / Cursor custom tools
+- Any CI/CD pipeline (GitHub Actions, Jenkins, etc.)
+- Browser-based tools (CORS headers included)
+- Custom integrations — any language that can make HTTP requests
+
+The stdio MCP transport (for Claude Code) and HTTP server run simultaneously — no either/or.
 
 ---
 
@@ -152,17 +196,17 @@ pincherMCP supports a lightweight Cypher subset translated to SQL at query time.
 -- Find all functions whose name matches a regex
 MATCH (f:Function) WHERE f.name =~ '.*Handler.*' RETURN f.name, f.file_path
 
--- Find what main() calls (single-hop JOIN)
+-- Find what main() calls (single-hop JOIN, sub-ms)
 MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = 'main' RETURN g.name, g.file_path LIMIT 20
 
--- Find call chains up to 3 hops deep (recursive CTE), filter result nodes
-MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name = 'ProcessOrder' AND b.kind = 'Function' RETURN b.name, b.kind
+-- Find call chains up to 3 hops deep (recursive CTE)
+MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name = 'ProcessOrder' AND b.kind = 'Function' RETURN b.name
 
 -- Count functions by language
 MATCH (f:Function) RETURN COUNT(f) AS total
 
 -- Find all exported Go functions
-MATCH (f:Function) WHERE f.language = 'Go' AND f.is_exported = 'true' RETURN f.name LIMIT 50
+MATCH (f:Function) WHERE f.language = 'Go' RETURN f.name LIMIT 50
 
 -- Named edge variables (access edge metadata)
 MATCH (a:Function)-[r:CALLS]->(b:Function) WHERE a.name = 'main' RETURN a.name, r.kind, r.confidence, b.name
@@ -173,7 +217,61 @@ MATCH (f:Function) WHERE f.file_path STARTS WITH 'internal/' RETURN f.name, f.st
 
 **Supported operators:** `=`, `<>`, `>`, `<`, `>=`, `<=`, `=~` (regex), `CONTAINS`, `STARTS WITH`
 
-WHERE filters apply to both the start node and result nodes in all query modes (single-hop JOIN, variable-length BFS, and node-only scans).
+All queries are scoped to a single project — cross-project data leakage is impossible.
+
+---
+
+## Token Savings in Detail
+
+### Per-call savings
+
+Every response includes a `_meta` field:
+
+```json
+"_meta": {
+  "tokens_used":  312,
+  "tokens_saved": 14800,
+  "latency_ms":   2,
+  "cost_avoided": "$0.0444"
+}
+```
+
+**Typical savings:**
+- `symbol` vs. reading a whole file: **~95% fewer tokens**
+- `context` vs. reading a file and its imports: **~90% fewer tokens**
+- `search` vs. asking the model to scan files: **~98% fewer tokens**
+- `trace` vs. asking the model to follow call chains manually: **~99% fewer tokens**
+
+### Search field projection
+
+When you only need IDs to feed into `symbol` or `context`, use the `fields` parameter to return only what you need:
+
+```
+search query="processPayment" fields="id,name,file_path"
+```
+
+Returns ~80% fewer tokens per result compared to the full 10-field default.
+
+### All-time ROI tracking
+
+The `stats` tool now shows cumulative savings across every session:
+
+```json
+{
+  "session": {
+    "calls": 47,
+    "tokens_saved": 284000,
+    "total_cost_avoided": "$0.8520"
+  },
+  "all_time": {
+    "calls": 3847,
+    "tokens_saved": 18400000,
+    "total_cost_avoided": "$55.20"
+  }
+}
+```
+
+These numbers persist across reconnects, process restarts, and binary upgrades — giving you (and your stakeholders) a durable, provable measure of cost avoided.
 
 ---
 
@@ -189,10 +287,8 @@ WHERE filters apply to both the start node and result nodes in all query modes (
 ```bash
 git clone https://github.com/kwad77/pincherMCP
 cd pincherMCP
-go build -o pincher ./cmd/pinch
-
-# Windows
-go build -o pincher.exe ./cmd/pinch
+go build -o pincher ./cmd/pinch/         # Linux/macOS
+go build -o pincher.exe ./cmd/pinch/     # Windows
 ```
 
 ### Add to Claude Code
@@ -225,6 +321,18 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 }
 ```
 
+### Use as an HTTP server (any LLM / CI/CD)
+
+```bash
+# Run with both stdio MCP and HTTP REST
+pincher --http :8080
+
+# Or HTTP-only (no Claude Code needed)
+pincher --http :8080 --data-dir /var/pincher
+```
+
+Point any OpenAI-compatible tool at `http://localhost:8080/v1/`.
+
 ---
 
 ## Usage
@@ -232,7 +340,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 ### First time: index a project
 
 ```
-Use the pincher index tool with path "/path/to/your/project"
+Use pincher index with path "/path/to/your/project"
 ```
 
 Returns:
@@ -245,8 +353,7 @@ Returns:
   "symbols": 3847,
   "edges": 12094,
   "skipped": 0,
-  "duration_ms": 340,
-  "_meta": { "tokens_used": 56, "tokens_saved": 0, "latency_ms": 340, "cost_avoided": "$0.0000" }
+  "duration_ms": 340
 }
 ```
 
@@ -284,6 +391,14 @@ Use pincher changes with scope "unstaged"
 
 Runs `git diff`, finds all symbols in changed files, traces inbound callers, returns a blast radius report with risk labels and counts.
 
+### Track savings over time
+
+```
+Use pincher stats
+```
+
+Returns the current session stats **and** the all-time aggregate from every previous session.
+
 ---
 
 ## Data Storage
@@ -296,7 +411,9 @@ pincherMCP stores its database in a platform-appropriate directory — no root p
 | macOS | `~/Library/Application Support/pincherMCP/pincher.db` |
 | Linux | `~/.local/share/pincherMCP/pincher.db` |
 
-The database is a single SQLite WAL file. Back it up with any file copy tool. Delete it to reset all indexes. The schema is versioned — upgrading the binary applies any pending migrations automatically.
+Override with `--data-dir /custom/path`.
+
+The database is a single SQLite WAL file (schema v4). Back it up with any file copy tool. Delete it to reset all indexes. The schema is versioned — upgrading the binary applies any pending migrations automatically, no data loss.
 
 ---
 
@@ -320,7 +437,7 @@ pincherMCP extracts symbols from 12 languages and detects (but does not index) 8
 | Swift | Regex | 0.70 | Functions, Classes |
 | Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, R | Detected only | — | None (files skipped) |
 
-Go uses the standard library's `go/ast` parser for exact byte offsets. All other extracting languages use regex patterns. To upgrade any language to full accuracy, replace its extractor with tree-sitter bindings — the interface is unchanged.
+Go uses the standard library's `go/ast` parser for exact byte offsets. All other extracting languages use regex patterns calibrated for accuracy. To upgrade any language to full accuracy, replace its extractor with tree-sitter bindings — the interface is unchanged.
 
 ---
 
@@ -334,30 +451,9 @@ All numbers on a ~5,000-file Go monorepo (MacBook M2):
 | Incremental re-index (1 file changed) | ~15ms | Hash check skips unchanged files |
 | Symbol retrieval (`symbol` tool) | <1ms | 1 SQL + 1 seek + 1 read |
 | FTS5 search (`search` tool) | <5ms | BM25 ranking via SQLite FTS5 |
-| Single-hop Cypher query | <2ms | JOIN-fused SQL |
+| Single-hop Cypher query | <2ms | JOIN-fused SQL, no round trips |
 | Multi-hop BFS query (depth 3) | <5ms | Recursive CTE — 1 SQL per start node |
-| Concurrent write safety | 5s retry | `busy_timeout=5000` prevents lock contention errors |
-
----
-
-## Token Efficiency
-
-Every response includes a `_meta` field showing token consumption:
-
-```json
-"_meta": {
-  "tokens_used":  312,
-  "tokens_saved": 14800,
-  "latency_ms":   2,
-  "cost_avoided": "$0.0444"
-}
-```
-
-**Typical savings:**
-- `symbol` vs. reading a whole file: **~95% fewer tokens**
-- `context` vs. reading a file and its imports: **~90% fewer tokens**
-- `search` vs. asking Claude to scan files: **~98% fewer tokens**
-- `trace` vs. asking Claude to manually follow call chains: **~99% fewer tokens**
+| Session stats flush | every 60s | Background goroutine, non-blocking |
 
 ---
 
@@ -371,7 +467,7 @@ Use pincher adr with action "set", key "AUTH", value "JWT, 24h expiry, RS256 key
 Use pincher adr with action "list"
 ```
 
-These persist in the SQLite database and are retrievable in any future session.
+These persist in SQLite and are retrievable in any future session, from any connected client.
 
 ---
 
@@ -379,25 +475,37 @@ These persist in the SQLite database and are retrievable in any future session.
 
 ```
 pincherMCP/
-├── cmd/pinch/main.go            # Entry point — wires db + indexer + server
+├── cmd/pinch/main.go            # Entry point — flags, wires db + indexer + server
 ├── internal/
-│   ├── db/db.go                 # SQLite store: schema, versioned migrations, CRUD, FTS5, graph ops
+│   ├── db/db.go                 # SQLite store: schema v4, migrations, CRUD, FTS5, graph ops, sessions
 │   ├── ast/
 │   │   ├── extractor.go         # Multi-language symbol extraction with byte offsets + confidence scores
 │   │   └── languages.go         # Extension → language detection (20+ languages)
-│   ├── cypher/engine.go         # Cypher-to-SQL translation (tokenizer → parser → executor)
+│   ├── cypher/engine.go         # Cypher-to-SQL translation (tokenizer → parser → 3 query paths)
 │   ├── index/indexer.go         # Indexing pipeline: walk → hash → extract → store → watch → move tracking
-│   └── server/server.go         # MCP server: 13 tools + _meta envelope
+│   └── server/server.go         # 14 MCP tools + HTTP REST gateway + session persistence
 └── go.mod
 ```
 
 ### CLI flags
 
 ```
-pinch -version                   # print version and exit
-pinch -data-dir /custom/path     # override database directory
-pinch -verbose                   # enable verbose logging to stderr
+pincher --version                    # print version and exit
+pincher --data-dir /custom/path      # override database directory
+pincher --verbose                    # enable verbose logging to stderr
+pincher --http :8080                 # also listen for HTTP REST on :8080
 ```
+
+### Test coverage
+
+```bash
+go test ./...                                         # run all tests
+go test ./... -coverprofile=cover.out                 # with coverage
+go tool cover -func=cover.out | grep "^total"         # total: ~90%
+go test ./internal/db/ -run TestGraphStats_WithData -v  # single test
+```
+
+Current coverage: **~90%** across all packages.
 
 ---
 
