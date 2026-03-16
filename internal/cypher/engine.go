@@ -321,13 +321,17 @@ func (p *parser) parsePattern() (pattern, error) {
 			}
 			p.skip("]")
 		}
-		// consume ->
-		if p.peek().value == "-" {
-			p.next()
-		}
-		if p.peek().value == ">" {
+		// consume -> (tokenizer emits it as a two-char token after "]")
+		switch p.peek().value {
+		case "->":
 			p.next()
 			pat.directed = true
+		case "-":
+			p.next()
+			if p.peek().value == ">" {
+				p.next()
+				pat.directed = true
+			}
 		}
 
 		// (toVar:ToKind)
