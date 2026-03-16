@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -53,7 +54,7 @@ type Server struct {
 	statsLatencyMS   int64
 }
 
-// New creates and registers all 12 MCP tools.
+// New creates and registers all 14 MCP tools.
 func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	s := &Server{
 		store:    store,
@@ -611,9 +612,8 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	_ = projectID // Cypher executor uses the DB directly
 
-	exec := &cypher.Executor{DB: s.store.DB(), MaxRows: maxRows}
+	exec := &cypher.Executor{DB: s.store.DB(), MaxRows: maxRows, ProjectID: projectID}
 	result, err := exec.Execute(ctx, cql)
 	if err != nil {
 		return errResult(fmt.Sprintf("cypher error: %v", err)), nil
@@ -1098,7 +1098,10 @@ func parseArgs(req *mcp.CallToolRequest) map[string]any {
 		return map[string]any{}
 	}
 	var m map[string]any
-	_ = json.Unmarshal(req.Params.Arguments, &m)
+	if err := json.Unmarshal(req.Params.Arguments, &m); err != nil {
+		slog.Warn("pincher.parse_args.invalid_json", "err", err)
+		return map[string]any{}
+	}
 	if m == nil {
 		m = map[string]any{}
 	}
@@ -1201,9 +1204,3 @@ func riskLabel(depth int) string {
 	}
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
