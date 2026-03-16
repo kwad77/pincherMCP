@@ -34,11 +34,13 @@ go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n
 
 ```
 cmd/pinch/main.go
-  → db.Open()        open/migrate SQLite
-  → index.New()      create indexer (holds *db.Store)
-  → server.New()     create MCP server (holds *db.Store + *index.Indexer)
-  → idx.Watch()      background goroutine: polls projects for file changes
-  → mcp.StdioTransport  JSON-RPC 2.0 over stdin/stdout
+  → db.Open()              open/migrate SQLite (schema v4)
+  → index.New()            create indexer (holds *db.Store)
+  → server.New()           create MCP server (holds *db.Store + *index.Indexer)
+  → srv.StartSessionFlusher() background goroutine: flushes session stats to DB every 60s
+  → idx.Watch()            background goroutine: polls projects for file changes
+  → [--http :PORT]         optional HTTP server for platform-agnostic REST access
+  → mcp.StdioTransport     JSON-RPC 2.0 over stdin/stdout (Claude Code)
 ```
 
 ### Three-layer storage (single `symbols` table serves all three)
@@ -53,7 +55,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 ### Package responsibilities
 
-- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v3**. `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
+- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v4** (added `sessions` table for persistent savings tracking). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
 
 - **`internal/ast/extractor.go`** — Multi-language symbol extraction. `Extract(source, language, relPath)` dispatches to per-language extractors and sets `ExtractionConfidence` on each symbol (1.0 for Go/AST, 0.85 for stable regex languages, 0.70 for approximate ones). Go uses `go/ast`; all other languages use regex. `extractionConfidence` map controls per-language scores.
 
@@ -63,7 +65,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 - **`internal/index/indexer.go`** — Indexing pipeline. `Index()` walks files concurrently (goroutine per file, `sync.WaitGroup`), hashes with xxh3, skips unchanged files, calls `ast.Extract`, converts to `db.Symbol`/`db.Edge`, flushes in batches. Per-project mutex (`idx.active` map + `idx.mu`) prevents concurrent index of the same project. `Watch()` polls all projects every 2s (active) or 30s (idle). On re-index, detects file moves by matching `(qualified_name, kind)` across projects and records redirects in `symbol_moves`.
 
-- **`internal/server/server.go`** — MCP server. All 14 tools are registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats (`statsCalls`, `statsTokensUsed`, `statsTokensSaved`). `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list on connection. The `cypher.Executor` is initialised with `ProjectID` so all three query paths (node scan, JOIN, BFS) are scoped to the resolved project.
+- **`internal/server/server.go`** — MCP server + HTTP REST gateway. All 14 tools registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats. `StartSessionFlusher()` flushes those stats to the `sessions` table every 60s. `ServeHTTP` / `ListenAndServeHTTP` expose all tools as `POST /v1/{tool}` for any HTTP client (OpenAI, Cursor, CI/CD). `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list. The `cypher.Executor` is initialised with `ProjectID` so all three query paths (node scan, JOIN, BFS) are scoped to the resolved project.
 
 ### The 14 MCP tools
 
@@ -73,7 +75,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 | 2 | `symbol` | Retrieve source by stable ID via O(1) byte-offset seek |
 | 3 | `symbols` | Batch retrieve multiple symbols in one call |
 | 4 | `context` | Symbol + its direct imports as a minimal-token bundle |
-| 5 | `search` | FTS5 BM25 full-text search (wildcards, phrases, kind/language filters) |
+| 5 | `search` | FTS5 BM25 full-text search (wildcards, phrases, kind/language/fields filters) |
 | 6 | `query` | Cypher-like graph queries (node scan, single-hop JOIN, BFS) |
 | 7 | `trace` | BFS call-path trace with CRITICAL/HIGH/MEDIUM/LOW risk labels |
 | 8 | `changes` | Git diff → affected symbols → blast radius BFS |
@@ -118,4 +120,5 @@ To add a schema change:
 ## Known Architectural Limitations (tracked, not yet fixed)
 
 - **Regex gap**: 19 non-Go languages use regex extraction (~80% accuracy). `extraction_confidence` field surfaces this to callers. Full fix = tree-sitter bindings (no CGO path; planned next sprint).
-- **Session stats are ephemeral**: `statsCalls`/`statsTokensUsed`/`statsTokensSaved` reset on reconnect. A `sessions` table for persistent aggregation is planned.
+- **Single-user SQLite**: The `sessions` table and symbol store are local. For team/enterprise shared indexes, a server mode with a shared DB path or a PostgreSQL backend is needed.
+- **HTTP auth**: The `--http` REST API has no authentication. For production deployment, put it behind a reverse proxy with auth (e.g. nginx + Bearer token).
