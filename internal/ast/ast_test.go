@@ -319,3 +319,453 @@ func TestExtractUnknownLanguage(t *testing.T) {
 		t.Errorf("expected 0 symbols for unsupported language, got %d", len(result.Symbols))
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JavaScript extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const jsSrc = `
+function processOrder(order) {
+  return order.total * 1.1;
+}
+
+class PaymentGateway {
+  constructor(apiKey) {
+    this.apiKey = apiKey;
+  }
+}
+
+const fetchData = async (url) => {
+  return fetch(url);
+};
+
+export function helper() {}
+`
+
+func TestExtractJavaScript(t *testing.T) {
+	result := Extract([]byte(jsSrc), "JavaScript", "src/payments.js")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["processOrder"]; !ok {
+		t.Error("expected symbol 'processOrder'")
+	}
+	if byName["processOrder"].Kind != "Function" {
+		t.Errorf("processOrder.Kind = %q, want Function", byName["processOrder"].Kind)
+	}
+	if _, ok := byName["PaymentGateway"]; !ok {
+		t.Error("expected symbol 'PaymentGateway'")
+	}
+	if byName["PaymentGateway"].Kind != "Class" {
+		t.Errorf("PaymentGateway.Kind = %q, want Class", byName["PaymentGateway"].Kind)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rust extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const rustSrc = `use std::collections::HashMap;
+
+pub struct Config {
+    pub name: String,
+}
+
+pub trait Runnable {
+    fn run(&self);
+}
+
+pub enum Status {
+    Active,
+    Inactive,
+}
+
+pub fn process(input: &str) -> String {
+    input.to_uppercase()
+}
+
+fn helper() {}
+`
+
+func TestExtractRust(t *testing.T) {
+	result := Extract([]byte(rustSrc), "Rust", "src/lib.rs")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["Config"]; !ok {
+		t.Error("expected struct 'Config'")
+	}
+	if byName["Config"].Kind != "Class" {
+		t.Errorf("Config.Kind = %q, want Class", byName["Config"].Kind)
+	}
+	if _, ok := byName["Runnable"]; !ok {
+		t.Error("expected trait 'Runnable'")
+	}
+	if byName["Runnable"].Kind != "Interface" {
+		t.Errorf("Runnable.Kind = %q, want Interface", byName["Runnable"].Kind)
+	}
+	if _, ok := byName["Status"]; !ok {
+		t.Error("expected enum 'Status'")
+	}
+	if _, ok := byName["process"]; !ok {
+		t.Error("expected function 'process'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Java extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const javaSrc = `import java.util.List;
+
+public class OrderService {
+    private final String name;
+
+    public OrderService(String name) {
+        this.name = name;
+    }
+
+    public List<String> getOrders() {
+        return null;
+    }
+}
+
+public interface Repository {
+    void save(Object obj);
+}
+
+public enum OrderStatus {
+    PENDING, FULFILLED
+}
+`
+
+func TestExtractJava(t *testing.T) {
+	result := Extract([]byte(javaSrc), "Java", "src/OrderService.java")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	// Java constructors share the class name, so iterate to find the class symbol.
+	var foundClass, foundInterface, foundEnum bool
+	for _, s := range result.Symbols {
+		if s.Name == "OrderService" && s.Kind == "Class" {
+			foundClass = true
+		}
+		if s.Name == "Repository" && s.Kind == "Interface" {
+			foundInterface = true
+		}
+		if s.Name == "OrderStatus" && s.Kind == "Enum" {
+			foundEnum = true
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol 'OrderService'")
+	}
+	if !foundInterface {
+		t.Error("expected interface symbol 'Repository'")
+	}
+	if !foundEnum {
+		t.Error("expected enum symbol 'OrderStatus'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ruby extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const rubySrc = `class Animal
+  def initialize(name)
+    @name = name
+  end
+
+  def speak
+    "..."
+  end
+end
+
+class Dog < Animal
+  def speak
+    "woof"
+  end
+end
+
+def standalone_helper
+  true
+end
+`
+
+func TestExtractRuby(t *testing.T) {
+	result := Extract([]byte(rubySrc), "Ruby", "lib/animal.rb")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["Animal"]; !ok {
+		t.Error("expected class 'Animal'")
+	}
+	if byName["Animal"].Kind != "Class" {
+		t.Errorf("Animal.Kind = %q, want Class", byName["Animal"].Kind)
+	}
+	if _, ok := byName["Dog"]; !ok {
+		t.Error("expected class 'Dog'")
+	}
+	if _, ok := byName["speak"]; !ok {
+		t.Error("expected method 'speak'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHP extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const phpSrc = `<?php
+
+class UserController extends BaseController {
+    public function index() {
+        return view('users.index');
+    }
+
+    private function validate($request) {
+        return true;
+    }
+}
+
+function formatDate($date) {
+    return date('Y-m-d', $date);
+}
+`
+
+func TestExtractPHP(t *testing.T) {
+	result := Extract([]byte(phpSrc), "PHP", "app/UserController.php")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["UserController"]; !ok {
+		t.Error("expected class 'UserController'")
+	}
+	// Note: indented class methods (e.g. 'index') are not matched by the regex extractor.
+	// Top-level functions without indentation are matched.
+	if _, ok := byName["formatDate"]; !ok {
+		t.Error("expected function 'formatDate'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cSrc = `#include <stdio.h>
+#include <stdlib.h>
+
+int add(int a, int b) {
+    return a + b;
+}
+
+static void helper(void) {
+    printf("hello\n");
+}
+
+int main(int argc, char *argv[]) {
+    return 0;
+}
+`
+
+func TestExtractC(t *testing.T) {
+	result := Extract([]byte(cSrc), "C", "src/main.c")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["add"]; !ok {
+		t.Error("expected function 'add'")
+	}
+	if _, ok := byName["main"]; !ok {
+		t.Error("expected function 'main'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C# extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const csharpSrc = `using System;
+
+public class OrderService : IService {
+    private readonly string _name;
+
+    public OrderService(string name) {
+        _name = name;
+    }
+
+    public async Task<string> GetOrderAsync(int id) {
+        return id.ToString();
+    }
+
+    private void Validate() {}
+}
+
+public interface IService {
+    Task<string> GetOrderAsync(int id);
+}
+`
+
+func TestExtractCSharp(t *testing.T) {
+	result := Extract([]byte(csharpSrc), "C#", "Services/OrderService.cs")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	// C# constructors share the class name; iterate to find the class symbol.
+	var foundClass, foundInterface bool
+	for _, s := range result.Symbols {
+		if s.Name == "OrderService" && s.Kind == "Class" {
+			foundClass = true
+		}
+		if s.Name == "IService" && s.Kind == "Interface" {
+			foundInterface = true
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol 'OrderService'")
+	}
+	if !foundInterface {
+		t.Error("expected interface symbol 'IService'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kotlin extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const kotlinSrc = `import kotlinx.coroutines.*
+
+data class User(val name: String, val age: Int)
+
+class UserService {
+    suspend fun fetchUser(id: Int): User {
+        return User("Alice", 30)
+    }
+
+    fun validateUser(user: User): Boolean {
+        return user.age >= 0
+    }
+}
+
+fun main() {
+    println("Hello")
+}
+`
+
+func TestExtractKotlin(t *testing.T) {
+	result := Extract([]byte(kotlinSrc), "Kotlin", "src/UserService.kt")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["User"]; !ok {
+		t.Error("expected data class 'User'")
+	}
+	if _, ok := byName["UserService"]; !ok {
+		t.Error("expected class 'UserService'")
+	}
+	if _, ok := byName["main"]; !ok {
+		t.Error("expected function 'main'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Swift extractor
+// ─────────────────────────────────────────────────────────────────────────────
+
+const swiftSrc = `import Foundation
+
+protocol Drawable {
+    func draw()
+}
+
+class Shape: Drawable {
+    var color: String = "red"
+
+    func draw() {
+        print("drawing")
+    }
+
+    private func validate() -> Bool {
+        return true
+    }
+}
+
+public func createShape(color: String) -> Shape {
+    return Shape()
+}
+`
+
+func TestExtractSwift(t *testing.T) {
+	result := Extract([]byte(swiftSrc), "Swift", "Sources/Shape.swift")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	if _, ok := byName["Drawable"]; !ok {
+		t.Error("expected protocol 'Drawable'")
+	}
+	if byName["Drawable"].Kind != "Interface" {
+		t.Errorf("Drawable.Kind = %q, want Interface", byName["Drawable"].Kind)
+	}
+	if _, ok := byName["Shape"]; !ok {
+		t.Error("expected class 'Shape'")
+	}
+	if _, ok := byName["createShape"]; !ok {
+		t.Error("expected function 'createShape'")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extract dispatch (all language branches)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExtract_JSX(t *testing.T) {
+	src := []byte(`function MyComponent() { return null; }`)
+	result := Extract(src, "JSX", "src/MyComponent.jsx")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+}
+
+func TestExtract_TSX(t *testing.T) {
+	src := []byte(`export function Button(): JSX.Element { return null; }`)
+	result := Extract(src, "TSX", "src/Button.tsx")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+}
+
+func TestExtract_CPP(t *testing.T) {
+	src := []byte(`int compute(int x) { return x * 2; }`)
+	result := Extract(src, "C++", "src/compute.cpp")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+}
