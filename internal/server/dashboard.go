@@ -76,6 +76,11 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .footer a{color:var(--accent);text-decoration:none}
 .toast{position:fixed;bottom:72px;right:24px;background:#161b22;border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;color:var(--text);opacity:0;transition:opacity .3s;pointer-events:none}
 .toast.show{opacity:1}
+.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px}
+.sparkline-card svg{width:100%;height:80px;display:block}
+.sparkline-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.sparkline-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+.sparkline-legend{font-size:11px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -108,6 +113,17 @@ main{max-width:1200px;margin:0 auto;padding:32px}
   <p class="section-title">All-Time ROI</p>
   <div class="grid grid-4" id="alltime-cards">
     <div class="loading">Loading all-time stats…</div>
+  </div>
+
+  <p class="section-title">Token Savings History</p>
+  <div class="sparkline-card" id="sparkline-card">
+    <div class="sparkline-meta">
+      <span class="sparkline-title">Tokens saved per session</span>
+      <span class="sparkline-legend" id="sparkline-legend">—</span>
+    </div>
+    <svg id="sparkline-svg" viewBox="0 0 800 80" preserveAspectRatio="none">
+      <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Loading…</text>
+    </svg>
   </div>
 
   <p class="section-title">Indexed Projects</p>
@@ -279,8 +295,48 @@ async function load() {
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
+async function loadSparkline() {
+  try {
+    const r = await fetch('/v1/sessions');
+    const data = await r.json();
+    const sessions = (data.sessions || []).slice().reverse(); // oldest first
+    const svg = document.getElementById('sparkline-svg');
+    const legend = document.getElementById('sparkline-legend');
+    if (!sessions.length) {
+      svg.innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">No sessions recorded yet</text>';
+      return;
+    }
+    const vals = sessions.map(s => s.tokens_saved || 0);
+    const maxVal = Math.max(...vals, 1);
+    const W = 800, H = 80, pad = 4;
+    const xStep = vals.length < 2 ? W : (W - pad*2) / (vals.length - 1);
+    const points = vals.map((v, i) => {
+      const x = pad + i * xStep;
+      const y = H - pad - ((v / maxVal) * (H - pad*2));
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    // Area fill
+    const first = pad.toFixed(1) + ',' + H;
+    const last = (pad + (vals.length-1)*xStep).toFixed(1) + ',' + H;
+    svg.innerHTML =
+      '<defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#58a6ff" stop-opacity=".3"/><stop offset="100%" stop-color="#58a6ff" stop-opacity="0"/></linearGradient></defs>' +
+      '<polygon points="' + first + ' ' + points + ' ' + last + '" fill="url(#sg)"/>' +
+      '<polyline points="' + points + '" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+    // Dot on last point
+    const lastX = pad + (vals.length-1)*xStep;
+    const lastY = H - pad - ((vals[vals.length-1] / maxVal) * (H - pad*2));
+    svg.innerHTML += '<circle cx="'+lastX.toFixed(1)+'" cy="'+lastY.toFixed(1)+'" r="3" fill="#58a6ff"/>';
+    const total = vals.reduce((a,b)=>a+b,0);
+    legend.textContent = fmt(total) + ' total · ' + sessions.length + ' sessions · peak ' + fmt(maxVal) + '/session';
+  } catch(e) {
+    document.getElementById('sparkline-svg').innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Could not load session history</text>';
+  }
+}
+
 load();
+loadSparkline();
 setInterval(load, 30000); // auto-refresh every 30s
+setInterval(loadSparkline, 60000); // sparkline refreshes every 60s
 </script>
 </body>
 </html>`

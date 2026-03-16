@@ -227,6 +227,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(dashboardHTML))
 		return
 	}
+	// GET /v1/sessions — per-session savings history for sparkline chart.
+	if path == "sessions" && r.Method == http.MethodGet {
+		sessions, err := s.store.GetSessions(90) // last 90 sessions
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			return
+		}
+		var rows []map[string]any
+		for _, sess := range sessions {
+			rows = append(rows, map[string]any{
+				"session_id":   sess.SessionID,
+				"started_at":   sess.StartedAt.Format(time.RFC3339),
+				"last_seen":    sess.LastSeen.Format(time.RFC3339),
+				"calls":        sess.Calls,
+				"tokens_used":  sess.TokensUsed,
+				"tokens_saved": sess.TokensSaved,
+				"cost_avoided": fmt.Sprintf("$%.4f", sess.CostAvoided),
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"sessions": rows})
+		return
+	}
 	// GET /v1/projects — list all indexed projects.
 	if path == "projects" && r.Method == http.MethodGet {
 		projects, err := s.store.ListProjects()

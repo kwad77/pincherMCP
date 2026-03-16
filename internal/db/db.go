@@ -1036,6 +1036,44 @@ func (s *Store) RecordSession(sessionID string, startedAt time.Time, calls, toke
 	return err
 }
 
+// SessionRow holds per-session stats for historical display.
+type SessionRow struct {
+	SessionID   string
+	StartedAt   time.Time
+	LastSeen    time.Time
+	Calls       int64
+	TokensUsed  int64
+	TokensSaved int64
+	CostAvoided float64
+}
+
+// GetSessions returns all recorded sessions ordered by start time descending.
+// Limit ≤ 0 returns all rows.
+func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
+	q := `SELECT session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided
+	      FROM sessions ORDER BY started_at DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := s.db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionRow
+	for rows.Next() {
+		var r SessionRow
+		var startedUnix, lastSeenUnix int64
+		if err := rows.Scan(&r.SessionID, &startedUnix, &lastSeenUnix, &r.Calls, &r.TokensUsed, &r.TokensSaved, &r.CostAvoided); err != nil {
+			return nil, err
+		}
+		r.StartedAt = time.Unix(startedUnix, 0)
+		r.LastSeen = time.Unix(lastSeenUnix, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // GetAllTimeSavings returns the cumulative savings across all recorded sessions.
 func (s *Store) GetAllTimeSavings() (calls, tokensUsed, tokensSaved int64, costAvoided float64, err error) {
 	err = s.db.QueryRow(
