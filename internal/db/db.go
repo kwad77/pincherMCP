@@ -500,23 +500,20 @@ func formatStaleness(d time.Duration) string {
 
 // DeleteProject removes a project and all its data.
 func (s *Store) DeleteProject(id string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	for _, q := range []string{
-		`DELETE FROM edges   WHERE project_id=?`,
-		`DELETE FROM symbols WHERE project_id=?`,
-		`DELETE FROM files   WHERE project_id=?`,
-		`DELETE FROM adrs    WHERE project_id=?`,
-		`DELETE FROM projects WHERE id=?`,
-	} {
-		if _, err := tx.Exec(q, id); err != nil {
-			return err
+	return s.withTx(func(tx *sql.Tx) error {
+		for _, q := range []string{
+			`DELETE FROM edges   WHERE project_id=?`,
+			`DELETE FROM symbols WHERE project_id=?`,
+			`DELETE FROM files   WHERE project_id=?`,
+			`DELETE FROM adrs    WHERE project_id=?`,
+			`DELETE FROM projects WHERE id=?`,
+		} {
+			if _, err := tx.Exec(q, id); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -529,13 +526,8 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 	if len(syms) == 0 {
 		return nil
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	stmt, err := tx.Prepare(`
+	return s.withTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`
 		INSERT OR REPLACE INTO symbols
 			(id, project_id, file_path, name, qualified_name, kind, language,
 			 start_byte, end_byte, start_line, end_line,
@@ -543,63 +535,56 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 			 complexity, is_exported, is_test, is_entry_point, file_hash,
 			 extraction_confidence)
 		VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for i := range syms {
-		sym := &syms[i]
-		conf := sym.ExtractionConfidence
-		if conf == 0 {
-			conf = 1.0 // default: exact (callers that don't set it are Go/AST)
-		}
-		_, err := stmt.Exec(
-			sym.ID, sym.ProjectID, sym.FilePath, sym.Name, sym.QualifiedName, sym.Kind, sym.Language,
-			sym.StartByte, sym.EndByte, sym.StartLine, sym.EndLine,
-			ns(sym.Signature), ns(sym.ReturnType), ns(sym.Docstring), ns(sym.Parent),
-			sym.Complexity, bi(sym.IsExported), bi(sym.IsTest), bi(sym.IsEntryPoint),
-			ns(sym.FileHash), conf,
-		)
 		if err != nil {
 			return err
 		}
-	}
-	return tx.Commit()
+		defer stmt.Close()
+		for i := range syms {
+			sym := &syms[i]
+			conf := sym.ExtractionConfidence
+			if conf == 0 {
+				conf = 1.0 // default: exact (callers that don't set it are Go/AST)
+			}
+			_, err := stmt.Exec(
+				sym.ID, sym.ProjectID, sym.FilePath, sym.Name, sym.QualifiedName, sym.Kind, sym.Language,
+				sym.StartByte, sym.EndByte, sym.StartLine, sym.EndLine,
+				ns(sym.Signature), ns(sym.ReturnType), ns(sym.Docstring), ns(sym.Parent),
+				sym.Complexity, bi(sym.IsExported), bi(sym.IsTest), bi(sym.IsEntryPoint),
+				ns(sym.FileHash), conf,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // DeleteSymbolsForFile removes all symbols (and edges) from one file.
 func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	rows, err := tx.Query(`SELECT id FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
-	if err != nil {
-		return err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+	return s.withTx(func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT id FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
+		if err != nil {
 			return err
 		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-
-	for _, id := range ids {
-		if _, err := tx.Exec(`DELETE FROM edges WHERE from_id=? OR to_id=?`, id, id); err != nil {
-			return err
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
 		}
-	}
-	if _, err := tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath); err != nil {
+		rows.Close()
+		for _, id := range ids {
+			if _, err := tx.Exec(`DELETE FROM edges WHERE from_id=? OR to_id=?`, id, id); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
 		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // GetSymbol returns a symbol by its stable ID, or nil if not found.
@@ -699,32 +684,27 @@ func (s *Store) BulkUpsertEdges(edges []Edge) error {
 	if len(edges) == 0 {
 		return nil
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	stmt, err := tx.Prepare(`
+	return s.withTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`
 		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties)
 		VALUES (?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for i := range edges {
-		e := &edges[i]
-		propsJSON := ""
-		if len(e.Properties) > 0 {
-			b, _ := json.Marshal(e.Properties)
-			propsJSON = string(b)
-		}
-		if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON)); err != nil {
+		if err != nil {
 			return err
 		}
-	}
-	return tx.Commit()
+		defer stmt.Close()
+		for i := range edges {
+			e := &edges[i]
+			propsJSON := ""
+			if len(e.Properties) > 0 {
+				b, _ := json.Marshal(e.Properties)
+				propsJSON = string(b)
+			}
+			if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // EdgesFrom returns all edges originating from a symbol ID.
@@ -806,30 +786,26 @@ func (s *Store) ResolveStaleID(projectID, oldID string) (string, bool) {
 // When a match is found it records old_id → new_id in symbol_moves.
 // Non-fatal: errors are returned but callers typically log and continue.
 func (s *Store) DetectAndRecordMoves(projectID string, newSyms []Symbol) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	for i := range newSyms {
-		sym := &newSyms[i]
-		var oldID string
-		err := tx.QueryRow(
-			`SELECT id FROM symbols WHERE project_id=? AND qualified_name=? AND kind=? AND id != ?`,
-			projectID, sym.QualifiedName, sym.Kind, sym.ID,
-		).Scan(&oldID)
-		if err == sql.ErrNoRows || err != nil {
-			continue
-		}
-		_, _ = tx.Exec(
-			`INSERT INTO symbol_moves(old_id, new_id, project_id, moved_at)
+	return s.withTx(func(tx *sql.Tx) error {
+		for i := range newSyms {
+			sym := &newSyms[i]
+			var oldID string
+			err := tx.QueryRow(
+				`SELECT id FROM symbols WHERE project_id=? AND qualified_name=? AND kind=? AND id != ?`,
+				projectID, sym.QualifiedName, sym.Kind, sym.ID,
+			).Scan(&oldID)
+			if err == sql.ErrNoRows || err != nil {
+				continue
+			}
+			_, _ = tx.Exec(
+				`INSERT INTO symbol_moves(old_id, new_id, project_id, moved_at)
 			 VALUES (?,?,?,?)
 			 ON CONFLICT(old_id, project_id) DO UPDATE SET new_id=excluded.new_id, moved_at=excluded.moved_at`,
-			oldID, sym.ID, projectID, time.Now().Unix(),
-		)
-	}
-	return tx.Commit()
+				oldID, sym.ID, projectID, time.Now().Unix(),
+			)
+		}
+		return nil
+	})
 }
 
 // TraceResult is one hop returned by TraceViaCTE.
@@ -1159,6 +1135,19 @@ func fillSymbol(sym *Symbol, sig, ret, doc, par, fh sql.NullString, isExp, isTes
 	sym.IsExported = isExp != 0
 	sym.IsTest = isTest != 0
 	sym.IsEntryPoint = isEntry != 0
+}
+
+// withTx runs fn inside a transaction, committing on success and rolling back on error.
+func (s *Store) withTx(fn func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ns converts empty string to nil for SQL NULL columns.
