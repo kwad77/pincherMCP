@@ -39,7 +39,7 @@ import (
 )
 
 // sessionFlushInterval controls how often in-memory session stats are persisted to SQLite.
-const sessionFlushInterval = 60 * time.Second
+const sessionFlushInterval = 10 * time.Second
 
 // Server is the pincherMCP MCP server.
 type Server struct {
@@ -1339,6 +1339,22 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		avgLatency = totalLatency / calls
 	}
 
+	// Flush current session to DB so all-time totals are fresh.
+	s.flushSession()
+
+	// If this process has no live MCP session (e.g. HTTP-only dashboard server),
+	// read the most recent session from DB so the dashboard shows real data.
+	if calls == 0 {
+		if atCalls, atUsed, atSaved, _, err := s.store.GetAllTimeSavings(); err == nil && atCalls > 0 {
+			if atSaved > 0 || atUsed > 0 {
+				tokensUsed = atUsed
+				tokensSaved = atSaved
+				calls = atCalls
+				totalCostAvoided = float64(atSaved) / 1_000_000.0 * baseCostPer1M
+			}
+		}
+	}
+
 	session := map[string]any{
 		"calls":              calls,
 		"tokens_used":        tokensUsed,
@@ -1346,9 +1362,6 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"total_cost_avoided": fmt.Sprintf("$%.4f", totalCostAvoided),
 		"avg_latency_ms":     avgLatency,
 	}
-
-	// Flush current session to DB so all-time totals are fresh.
-	s.flushSession()
 
 	// All-time cumulative savings across all sessions.
 	var allTime map[string]any
