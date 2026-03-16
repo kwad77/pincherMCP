@@ -47,6 +47,7 @@ type Server struct {
 	store    *db.Store
 	indexer  *index.Indexer
 	handlers map[string]mcp.ToolHandler
+	version  string
 
 	sessionOnce    sync.Once
 	sessionRoot    string
@@ -72,6 +73,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		store:               store,
 		indexer:             indexer,
 		handlers:            make(map[string]mcp.ToolHandler),
+		version:             version,
 		persistentSessionID: fmt.Sprintf("sess-%d", now.UnixNano()),
 		sessionStartedAt:    now,
 	}
@@ -191,6 +193,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": "pincher"})
 		return
 	}
+	if path == "openapi.json" {
+		json.NewEncoder(w).Encode(s.openAPISpec())
+		return
+	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed — use POST /v1/{tool}"}`, http.StatusMethodNotAllowed)
@@ -242,6 +248,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewEncoder(w).Encode(map[string]any{"error": "empty result"})
+}
+
+// openAPISpec returns a minimal OpenAPI 3.1 document describing every HTTP tool endpoint.
+// Served at GET /v1/openapi.json so any client (Postman, Cursor, copilots) can auto-import.
+func (s *Server) openAPISpec() map[string]any {
+	tools := []string{"index", "symbol", "symbols", "context", "search", "query", "trace", "changes", "architecture", "schema", "list", "adr", "health", "stats"}
+	paths := map[string]any{}
+	for _, t := range tools {
+		paths["/v1/"+t] = map[string]any{
+			"post": map[string]any{
+				"operationId": t,
+				"summary":     "Call the " + t + " tool",
+				"requestBody": map[string]any{
+					"required": true,
+					"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}},
+				},
+				"responses": map[string]any{
+					"200": map[string]any{"description": "Tool result", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}},
+				},
+			},
+		}
+	}
+	paths["/v1/health"] = map[string]any{
+		"get": map[string]any{"operationId": "health", "summary": "Liveness probe", "responses": map[string]any{"200": map[string]any{"description": "ok"}}},
+	}
+	return map[string]any{
+		"openapi": "3.1.0",
+		"info":    map[string]any{"title": "pincherMCP HTTP API", "version": s.version},
+		"paths":   paths,
+	}
 }
 
 // ListenAndServeHTTP starts an HTTP server on addr (e.g. ":8080").
