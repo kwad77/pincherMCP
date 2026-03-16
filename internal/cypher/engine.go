@@ -33,8 +33,9 @@ type Result struct {
 
 // Executor runs Cypher queries against a SQLite database.
 type Executor struct {
-	DB      *sql.DB
-	MaxRows int // 0 = default (200)
+	DB        *sql.DB
+	MaxRows   int    // 0 = default (200)
+	ProjectID string // if set, all queries are scoped to this project
 }
 
 // Execute parses and executes a Cypher query.
@@ -538,6 +539,10 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 		FROM symbols WHERE 1=1`
 	var args []any
 
+	if e.ProjectID != "" {
+		sqlQ += " AND project_id=?"
+		args = append(args, e.ProjectID)
+	}
 	if pat.fromKind != "" {
 		sqlQ += " AND kind=?"
 		args = append(args, pat.fromKind)
@@ -558,17 +563,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 		}
 		col := cypherPropToCol(c.property)
 		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH") {
-			switch c.op {
-			case "=":
-				sqlQ += " AND " + col + "=?"
-				args = append(args, c.value)
-			case "CONTAINS":
-				sqlQ += " AND " + col + " LIKE ?"
-				args = append(args, "%"+c.value+"%")
-			case "STARTS WITH":
-				sqlQ += " AND " + col + " LIKE ?"
-				args = append(args, c.value+"%")
-			}
+			appendWhereOp(&sqlQ, &args, "", col, c)
 		} else {
 			unpushed = append(unpushed, c)
 		}
@@ -634,6 +629,10 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	var args []any
 	args = append(args, edgeArgs...)
 
+	if e.ProjectID != "" {
+		sqlQ += " AND a.project_id=?"
+		args = append(args, e.ProjectID)
+	}
 	if pat.fromKind != "" {
 		sqlQ += " AND a.kind=?"
 		args = append(args, pat.fromKind)
@@ -655,17 +654,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 		}
 		col := cypherPropToCol(c.property)
 		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH") {
-			switch c.op {
-			case "=":
-				sqlQ += " AND " + tableAlias + "." + col + "=?"
-				args = append(args, c.value)
-			case "CONTAINS":
-				sqlQ += " AND " + tableAlias + "." + col + " LIKE ?"
-				args = append(args, "%"+c.value+"%")
-			case "STARTS WITH":
-				sqlQ += " AND " + tableAlias + "." + col + " LIKE ?"
-				args = append(args, c.value+"%")
-			}
+			appendWhereOp(&sqlQ, &args, tableAlias+".", col, c)
 		} else {
 			unpushed = append(unpushed, c)
 		}
@@ -729,6 +718,10 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 		FROM symbols WHERE 1=1`
 	var startArgs []any
 
+	if e.ProjectID != "" {
+		startQ += " AND project_id=?"
+		startArgs = append(startArgs, e.ProjectID)
+	}
 	if pat.fromKind != "" {
 		startQ += " AND kind=?"
 		startArgs = append(startArgs, pat.fromKind)
@@ -773,7 +766,7 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 
 	var resultRows []map[string]any
 	for _, start := range startNodes {
-		hops, err := e.bfsViaCTE(ctx, start.ID, edgeKinds, pat.minHops, maxDepth)
+		hops, err := e.bfsViaCTE(ctx, start.ID, edgeKinds, pat.minHops, maxDepth, e.ProjectID, e.maxRows())
 		if err != nil {
 			continue
 		}
@@ -802,9 +795,14 @@ done:
 // bfsViaCTE uses a single recursive CTE to find all nodes reachable from startID
 // within [minHops, maxHops] steps along edges of the given kinds.
 // This replaces the old Go BFS loop that issued one SQL call per node per depth.
-func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string, minHops, maxHops int) ([]bfsHop, error) {
+func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string, minHops, maxHops int, projectID string, maxRows int) ([]bfsHop, error) {
 	in := strings.Repeat("?,", len(kinds))
 	in = in[:len(in)-1]
+
+	projectFilter := ""
+	if projectID != "" {
+		projectFilter = " AND e.project_id = ?"
+	}
 
 	// UNION ALL + WHERE depth < maxHops terminates even on cyclic graphs.
 	// GROUP BY id + MIN(depth) returns each reachable node once at shortest path.
@@ -813,7 +811,7 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 		UNION ALL
 		SELECT e.to_id, r.depth + 1
 		FROM reach r
-		JOIN edges e ON e.from_id = r.id AND e.kind IN (` + in + `)
+		JOIN edges e ON e.from_id = r.id AND e.kind IN (` + in + `)` + projectFilter + `
 		WHERE r.depth < ?
 	)
 	SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
@@ -824,13 +822,16 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 	WHERE r.depth >= ? AND r.id != ?
 	GROUP BY r.id
 	ORDER BY min_depth
-	LIMIT 1000`
+	LIMIT ?`
 
 	args := []any{startID}
 	for _, k := range kinds {
 		args = append(args, k)
 	}
-	args = append(args, maxHops, minHops, startID)
+	if projectID != "" {
+		args = append(args, projectID)
+	}
+	args = append(args, maxHops, minHops, startID, maxRows)
 
 	rows, err := e.DB.QueryContext(ctx, cteQ, args...)
 	if err != nil {
@@ -1022,6 +1023,22 @@ func symRowToMap(varName string, n *symRow) map[string]any {
 		prefix + "is_entry_point":         n.IsEntryPoint,
 		prefix + "complexity":             n.Complexity,
 		prefix + "extraction_confidence":  n.ExtractionConfidence,
+	}
+}
+
+// appendWhereOp appends a SQL condition for a pushed-down Cypher WHERE clause.
+// prefix is "" for single-table queries or "alias." for JOIN queries.
+func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
+	switch c.op {
+	case "=":
+		*sqlQ += " AND " + prefix + col + "=?"
+		*args = append(*args, c.value)
+	case "CONTAINS":
+		*sqlQ += " AND " + prefix + col + " LIKE ?"
+		*args = append(*args, "%"+c.value+"%")
+	case "STARTS WITH":
+		*sqlQ += " AND " + prefix + col + " LIKE ?"
+		*args = append(*args, c.value+"%")
 	}
 }
 
