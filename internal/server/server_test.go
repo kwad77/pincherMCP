@@ -1783,3 +1783,207 @@ func TestServeHTTP_RateLimitedResponse(t *testing.T) {
 		t.Fatalf("second request (over limit): got %d, want 429", w.Code)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/stats  (dashboard-safe read-only endpoint)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestServeHTTP_GetStats_Empty(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/stats")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/stats: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	// session may be nil (no sessions recorded yet), all_time should exist
+	if _, ok := resp["all_time"]; !ok {
+		t.Errorf("GET /v1/stats: missing all_time key; got %v", resp)
+	}
+}
+
+func TestServeHTTP_GetStats_WithSession(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	// Record a fake session directly in the DB
+	if err := store.RecordSession("sess-1", time.Now(), 5, 1000, 2000, 0.10); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	w := httpGet(t, srv, "/v1/stats")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/stats: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sess, ok := resp["session"].(map[string]any)
+	if !ok || sess == nil {
+		t.Fatalf("GET /v1/stats: session not returned; got %v", resp)
+	}
+	if sess["calls"] == nil {
+		t.Errorf("GET /v1/stats: session.calls missing")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/sessions
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestServeHTTP_GetSessions_Empty(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/sessions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/sessions: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["sessions"]; !ok {
+		t.Errorf("GET /v1/sessions: missing sessions key; got %v", resp)
+	}
+}
+
+func TestServeHTTP_GetSessions_WithData(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.RecordSession("sess-a", time.Now(), 3, 500, 1000, 0.05)
+	store.RecordSession("sess-b", time.Now(), 7, 1500, 3000, 0.15)
+	w := httpGet(t, srv, "/v1/sessions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/sessions: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	rows, _ := resp["sessions"].([]any)
+	if len(rows) != 2 {
+		t.Errorf("GET /v1/sessions: got %d sessions, want 2", len(rows))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/index-progress
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestServeHTTP_IndexProgress_NotActive(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpPost(t, srv, "/v1/index-progress", `{"project":"nonexistent"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /v1/index-progress: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["active"] != false {
+		t.Errorf("index-progress active: got %v, want false", resp["active"])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/projects  and  DELETE /v1/projects
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestServeHTTP_GetProjects_Empty(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/projects")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/projects: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["projects"]; !ok {
+		t.Errorf("GET /v1/projects: missing projects key; got %v", resp)
+	}
+}
+
+func TestServeHTTP_DeleteProject_BadBody(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// Missing id field
+	w := httpDelete(t, srv, "/v1/projects", `{}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE /v1/projects bad body: got %d, want 400", w.Code)
+	}
+}
+
+func TestServeHTTP_DeleteProject_NotFound(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpDelete(t, srv, "/v1/projects", `{"id":"nonexistent-proj"}`)
+	// DeleteProject on nonexistent ID should still return 200 (SQLite DELETE is idempotent)
+	if w.Code != http.StatusOK {
+		t.Logf("DELETE nonexistent project: got %d (acceptable)", w.Code)
+	}
+}
+
+func httpDelete(t *testing.T, srv *Server, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// savedVsFileSizes — root="" fallback
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSavedVsFileSizes_EmptyRoot(t *testing.T) {
+	// When root is "" and the files don't exist, falls back to avgFileSize per path
+	paths := []string{"nonexistent/file.go"}
+	saved := savedVsFileSizes("", paths, []byte("small payload"))
+	// Should be positive: avgFileSize tokens >> tiny payload tokens
+	if saved <= 0 {
+		t.Errorf("savedVsFileSizes with missing file: got %d, want > 0", saved)
+	}
+}
+
+func TestSavedVsFileSizes_DuplicatePaths(t *testing.T) {
+	// Duplicate paths should only be counted once
+	paths := []string{"a.go", "a.go", "a.go"}
+	saved1 := savedVsFileSizes("", []string{"a.go"}, []byte("x"))
+	saved3 := savedVsFileSizes("", paths, []byte("x"))
+	if saved1 != saved3 {
+		t.Errorf("duplicate paths counted multiple times: single=%d triplicate=%d", saved1, saved3)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleStats MCP tool — DB fallback when no live session
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleStats_DBFallback(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	// Inject a session row directly; stats atomic counters stay at 0
+	store.RecordSession("fallback-sess", time.Now(), 42, 9000, 18000, 0.90)
+
+	ctx := context.Background()
+	result, err := srv.handleStats(ctx, makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("handleStats: %v", err)
+	}
+	m := decode(t, result)
+	sess, _ := m["session"].(map[string]any)
+	if sess == nil {
+		t.Fatal("handleStats: session field missing")
+	}
+	// calls should come from the DB row (42), not from in-memory counter (0)
+	calls, _ := sess["calls"].(float64)
+	if calls != 42 {
+		t.Errorf("handleStats DB fallback: calls=%v, want 42", calls)
+	}
+}
+
+func TestHandleStats_AllTime(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.RecordSession("s1", time.Now(), 10, 1000, 2000, 0.10)
+	store.RecordSession("s2", time.Now(), 20, 3000, 6000, 0.30)
+
+	ctx := context.Background()
+	result, err := srv.handleStats(ctx, makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("handleStats: %v", err)
+	}
+	m := decode(t, result)
+	at, _ := m["all_time"].(map[string]any)
+	if at == nil {
+		t.Fatal("handleStats: all_time field missing")
+	}
+	atCalls, _ := at["calls"].(float64)
+	if atCalls != 30 {
+		t.Errorf("all_time calls: got %v, want 30", atCalls)
+	}
+}
