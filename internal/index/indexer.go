@@ -462,7 +462,8 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 
 			for _, edge := range edges {
 				targetID := edge.ToID
-				if direction == "inbound" {
+				if edge.ToID == node.ID {
+					// inbound edge (from EdgesTo): neighbor is the source
 					targetID = edge.FromID
 				}
 				if visited[targetID] {
