@@ -1,0 +1,862 @@
+// Package db manages the SQLite store for pincherMCP.
+//
+// Design: every symbol row serves three purposes simultaneously:
+//   (1) Byte-offset O(1) source retrieval  (start_byte / end_byte)
+//   (2) Knowledge graph node               (kind, edges table)
+//   (3) FTS5 BM25 full-text search         (symbols_fts virtual table)
+//
+// All three indexes are populated in a single AST parse pass.
+package db
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// Store wraps a SQLite database.
+type Store struct {
+	db   *sql.DB
+	Path string
+}
+
+// DataDir returns the platform data directory for pincherMCP.
+func DataDir() (string, error) {
+	var base string
+	switch runtime.GOOS {
+	case "windows":
+		base = os.Getenv("APPDATA")
+		if base == "" {
+			base = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
+		}
+	case "darwin":
+		base = filepath.Join(os.Getenv("HOME"), "Library", "Application Support")
+	default:
+		base = os.Getenv("XDG_DATA_HOME")
+		if base == "" {
+			base = filepath.Join(os.Getenv("HOME"), ".local", "share")
+		}
+	}
+	dir := filepath.Join(base, "pincherMCP")
+	return dir, os.MkdirAll(dir, 0o700)
+}
+
+// Open opens (or creates) the pincher database at dir/pincher.db.
+func Open(dir string) (*Store, error) {
+	path := filepath.Join(dir, "pincher.db")
+	// WAL mode + normal sync = best throughput/durability tradeoff.
+	// cache_size=-65536 = 64 MB page cache.
+	dsn := fmt.Sprintf(
+		"file:%s?_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON&_cache_size=-65536",
+		path,
+	)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	db.SetMaxOpenConns(1) // SQLite is single-writer
+	db.SetMaxIdleConns(1)
+
+	s := &Store{db: db, Path: path}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return s, nil
+}
+
+// DB returns the raw *sql.DB for advanced callers (e.g. the Cypher executor).
+func (s *Store) DB() *sql.DB { return s.db }
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// migrate applies the schema (idempotent — IF NOT EXISTS throughout).
+func (s *Store) migrate() error {
+	_, err := s.db.Exec(schema)
+	return err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schema
+// ─────────────────────────────────────────────────────────────────────────────
+
+// schema is the complete pincherMCP database layout.
+//
+// Three-layer design:
+//
+//	Layer 1 — Byte-Offset Symbol Store (jcodemunch-mcp innovation)
+//	  symbols.start_byte / end_byte → os.File.Seek + Read → O(1) source
+//	  No re-parsing on retrieval, no line scanning.
+//
+//	Layer 2 — Knowledge Graph (codebase-memory-mcp innovation)
+//	  nodes = symbols rows (shared — no duplication)
+//	  edges = CALLS / IMPORTS / INHERITS / IMPLEMENTS etc.
+//	  Supports Cypher-like MATCH → SQL translation → sub-ms queries
+//
+//	Layer 3 — FTS5 Full-Text Search (code-index-mcp innovation)
+//	  symbols_fts virtual table with built-in BM25 ranking
+//	  Auto-synced via AFTER INSERT/UPDATE/DELETE triggers
+const schema = `
+CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT    PRIMARY KEY,
+    path        TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    indexed_at  INTEGER,
+    file_count  INTEGER DEFAULT 0,
+    sym_count   INTEGER DEFAULT 0,
+    edge_count  INTEGER DEFAULT 0
+);
+
+-- Stable ID format: "{file_path}::{qualified_name}#{kind}"
+-- Stable across re-indexing so agents can persist symbol references.
+CREATE TABLE IF NOT EXISTS symbols (
+    id             TEXT    PRIMARY KEY,
+    project_id     TEXT    NOT NULL REFERENCES projects(id),
+    file_path      TEXT    NOT NULL,
+    name           TEXT    NOT NULL,
+    qualified_name TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,
+    language       TEXT    NOT NULL,
+
+    -- Layer 1: Byte-Offset Retrieval
+    -- Retrieval = 1 SQL lookup + 1 file seek (seek to start_byte, read end_byte-start_byte bytes).
+    -- Zero re-parsing. Zero line scanning.
+    start_byte     INTEGER NOT NULL,
+    end_byte       INTEGER NOT NULL,
+
+    start_line     INTEGER NOT NULL,
+    end_line       INTEGER NOT NULL,
+    signature      TEXT,
+    return_type    TEXT,
+    docstring      TEXT,
+    parent         TEXT,
+
+    -- Layer 2: Graph properties
+    complexity     INTEGER DEFAULT 0,
+    is_exported    INTEGER DEFAULT 0,
+    is_test        INTEGER DEFAULT 0,
+    is_entry_point INTEGER DEFAULT 0,
+
+    file_hash      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sym_project ON symbols(project_id);
+CREATE INDEX IF NOT EXISTS idx_sym_file    ON symbols(project_id, file_path);
+CREATE INDEX IF NOT EXISTS idx_sym_kind    ON symbols(project_id, kind);
+CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(project_id, name);
+CREATE INDEX IF NOT EXISTS idx_sym_qn      ON symbols(project_id, qualified_name);
+
+-- Layer 3: FTS5 full-text search with BM25 ranking.
+-- content= avoids storing duplicate text; triggers keep the index in sync.
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    symbol_id UNINDEXED,
+    name,
+    qualified_name,
+    signature,
+    docstring,
+    content='symbols',
+    content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 1'
+);
+
+CREATE TRIGGER IF NOT EXISTS sym_fts_insert AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES (new.rowid, new.id, new.name, new.qualified_name,
+            COALESCE(new.signature,''), COALESCE(new.docstring,''));
+END;
+CREATE TRIGGER IF NOT EXISTS sym_fts_delete AFTER DELETE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
+            COALESCE(old.signature,''), COALESCE(old.docstring,''));
+END;
+CREATE TRIGGER IF NOT EXISTS sym_fts_update AFTER UPDATE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
+            COALESCE(old.signature,''), COALESCE(old.docstring,''));
+    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES (new.rowid, new.id, new.name, new.qualified_name,
+            COALESCE(new.signature,''), COALESCE(new.docstring,''));
+END;
+
+CREATE TABLE IF NOT EXISTS edges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT    NOT NULL REFERENCES projects(id),
+    from_id    TEXT    NOT NULL,
+    to_id      TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    confidence REAL    DEFAULT 1.0,
+    properties TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_edge_from ON edges(from_id);
+CREATE INDEX IF NOT EXISTS idx_edge_to   ON edges(to_id);
+CREATE INDEX IF NOT EXISTS idx_edge_kind ON edges(project_id, kind);
+
+CREATE TABLE IF NOT EXISTS files (
+    project_id TEXT    NOT NULL,
+    path       TEXT    NOT NULL,
+    hash       TEXT    NOT NULL,
+    indexed_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS adrs (
+    project_id TEXT    NOT NULL,
+    key        TEXT    NOT NULL,
+    value      TEXT    NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, key)
+);
+`
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Symbol is a code entity extracted by the AST indexer.
+type Symbol struct {
+	ID            string
+	ProjectID     string
+	FilePath      string
+	Name          string
+	QualifiedName string
+	Kind          string // Function|Method|Class|Interface|Enum|Type|Variable|Module
+	Language      string
+	StartByte     int
+	EndByte       int
+	StartLine     int
+	EndLine       int
+	Signature     string
+	ReturnType    string
+	Docstring     string
+	Parent        string
+	Complexity    int
+	IsExported    bool
+	IsTest        bool
+	IsEntryPoint  bool
+	FileHash      string
+}
+
+// MakeSymbolID produces the stable, human-readable symbol ID.
+func MakeSymbolID(filePath, qualifiedName, kind string) string {
+	return filePath + "::" + qualifiedName + "#" + kind
+}
+
+// Edge is a directed relationship between two symbols.
+type Edge struct {
+	ID         int64
+	ProjectID  string
+	FromID     string
+	ToID       string
+	Kind       string
+	Confidence float64
+	Properties map[string]any
+}
+
+// Project summarises an indexed repository.
+type Project struct {
+	ID        string
+	Path      string
+	Name      string
+	IndexedAt time.Time
+	FileCount int
+	SymCount  int
+	EdgeCount int
+}
+
+// SearchResult is a FTS5 match returned by SearchSymbols.
+type SearchResult struct {
+	Symbol Symbol
+	Score  float64
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Project operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UpsertProject creates or updates a project record.
+func (s *Store) UpsertProject(p Project) error {
+	_, err := s.db.Exec(`
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
+			file_count=excluded.file_count, sym_count=excluded.sym_count, edge_count=excluded.edge_count`,
+		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
+		p.FileCount, p.SymCount, p.EdgeCount,
+	)
+	return err
+}
+
+// ListProjects returns all indexed projects.
+func (s *Store) ListProjects() ([]Project, error) {
+	rows, err := s.db.Query(
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count FROM projects ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		var p Project
+		var ts int64
+		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount); err != nil {
+			return nil, err
+		}
+		p.IndexedAt = time.Unix(ts, 0)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetProject returns a single project by ID, or nil if not found.
+func (s *Store) GetProject(id string) (*Project, error) {
+	row := s.db.QueryRow(
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count FROM projects WHERE id=?`, id)
+	var p Project
+	var ts int64
+	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	p.IndexedAt = time.Unix(ts, 0)
+	return &p, nil
+}
+
+// DeleteProject removes a project and all its data.
+func (s *Store) DeleteProject(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for _, q := range []string{
+		`DELETE FROM edges   WHERE project_id=?`,
+		`DELETE FROM symbols WHERE project_id=?`,
+		`DELETE FROM files   WHERE project_id=?`,
+		`DELETE FROM adrs    WHERE project_id=?`,
+		`DELETE FROM projects WHERE id=?`,
+	} {
+		if _, err := tx.Exec(q, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Symbol operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BulkUpsertSymbols inserts or replaces symbols in a single transaction.
+// FTS5 triggers fire automatically per row — no extra calls needed.
+func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
+	if len(syms) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmt, err := tx.Prepare(`
+		INSERT OR REPLACE INTO symbols
+			(id, project_id, file_path, name, qualified_name, kind, language,
+			 start_byte, end_byte, start_line, end_line,
+			 signature, return_type, docstring, parent,
+			 complexity, is_exported, is_test, is_entry_point, file_hash)
+		VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for i := range syms {
+		sym := &syms[i]
+		_, err := stmt.Exec(
+			sym.ID, sym.ProjectID, sym.FilePath, sym.Name, sym.QualifiedName, sym.Kind, sym.Language,
+			sym.StartByte, sym.EndByte, sym.StartLine, sym.EndLine,
+			ns(sym.Signature), ns(sym.ReturnType), ns(sym.Docstring), ns(sym.Parent),
+			sym.Complexity, bi(sym.IsExported), bi(sym.IsTest), bi(sym.IsEntryPoint),
+			ns(sym.FileHash),
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DeleteSymbolsForFile removes all symbols (and edges) from one file.
+func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	rows, err := tx.Query(`SELECT id FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM edges WHERE from_id=? OR to_id=?`, id, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// GetSymbol returns a symbol by its stable ID, or nil if not found.
+func (s *Store) GetSymbol(id string) (*Symbol, error) {
+	row := s.db.QueryRow(symSelectFrom+` WHERE id=?`, id)
+	return scanOneSymbol(row)
+}
+
+// GetSymbolsByName finds symbols by short name across a project.
+func (s *Store) GetSymbolsByName(projectID, name string, limit int) ([]Symbol, error) {
+	rows, err := s.db.Query(symSelectFrom+` WHERE project_id=? AND name=? LIMIT ?`, projectID, name, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanManySymbols(rows)
+}
+
+// GetSymbolsByQN finds symbols by qualified name in a project.
+func (s *Store) GetSymbolsByQN(projectID, qn string) ([]Symbol, error) {
+	rows, err := s.db.Query(symSelectFrom+` WHERE project_id=? AND qualified_name=?`, projectID, qn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanManySymbols(rows)
+}
+
+// GetSymbolsForFile returns all symbols in a file ordered by byte offset.
+func (s *Store) GetSymbolsForFile(projectID, filePath string) ([]Symbol, error) {
+	rows, err := s.db.Query(
+		symSelectFrom+` WHERE project_id=? AND file_path=? ORDER BY start_byte`,
+		projectID, filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanManySymbols(rows)
+}
+
+// GetHotspots returns the most-called symbols (highest in-degree) for a project.
+func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
+	rows, err := s.db.Query(`
+		SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
+		       s.start_byte, s.end_byte, s.start_line, s.end_line,
+		       s.signature, s.return_type, s.docstring, s.parent,
+		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash
+		FROM symbols s
+		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
+		ORDER BY cnt DESC LIMIT ?`, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanManySymbols(rows)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FTS5 Search (Layer 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SearchSymbols performs BM25-ranked full-text search.
+// query uses FTS5 match syntax (e.g. "auth*", "login authenticate").
+func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int) ([]SearchResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	q := `
+		SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
+		       s.start_byte, s.end_byte, s.start_line, s.end_line,
+		       s.signature, s.return_type, s.docstring, s.parent,
+		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
+		       bm25(symbols_fts) AS score
+		FROM symbols_fts
+		JOIN symbols s ON s.rowid = symbols_fts.rowid
+		WHERE symbols_fts MATCH ? AND s.project_id = ?`
+	args := []any{query, projectID}
+	if kind != "" {
+		q += " AND s.kind = ?"
+		args = append(args, kind)
+	}
+	if language != "" {
+		q += " AND s.language = ?"
+		args = append(args, language)
+	}
+	q += " ORDER BY score LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var sym Symbol
+		var score float64
+		if err := scanSymbolRow(rows, &sym, &score); err != nil {
+			return nil, err
+		}
+		results = append(results, SearchResult{Symbol: sym, Score: -score}) // negate: lower bm25 = better
+	}
+	return results, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edge operations (Knowledge Graph — Layer 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BulkUpsertEdges inserts edges, ignoring duplicates.
+func (s *Store) BulkUpsertEdges(edges []Edge) error {
+	if len(edges) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties)
+		VALUES (?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for i := range edges {
+		e := &edges[i]
+		propsJSON := ""
+		if len(e.Properties) > 0 {
+			b, _ := json.Marshal(e.Properties)
+			propsJSON = string(b)
+		}
+		if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// EdgesFrom returns all edges originating from a symbol ID.
+func (s *Store) EdgesFrom(fromID string, kinds []string) ([]Edge, error) {
+	return s.queryEdges("from_id", fromID, kinds)
+}
+
+// EdgesTo returns all edges pointing to a symbol ID.
+func (s *Store) EdgesTo(toID string, kinds []string) ([]Edge, error) {
+	return s.queryEdges("to_id", toID, kinds)
+}
+
+func (s *Store) queryEdges(col, id string, kinds []string) ([]Edge, error) {
+	q := `SELECT id, project_id, from_id, to_id, kind, confidence, properties FROM edges WHERE ` + col + `=?`
+	args := []any{id}
+	if len(kinds) > 0 {
+		in := ""
+		for i, k := range kinds {
+			if i > 0 {
+				in += ","
+			}
+			in += "?"
+			args = append(args, k)
+		}
+		q += " AND kind IN (" + in + ")"
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Edge
+	for rows.Next() {
+		var e Edge
+		var propsStr sql.NullString
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.FromID, &e.ToID, &e.Kind, &e.Confidence, &propsStr); err != nil {
+			return nil, err
+		}
+		if propsStr.Valid && propsStr.String != "" {
+			_ = json.Unmarshal([]byte(propsStr.String), &e.Properties)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// GraphStats returns node and edge counts grouped by kind.
+func (s *Store) GraphStats(projectID string) (symCount, edgeCount int, kindCounts, edgeKindCounts map[string]int, err error) {
+	kindCounts = make(map[string]int)
+	edgeKindCounts = make(map[string]int)
+
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM symbols WHERE project_id=?`, projectID).Scan(&symCount); err != nil {
+		return
+	}
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM edges WHERE project_id=?`, projectID).Scan(&edgeCount); err != nil {
+		return
+	}
+
+	rows, err2 := s.db.Query(`SELECT kind, COUNT(*) FROM symbols WHERE project_id=? GROUP BY kind`, projectID)
+	if err2 != nil {
+		err = err2
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var c int
+		if err = rows.Scan(&k, &c); err != nil {
+			return
+		}
+		kindCounts[k] = c
+	}
+
+	erows, err3 := s.db.Query(`SELECT kind, COUNT(*) FROM edges WHERE project_id=? GROUP BY kind`, projectID)
+	if err3 != nil {
+		err = err3
+		return
+	}
+	defer erows.Close()
+	for erows.Next() {
+		var k string
+		var c int
+		if err = erows.Scan(&k, &c); err != nil {
+			return
+		}
+		edgeKindCounts[k] = c
+	}
+	return
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// File hash operations (incremental reindex)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetFileHash returns the stored content hash for a file, or "" if not indexed.
+func (s *Store) GetFileHash(projectID, path string) string {
+	var hash string
+	_ = s.db.QueryRow(`SELECT hash FROM files WHERE project_id=? AND path=?`, projectID, path).Scan(&hash)
+	return hash
+}
+
+// SetFileHash stores the content hash for a file.
+func (s *Store) SetFileHash(projectID, path, hash string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO files(project_id, path, hash, indexed_at) VALUES (?,?,?,?)`,
+		projectID, path, hash, time.Now().Unix())
+	return err
+}
+
+// DeleteFileHash removes the stored hash for a file.
+func (s *Store) DeleteFileHash(projectID, path string) error {
+	_, err := s.db.Exec(`DELETE FROM files WHERE project_id=? AND path=?`, projectID, path)
+	return err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SetADR stores an ADR key-value pair.
+func (s *Store) SetADR(projectID, key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO adrs(project_id, key, value, updated_at) VALUES (?,?,?,?)`,
+		projectID, key, value, time.Now().Unix())
+	return err
+}
+
+// GetADR returns an ADR value by key.
+func (s *Store) GetADR(projectID, key string) (string, bool, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM adrs WHERE project_id=? AND key=?`, projectID, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return value, err == nil, err
+}
+
+// ListADRs returns all ADR entries for a project.
+func (s *Store) ListADRs(projectID string) (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM adrs WHERE project_id=? ORDER BY key`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// DeleteADR removes an ADR entry.
+func (s *Store) DeleteADR(projectID, key string) error {
+	_, err := s.db.Exec(`DELETE FROM adrs WHERE project_id=? AND key=?`, projectID, key)
+	return err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scan helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const symSelectFrom = `
+	SELECT id, project_id, file_path, name, qualified_name, kind, language,
+	       start_byte, end_byte, start_line, end_line,
+	       signature, return_type, docstring, parent,
+	       complexity, is_exported, is_test, is_entry_point, file_hash
+	FROM symbols`
+
+func scanOneSymbol(row *sql.Row) (*Symbol, error) {
+	var sym Symbol
+	var sig, ret, doc, par, fh sql.NullString
+	var isExp, isTest, isEntry int64
+	err := row.Scan(
+		&sym.ID, &sym.ProjectID, &sym.FilePath, &sym.Name, &sym.QualifiedName, &sym.Kind, &sym.Language,
+		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
+		&sig, &ret, &doc, &par,
+		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sym.Signature = sig.String
+	sym.ReturnType = ret.String
+	sym.Docstring = doc.String
+	sym.Parent = par.String
+	sym.FileHash = fh.String
+	sym.IsExported = isExp != 0
+	sym.IsTest = isTest != 0
+	sym.IsEntryPoint = isEntry != 0
+	return &sym, nil
+}
+
+func scanManySymbols(rows *sql.Rows) ([]Symbol, error) {
+	var out []Symbol
+	for rows.Next() {
+		var sym Symbol
+		if err := scanSymbolRowsRow(rows, &sym); err != nil {
+			return nil, err
+		}
+		out = append(out, sym)
+	}
+	return out, rows.Err()
+}
+
+func scanSymbolRowsRow(rows *sql.Rows, sym *Symbol) error {
+	var sig, ret, doc, par, fh sql.NullString
+	var isExp, isTest, isEntry int64
+	if err := rows.Scan(
+		&sym.ID, &sym.ProjectID, &sym.FilePath, &sym.Name, &sym.QualifiedName, &sym.Kind, &sym.Language,
+		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
+		&sig, &ret, &doc, &par,
+		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
+	); err != nil {
+		return err
+	}
+	sym.Signature = sig.String
+	sym.ReturnType = ret.String
+	sym.Docstring = doc.String
+	sym.Parent = par.String
+	sym.FileHash = fh.String
+	sym.IsExported = isExp != 0
+	sym.IsTest = isTest != 0
+	sym.IsEntryPoint = isEntry != 0
+	return nil
+}
+
+// scanSymbolRow scans a symbol row that also includes a score column (FTS5 queries).
+func scanSymbolRow(rows *sql.Rows, sym *Symbol, score *float64) error {
+	var sig, ret, doc, par, fh sql.NullString
+	var isExp, isTest, isEntry int64
+	return rows.Scan(
+		&sym.ID, &sym.ProjectID, &sym.FilePath, &sym.Name, &sym.QualifiedName, &sym.Kind, &sym.Language,
+		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
+		&sig, &ret, &doc, &par,
+		&sym.Complexity, &isExp, &isTest, &isEntry, &fh, score,
+	)
+}
+
+// ns converts empty string to nil for SQL NULL columns.
+func ns(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// bi converts bool to 0/1 for SQLite INTEGER columns.
+func bi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ProjectNameFromPath derives a project name from a directory path.
+func ProjectNameFromPath(path string) string {
+	return filepath.Base(filepath.Clean(path))
+}
+
+// ProjectIDFromPath derives a stable project ID from a directory path.
+func ProjectIDFromPath(path string) string {
+	// Use the absolute path itself as the ID — simple and stable.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
+
+// ApproxTokens estimates the token count of a string.
+// Uses the common approximation of 1 token ≈ 4 characters.
+func ApproxTokens(s string) int {
+	return (len(s) + 3) / 4
+}
+
+// FormatSize formats a byte count as a human-readable string.
+func FormatSize(bytes int) string {
+	switch {
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
