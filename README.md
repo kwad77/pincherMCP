@@ -8,8 +8,6 @@
 [![Go 1.24](https://img.shields.io/badge/go-1.24-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-~90%25-22c55e.svg)](#development)
-[![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
-
 **The fastest, most token-efficient codebase intelligence server.**
 Single binary · No cloud dependencies · Any LLM · HTTP REST or MCP stdio
 
@@ -62,25 +60,21 @@ curl -s http://localhost:8080/v1/health
 
 ## Why pincherMCP?
 
-### Comparison with existing tools
+pincherMCP stands on the shoulders of three excellent projects, combining the best idea from each into one lean Go binary:
 
-| | codebase-memory-mcp | jcodemunch-mcp | Code-Index-MCP | **pincherMCP** |
-|---|:---:|:---:|:---:|:---:|
-| Byte-offset O(1) retrieval | ✗ | ✓ | ✗ | ✓ |
-| Knowledge graph + Cypher | ✓ | ✗ | ✗ | ✓ |
-| FTS5 BM25 search | ✗ | ✗ | ✓ | ✓ |
-| Incremental re-index | ✓ | ✗ | ✓ | ✓ |
-| HTTP REST gateway | ✗ | ✗ | ✗ | ✓ |
-| Token budget metadata | ✗ | ✓ | ✗ | ✓ |
-| Persistent ROI tracking | ✗ | ✗ | ✗ | ✓ |
-| Single binary, no runtime | ✗ | ✗ | ✗ | ✓ |
-| Docker required | ✗ | ✗ | ✓ | optional |
+| Project | What we borrowed |
+|---|---|
+| [codebase-memory-mcp](https://github.com/nicholasgasior/codebase-memory-mcp) | Knowledge graph, Cypher queries, incremental re-index |
+| [jcodemunch-mcp](https://github.com/jgravelle/jcodemunch-mcp) | Byte-offset O(1) symbol retrieval, `_meta` token budget envelope |
+| [Code-Index-MCP](https://github.com/ViperJuice/Code-Index-MCP) | FTS5 BM25 full-text search, file-watch auto-reindex |
+
+All three indexes — **byte-offset store**, **knowledge graph**, **FTS5 search** — are populated in a **single AST parse pass** from one shared `symbols` table. No duplication, no sync overhead.
 
 ### What pincherMCP does differently
 
 ```
 One parse  →  three indexes, zero overhead
-One binary →  no Docker, no Python, no external services
+One binary →  no Python, no external services, runs anywhere
 One call   →  always returns token cost metadata
 Any LLM   →  HTTP REST works with GPT-4, Gemini, Copilot, Cursor, CI/CD
 ```
@@ -409,23 +403,6 @@ pincher --http :8080 --data-dir /var/pincher
 ```
 
 Point any OpenAI-compatible tool at `http://localhost:8080/v1/`. Import `GET /v1/openapi.json` directly into Postman or Cursor for auto-generated typed calls.
-
-### Docker
-
-```bash
-# Pull and run
-docker build -t pincher .
-docker run -p 8080:8080 -v /my/data:/data pincher
-
-# With auth key
-docker run -p 8080:8080 -v /my/data:/data pincher --http :8080 --http-key mysecrettoken
-
-# Mount a repo for indexing
-docker run -p 8080:8080 \
-  -v /my/data:/data \
-  -v /path/to/repo:/repo:ro \
-  pincher
-```
 
 ---
 
