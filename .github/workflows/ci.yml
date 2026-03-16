@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -timeout 120s
+
+      - name: Build
+        run: go build ./cmd/pinch/
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with coverage
+        run: go test ./... -coverprofile=cover.out -timeout 120s
+
+      - name: Check coverage threshold (85%)
+        run: |
+          TOTAL=$(go tool cover -func=cover.out | grep "^total" | awk '{print $3}' | tr -d '%')
+          echo "Total coverage: ${TOTAL}%"
+          awk -v t="$TOTAL" 'BEGIN { if (t+0 < 85) { print "Coverage " t "% is below 85% threshold"; exit 1 } }'
