@@ -1744,3 +1744,134 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Errorf("schema version after re-migrate=%d, want %d", version, expected)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session persistence tests (RecordSession, GetSessions, GetAllTimeSavings)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRecordSession_Basic(t *testing.T) {
+	s := newTestStore(t)
+	start := time.Now().Add(-5 * time.Minute)
+	if err := s.RecordSession("sess-001", start, 10, 500, 12000, 0.036); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	rows, err := s.GetSessions(10)
+	if err != nil {
+		t.Fatalf("GetSessions: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.SessionID != "sess-001" {
+		t.Errorf("session_id=%q, want sess-001", r.SessionID)
+	}
+	if r.Calls != 10 {
+		t.Errorf("calls=%d, want 10", r.Calls)
+	}
+	if r.TokensUsed != 500 {
+		t.Errorf("tokens_used=%d, want 500", r.TokensUsed)
+	}
+	if r.TokensSaved != 12000 {
+		t.Errorf("tokens_saved=%d, want 12000", r.TokensSaved)
+	}
+}
+
+func TestRecordSession_Upsert(t *testing.T) {
+	s := newTestStore(t)
+	start := time.Now().Add(-10 * time.Minute)
+	// First write
+	if err := s.RecordSession("sess-abc", start, 5, 200, 4000, 0.012); err != nil {
+		t.Fatalf("first RecordSession: %v", err)
+	}
+	// Upsert with updated stats (same session_id)
+	if err := s.RecordSession("sess-abc", start, 20, 900, 18000, 0.054); err != nil {
+		t.Fatalf("second RecordSession: %v", err)
+	}
+	rows, err := s.GetSessions(10)
+	if err != nil {
+		t.Fatalf("GetSessions: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d sessions after upsert, want 1", len(rows))
+	}
+	if rows[0].Calls != 20 {
+		t.Errorf("calls after upsert=%d, want 20", rows[0].Calls)
+	}
+}
+
+func TestGetSessions_OrderAndLimit(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+	// Insert 3 sessions with different start times
+	for i, offset := range []time.Duration{-3 * time.Hour, -2 * time.Hour, -1 * time.Hour} {
+		id := "sess-" + string(rune('a'+i))
+		if err := s.RecordSession(id, now.Add(offset), int64(i+1)*5, 100, 1000, 0.003); err != nil {
+			t.Fatalf("RecordSession %d: %v", i, err)
+		}
+	}
+	// Limit 2 — should get the 2 most recent
+	rows, err := s.GetSessions(2)
+	if err != nil {
+		t.Fatalf("GetSessions(2): %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(rows))
+	}
+	// Most recent first
+	if rows[0].SessionID != "sess-c" {
+		t.Errorf("first result=%q, want sess-c (most recent)", rows[0].SessionID)
+	}
+	if rows[1].SessionID != "sess-b" {
+		t.Errorf("second result=%q, want sess-b", rows[1].SessionID)
+	}
+}
+
+func TestGetSessions_Empty(t *testing.T) {
+	s := newTestStore(t)
+	rows, err := s.GetSessions(10)
+	if err != nil {
+		t.Fatalf("GetSessions on empty DB: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("got %d rows on empty DB, want 0", len(rows))
+	}
+}
+
+func TestGetAllTimeSavings_Empty(t *testing.T) {
+	s := newTestStore(t)
+	calls, used, saved, cost, err := s.GetAllTimeSavings()
+	if err != nil {
+		t.Fatalf("GetAllTimeSavings on empty DB: %v", err)
+	}
+	if calls != 0 || used != 0 || saved != 0 || cost != 0 {
+		t.Errorf("expected all zeros on empty DB, got calls=%d used=%d saved=%d cost=%v", calls, used, saved, cost)
+	}
+}
+
+func TestGetAllTimeSavings_Aggregates(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+	if err := s.RecordSession("sess-x", now.Add(-2*time.Hour), 10, 300, 5000, 0.015); err != nil {
+		t.Fatalf("RecordSession 1: %v", err)
+	}
+	if err := s.RecordSession("sess-y", now.Add(-1*time.Hour), 20, 600, 10000, 0.030); err != nil {
+		t.Fatalf("RecordSession 2: %v", err)
+	}
+	calls, used, saved, cost, err := s.GetAllTimeSavings()
+	if err != nil {
+		t.Fatalf("GetAllTimeSavings: %v", err)
+	}
+	if calls != 30 {
+		t.Errorf("total calls=%d, want 30", calls)
+	}
+	if used != 900 {
+		t.Errorf("total tokens_used=%d, want 900", used)
+	}
+	if saved != 15000 {
+		t.Errorf("total tokens_saved=%d, want 15000", saved)
+	}
+	if cost < 0.044 || cost > 0.046 {
+		t.Errorf("total cost_avoided=%v, want ~0.045", cost)
+	}
+}
