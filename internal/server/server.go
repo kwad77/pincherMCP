@@ -677,7 +677,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		if nodes, ok := byDepth[d]; ok {
 			hop := map[string]any{"depth": d, "nodes": nodes}
 			if addRisk {
-				hop["risk"] = riskLabel(d)
+				hop["risk"] = index.RiskLabel(d)
 			}
 			hopsList = append(hopsList, hop)
 		}
@@ -1191,16 +1191,4 @@ func parseGitDiffFiles(diff string) []string {
 	return files
 }
 
-func riskLabel(depth int) string {
-	switch depth {
-	case 1:
-		return "CRITICAL"
-	case 2:
-		return "HIGH"
-	case 3:
-		return "MEDIUM"
-	default:
-		return "LOW"
-	}
-}
 

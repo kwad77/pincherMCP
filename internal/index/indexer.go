@@ -221,6 +221,8 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			edgeBuf = append(edgeBuf, edges...)
 			// Flush when buffer is large enough
 			if len(symBuf) >= 500 {
+				totalSymbols += len(symBuf)
+				totalEdges += len(edgeBuf)
 				if flushErr := idx.flushBuffers(projectID, &symBuf, &edgeBuf); flushErr != nil {
 					slog.Warn("pincher.index.flush.err", "err", flushErr)
 				}
@@ -460,7 +462,7 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 		}
 		risk := ""
 		if addRisk {
-			risk = riskLabel(tr.Depth)
+			risk = RiskLabel(tr.Depth)
 		}
 		hops = append(hops, Hop{Symbol: *sym, Depth: tr.Depth, Via: tr.ViaKind, Risk: risk})
 		if len(hops) >= 500 {
@@ -470,7 +472,8 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 	return hops, nil
 }
 
-func riskLabel(depth int) string {
+// RiskLabel maps a BFS depth to a risk label: 1=CRITICAL, 2=HIGH, 3=MEDIUM, 4+=LOW.
+func RiskLabel(depth int) string {
 	switch depth {
 	case 1:
 		return "CRITICAL"
