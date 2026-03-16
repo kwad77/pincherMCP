@@ -1446,3 +1446,48 @@ func TestRunBFS_GotoDoneEarlyExit(t *testing.T) {
 		t.Errorf("BFS goto done did not fire: got %d rows, want <4", r.Total)
 	}
 }
+
+func TestExecute_ParseError_ReturnsError(t *testing.T) {
+	db := newTestDB(t)
+	e := &Executor{DB: db}
+	// IN is not a supported operator — should return an error via parseConditions
+	_, err := e.Execute(context.Background(), `MATCH (n:Function) WHERE n.name IN ["Foo"] RETURN n.name`)
+	if err == nil {
+		t.Fatal("expected parse error for unsupported IN operator, got nil")
+	}
+}
+
+func TestExecute_InvalidRegex_ReturnsError(t *testing.T) {
+	db := newTestDB(t)
+	insertSym(t, db, "f1", "Foo", "Function", "Go")
+	e := &Executor{DB: db}
+	// (*invalid is not a valid regex — should fail at parse time (B2 fix)
+	_, err := e.Execute(context.Background(), `MATCH (n:Function) WHERE n.name =~ "(*invalid" RETURN n.name`)
+	if err == nil {
+		t.Fatal("expected error for invalid regex pattern, got nil")
+	}
+}
+
+func TestExecute_ValidRegex_Matches(t *testing.T) {
+	db := newTestDB(t)
+	insertSym(t, db, "f1", "FooBar", "Function", "Go")
+	insertSym(t, db, "f2", "BazQux", "Function", "Go")
+	e := &Executor{DB: db}
+	r, err := e.Execute(context.Background(), `MATCH (n:Function) WHERE n.name =~ "Foo.*" RETURN n.name`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if r.Total != 1 {
+		t.Errorf("regex filter: got %d rows, want 1", r.Total)
+	}
+}
+
+func TestExecute_UnsupportedOperator_ReturnsError(t *testing.T) {
+	db := newTestDB(t)
+	e := &Executor{DB: db}
+	// LIKE is not a supported operator in our Cypher subset
+	_, err := e.Execute(context.Background(), `MATCH (n:Function) WHERE n.name LIKE "Foo%" RETURN n.name`)
+	if err == nil {
+		t.Fatal("expected error for unsupported LIKE operator, got nil")
+	}
+}

@@ -383,7 +383,7 @@ func (p *parser) parseConditions() ([]condition, error) {
 	for {
 		c, err := p.parseOneCondition()
 		if err != nil {
-			return conds, nil
+			return nil, err
 		}
 		conds = append(conds, c)
 		if p.peek().value != "AND" && p.peek().value != "OR" {
