@@ -71,6 +71,12 @@ type Server struct {
 	statsTokensUsed  int64
 	statsTokensSaved int64
 	statsLatencyMS   int64
+
+	// mcpConnected is set to 1 when an MCP client fires onInit.
+	// Sessions are only flushed to DB when an MCP client is connected — this
+	// prevents the HTTP-only dashboard process from recording its own tool
+	// calls (POST /v1/architecture etc.) as fake MCP sessions in the DB.
+	mcpConnected int32
 }
 
 // New creates and registers all 14 MCP tools.
@@ -114,7 +120,12 @@ func (s *Server) StartSessionFlusher(ctx context.Context) {
 }
 
 // flushSession persists current in-memory session stats to the sessions table.
+// Only runs when an MCP client has connected (mcpConnected=1). This prevents
+// the HTTP-only dashboard process from writing its own tool calls as sessions.
 func (s *Server) flushSession() {
+	if atomic.LoadInt32(&s.mcpConnected) == 0 {
+		return // no MCP client — HTTP-only process, don't record fake sessions
+	}
 	calls := atomic.LoadInt64(&s.statsCalls)
 	if calls == 0 {
 		return // nothing to record yet
@@ -131,6 +142,7 @@ func (s *Server) flushSession() {
 func (s *Server) MCPServer() *mcp.Server { return s.mcp }
 
 func (s *Server) onInit(ctx context.Context, req *mcp.InitializedRequest) {
+	atomic.StoreInt32(&s.mcpConnected, 1)
 	s.sessionOnce.Do(func() {
 		s.detectRoot(ctx, req.Session)
 	})

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1994,6 +1995,9 @@ func TestHandleStats_AllTime(t *testing.T) {
 
 func TestStartSessionFlusher_CancelFlushes(t *testing.T) {
 	srv, store, _ := newTestServer(t)
+
+	// Simulate MCP client connecting (required for flushSession to record sessions)
+	atomic.StoreInt32(&srv.mcpConnected, 1)
 
 	// Make one tool call so statsCalls > 0 (jsonResultWithMeta increments it)
 	srv.handleList(context.Background(), makeReq(nil)) //nolint:errcheck
