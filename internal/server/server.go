@@ -1572,11 +1572,18 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokens
 		"cost_avoided": fmt.Sprintf("$%.4f", costAvoided),
 	}
 
-	// Accumulate session stats
-	atomic.AddInt64(&s.statsCalls, 1)
+	// Accumulate session stats. On the very first call, flush immediately so
+	// the dashboard sees the new session within milliseconds, not after 10s.
+	newCalls := atomic.AddInt64(&s.statsCalls, 1)
 	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
 	atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
 	atomic.AddInt64(&s.statsLatencyMS, latency)
+
+	// First call of a new session: flush immediately so the dashboard sees
+	// the session within milliseconds rather than waiting for the 10s ticker.
+	if newCalls == 1 {
+		go s.flushSession()
+	}
 
 	out, _ := json.MarshalIndent(data, "", "  ")
 	return &mcp.CallToolResult{

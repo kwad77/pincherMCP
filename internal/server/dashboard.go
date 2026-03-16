@@ -201,7 +201,7 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <div id="tab-overview" class="tab-pane active">
 <main>
   <div id="error-box"></div>
-  <p class="section-title">This Session</p>
+  <p class="section-title" id="session-title">Session</p>
   <div class="grid grid-4" id="session-cards"><div class="loading">Loading…</div></div>
   <p class="section-title">All-Time ROI</p>
   <div class="grid grid-4" id="alltime-cards"><div class="loading">Loading…</div></div>
@@ -344,12 +344,17 @@ async function load() {
     const data = await fetch('/v1/stats').then(r=>r.json());
     const s = data.session || {};
     const a = data.all_time || {};
-    const sessAge = s.last_seen ? ' \u00b7 '+timeAgo(s.last_seen) : '';
-    const sessStart = s.started_at ? 'started '+timeAgo(s.started_at) : 'this session';
+    // Determine if the session data is from the current session or a stale one.
+    // A session is "live" if last_seen was within the last 90 seconds.
+    const lastSeenMs = s.last_seen ? Date.now() - new Date(s.last_seen) : Infinity;
+    const isLive = lastSeenMs < 90000;
+    const sessLabel = isLive ? 'Current Session' : 'Last Session';
+    const sessAge = s.last_seen ? (isLive ? 'active '+timeAgo(s.last_seen) : 'ended '+timeAgo(s.last_seen)) : 'no data yet';
+    document.getElementById('session-title').textContent = sessLabel;
     document.getElementById('session-cards').innerHTML =
-      statCard('Tool Calls', fmt(s.calls||0), 'blue', sessStart, '') +
+      statCard('Tool Calls', fmt(s.calls||0), 'blue', sessAge, '') +
       statCard('Tokens Saved', fmt(s.tokens_saved||0), 'green', 'vs reading full files', 'green') +
-      statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed'+sessAge, 'purple') +
+      statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed', 'purple') +
       statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange');
     document.getElementById('alltime-cards').innerHTML = (a.calls||0) > 0 ?
       statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
