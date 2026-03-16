@@ -794,11 +794,12 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		})
 	}
 
+	responseJSON, _ := json.Marshal(results)
 	data := map[string]any{
 		"symbols": results,
 		"count":   len(results),
 	}
-	return s.jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, savedVsFullRead(len(results), responseJSON)), nil
 }
 
 func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -912,11 +913,8 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	// Token savings: symbols returned as stubs instead of full file reads.
-	// Estimate full-context cost (~2 KB per symbol in context) minus actual payload.
 	responseJSON, _ := json.Marshal(rows)
-	const avgSymbolContext = 2000 // chars an agent would read without search
-	fullContextEst := len(results) * avgSymbolContext
-	tokensSaved := max(0, db.ApproxTokens(strings.Repeat("x", fullContextEst))-db.ApproxTokens(string(responseJSON)))
+	tokensSaved := savedVsFullRead(len(results), responseJSON)
 
 	data := map[string]any{
 		"results": rows,
@@ -946,12 +944,13 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		return errResult(fmt.Sprintf("cypher error: %v", err)), nil
 	}
 
+	responseJSON, _ := json.Marshal(result.Rows)
 	data := map[string]any{
 		"columns": result.Columns,
 		"rows":    result.Rows,
 		"total":   result.Total,
 	}
-	return s.jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, savedVsFullRead(result.Total, responseJSON)), nil
 }
 
 func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1008,6 +1007,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}
 	}
 
+	responseJSON, _ := json.Marshal(hopsList)
 	data := map[string]any{
 		"root":      name,
 		"direction": direction,
@@ -1017,7 +1017,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if addRisk {
 		data["risk_summary"] = riskCounts
 	}
-	return s.jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, savedVsFullRead(len(hops), responseJSON)), nil
 }
 
 func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1097,6 +1097,8 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		})
 	}
 
+	responseJSON, _ := json.Marshal(impacted)
+	totalTracedSyms := len(changedSymbols) + len(impacted)
 	data := map[string]any{
 		"changed_files":   changedFiles,
 		"changed_symbols": changedSymNames,
@@ -1111,7 +1113,7 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 			"low":             riskCounts["LOW"],
 		},
 	}
-	return s.jsonResultWithMeta(data, start, 0), nil
+	return s.jsonResultWithMeta(data, start, savedVsFullRead(totalTracedSyms, responseJSON)), nil
 }
 
 func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1174,7 +1176,14 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 		"node_kinds":      kindCounts,
 		"edge_kinds":      edgeKindCounts,
 	}
-	return s.jsonResultWithMeta(data, start, 0), nil
+	// Architecture replaces reading every file to orient in the codebase.
+	// Savings = all symbols in project × avgSymbolContext − this payload.
+	symCount := 0
+	if p != nil {
+		symCount = p.SymCount
+	}
+	responseJSON, _ := json.Marshal(data)
+	return s.jsonResultWithMeta(data, start, savedVsFullRead(symCount, responseJSON)), nil
 }
 
 func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1383,6 +1392,16 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 
 // baseCostPer1M is the approximate cost per 1M tokens for Claude Sonnet (USD).
 const baseCostPer1M = 3.0
+
+// avgSymbolContext is the estimated chars an agent would read from a file to
+// understand one symbol without pincherMCP (roughly one avg Go function + context).
+const avgSymbolContext = 2000
+
+// savedVsFullRead returns estimated tokens saved: (N symbols × avgSymbolContext) minus
+// the actual payload size. This is the core token-savings accounting for graph tools.
+func savedVsFullRead(count int, payloadBytes []byte) int {
+	return max(0, db.ApproxTokens(strings.Repeat("x", count*avgSymbolContext))-db.ApproxTokens(string(payloadBytes)))
+}
 
 func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *mcp.CallToolResult {
 	latency := time.Since(start).Milliseconds()
