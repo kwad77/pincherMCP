@@ -1,4 +1,4 @@
-// Package server implements the pincherMCP MCP server with all 12 tools.
+// Package server implements the pincherMCP MCP server with all 14 tools.
 //
 // Every tool response includes a "_meta" envelope (jcodemunch-mcp pattern):
 //
@@ -316,7 +316,18 @@ func (s *Server) registerTools() {
 		}`),
 	}, s.handleADR)
 
-	// 13. stats
+	// 13. health
+	s.addTool(&mcp.Tool{
+		Name:        "health",
+		Description: "Diagnostic report: schema version, index staleness (time since last index), and per-language extraction coverage (parser type + confidence score). Use to detect stale indexes or verify extraction quality before trusting graph results.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"project":{"type":"string","description":"Project to report on. Defaults to session project."}
+			}
+		}`),
+	}, s.handleHealth)
+
+	// 14. stats
 	s.addTool(&mcp.Tool{
 		Name:        "stats",
 		Description: "Session savings summary: cumulative tokens used, tokens saved, cost avoided, and call count since the server started. Also shows per-project index size (files, symbols, edges). Useful for tracking how much context budget pincherMCP has saved.",
@@ -947,6 +958,42 @@ func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		return errResult(fmt.Sprintf("unknown action %q", action)), nil
 	}
 
+	return s.jsonResultWithMeta(data, start, 0), nil
+}
+
+func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start := time.Now()
+	args := parseArgs(req)
+	projectArg := str(args, "project")
+
+	// Resolve project — optional; health without a project still returns schema version + db path.
+	projectID := ""
+	if pid, err := s.resolveProjectID(projectArg); err == nil {
+		projectID = pid
+	}
+
+	report, err := s.store.HealthCheck(projectID)
+	if err != nil {
+		return errResult(fmt.Sprintf("health check error: %v", err)), nil
+	}
+
+	data := map[string]any{
+		"schema_version": report.SchemaVersion,
+		"db_path":        report.DBPath,
+	}
+	if report.Project != nil {
+		data["project"] = map[string]any{
+			"name":             report.Project.Name,
+			"path":             report.Project.Path,
+			"files":            report.Project.FileCount,
+			"symbols":          report.Project.SymCount,
+			"edges":            report.Project.EdgeCount,
+			"indexed_at":       report.Project.IndexedAt.Format(time.RFC3339),
+			"staleness_human":  report.StalenessHuman,
+			"staleness_seconds": report.StalenessSecs,
+		}
+		data["extraction_coverage"] = report.Coverage
+	}
 	return s.jsonResultWithMeta(data, start, 0), nil
 }
 

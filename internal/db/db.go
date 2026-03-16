@@ -401,6 +401,89 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	return &p, nil
 }
 
+// LanguageCoverage describes extraction quality for one language.
+type LanguageCoverage struct {
+	Language   string  `json:"language"`
+	Parser     string  `json:"parser"`   // "AST" or "Regex"
+	Confidence float64 `json:"confidence"` // avg extraction_confidence for this language
+	Symbols    int     `json:"symbols"`
+}
+
+// HealthReport is the output of HealthCheck.
+type HealthReport struct {
+	SchemaVersion  int                `json:"schema_version"`
+	Project        *Project           `json:"project,omitempty"`
+	StalenessSecs  int64              `json:"staleness_seconds"`
+	StalenessHuman string             `json:"staleness_human"`
+	Coverage       []LanguageCoverage `json:"extraction_coverage"`
+	DBPath         string             `json:"db_path"`
+}
+
+// HealthCheck returns diagnostic information for the given project.
+// projectID may be empty, in which case Project and coverage are omitted.
+func (s *Store) HealthCheck(projectID string) (*HealthReport, error) {
+	report := &HealthReport{DBPath: s.Path}
+
+	// Schema version
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&report.SchemaVersion); err != nil {
+		report.SchemaVersion = -1
+	}
+
+	if projectID == "" {
+		return report, nil
+	}
+
+	// Project staleness
+	p, err := s.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if p != nil {
+		report.Project = p
+		stale := time.Since(p.IndexedAt)
+		report.StalenessSecs = int64(stale.Seconds())
+		report.StalenessHuman = formatStaleness(stale)
+	}
+
+	// Per-language extraction coverage
+	rows, err := s.db.Query(`
+		SELECT language, AVG(extraction_confidence), COUNT(*)
+		FROM symbols
+		WHERE project_id = ?
+		GROUP BY language
+		ORDER BY COUNT(*) DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var lc LanguageCoverage
+		if err := rows.Scan(&lc.Language, &lc.Confidence, &lc.Symbols); err != nil {
+			return nil, err
+		}
+		if lc.Confidence >= 0.99 {
+			lc.Parser = "AST"
+		} else {
+			lc.Parser = "Regex"
+		}
+		report.Coverage = append(report.Coverage, lc)
+	}
+	return report, rows.Err()
+}
+
+func formatStaleness(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 // DeleteProject removes a project and all its data.
 func (s *Store) DeleteProject(id string) error {
 	tx, err := s.db.Begin()

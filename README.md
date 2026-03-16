@@ -189,10 +189,10 @@ WHERE filters apply to both the start node and result nodes in all query modes (
 ```bash
 git clone https://github.com/kwad77/pincherMCP
 cd pincherMCP
-go build -o pinch ./cmd/pinch
+go build -o pincher ./cmd/pinch
 
 # Windows
-go build -o pinch.exe ./cmd/pinch
+go build -o pincher.exe ./cmd/pinch
 ```
 
 ### Add to Claude Code
@@ -204,7 +204,7 @@ Edit `~/.claude/mcp.json`:
   "mcpServers": {
     "pincher": {
       "type": "stdio",
-      "command": "/path/to/pinch"
+      "command": "/path/to/pincher"
     }
   }
 }
@@ -219,7 +219,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "pincher": {
       "type": "stdio",
-      "command": "C:\\path\\to\\pinch.exe"
+      "command": "C:\\path\\to\\pincher.exe"
     }
   }
 }

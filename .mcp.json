@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pincher": {
+      "type": "stdio",
+      "command": "D:/ClaudeCode/MCP_Combine/pincherMCP/pincher.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}

@@ -6,11 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build the binary
-go build -o pinch.exe ./cmd/pinch        # Windows
-go build -o pinch ./cmd/pinch            # Linux/macOS
-
-# Rebuild pincher.exe (used by MCP config — must stay in sync with cmd/pinch)
-go build -o pincher.exe ./cmd/pinch/
+go build -o pincher.exe ./cmd/pinch/     # Windows
+go build -o pincher ./cmd/pinch/         # Linux/macOS
 
 # Run all tests
 go test ./...
@@ -56,7 +53,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 ### Package responsibilities
 
-- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
+- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v3**. `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
 
 - **`internal/ast/extractor.go`** — Multi-language symbol extraction. `Extract(source, language, relPath)` dispatches to per-language extractors and sets `ExtractionConfidence` on each symbol (1.0 for Go/AST, 0.85 for stable regex languages, 0.70 for approximate ones). Go uses `go/ast`; all other languages use regex. `extractionConfidence` map controls per-language scores.
 
@@ -64,9 +61,28 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 - **`internal/cypher/engine.go`** — Cypher-to-SQL translation. Pipeline: `tokenize` → `parseQuery` → `run`. Three query paths: `runNodeScan` (no edge), `runJoinQuery` (single-hop, SQL JOIN), `runBFS` (variable-length, Go BFS loop). `symRow` struct and all SELECT queries must stay in sync with `db.go`'s `Symbol` fields — both have `extraction_confidence`.
 
-- **`internal/index/indexer.go`** — Indexing pipeline. `Index()` walks files concurrently (goroutine per file, `sync.WaitGroup`), hashes with xxh3, skips unchanged files, calls `ast.Extract`, converts to `db.Symbol`/`db.Edge`, flushes in batches. Per-project mutex (`idx.active` map + `idx.mu`) prevents concurrent index of the same project. `Watch()` polls all projects every 2s (active) or 30s (idle).
+- **`internal/index/indexer.go`** — Indexing pipeline. `Index()` walks files concurrently (goroutine per file, `sync.WaitGroup`), hashes with xxh3, skips unchanged files, calls `ast.Extract`, converts to `db.Symbol`/`db.Edge`, flushes in batches. Per-project mutex (`idx.active` map + `idx.mu`) prevents concurrent index of the same project. `Watch()` polls all projects every 2s (active) or 30s (idle). On re-index, detects file moves by matching `(qualified_name, kind)` across projects and records redirects in `symbol_moves`.
 
-- **`internal/server/server.go`** — MCP server. All 13 tools are registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats (`statsCalls`, `statsTokensUsed`, `statsTokensSaved`). `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list on connection.
+- **`internal/server/server.go`** — MCP server. All 14 tools are registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats (`statsCalls`, `statsTokensUsed`, `statsTokensSaved`). `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list on connection.
+
+### The 14 MCP tools
+
+| # | Tool | Purpose |
+|---|---|---|
+| 1 | `index` | Index a repo (incremental by default; `force=true` to re-parse all) |
+| 2 | `symbol` | Retrieve source by stable ID via O(1) byte-offset seek |
+| 3 | `symbols` | Batch retrieve multiple symbols in one call |
+| 4 | `context` | Symbol + its direct imports as a minimal-token bundle |
+| 5 | `search` | FTS5 BM25 full-text search (wildcards, phrases, kind/language filters) |
+| 6 | `query` | Cypher-like graph queries (node scan, single-hop JOIN, BFS) |
+| 7 | `trace` | BFS call-path trace with CRITICAL/HIGH/MEDIUM/LOW risk labels |
+| 8 | `changes` | Git diff → affected symbols → blast radius BFS |
+| 9 | `architecture` | High-level orientation: languages, entry points, hotspot functions |
+| 10 | `schema` | Graph schema: node/edge kind counts |
+| 11 | `list` | All indexed projects with stats |
+| 12 | `adr` | Architecture Decision Records: persistent key/value project knowledge |
+| 13 | `health` | Schema version, index staleness, per-language extraction coverage |
+| 14 | `stats` | Session savings summary: tokens used/saved, cost avoided, call count |
 
 ### Symbol ID format
 
@@ -75,7 +91,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 e.g. "internal/db/db.go::db.Open#Function"
 ```
 
-IDs are stable across re-indexing as long as file path and qualified name don't change. The ID is built by `db.MakeSymbolID()`.
+IDs are stable across re-indexing as long as file path and qualified name don't change. Built by `db.MakeSymbolID()`. If a file moves, `handleSymbol` automatically resolves stale IDs via `store.ResolveStaleID()` → `symbol_moves` table.
 
 ### Schema migration pattern
 
@@ -101,6 +117,6 @@ To add a schema change:
 
 ## Known Architectural Limitations (tracked, not yet fixed)
 
-- **Regex gap**: 19 non-Go languages use regex extraction (~80% accuracy). `extraction_confidence` field surfaces this to callers. Full fix = tree-sitter bindings (future sprint).
-- **ID fragility on file moves**: Symbol IDs encode file path; moving `internal/auth/` → `pkg/identity/` breaks all IDs for that file. A `symbol_moves` tracking table is planned.
+- **Regex gap**: 19 non-Go languages use regex extraction (~80% accuracy). `extraction_confidence` field surfaces this to callers. Full fix = tree-sitter bindings (no CGO path; planned next sprint).
 - **BFS N×depth SQL queries**: `runBFS` in `cypher/engine.go` issues one SQL query per node per depth level. Planned fix: replace with a single recursive CTE query.
+- **Session stats are ephemeral**: `statsCalls`/`statsTokensUsed`/`statsTokensSaved` reset on reconnect. A `sessions` table for persistent aggregation is planned.
