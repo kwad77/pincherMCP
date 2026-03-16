@@ -381,7 +381,11 @@ func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 	srv := &http.Server{Addr: addr, Handler: s}
 	go func() {
 		<-ctx.Done()
-		srv.Close()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			slog.Warn("pincher.http.shutdown.err", "err", err)
+		}
 	}()
 	slog.Info("pincher.http.listen", "addr", addr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
