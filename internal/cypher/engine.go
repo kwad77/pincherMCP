@@ -587,6 +587,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 	}
 	defer rows.Close()
 
+	reCache := make(map[string]*regexp.Regexp)
 	var nodes []map[string]any
 	for rows.Next() {
 		n, err := scanSymRow(rows)
@@ -595,7 +596,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 		}
 		m := symRowToMap(pat.fromVar, n)
 		// Apply unpushed conditions in Go
-		if !matchesConditions(m, unpushed) {
+		if !matchesConditionsWithCache(m, unpushed, reCache) {
 			continue
 		}
 		nodes = append(nodes, m)
@@ -676,6 +677,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	}
 	defer rows.Close()
 
+	reCache := make(map[string]*regexp.Regexp)
 	var resultRows []map[string]any
 	for rows.Next() {
 		aNode, bNode, edgeKind, conf, err := scanJoinRow(rows)
@@ -693,7 +695,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 			m[pat.edgeVar+".kind"] = edgeKind
 			m[pat.edgeVar+".confidence"] = conf
 		}
-		if !matchesConditions(m, unpushed) {
+		if !matchesConditionsWithCache(m, unpushed, reCache) {
 			continue
 		}
 		resultRows = append(resultRows, m)
@@ -768,6 +770,7 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 		maxDepth = 10
 	}
 
+	reCache := make(map[string]*regexp.Regexp)
 	var resultRows []map[string]any
 	for _, start := range startNodes {
 		hops, err := e.bfsViaCTE(ctx, start.ID, edgeKinds, pat.minHops, maxDepth, e.ProjectID, e.maxRows())
@@ -783,7 +786,7 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 				m[k] = v
 			}
 			m["_hop"] = hop.depth
-			if !matchesConditions(m, q.conditions) {
+			if !matchesConditionsWithCache(m, q.conditions, reCache) {
 				continue
 			}
 			resultRows = append(resultRows, m)
@@ -1069,7 +1072,13 @@ func cypherPropToCol(prop string) string {
 
 // matchesConditions applies remaining (non-SQL-pushed) conditions in Go,
 // supporting regex (=~) and numeric comparisons.
+// reCache is an optional map for caching compiled regexes across calls to
+// avoid recompiling the same pattern for every row.
 func matchesConditions(row map[string]any, conds []condition) bool {
+	return matchesConditionsWithCache(row, conds, nil)
+}
+
+func matchesConditionsWithCache(row map[string]any, conds []condition, reCache map[string]*regexp.Regexp) bool {
 	for _, c := range conds {
 		key := c.variable + "." + c.property
 		actual := fmt.Sprint(row[key])
@@ -1084,8 +1093,21 @@ func matchesConditions(row map[string]any, conds []condition) bool {
 				return false
 			}
 		case "=~":
-			re, err := regexp.Compile(c.value)
-			if err != nil || !re.MatchString(actual) {
+			var re *regexp.Regexp
+			if reCache != nil {
+				re = reCache[c.value]
+			}
+			if re == nil {
+				var err error
+				re, err = regexp.Compile(c.value)
+				if err != nil {
+					return false
+				}
+				if reCache != nil {
+					reCache[c.value] = re
+				}
+			}
+			if !re.MatchString(actual) {
 				return false
 			}
 		case "CONTAINS":
