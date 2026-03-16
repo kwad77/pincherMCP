@@ -518,7 +518,7 @@ func (s *Server) registerTools() {
 	// 5. search
 	s.addTool(&mcp.Tool{
 		Name:        "search",
-		Description: "Find symbols by name or content. Always start here when you don't know the exact symbol ID. Uses FTS5 BM25 ranking. Examples: search 'processOrder' to find a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by kind=Function or language=Go to narrow results. Follow up with `context` on the result ID to get full source.",
+		Description: "Find symbols by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a 5-line snippet for each result — often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: search 'processOrder' to find a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by kind=Function or language=Go to narrow results. Use `context` on the result ID only if you need the full source + dependencies.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["query"],"properties":{
 				"query":{"type":"string","description":"FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR."},
@@ -873,6 +873,9 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return errResult(fmt.Sprintf("search error: %v", err)), nil
 	}
 
+	// Resolve project root once for snippet reads.
+	root, _ := s.resolveProjectRoot(projectID)
+
 	// Build field allow-set for projection (nil = all fields).
 	var fieldSet map[string]bool
 	if fieldsArg != "" {
@@ -881,6 +884,10 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			fieldSet[strings.TrimSpace(f)] = true
 		}
 	}
+
+	// snippetLines is the max lines of source included per result.
+	// Callers can suppress snippets via fields= projection.
+	const snippetLines = 5
 
 	allFields := map[string]any{}
 	var rows []map[string]any
@@ -896,8 +903,22 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		allFields["score"] = r.Score
 		allFields["extraction_confidence"] = r.Symbol.ExtractionConfidence
 
+		// Add a short snippet so Claude can often skip a follow-up symbol/context call.
+		// Suppress for variables/types where the signature IS the content.
+		snippet := ""
+		if root != "" && r.Symbol.Kind != "Variable" && r.Symbol.Kind != "Type" {
+			if src, err := index.ReadSymbolSource(root, r.Symbol); err == nil && src != "" {
+				lines := strings.SplitN(src, "\n", snippetLines+1)
+				if len(lines) > snippetLines {
+					lines = lines[:snippetLines]
+					lines = append(lines, "…")
+				}
+				snippet = strings.Join(lines, "\n")
+			}
+		}
+		allFields["snippet"] = snippet
+
 		if fieldSet == nil {
-			// Copy all fields
 			row := make(map[string]any, len(allFields))
 			for k, v := range allFields {
 				row[k] = v
@@ -918,7 +939,6 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	for _, r := range results {
 		filePaths = append(filePaths, r.Symbol.FilePath)
 	}
-	root, _ := s.resolveProjectRoot(projectID)
 	tokensSaved := savedVsFileSizes(root, filePaths, responseJSON)
 
 	data := map[string]any{

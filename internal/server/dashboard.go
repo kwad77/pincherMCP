@@ -48,6 +48,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .proj-card.stale{border-color:rgba(240,136,62,.4)}
 .proj-card.stale::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--orange);border-radius:10px 10px 0 0}
 .pill.stale-pill{background:rgba(240,136,62,.1);color:var(--orange);border-color:rgba(240,136,62,.3)}
+.proj-card.indexing{pointer-events:none;opacity:.6}
+.proj-card.indexing::after{content:'Indexing\2026';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--accent);background:rgba(13,17,23,.7);border-radius:10px;animation:pulse 1.2s ease-in-out infinite}
 .proj-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px}
 .proj-name{font-size:15px;font-weight:600}
 .proj-actions{display:flex;gap:6px;flex-shrink:0}
@@ -151,16 +153,19 @@ function statCard(label, value, cls, sub, cardCls) {
 async function reindex(id, btn) {
   btn.disabled = true;
   btn.textContent = '…';
+  const card = btn.closest('.proj-card');
+  if (card) card.classList.add('indexing');
   try {
     const r = await fetch('/v1/index', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({path: id})});
     const d = await r.json();
     const res = d.result || d;
-    showToast(` + "`" + `Re-indexed: ${res.symbols||0} symbols, ${res.edges||0} edges` + "`" + `);
+    showToast('Re-indexed: '+(res.symbols||0)+' symbols, '+(res.edges||0)+' edges');
     load();
   } catch(e) {
     showToast('Re-index failed: '+e.message, false);
+    if (card) card.classList.remove('indexing');
     btn.disabled = false;
-    btn.textContent = '⟳';
+    btn.textContent = '\u27f3';
   }
 }
 
