@@ -215,7 +215,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
 	if path == "health" {
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": "pincher"})
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": s.version})
 		return
 	}
 	if path == "openapi.json" {
@@ -470,7 +470,7 @@ func (s *Server) registerTools() {
 	// 1. index
 	s.addTool(&mcp.Tool{
 		Name:        "index",
-		Description: "Index a repository. Extracts symbols with byte offsets, builds knowledge graph, and populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files). Set force=true to re-parse everything. Returns counts and latency.",
+		Description: "Index a repository. Extracts symbols with byte offsets, builds a knowledge graph, and populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files). Set force=true to re-parse everything. Call this once per project before using any other tool.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"path":{"type":"string","description":"Absolute path to the repository root. Defaults to session project root."},
@@ -482,7 +482,7 @@ func (s *Server) registerTools() {
 	// 2. symbol
 	s.addTool(&mcp.Tool{
 		Name:        "symbol",
-		Description: "Retrieve source code for a symbol by its stable ID using O(1) byte-offset seeking. No re-parsing. Format: '{file_path}::{qualified_name}#{kind}'. Use `search` first to find the ID. Returns source, signature, location, and token savings metadata.",
+		Description: "Retrieve full source code for one symbol by stable ID using O(1) byte-offset seeking — never re-parses the file. Use `search` first to find the ID. Format: '{file_path}::{qualified_name}#{kind}'. Prefer `context` when you also need the symbol's dependencies, or `symbols` for batching multiple lookups.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Stable symbol ID. Format: '{file_path}::{qualified_name}#{kind}'"},
@@ -494,7 +494,7 @@ func (s *Server) registerTools() {
 	// 3. symbols (batch)
 	s.addTool(&mcp.Tool{
 		Name:        "symbols",
-		Description: "Batch retrieve source code for multiple symbols in one call. Use instead of calling `symbol` in a loop. Minimises round trips. Returns array of {id, source, signature, file_path, start_line}.",
+		Description: "Batch retrieve source code for multiple symbols in one call. Always prefer this over calling `symbol` in a loop — one round trip instead of N. Max 100 IDs per call. Returns array of {id, source, signature, file_path, start_line}.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["ids"],"properties":{
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
@@ -506,7 +506,7 @@ func (s *Server) registerTools() {
 	// 4. context
 	s.addTool(&mcp.Tool{
 		Name:        "context",
-		Description: "Get a symbol plus its direct imports as a minimal-token context bundle. Use this instead of reading entire files — ~90% token reduction. Returns {symbol: {source, ...}, imports: [{source, ...}]}.",
+		Description: "PREFERRED for understanding a function: returns the symbol's full source PLUS all functions it directly imports/calls — in one shot. ~90% token reduction vs reading files. Use this instead of `symbol` whenever you need to understand how a function works in context. Returns {symbol: {source, ...}, imports: [{source, ...}]}.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Symbol ID to fetch with its imports."},
@@ -518,7 +518,7 @@ func (s *Server) registerTools() {
 	// 5. search
 	s.addTool(&mcp.Tool{
 		Name:        "search",
-		Description: "Full-text search across symbol names, qualified names, signatures, and docstrings. Uses FTS5 BM25 ranking. Supports wildcards (auth*) and phrase queries (\"process order\"). Filter by kind (Function/Class/etc) or language.",
+		Description: "Find symbols by name or content. Always start here when you don't know the exact symbol ID. Uses FTS5 BM25 ranking. Examples: search 'processOrder' to find a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by kind=Function or language=Go to narrow results. Follow up with `context` on the result ID to get full source.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["query"],"properties":{
 				"query":{"type":"string","description":"FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR."},
@@ -534,7 +534,7 @@ func (s *Server) registerTools() {
 	// 6. query
 	s.addTool(&mcp.Tool{
 		Name:        "query",
-		Description: "Execute a Cypher-like graph query. Sub-ms for single-hop patterns. Supports: MATCH (n:Kind) WHERE n.name='x' RETURN n.name; MATCH (a)-[:CALLS]->(b) RETURN a.name,b.name; MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name='main' RETURN b.name; WHERE with =, =~(regex), CONTAINS, >, < operators.",
+		Description: "Graph query using Cypher syntax — use when you need structural relationships, not text matches. Examples: find all callers 'MATCH (a)-[:CALLS]->(b) WHERE b.name=\"Open\" RETURN a.name'; find classes in a file 'MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name'; multi-hop 'MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name=\"main\" RETURN b.name'. Use `search` instead for name/text lookups.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["cypher"],"properties":{
 				"cypher":{"type":"string","description":"Cypher query. Example: MATCH (f:Function)-[:CALLS]->(g) WHERE f.name='main' RETURN g.name LIMIT 20"},
@@ -547,7 +547,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "BFS call-path trace: who calls this function, or what does it call. Returns hops with risk labels (CRITICAL=depth1, HIGH=depth2, MEDIUM=depth3, LOW=depth4+). Use search first to find the exact function name.",
+		Description: "Trace call relationships from a function — who calls it (inbound) or what it calls (outbound). Use for impact analysis before editing a function, or to understand a call chain. Risk labels show blast radius: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["name"],"properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder')"},
@@ -562,7 +562,7 @@ func (s *Server) registerTools() {
 	// 8. changes
 	s.addTool(&mcp.Tool{
 		Name:        "changes",
-		Description: "Map git diff to affected symbols and compute blast radius. Runs `git diff` in the project directory, finds which symbols changed, then BFS-traces the impact. Returns changed_symbols, impacted (with risk), and summary.",
+		Description: "Pre-commit safety check: maps your git diff to affected symbols and computes blast radius. Use before committing to understand what you might have broken. Runs git diff, finds changed symbols, BFS-traces impact. Returns changed_symbols, impacted callers (with CRITICAL/HIGH/MEDIUM/LOW risk), and summary counts.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
@@ -575,7 +575,7 @@ func (s *Server) registerTools() {
 	// 9. architecture
 	s.addTool(&mcp.Tool{
 		Name:        "architecture",
-		Description: "High-level codebase orientation. Returns languages, entry points, top packages, hotspot functions (most called), and graph statistics. Call this first when exploring an unfamiliar project.",
+		Description: "Codebase orientation in one call — call this first on any unfamiliar project. Returns: language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Much cheaper than reading files to understand the structure.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"}
@@ -586,7 +586,7 @@ func (s *Server) registerTools() {
 	// 10. schema
 	s.addTool(&mcp.Tool{
 		Name:        "schema",
-		Description: "Knowledge graph schema: node kind counts, edge kind counts, total symbols, total edges. Use before query to understand what's indexed.",
+		Description: "Graph schema overview: node kind counts (Function, Class, Method…), edge kind counts (CALLS, IMPORTS…), totals. Use before writing a `query` to see what node/edge kinds exist in this project.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"}
@@ -604,7 +604,7 @@ func (s *Server) registerTools() {
 	// 12. adr
 	s.addTool(&mcp.Tool{
 		Name:        "adr",
-		Description: "Architecture Decision Records — persistent project knowledge store. actions: get (retrieve value), set (store value), list (all entries), delete (remove). Use to record stack decisions, architectural patterns, team conventions.",
+		Description: "Persistent project knowledge store — survives across sessions. Store architectural decisions, team conventions, known gotchas. Actions: set (store), get (retrieve), list (all entries), delete. Examples: adr set PURPOSE 'payment processing service'; adr set STACK 'Go+SQLite+Redis'; adr list to recall everything stored.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["action"],"properties":{
 				"action":{"type":"string","enum":["get","set","list","delete"]},

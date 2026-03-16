@@ -45,6 +45,9 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .proj-card:hover{border-color:var(--accent)}
 .proj-card.invalid{border-color:rgba(248,81,73,.4)}
 .proj-card.invalid::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--red);border-radius:10px 10px 0 0}
+.proj-card.stale{border-color:rgba(240,136,62,.4)}
+.proj-card.stale::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--orange);border-radius:10px 10px 0 0}
+.pill.stale-pill{background:rgba(240,136,62,.1);color:var(--orange);border-color:rgba(240,136,62,.3)}
 .proj-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px}
 .proj-name{font-size:15px;font-weight:600}
 .proj-actions{display:flex;gap:6px;flex-shrink:0}
@@ -119,6 +122,15 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <script>
 const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
 const fmtMs = ms => ms < 1 ? '<1ms' : ms+'ms';
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const secs = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+  if (secs < 86400) return Math.floor(secs/3600) + 'h ago';
+  return Math.floor(secs/86400) + 'd ago';
+}
+const STALE_HOURS = 24;
 
 function showToast(msg, ok=true) {
   const t = document.getElementById('toast');
@@ -222,17 +234,22 @@ async function load() {
       grid.innerHTML = '<div class="empty">No projects indexed yet. Use the <code>index</code> tool to add a project.</div>';
     } else {
       grid.innerHTML = projects.map(p => {
-        const id   = p.ID   || p.id   || '';
-        const name = p.Name || p.name || '—';
-        const path = p.Path || p.path || '';
-        const syms = p.SymCount  || p.sym_count  || 0;
-        const edges= p.EdgeCount || p.edge_count || 0;
-        const files= p.FileCount || p.file_count || 0;
-        const ts   = p.IndexedAt || p.indexed_at || '';
-        // Heuristic: if sym/edge counts are 0 and the path looks stale, flag it
-        const isEmpty = syms === 0 && edges === 0;
+        const id    = p.ID   || p.id   || '';
+        const name  = p.Name || p.name || '—';
+        const path  = p.Path || p.path || '';
+        const syms  = p.SymCount  || p.sym_count  || 0;
+        const edges = p.EdgeCount || p.edge_count || 0;
+        const files = p.FileCount || p.file_count || 0;
+        const ts    = p.IndexedAt || p.indexed_at || '';
+        const isEmpty  = syms === 0 && edges === 0;
+        const ageHours = ts ? (Date.now() - new Date(ts)) / 3600000 : 0;
+        const isStale  = !isEmpty && ageHours > STALE_HOURS;
+        const cardCls  = isEmpty ? ' invalid' : isStale ? ' stale' : '';
+        const pillCls  = isEmpty ? ' warn' : isStale ? ' stale-pill' : '';
+        const statusMsg = isEmpty ? ' \u26a0 no data \u2014 may be a ghost project'
+                        : isStale ? ' \u26a0 index is ' + Math.floor(ageHours) + 'h old \u2014 consider re-indexing' : '';
         return ` + "`" + `
-        <div class="proj-card${isEmpty?' invalid':''}">
+        <div class="proj-card${cardCls}">
           <div class="proj-header">
             <div class="proj-name">${name}</div>
             <div class="proj-actions">
@@ -240,13 +257,13 @@ async function load() {
               <button class="proj-btn danger" title="Remove from index" onclick="deleteProject(${JSON.stringify(id)}, ${JSON.stringify(name)})">✕ Remove</button>
             </div>
           </div>
-          <div class="proj-path${isEmpty?' missing':''}" title="${path}">${path}${isEmpty?' ⚠ no data — may be stale':''}</div>
+          <div class="proj-path${isEmpty||isStale?' missing':''}" title="${path}">${path}${statusMsg}</div>
           <div class="proj-stats">
             <div class="proj-stat"><div class="proj-stat-val">${fmt(files)}</div><div class="proj-stat-label">Files</div></div>
             <div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">${fmt(syms)}</div><div class="proj-stat-label">Symbols</div></div>
             <div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">${fmt(edges)}</div><div class="proj-stat-label">Edges</div></div>
           </div>
-          ${ts ? ` + "`" + `<div style="margin-top:10px"><span class="pill${isEmpty?' warn':''}">indexed ${new Date(ts).toLocaleString()}</span></div>` + "`" + ` : ''}
+          ${ts ? ` + "`" + `<div style="margin-top:10px" title="${new Date(ts).toLocaleString()}"><span class="pill${pillCls}">indexed ${timeAgo(ts)}</span></div>` + "`" + ` : ''}
         </div>` + "`" + `;
       }).join('');
     }
