@@ -3,6 +3,8 @@ package cypher
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -1088,5 +1090,359 @@ func TestRunBFS_WhereFilter(t *testing.T) {
 		if row["b.name"] != "TargetA" {
 			t.Errorf("BFS WHERE filter not applied: b.name=%v", row["b.name"])
 		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parsePattern — undirected edge, fromProps, edgeVar, multi-kind
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestParsePattern_FromProps(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "fp1", "Target", "Function", "Go")
+
+	// MATCH (n {name: 'Target'}) — inline prop filter on fromNode
+	r := exec(t, db, "MATCH (n {name: 'Target'}) RETURN n.name")
+	if r.Total == 0 {
+		t.Error("fromProps filter returned no results")
+	}
+}
+
+func TestParsePattern_EdgeVar(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "ev1", "A", "Function", "Go")
+	insertSym(t, db, "ev2", "B", "Function", "Go")
+	insertEdge(t, db, "ev1", "ev2", "CALLS")
+
+	// Named edge variable: MATCH (a)-[r:CALLS]->(b) RETURN r.kind
+	r := exec(t, db, "MATCH (a)-[r:CALLS]->(b) RETURN r.kind")
+	if r.Total == 0 {
+		t.Error("edge variable query returned no results")
+	}
+	for _, row := range r.Rows {
+		if row["r.kind"] != "CALLS" {
+			t.Errorf("r.kind=%v, want CALLS", row["r.kind"])
+		}
+	}
+}
+
+func TestParsePattern_MultiKindEdge(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "mk1", "A", "Function", "Go")
+	insertSym(t, db, "mk2", "B", "Function", "Go")
+	insertSym(t, db, "mk3", "C", "Function", "Go")
+	insertEdge(t, db, "mk1", "mk2", "CALLS")
+	insertEdge(t, db, "mk1", "mk3", "IMPORTS")
+
+	// Multi-kind edge: MATCH (a)-[:CALLS|IMPORTS]->(b)
+	r := exec(t, db, "MATCH (a)-[:CALLS|IMPORTS]->(b) RETURN b.name")
+	if r.Total < 2 {
+		t.Errorf("multi-kind edge returned %d rows, want >=2", r.Total)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildResult — COUNT, DISTINCT, ORDER BY DESC, empty RETURN
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildResult_CountAlias(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "cntA1", "Fn1", "Function", "Go")
+	insertSym(t, db, "cntA2", "Fn2", "Function", "Go")
+
+	r := exec(t, db, "MATCH (n:Function) RETURN COUNT(n) AS total")
+	if r.Total != 1 {
+		t.Fatalf("COUNT AS query returned %d rows, want 1", r.Total)
+	}
+	v := r.Rows[0]["total"]
+	if v == nil {
+		t.Error("COUNT AS alias not present in result")
+	}
+}
+
+func TestBuildResult_DistinctCollapses(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "dc1", "DupName", "Function", "Go")
+	_, _ = db.Exec(
+		`INSERT INTO symbols(id, project_id, file_path, name, qualified_name, kind, language,
+			start_byte, end_byte, start_line, end_line) VALUES (?,?,?,?,?,?,?, 0,100,1,5)`,
+		"dc2", "proj1", "file2.go", "DupName", "DupName", "Method", "Go",
+	)
+
+	// Without DISTINCT there are 2 rows; with DISTINCT on name, the name values should be unique.
+	r := exec(t, db, "MATCH (n) WHERE n.name='DupName' RETURN DISTINCT n.name")
+	seen := map[string]bool{}
+	for _, row := range r.Rows {
+		key := fmt.Sprint(row["n.name"])
+		if seen[key] {
+			t.Errorf("DISTINCT returned duplicate: %v", key)
+		}
+		seen[key] = true
+	}
+}
+
+func TestBuildResult_OrderByDescSort(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "odS1", "Aardvark", "Function", "Go")
+	insertSym(t, db, "odS2", "Zebra", "Function", "Go")
+	insertSym(t, db, "odS3", "Mango", "Function", "Go")
+
+	// No WHERE filter — returns all Function symbols, sorted DESC by name
+	r := exec(t, db, "MATCH (n:Function) RETURN n.name ORDER BY n.name DESC")
+	if r.Total < 3 {
+		t.Fatalf("expected >=3 rows, got %d", r.Total)
+	}
+	// Zebra should sort last alphabetically but first DESC
+	first := fmt.Sprint(r.Rows[0]["n.name"])
+	last := fmt.Sprint(r.Rows[len(r.Rows)-1]["n.name"])
+	if first < last {
+		t.Errorf("ORDER BY DESC not applied: first=%q last=%q", first, last)
+	}
+}
+
+func TestBuildResult_NoReturnVars(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "nrV1", "Foo", "Function", "Go")
+
+	// No RETURN clause — auto-projects all columns from the map
+	r := exec(t, db, "MATCH (n:Function) WHERE n.name='Foo'")
+	_ = r // no panic required
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runJoinQuery — WHERE filter on the to-node (b) pushdown
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRunJoinQuery_WhereOnToNode(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "jb1", "Caller", "Function", "Go")
+	insertSym(t, db, "jb2", "TargetA", "Function", "Go")
+	insertSym(t, db, "jb3", "TargetB", "Function", "Go")
+	insertEdge(t, db, "jb1", "jb2", "CALLS")
+	insertEdge(t, db, "jb1", "jb3", "CALLS")
+
+	// WHERE on b (to-node) should be pushed down as "b.name=?"
+	r := exec(t, db, "MATCH (a)-[:CALLS]->(b) WHERE b.name='TargetA' RETURN b.name")
+	if r.Total == 0 {
+		t.Error("WHERE on to-node returned no results")
+	}
+	for _, row := range r.Rows {
+		if row["b.name"] != "TargetA" {
+			t.Errorf("WHERE b.name='TargetA' returned %v", row["b.name"])
+		}
+	}
+}
+
+func TestRunJoinQuery_WhereContainsOnToNode(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "jbc1", "Srv", "Function", "Go")
+	insertSym(t, db, "jbc2", "ProcessOrder", "Function", "Go")
+	insertSym(t, db, "jbc3", "ProcessReturn", "Function", "Go")
+	insertEdge(t, db, "jbc1", "jbc2", "CALLS")
+	insertEdge(t, db, "jbc1", "jbc3", "CALLS")
+
+	// CONTAINS on b should filter correctly
+	r := exec(t, db, "MATCH (a)-[:CALLS]->(b) WHERE b.name CONTAINS 'Order' RETURN b.name")
+	for _, row := range r.Rows {
+		name := fmt.Sprint(row["b.name"])
+		if !strings.Contains(name, "Order") {
+			t.Errorf("CONTAINS filter violated: b.name=%q", name)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProjectID isolation — queries must not cross project boundaries
+// ─────────────────────────────────────────────────────────────────────────────
+
+// insertSymProject inserts a symbol with an explicit project_id.
+func insertSymProject(t *testing.T, db *sql.DB, id, name, kind, lang, projectID string) {
+	t.Helper()
+	_, err := db.Exec(
+		`INSERT INTO symbols(id, project_id, file_path, name, qualified_name, kind, language,
+			start_byte, end_byte, start_line, end_line) VALUES (?,?,?,?,?,?,?, 0,100,1,5)`,
+		id, projectID, "file.go", name, name, kind, lang,
+	)
+	if err != nil {
+		t.Fatalf("insert symbol %q: %v", id, err)
+	}
+}
+
+// insertEdgeProject inserts an edge with an explicit project_id.
+func insertEdgeProject(t *testing.T, db *sql.DB, fromID, toID, kind, projectID string) {
+	t.Helper()
+	_, err := db.Exec(
+		`INSERT INTO edges(project_id, from_id, to_id, kind) VALUES (?,?,?,?)`,
+		projectID, fromID, toID, kind,
+	)
+	if err != nil {
+		t.Fatalf("insert edge %s->%s: %v", fromID, toID, err)
+	}
+}
+
+func execWithProject(t *testing.T, db *sql.DB, projectID, query string) *Result {
+	t.Helper()
+	e := &Executor{DB: db, MaxRows: 100, ProjectID: projectID}
+	r, err := e.Execute(context.Background(), query)
+	if err != nil {
+		t.Fatalf("Execute(%q): %v", query, err)
+	}
+	return r
+}
+
+func TestProjectID_NodeScan_Isolation(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	insertSymProject(t, db, "p1-fn", "SharedName", "Function", "Go", "proj1")
+	insertSymProject(t, db, "p2-fn", "SharedName", "Function", "Go", "proj2")
+
+	// proj1 should see only its own symbol
+	r := execWithProject(t, db, "proj1", "MATCH (n:Function) WHERE n.name='SharedName' RETURN n.name")
+	if r.Total != 1 {
+		t.Errorf("proj1 node scan: want 1 result, got %d", r.Total)
+	}
+
+	// proj2 should see only its own
+	r = execWithProject(t, db, "proj2", "MATCH (n:Function) WHERE n.name='SharedName' RETURN n.name")
+	if r.Total != 1 {
+		t.Errorf("proj2 node scan: want 1 result, got %d", r.Total)
+	}
+
+	// Without ProjectID, both are visible
+	r = exec(t, db, "MATCH (n:Function) WHERE n.name='SharedName' RETURN n.name")
+	if r.Total != 2 {
+		t.Errorf("unscoped node scan: want 2 results, got %d", r.Total)
+	}
+}
+
+func TestProjectID_JoinQuery_Isolation(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	insertSymProject(t, db, "p1-a", "Caller", "Function", "Go", "proj1")
+	insertSymProject(t, db, "p1-b", "Callee", "Function", "Go", "proj1")
+	insertSymProject(t, db, "p2-a", "Caller", "Function", "Go", "proj2")
+	insertSymProject(t, db, "p2-b", "Callee", "Function", "Go", "proj2")
+
+	insertEdgeProject(t, db, "p1-a", "p1-b", "CALLS", "proj1")
+	insertEdgeProject(t, db, "p2-a", "p2-b", "CALLS", "proj2")
+
+	// proj1 sees only proj1 edges
+	r := execWithProject(t, db, "proj1", "MATCH (a)-[:CALLS]->(b) RETURN a.name, b.name")
+	if r.Total != 1 {
+		t.Errorf("proj1 join: want 1 row, got %d", r.Total)
+	}
+
+	// proj2 sees only proj2 edges
+	r = execWithProject(t, db, "proj2", "MATCH (a)-[:CALLS]->(b) RETURN a.name, b.name")
+	if r.Total != 1 {
+		t.Errorf("proj2 join: want 1 row, got %d", r.Total)
+	}
+
+	// Unscoped sees all
+	r = exec(t, db, "MATCH (a)-[:CALLS]->(b) RETURN a.name, b.name")
+	if r.Total != 2 {
+		t.Errorf("unscoped join: want 2 rows, got %d", r.Total)
+	}
+}
+
+func TestProjectID_BFS_Isolation(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// proj1: Root -> Child1
+	insertSymProject(t, db, "p1-root", "Root", "Function", "Go", "proj1")
+	insertSymProject(t, db, "p1-child", "Child1", "Function", "Go", "proj1")
+	// proj2: a separate Root -> Child2 (same symbol names, different project)
+	insertSymProject(t, db, "p2-root", "Root", "Function", "Go", "proj2")
+	insertSymProject(t, db, "p2-child", "Child2", "Function", "Go", "proj2")
+
+	insertEdgeProject(t, db, "p1-root", "p1-child", "CALLS", "proj1")
+	insertEdgeProject(t, db, "p2-root", "p2-child", "CALLS", "proj2")
+
+	// proj1 BFS from Root should only reach Child1, not Child2
+	r := execWithProject(t, db, "proj1", "MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name='Root' RETURN b.name")
+	for _, row := range r.Rows {
+		if row["b.name"] == "Child2" {
+			t.Errorf("proj1 BFS leaked into proj2: got Child2")
+		}
+	}
+	found := false
+	for _, row := range r.Rows {
+		if row["b.name"] == "Child1" {
+			found = true
+		}
+	}
+	if !found && r.Total > 0 {
+		t.Errorf("proj1 BFS: expected Child1 in results")
+	}
+}
+
+func TestProjectID_BFS_MaxRows(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Insert a chain: root -> n0 -> n1 -> ... -> n4
+	insertSym(t, db, "mr-root", "Root", "Function", "Go")
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("mr-%d", i)
+		insertSym(t, db, id, fmt.Sprintf("Node%d", i), "Function", "Go")
+		prev := "mr-root"
+		if i > 0 {
+			prev = fmt.Sprintf("mr-%d", i-1)
+		}
+		insertEdge(t, db, prev, id, "CALLS")
+	}
+
+	// With maxRows=2, BFS CTE should return at most 2 results
+	e := &Executor{DB: db, MaxRows: 2}
+	r, err := e.Execute(context.Background(), "MATCH (a)-[:CALLS*1..5]->(b) WHERE a.name='Root' RETURN b.name")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// buildResult applies LIMIT from query default (200), but bfsViaCTE LIMIT
+	// is now e.maxRows() = 2, so we expect at most 2 hops returned from CTE.
+	if r.Total > 2 {
+		t.Errorf("BFS with maxRows=2 returned %d rows, want <=2", r.Total)
+	}
+}
+
+func TestRunBFS_GotoDoneEarlyExit(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Create 4 start nodes (A1..A4), each with one reachable child.
+	// MaxRows=1 → maxRows()*2 = 2, so after 2 results the loop should goto done.
+	for i := 1; i <= 4; i++ {
+		src := fmt.Sprintf("ge-src%d", i)
+		dst := fmt.Sprintf("ge-dst%d", i)
+		insertSym(t, db, src, fmt.Sprintf("Source%d", i), "Function", "Go")
+		insertSym(t, db, dst, fmt.Sprintf("Dest%d", i), "Function", "Go")
+		insertEdge(t, db, src, dst, "CALLS")
+	}
+
+	// With MaxRows=1, the outer loop should exit after len(resultRows) >= 2
+	e := &Executor{DB: db, MaxRows: 1}
+	r, err := e.Execute(context.Background(),
+		"MATCH (a:Function)-[:CALLS*1..1]->(b) RETURN a.name, b.name LIMIT 10")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// goto done triggers when len(resultRows) >= maxRows*2 = 2, so we get ≤2 rows (not all 4 pairs)
+	if r.Total > 2 {
+		t.Errorf("BFS with MaxRows=1 returned %d rows, want <=2 (early exit at maxRows*2)", r.Total)
+	}
+	if r.Total >= 4 {
+		t.Errorf("BFS goto done did not fire: got %d rows, want <4", r.Total)
 	}
 }
