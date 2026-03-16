@@ -1987,3 +1987,107 @@ func TestHandleStats_AllTime(t *testing.T) {
 		t.Errorf("all_time calls: got %v, want 30", atCalls)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StartSessionFlusher — context cancel triggers final flush
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestStartSessionFlusher_CancelFlushes(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+
+	// Make one tool call so statsCalls > 0 (jsonResultWithMeta increments it)
+	srv.handleList(context.Background(), makeReq(nil)) //nolint:errcheck
+
+	ctx, cancel := context.WithCancel(context.Background())
+	srv.StartSessionFlusher(ctx)
+
+	// Cancel immediately — the goroutine should do a final flushSession()
+	cancel()
+
+	// Give the goroutine time to run the final flush
+	time.Sleep(50 * time.Millisecond)
+
+	// Session should now be in the DB
+	rows, err := store.GetSessions(10)
+	if err != nil {
+		t.Fatalf("GetSessions: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Error("StartSessionFlusher: no session flushed to DB after context cancel")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleADR — get nonexistent key
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleADR_GetMissing(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "proj1"
+	store.UpsertProject(db.Project{ID: "proj1", Path: "/proj1", Name: "proj1", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "get",
+		"key":    "NONEXISTENT",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR get: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for nonexistent ADR key, got success")
+	}
+}
+
+func TestHandleADR_GetNoKey(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "proj2"
+	store.UpsertProject(db.Project{ID: "proj2", Path: "/proj2", Name: "proj2", IndexedAt: time.Now()})
+
+	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "get",
+		// key omitted
+	}))
+	if err != nil {
+		t.Fatalf("handleADR get no key: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result when key is missing for action=get")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleChanges — git diff scope variants
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleChanges_StagedScope(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	dir := t.TempDir()
+	store.UpsertProject(db.Project{ID: dir, Path: dir, Name: "repo", IndexedAt: time.Now()})
+	srv.sessionID = dir
+	srv.sessionRoot = dir
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{
+		"scope": "staged",
+	}))
+	if err != nil {
+		t.Fatalf("handleChanges staged: %v", err)
+	}
+	// May fail (not a git repo) or succeed — we just verify no panic and a result
+	_ = result
+}
+
+func TestHandleChanges_CommitScope(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	dir := t.TempDir()
+	store.UpsertProject(db.Project{ID: dir, Path: dir, Name: "repo", IndexedAt: time.Now()})
+	srv.sessionID = dir
+	srv.sessionRoot = dir
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{
+		"scope": "HEAD",
+	}))
+	if err != nil {
+		t.Fatalf("handleChanges commit scope: %v", err)
+	}
+	_ = result
+}
