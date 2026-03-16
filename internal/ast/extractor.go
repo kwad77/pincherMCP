@@ -624,17 +624,9 @@ var rustRE = &regexExtractor{
 	importRE:    regexp.MustCompile(`(?m)^use\s+(?P<path>[a-zA-Z0-9_:]+)`),
 }
 
+// extractRust: 'pub' keyword marks exports; approximated here as always-exported.
 func extractRust(source []byte, relPath string) *FileResult {
-	opts := extractOpts{
-		modSep:    "::",
-		blockChar: '{',
-		exportedFn: func(name string) bool {
-			// In Rust, 'pub' prefix = exported. Approximation: starts with uppercase = exported type.
-			return true
-		},
-		isTest: func(name string) bool { return false },
-	}
-	return rustRE.extract(source, relPath, "Rust", opts)
+	return rustRE.extract(source, relPath, "Rust", simpleOpts("::", '{'))
 }
 
 var javaRE = &regexExtractor{
@@ -663,8 +655,7 @@ var rubyRE = &regexExtractor{
 }
 
 func extractRuby(source []byte, relPath string) *FileResult {
-	opts := extractOpts{modSep: "::", blockChar: 0, exportedFn: func(n string) bool { return true }, isTest: func(n string) bool { return false }}
-	return rubyRE.extract(source, relPath, "Ruby", opts)
+	return rubyRE.extract(source, relPath, "Ruby", simpleOpts("::", 0))
 }
 
 var phpRE = &regexExtractor{
@@ -673,8 +664,7 @@ var phpRE = &regexExtractor{
 }
 
 func extractPHP(source []byte, relPath string) *FileResult {
-	opts := extractOpts{modSep: "\\", blockChar: '{', exportedFn: func(n string) bool { return true }, isTest: func(n string) bool { return false }}
-	return phpRE.extract(source, relPath, "PHP", opts)
+	return phpRE.extract(source, relPath, "PHP", simpleOpts("\\", '{'))
 }
 
 var cRE = &regexExtractor{
@@ -682,8 +672,7 @@ var cRE = &regexExtractor{
 }
 
 func extractC(source []byte, relPath string) *FileResult {
-	opts := extractOpts{modSep: "::", blockChar: '{', exportedFn: func(n string) bool { return true }, isTest: func(n string) bool { return false }}
-	return cRE.extract(source, relPath, "C", opts)
+	return cRE.extract(source, relPath, "C", simpleOpts("::", '{'))
 }
 
 var csRE = &regexExtractor{
@@ -693,8 +682,7 @@ var csRE = &regexExtractor{
 }
 
 func extractCSharp(source []byte, relPath string) *FileResult {
-	opts := extractOpts{modSep: ".", blockChar: '{', exportedFn: func(n string) bool { return true }, isTest: func(n string) bool { return false }}
-	return csRE.extract(source, relPath, "C#", opts)
+	return csRE.extract(source, relPath, "C#", simpleOpts(".", '{'))
 }
 
 var kotlinRE = &regexExtractor{
@@ -703,8 +691,7 @@ var kotlinRE = &regexExtractor{
 }
 
 func extractKotlin(source []byte, relPath string) *FileResult {
-	opts := extractOpts{modSep: ".", blockChar: '{', exportedFn: func(n string) bool { return true }, isTest: func(n string) bool { return false }}
-	return kotlinRE.extract(source, relPath, "Kotlin", opts)
+	return kotlinRE.extract(source, relPath, "Kotlin", simpleOpts(".", '{'))
 }
 
 var swiftRE = &regexExtractor{
@@ -714,8 +701,18 @@ var swiftRE = &regexExtractor{
 }
 
 func extractSwift(source []byte, relPath string) *FileResult {
-	opts := extractOpts{modSep: ".", blockChar: '{', exportedFn: func(n string) bool { return true }, isTest: func(n string) bool { return false }}
-	return swiftRE.extract(source, relPath, "Swift", opts)
+	return swiftRE.extract(source, relPath, "Swift", simpleOpts(".", '{'))
+}
+
+// simpleOpts returns extractOpts for languages where every symbol is exported
+// and there are no test-detection heuristics. Most non-Go extractors use this.
+func simpleOpts(modSep string, blockChar byte) extractOpts {
+	return extractOpts{
+		modSep:     modSep,
+		blockChar:  blockChar,
+		exportedFn: func(string) bool { return true },
+		isTest:     func(string) bool { return false },
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
