@@ -30,11 +30,12 @@ One binary → no Docker, no Python, no external services
 One response → always includes token cost metadata
 ```
 
-Every tool response includes a `_meta` envelope so agents can track exactly how many tokens they consumed and how many they saved:
+Every tool response includes a `_meta` field at the top level so agents can track exactly how many tokens they consumed and how many they saved:
 
 ```json
 {
-  "result": { "...": "..." },
+  "name": "mySymbol",
+  "source": "func mySymbol() { ... }",
   "_meta": {
     "tokens_used":  312,
     "tokens_saved": 14800,
@@ -51,7 +52,7 @@ Every tool response includes a `_meta` envelope so agents can track exactly how 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        SQLite WAL                           │
-│                     (64 MB page cache)                      │
+│              (64 MB page cache, busy_timeout=5s)            │
 │                                                             │
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  │
 │  │  Layer 1      │  │  Layer 2      │  │  Layer 3      │  │
@@ -63,8 +64,8 @@ Every tool response includes a `_meta` envelope so agents can track exactly how 
 │  │  ↓            │  │  ↓            │  │  table        │  │
 │  │  1 SQL lookup │  │  sub-ms JOIN  │  │  ↓            │  │
 │  │  1 Seek       │  │  fusion       │  │  BM25 ranked  │  │
-│  │  1 Read       │  │  BFS traversal│  │  results      │  │
-│  │  O(1)         │  │               │  │               │  │
+│  │  1 Read       │  │  Recursive    │  │  results      │  │
+│  │  O(1)         │  │  CTE traversal│  │               │  │
 │  └───────────────┘  └───────────────┘  └───────────────┘  │
 │          ↑                  ↑                  ↑            │
 │          └──────────────────┴──────────────────┘            │
@@ -80,7 +81,7 @@ Every symbol gets a stable, human-readable ID that survives re-indexing:
 ```
 "{file_path}::{qualified_name}#{kind}"
 
-e.g.  "internal/db/db.go::db.Open#Function"
+e.g.  "internal/db/db.go::db.*Store.Open#Method"
       "src/auth/jwt.ts::AuthService.verify#Method"
 ```
 
@@ -92,13 +93,17 @@ When a file is **renamed or moved**, pincherMCP records a `symbol_moves` entry m
 
 Every symbol carries an `extraction_confidence` score:
 
-| Value | Meaning |
+| Value | Languages |
 |---|---|
-| `1.0` | Go `go/ast` — exact byte offsets, full type info |
-| `0.85` | Stable regex (Python, TypeScript, Rust, Java, JS) |
-| `0.70` | Approximate regex (other languages) |
+| `1.0` | Go — `go/ast` full AST, exact byte offsets |
+| `0.85` | Python, JavaScript, JSX, TypeScript, TSX, Rust, Java — stable regex |
+| `0.70` | Ruby, PHP, C, C++, C#, Kotlin, Swift — approximate regex |
 
-Use this to gate how much you trust the byte-offset retrieval vs. treating source as approximate.
+Languages in the "detected" category (Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, R) are recognized for file filtering but **no symbols are extracted** from them — those files are skipped during indexing.
+
+### Schema Migrations
+
+The database schema is versioned. New columns and tables are added via append-only migrations tracked in a `schema_version` table — existing databases upgrade automatically on next `pinch` startup without data loss.
 
 ---
 
@@ -110,7 +115,7 @@ Use this to gate how much you trust the byte-offset retrieval vs. treating sourc
 |---|---|
 | `index` | Index a repo. One AST pass populates all three layers. Incremental by default (xxh3 content hash skips unchanged files). |
 | `list` | List all indexed projects with stats (files, symbols, edges, last indexed). |
-| `changes` | Map `git diff` to affected symbols and compute blast radius via BFS. Returns changed symbols + impacted callers with CRITICAL/HIGH/MEDIUM/LOW risk labels. |
+| `changes` | Map `git diff` to affected symbols and compute blast radius. Scope: `unstaged` (default), `staged`, or `all`. Returns changed symbols + impacted callers with CRITICAL/HIGH/MEDIUM/LOW risk labels. |
 
 ### Symbol Retrieval
 
@@ -124,18 +129,18 @@ Use this to gate how much you trust the byte-offset retrieval vs. treating sourc
 
 | Tool | What it does |
 |---|---|
-| `search` | FTS5 BM25 full-text search across names, signatures, and docstrings. Supports wildcards (`auth*`), phrases (`"process order"`), AND/OR. Filter by kind or language. |
-| `query` | Execute Cypher-like graph queries. Sub-ms for single-hop patterns via SQL JOIN fusion. |
-| `trace` | BFS call-path trace — who calls this function, or what does it call. Returns hops with risk labels. |
+| `search` | FTS5 BM25 full-text search across names, signatures, and docstrings. Supports wildcards (`auth*`), phrases (`"process order"`), AND/OR. Filter by `kind` or `language`. |
+| `query` | Execute Cypher-like graph queries. Sub-ms for single-hop patterns via SQL JOIN fusion. Variable-length via recursive CTE. |
+| `trace` | Call-path trace — who calls this function, or what does it call. Uses recursive CTE (max 2 SQL calls). Returns hops grouped by depth with risk labels. |
 
 ### Architecture & Knowledge
 
 | Tool | What it does |
 |---|---|
-| `architecture` | High-level orientation: languages, entry points, hotspot functions (most-called), graph stats. Call this first on an unfamiliar project. |
+| `architecture` | High-level orientation: language breakdown, entry points, hotspot functions (most-called), graph stats. Call this first on an unfamiliar project. |
 | `schema` | Knowledge graph schema: node kind counts, edge kind counts. Use before `query` to understand what's indexed. |
-| `adr` | Architecture Decision Records — persistent key/value store per project. `get`, `set`, `list`, `delete`. Record stack decisions, patterns, conventions. |
-| `stats` | Session savings summary: cumulative tokens used/saved, cost avoided, call count, and avg latency since server start. Also shows the current project's index size (files, symbols, edges). |
+| `adr` | Architecture Decision Records — persistent key/value store per project. Actions: `get`, `set`, `list`, `delete`. Record stack decisions, patterns, conventions. |
+| `stats` | Session savings summary: cumulative tokens used/saved, cost avoided, call count, avg latency since server start. Also shows the current project's index size. |
 
 ---
 
@@ -144,13 +149,13 @@ Use this to gate how much you trust the byte-offset retrieval vs. treating sourc
 pincherMCP supports a lightweight Cypher subset translated to SQL at query time.
 
 ```cypher
--- Find all functions whose name contains "Handler"
+-- Find all functions whose name matches a regex
 MATCH (f:Function) WHERE f.name =~ '.*Handler.*' RETURN f.name, f.file_path
 
--- Find what main() calls (one hop)
+-- Find what main() calls (single-hop JOIN)
 MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = 'main' RETURN g.name, g.file_path LIMIT 20
 
--- Find call chains up to 3 hops deep, filter results
+-- Find call chains up to 3 hops deep (recursive CTE), filter result nodes
 MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name = 'ProcessOrder' AND b.kind = 'Function' RETURN b.name, b.kind
 
 -- Count functions by language
@@ -159,16 +164,16 @@ MATCH (f:Function) RETURN COUNT(f) AS total
 -- Find all exported Go functions
 MATCH (f:Function) WHERE f.language = 'Go' AND f.is_exported = 'true' RETURN f.name LIMIT 50
 
--- Named edge variables (get edge metadata)
-MATCH (a:Function)-[r:CALLS]->(b:Function) WHERE a.name = 'main' RETURN a.name, r.kind, b.name
+-- Named edge variables (access edge metadata)
+MATCH (a:Function)-[r:CALLS]->(b:Function) WHERE a.name = 'main' RETURN a.name, r.kind, r.confidence, b.name
 
--- Sort by line number
+-- Sort results by line number
 MATCH (f:Function) WHERE f.file_path STARTS WITH 'internal/' RETURN f.name, f.start_line ORDER BY f.start_line ASC
 ```
 
 **Supported operators:** `=`, `<>`, `>`, `<`, `>=`, `<=`, `=~` (regex), `CONTAINS`, `STARTS WITH`
 
-WHERE filters work on both the start node and result nodes in all query modes (single-hop JOIN, variable-length BFS, and node-only scans).
+WHERE filters apply to both the start node and result nodes in all query modes (single-hop JOIN, variable-length BFS, and node-only scans).
 
 ---
 
@@ -176,13 +181,13 @@ WHERE filters work on both the start node and result nodes in all query modes (s
 
 ### Requirements
 
-- Go 1.21+ (pure Go — no CGO, no C compiler needed)
+- Go 1.24+ (pure Go — no CGO, no C compiler needed)
 - Git (for the `changes` blast-radius tool)
 
 ### Build from source
 
 ```bash
-git clone https://github.com/yourorg/pincherMCP
+git clone https://github.com/kwad77/pincherMCP
 cd pincherMCP
 go build -o pinch ./cmd/pinch
 
@@ -235,11 +240,13 @@ Returns:
 ```json
 {
   "project": "myproject",
+  "path": "/path/to/your/project",
   "files": 142,
   "symbols": 3847,
   "edges": 12094,
   "skipped": 0,
-  "duration_ms": 340
+  "duration_ms": 340,
+  "_meta": { "tokens_used": 56, "tokens_saved": 0, "latency_ms": 340, "cost_avoided": "$0.0000" }
 }
 ```
 
@@ -249,13 +256,13 @@ Returns:
 Use pincher search with query "processPayment"
 ```
 
-Returns ranked results with stable IDs. Copy an ID, then:
+Returns BM25-ranked results with stable IDs. Copy an ID, then:
 
 ```
 Use pincher symbol with id "src/payments/processor.go::payments.processPayment#Function"
 ```
 
-Returns source code, signature, byte offsets — instantly, without re-parsing.
+Returns source code, signature, byte offsets, and `extraction_confidence` — instantly, without re-parsing.
 
 ### Understand call chains
 
@@ -263,7 +270,7 @@ Returns source code, signature, byte offsets — instantly, without re-parsing.
 Use pincher trace with name "processPayment" and direction "inbound"
 ```
 
-Returns every function that (transitively) calls `processPayment`, labeled:
+Returns every function that (transitively) calls `processPayment`, grouped by depth:
 - **CRITICAL** — direct callers (depth 1)
 - **HIGH** — callers of callers (depth 2)
 - **MEDIUM** — depth 3
@@ -272,10 +279,10 @@ Returns every function that (transitively) calls `processPayment`, labeled:
 ### Assess impact of a change
 
 ```
-Use pincher changes
+Use pincher changes with scope "unstaged"
 ```
 
-Runs `git diff`, finds all symbols in changed files, BFS-traces inbound callers, returns a blast radius report with risk labels and counts.
+Runs `git diff`, finds all symbols in changed files, traces inbound callers, returns a blast radius report with risk labels and counts.
 
 ---
 
@@ -289,31 +296,31 @@ pincherMCP stores its database in a platform-appropriate directory — no root p
 | macOS | `~/Library/Application Support/pincherMCP/pincher.db` |
 | Linux | `~/.local/share/pincherMCP/pincher.db` |
 
-The database is a single SQLite WAL file. Back it up with any file copy tool. Delete it to reset all indexes.
+The database is a single SQLite WAL file. Back it up with any file copy tool. Delete it to reset all indexes. The schema is versioned — upgrading the binary applies any pending migrations automatically.
 
 ---
 
 ## Language Support
 
-pincherMCP extracts symbols from 20+ languages:
+pincherMCP extracts symbols from 12 languages and detects (but does not index) 8 more:
 
-| Language | Extraction method | Byte offsets |
-|---|---|---|
-| Go | `go/ast` (full AST) | Exact (token.Pos) |
-| Python | Regex | Approximate |
-| TypeScript / TSX | Regex | Approximate |
-| JavaScript / JSX | Regex | Approximate |
-| Rust | Regex | Approximate |
-| Java | Regex | Approximate |
-| C / C++ | Regex | Approximate |
-| C# | Regex | Approximate |
-| Ruby | Regex | Approximate |
-| PHP | Regex | Approximate |
-| Kotlin | Regex | Approximate |
-| Swift | Regex | Approximate |
-| Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, R | Language detected | — |
+| Language | Extraction | Confidence | Symbols extracted |
+|---|---|---|---|
+| Go | `go/ast` full AST | 1.0 | Functions, Methods, Types, Interfaces, Constants, Variables |
+| Python | Regex | 0.85 | Functions, Classes, Methods |
+| TypeScript / TSX | Regex | 0.85 | Functions, Classes, Interfaces, Methods |
+| JavaScript / JSX | Regex | 0.85 | Functions, Classes, Methods |
+| Rust | Regex | 0.85 | Functions, Structs, Traits, Impls |
+| Java | Regex | 0.85 | Classes, Methods, Interfaces |
+| Ruby | Regex | 0.70 | Functions, Classes, Methods |
+| PHP | Regex | 0.70 | Functions, Classes, Methods |
+| C / C++ | Regex | 0.70 | Functions, Structs, Classes |
+| C# | Regex | 0.70 | Classes, Methods, Interfaces |
+| Kotlin | Regex | 0.70 | Functions, Classes |
+| Swift | Regex | 0.70 | Functions, Classes |
+| Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, R | Detected only | — | None (files skipped) |
 
-Go uses the standard library's `go/ast` parser for exact byte offsets. All other languages use regex patterns covering the most common symbol forms (~80% accuracy). To upgrade any language to full accuracy, replace its extractor with tree-sitter bindings — the interface is unchanged.
+Go uses the standard library's `go/ast` parser for exact byte offsets. All other extracting languages use regex patterns. To upgrade any language to full accuracy, replace its extractor with tree-sitter bindings — the interface is unchanged.
 
 ---
 
@@ -323,18 +330,19 @@ All numbers on a ~5,000-file Go monorepo (MacBook M2):
 
 | Operation | Time | Notes |
 |---|---|---|
-| Full index (cold) | ~800ms | Concurrent per-file, xxh3 hashing |
+| Full index (cold) | ~800ms | Concurrent per-file goroutines, xxh3 content hashing |
 | Incremental re-index (1 file changed) | ~15ms | Hash check skips unchanged files |
 | Symbol retrieval (`symbol` tool) | <1ms | 1 SQL + 1 seek + 1 read |
 | FTS5 search (`search` tool) | <5ms | BM25 ranking via SQLite FTS5 |
 | Single-hop Cypher query | <2ms | JOIN-fused SQL |
 | Multi-hop BFS query (depth 3) | <5ms | Recursive CTE — 1 SQL per start node |
+| Concurrent write safety | 5s retry | `busy_timeout=5000` prevents lock contention errors |
 
 ---
 
 ## Token Efficiency
 
-Every response includes a `_meta` envelope showing token consumption:
+Every response includes a `_meta` field showing token consumption:
 
 ```json
 "_meta": {
@@ -358,7 +366,7 @@ Every response includes a `_meta` envelope showing token consumption:
 Use the `adr` tool to record project-level decisions that survive context resets:
 
 ```
-Use pincher adr with action "set", key "STACK", value "Go 1.21 + SQLite + MCP stdio"
+Use pincher adr with action "set", key "STACK", value "Go 1.24 + SQLite + MCP stdio"
 Use pincher adr with action "set", key "AUTH", value "JWT, 24h expiry, RS256 keys in /etc/keys"
 Use pincher adr with action "list"
 ```
@@ -373,23 +381,22 @@ These persist in the SQLite database and are retrievable in any future session.
 pincherMCP/
 ├── cmd/pinch/main.go            # Entry point — wires db + indexer + server
 ├── internal/
-│   ├── db/db.go                 # SQLite store: schema, CRUD, FTS5, graph ops
+│   ├── db/db.go                 # SQLite store: schema, versioned migrations, CRUD, FTS5, graph ops
 │   ├── ast/
-│   │   ├── extractor.go         # Multi-language symbol extraction with byte offsets
-│   │   └── languages.go         # Extension → language detection
+│   │   ├── extractor.go         # Multi-language symbol extraction with byte offsets + confidence scores
+│   │   └── languages.go         # Extension → language detection (20+ languages)
 │   ├── cypher/engine.go         # Cypher-to-SQL translation (tokenizer → parser → executor)
-│   ├── index/indexer.go         # Indexing pipeline: walk → hash → extract → store → watch
-│   └── server/server.go         # MCP server: 12 tools + _meta envelope
+│   ├── index/indexer.go         # Indexing pipeline: walk → hash → extract → store → watch → move tracking
+│   └── server/server.go         # MCP server: 13 tools + _meta envelope
 └── go.mod
 ```
 
 ### CLI flags
 
 ```
-pinch --help
-pinch --version
-pinch --data-dir /custom/path    # override database directory
-pinch --verbose                  # enable verbose logging to stderr
+pinch -version                   # print version and exit
+pinch -data-dir /custom/path     # override database directory
+pinch -verbose                   # enable verbose logging to stderr
 ```
 
 ---
