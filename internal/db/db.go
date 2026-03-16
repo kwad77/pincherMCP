@@ -1190,7 +1190,10 @@ func bi(b bool) int {
 }
 
 // ProjectNameFromPath derives a project name from a directory path.
+// Handles both Unix and Windows-style paths on all platforms.
 func ProjectNameFromPath(path string) string {
+	// Normalize Windows backslashes so filepath.Base works cross-platform.
+	path = strings.ReplaceAll(path, "\\", "/")
 	return filepath.Base(filepath.Clean(path))
 }
 
