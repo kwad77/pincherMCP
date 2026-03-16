@@ -48,6 +48,7 @@ type Server struct {
 	indexer  *index.Indexer
 	handlers map[string]mcp.ToolHandler
 	version  string
+	httpKey  string // optional bearer token; empty = no auth required
 
 	sessionOnce    sync.Once
 	sessionRoot    string
@@ -180,6 +181,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bearer token auth — enforced when --http-key is set.
+	if s.httpKey != "" {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if tok != s.httpKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]any{"error": "unauthorized — set Authorization: Bearer <key>"})
+			return
+		}
+	}
+
 	// Transparently compress responses when the client supports it.
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
@@ -282,6 +293,10 @@ func (s *Server) openAPISpec() map[string]any {
 
 // ListenAndServeHTTP starts an HTTP server on addr (e.g. ":8080").
 // It blocks until ctx is cancelled or the listener fails.
+// SetHTTPKey configures a required bearer token for all HTTP requests.
+// If key is empty, authentication is disabled (suitable for localhost-only deployments).
+func (s *Server) SetHTTPKey(key string) { s.httpKey = key }
+
 func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 	srv := &http.Server{Addr: addr, Handler: s}
 	go func() {

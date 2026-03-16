@@ -23,6 +23,7 @@ func main() {
 		dataDir     = flag.String("data-dir", "", "Override data directory (default: platform-appropriate)")
 		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
 		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080). Enables any HTTP client to call all tools via POST /v1/{tool}.")
+		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments).")
 	)
 	flag.Parse()
 
@@ -56,7 +57,7 @@ func main() {
 	// Build indexer
 	idx := index.New(store)
 
-	// Build MCP server with all 13 tools
+	// Build MCP server with all 14 tools
 	srv := server.New(store, idx, version)
 
 	// Context with graceful shutdown
@@ -69,6 +70,9 @@ func main() {
 
 	// Optionally run HTTP server for platform-agnostic access.
 	if *httpAddr != "" {
+		if *httpKey != "" {
+			srv.SetHTTPKey(*httpKey)
+		}
 		go func() {
 			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {
 				log.Printf("pincherMCP: http server error: %v", err)
