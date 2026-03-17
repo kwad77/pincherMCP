@@ -1999,3 +1999,113 @@ func TestListADRs_EmptyProject(t *testing.T) {
 		t.Errorf("ListADRs nonexistent project: got %d, want 0", len(adrs))
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GraphStats
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestGraphStats_Empty(t *testing.T) {
+	store := newTestStore(t)
+	symCount, edgeCount, kindCounts, edgeKindCounts, err := store.GraphStats("no-project")
+	if err != nil {
+		t.Fatalf("GraphStats: %v", err)
+	}
+	if symCount != 0 || edgeCount != 0 {
+		t.Errorf("GraphStats empty: symCount=%d edgeCount=%d, want 0", symCount, edgeCount)
+	}
+	if len(kindCounts) != 0 || len(edgeKindCounts) != 0 {
+		t.Errorf("GraphStats empty: kindCounts=%v edgeKindCounts=%v, want empty", kindCounts, edgeKindCounts)
+	}
+}
+
+func TestGraphStats_WithMixedKinds(t *testing.T) {
+	store := newTestStore(t)
+	pid := "gstat-proj"
+	store.UpsertProject(testProject(pid))
+
+	syms := []Symbol{
+		testSymbol("f1", "FuncA", "Function", pid, "a.go"),
+		testSymbol("f2", "FuncB", "Function", pid, "a.go"),
+		testSymbol("c1", "MyClass", "Class", pid, "b.go"),
+	}
+	if err := store.BulkUpsertSymbols(syms); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+	edges := []Edge{
+		{FromID: "f1", ToID: "f2", Kind: "CALLS", ProjectID: pid},
+		{FromID: "c1", ToID: "f1", Kind: "IMPORTS", ProjectID: pid},
+	}
+	if err := store.BulkUpsertEdges(edges); err != nil {
+		t.Fatalf("BulkUpsertEdges: %v", err)
+	}
+
+	symCount, edgeCount, kindCounts, edgeKindCounts, err := store.GraphStats(pid)
+	if err != nil {
+		t.Fatalf("GraphStats with data: %v", err)
+	}
+	if symCount != 3 {
+		t.Errorf("symCount=%d, want 3", symCount)
+	}
+	if edgeCount != 2 {
+		t.Errorf("edgeCount=%d, want 2", edgeCount)
+	}
+	if kindCounts["Function"] != 2 {
+		t.Errorf("kindCounts[Function]=%d, want 2", kindCounts["Function"])
+	}
+	if kindCounts["Class"] != 1 {
+		t.Errorf("kindCounts[Class]=%d, want 1", kindCounts["Class"])
+	}
+	if edgeKindCounts["CALLS"] != 1 {
+		t.Errorf("edgeKindCounts[CALLS]=%d, want 1", edgeKindCounts["CALLS"])
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteSymbolsForFile
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestDeleteSymbolsForFile_ClearsEdges(t *testing.T) {
+	store := newTestStore(t)
+	pid := "dsff-proj"
+	store.UpsertProject(testProject(pid))
+
+	syms := []Symbol{
+		testSymbol("dsff-a", "Alpha", "Function", pid, "alpha.go"),
+		testSymbol("dsff-b", "Beta", "Function", pid, "beta.go"),
+	}
+	store.BulkUpsertSymbols(syms)
+	edges := []Edge{
+		{FromID: "dsff-a", ToID: "dsff-b", Kind: "CALLS", ProjectID: pid},
+	}
+	store.BulkUpsertEdges(edges)
+
+	// Delete symbols for alpha.go
+	if err := store.DeleteSymbolsForFile(pid, "alpha.go"); err != nil {
+		t.Fatalf("DeleteSymbolsForFile: %v", err)
+	}
+
+	// dsff-a should be gone
+	sym, err := store.GetSymbol("dsff-a")
+	if err != nil {
+		t.Fatalf("GetSymbol after delete: %v", err)
+	}
+	if sym != nil {
+		t.Error("dsff-a still exists after DeleteSymbolsForFile")
+	}
+	// dsff-b should still exist
+	sym2, err := store.GetSymbol("dsff-b")
+	if err != nil {
+		t.Fatalf("GetSymbol dsff-b: %v", err)
+	}
+	if sym2 == nil {
+		t.Error("dsff-b was incorrectly deleted")
+	}
+}
+
+func TestDeleteSymbolsForFile_NonExistent_NoError(t *testing.T) {
+	store := newTestStore(t)
+	// Deleting symbols for a file that doesn't exist should not error
+	if err := store.DeleteSymbolsForFile("any-proj", "nonexistent.go"); err != nil {
+		t.Errorf("DeleteSymbolsForFile nonexistent: %v", err)
+	}
+}
