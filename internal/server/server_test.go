@@ -2007,6 +2007,34 @@ func TestServeHTTP_GetProjects_Empty(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_Dashboard(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/dashboard", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/dashboard: got %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if body == "" {
+		t.Error("dashboard response body is empty")
+	}
+}
+
+func TestServeHTTP_DeleteProject_Success(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "del-pid", Path: "/tmp/del", Name: "todel", IndexedAt: time.Now()})
+	w := httpDelete(t, srv, "/v1/projects", `{"id":"del-pid"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE /v1/projects success: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["deleted"] != "del-pid" {
+		t.Errorf("DELETE response: deleted=%v, want del-pid", resp["deleted"])
+	}
+}
+
 func TestServeHTTP_DeleteProject_BadBody(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	// Missing id field
