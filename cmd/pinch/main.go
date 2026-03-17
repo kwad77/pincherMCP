@@ -85,8 +85,22 @@ func main() {
 		}()
 	}
 
-	// Run MCP server over stdio
+	// Run MCP server over stdio.
+	// In HTTP mode we don't exit when the stdio connection closes — the HTTP
+	// dashboard server must keep running across MCP reconnects.
 	if err := srv.MCPServer().Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
-		log.Fatalf("pincherMCP: server error: %v", err)
+		if *httpAddr != "" {
+			log.Printf("pincherMCP: mcp stdio closed (%v) — http dashboard still running at %s", err, *httpAddr)
+		} else {
+			log.Fatalf("pincherMCP: server error: %v", err)
+		}
+	}
+
+	// If the HTTP server is active, wait for a shutdown signal even after the
+	// MCP stdio connection has closed.  Without this the process would exit and
+	// kill the HTTP server every time the MCP client disconnects (e.g. /mcp
+	// reconnect in Claude Code, terminal Ctrl+D, etc.).
+	if *httpAddr != "" && ctx.Err() == nil {
+		<-ctx.Done()
 	}
 }

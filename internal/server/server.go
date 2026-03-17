@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -461,6 +462,27 @@ func (s *Server) allowRequest(ip string) bool {
 }
 
 func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
+	// Retry port binding for up to 10 seconds.  When the MCP client reconnects
+	// (e.g. /mcp in Claude Code) the previous process may still be holding the
+	// port for a brief window; retrying here makes the dashboard resilient.
+	var ln net.Listener
+	var bindErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		ln, bindErr = net.Listen("tcp", addr)
+		if bindErr == nil {
+			break
+		}
+		slog.Warn("pincher.http.bind.retry", "addr", addr, "attempt", attempt+1, "err", bindErr)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	if bindErr != nil {
+		return fmt.Errorf("bind %s: %w", addr, bindErr)
+	}
+
 	srv := &http.Server{Addr: addr, Handler: s}
 	go func() {
 		<-ctx.Done()
@@ -471,7 +493,7 @@ func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 		}
 	}()
 	slog.Info("pincher.http.listen", "addr", addr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
