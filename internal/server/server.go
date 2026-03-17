@@ -841,7 +841,7 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 	symbolBytes := sym.EndByte - sym.StartByte
-	tokensSaved := db.ApproxTokens(strings.Repeat("x", max(0, fileSizeBytes-symbolBytes)))
+	tokensSaved := max(0, fileSizeBytes-symbolBytes) / charsPerToken
 
 	data := map[string]any{
 		"id":            sym.ID,
@@ -1564,11 +1564,16 @@ const baseCostPer1M = 3.0
 // average ~33KB; 20KB is a conservative cross-language estimate.
 const avgFileSize = 20_000
 
+// charsPerToken is the approximate number of source-code characters per BPE
+// token. Used only for baseline estimates where we don't have the actual text.
+const charsPerToken = 4
+
 // savedVsFullRead returns estimated tokens saved: (N symbols × avgFileSize) minus
 // the actual payload size. The baseline is "read the whole file per symbol",
 // which is what an agent does without a code graph.
 func savedVsFullRead(count int, payloadBytes []byte) int {
-	return max(0, db.ApproxTokens(strings.Repeat("x", count*avgFileSize))-db.ApproxTokens(string(payloadBytes)))
+	baselineTokens := count * avgFileSize / charsPerToken
+	return max(0, baselineTokens-db.ApproxTokens(string(payloadBytes)))
 }
 
 // savedVsFileSizes returns estimated tokens saved using actual file sizes looked
@@ -1588,7 +1593,7 @@ func savedVsFileSizes(root string, filePaths []string, payloadBytes []byte) int 
 			total += avgFileSize
 		}
 	}
-	return max(0, db.ApproxTokens(strings.Repeat("x", total))-db.ApproxTokens(string(payloadBytes)))
+	return max(0, total/charsPerToken-db.ApproxTokens(string(payloadBytes)))
 }
 
 func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokensSaved int) *mcp.CallToolResult {
