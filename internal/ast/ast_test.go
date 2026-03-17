@@ -1113,3 +1113,58 @@ func RunAll(fns []func()) {
 		t.Error("expected RunAll symbol")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// findBlockEnd — direct edge case coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestFindBlockEnd_PastEnd(t *testing.T) {
+	src := []byte("abc")
+	got := findBlockEnd(src, 10, '{') // startOffset >= len(source)
+	if got != len(src) {
+		t.Errorf("findBlockEnd past end: got %d, want %d", got, len(src))
+	}
+}
+
+func TestFindBlockEnd_IndentBased(t *testing.T) {
+	// blockChar == 0 → indentation-based (Python-style): advance up to 80 lines
+	src := []byte("line1\nline2\nline3\n")
+	got := findBlockEnd(src, 0, 0)
+	if got <= 0 || got > len(src) {
+		t.Errorf("findBlockEnd indent: got %d, want in range (0, %d]", got, len(src))
+	}
+}
+
+func TestFindBlockEnd_Parens(t *testing.T) {
+	src := []byte("(a, (b, c), d)")
+	got := findBlockEnd(src, 0, '(')
+	if got != len(src) {
+		t.Errorf("findBlockEnd parens: got %d, want %d", got, len(src))
+	}
+}
+
+func TestFindBlockEnd_Bracket(t *testing.T) {
+	src := []byte("[1, [2, 3]]")
+	got := findBlockEnd(src, 0, '[')
+	if got != len(src) {
+		t.Errorf("findBlockEnd bracket: got %d, want %d", got, len(src))
+	}
+}
+
+func TestFindBlockEnd_UnknownDelimiter(t *testing.T) {
+	// Unknown delimiter falls through to return len(source)
+	src := []byte("some source code")
+	got := findBlockEnd(src, 0, '|')
+	if got != len(src) {
+		t.Errorf("findBlockEnd unknown delim: got %d, want %d", got, len(src))
+	}
+}
+
+func TestFindBlockEnd_NeverOpened(t *testing.T) {
+	// source has no opening brace — returns len(source) (started stays false)
+	src := []byte("no braces here")
+	got := findBlockEnd(src, 0, '{')
+	if got != len(src) {
+		t.Errorf("findBlockEnd never opened: got %d, want %d", got, len(src))
+	}
+}
