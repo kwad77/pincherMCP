@@ -16,10 +16,27 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	tkz "github.com/tiktoken-go/tokenizer"
 	_ "modernc.org/sqlite"
 )
+
+// tke is the cl100k_base tokenizer singleton (same BPE family as Claude).
+// Initialised once on first use; falls back to 4-char approximation on error.
+var (
+	tke     tkz.Codec
+	tkeOnce sync.Once
+	tkeErr  error
+)
+
+func getTokenizer() tkz.Codec {
+	tkeOnce.Do(func() {
+		tke, tkeErr = tkz.Get(tkz.Cl100kBase)
+	})
+	return tke
+}
 
 // Store wraps a SQLite database.
 type Store struct {
@@ -1231,9 +1248,14 @@ func ProjectIDFromPath(path string) string {
 	return abs
 }
 
-// ApproxTokens estimates the token count of a string.
-// Uses the common approximation of 1 token ≈ 4 characters.
+// ApproxTokens returns the BPE token count of s using the cl100k_base
+// tokenizer (same BPE family as Claude). Falls back to the 4-char heuristic
+// if the tokenizer is unavailable.
 func ApproxTokens(s string) int {
+	if enc := getTokenizer(); enc != nil {
+		ids, _, _ := enc.Encode(s)
+		return len(ids)
+	}
 	return (len(s) + 3) / 4
 }
 
