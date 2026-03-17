@@ -1491,3 +1491,70 @@ func TestExecute_UnsupportedOperator_ReturnsError(t *testing.T) {
 		t.Fatal("expected error for unsupported LIKE operator, got nil")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runJoinQuery — uncovered branches
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRunJoinQuery_ToKindFilter(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	// (a:Function)-[:CALLS]->(b:Method) — toKind filter
+	insertSym(t, db, "jq-fn", "Caller", "Function", "Go")
+	insertSym(t, db, "jq-mt", "Callee", "Method", "Go")
+	insertEdge(t, db, "jq-fn", "jq-mt", "CALLS")
+
+	e := &Executor{DB: db}
+	r, err := e.Execute(context.Background(),
+		"MATCH (a:Function)-[:CALLS]->(b:Method) RETURN a.name, b.name")
+	if err != nil {
+		t.Fatalf("runJoinQuery toKind: %v", err)
+	}
+	if r.Total == 0 {
+		t.Error("expected at least 1 join result with toKind=Method")
+	}
+}
+
+func TestRunJoinQuery_NamedEdgeVar(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "ev-a", "Alpha", "Function", "Go")
+	insertSym(t, db, "ev-b", "Beta", "Function", "Go")
+	insertEdge(t, db, "ev-a", "ev-b", "CALLS")
+
+	// r is a named edge variable — should populate r.kind and r.confidence
+	e := &Executor{DB: db}
+	r, err := e.Execute(context.Background(),
+		"MATCH (a)-[r:CALLS]->(b) RETURN a.name, r.kind, b.name")
+	if err != nil {
+		t.Fatalf("runJoinQuery namedEdge: %v", err)
+	}
+	if r.Total == 0 {
+		t.Error("expected results with named edge variable")
+	}
+	// r.kind should be in the result row
+	if len(r.Rows) > 0 {
+		if _, ok := r.Rows[0]["r.kind"]; !ok {
+			t.Error("expected r.kind in result row for named edge variable")
+		}
+	}
+}
+
+func TestRunJoinQuery_UnpushedCondition(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "up-a", "Source", "Function", "Go")
+	insertSym(t, db, "up-b", "Sink", "Function", "Go")
+	insertEdge(t, db, "up-a", "up-b", "CALLS")
+
+	// Regex condition can't be pushed to SQL — goes to unpushed list
+	e := &Executor{DB: db}
+	r, err := e.Execute(context.Background(),
+		`MATCH (a)-[:CALLS]->(b) WHERE a.name =~ "Sou.*" RETURN a.name, b.name`)
+	if err != nil {
+		t.Fatalf("runJoinQuery unpushed: %v", err)
+	}
+	if r.Total == 0 {
+		t.Error("expected 1 join result with regex unpushed condition")
+	}
+}
