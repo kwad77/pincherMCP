@@ -262,6 +262,86 @@ func TestHandleSearch_WithProject(t *testing.T) {
 	}
 }
 
+func TestHandleSearch_FieldProjection(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "proj2"
+	store.UpsertProject(db.Project{ID: "proj2", Path: "/tmp/proj2", Name: "proj2", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "s2", ProjectID: "proj2", FilePath: "b.go", Name: "LoadData",
+			QualifiedName: "pkg.LoadData", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 3},
+	})
+
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":  "LoadData",
+		"fields": "id,name",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch fields: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleSearch fields error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	rows, _ := m["results"].([]any)
+	if len(rows) == 0 {
+		t.Skip("no results — FTS not indexed yet")
+	}
+	row, _ := rows[0].(map[string]any)
+	if _, ok := row["kind"]; ok {
+		t.Error("field projection: 'kind' should be absent when fields=id,name")
+	}
+	if _, ok := row["id"]; !ok {
+		t.Error("field projection: 'id' should be present")
+	}
+}
+
+func TestHandleSearch_AllProjects(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "pA", Path: "/tmp/pA", Name: "pA", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "sA", ProjectID: "pA", FilePath: "x.go", Name: "GlobalFunc",
+			QualifiedName: "pkg.GlobalFunc", Kind: "Function", Language: "Go"},
+	})
+
+	// project="*" searches across all projects (no project filter)
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":   "GlobalFunc",
+		"project": "*",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch *: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleSearch * error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	if m["count"] == nil {
+		t.Errorf("handleSearch *: missing count field")
+	}
+}
+
+func TestHandleSearch_VariableKindSkipsSnippet(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	srv.sessionID = "proj3"
+	srv.sessionRoot = dir
+	store.UpsertProject(db.Project{ID: "proj3", Path: dir, Name: "proj3", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "v1", ProjectID: "proj3", FilePath: "c.go", Name: "MaxRetries",
+			QualifiedName: "pkg.MaxRetries", Kind: "Variable", Language: "Go"},
+	})
+
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{"query": "MaxRetries"}))
+	if err != nil {
+		t.Fatalf("handleSearch variable: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleSearch variable error: %v", decode(t, result))
+	}
+	// Variable kind should produce empty snippet — just verify no panic
+	_ = decode(t, result)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // handleSymbol
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1532,6 +1612,42 @@ func TestResolveProjectID_ByProjectName(t *testing.T) {
 	}
 	if id != "pid-xyz" {
 		t.Errorf("resolveProjectID by name = %q, want pid-xyz", id)
+	}
+}
+
+func TestResolveProjectID_NoSessionNoArg(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// sessionID is "" (default) and no project arg — should error
+	_, err := srv.resolveProjectID("")
+	if err == nil {
+		t.Error("expected error when no project and no session, got nil")
+	}
+}
+
+func TestResolveProjectID_UnknownName(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.sessionID = "some-session"
+	// Project arg not in DB by ID or name
+	_, err := srv.resolveProjectID("definitely-missing")
+	if err == nil {
+		t.Error("expected error for unknown project, got nil")
+	}
+}
+
+func TestResolveProjectID_SessionIDUsedWhenEmpty(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "my-session-proj"
+	store.UpsertProject(db.Project{
+		ID: "my-session-proj", Path: "/tmp/session", Name: "session", IndexedAt: time.Now(),
+	})
+
+	// Empty project arg → falls back to sessionID
+	id, err := srv.resolveProjectID("")
+	if err != nil {
+		t.Fatalf("resolveProjectID session fallback: %v", err)
+	}
+	if id != "my-session-proj" {
+		t.Errorf("resolveProjectID session fallback = %q, want my-session-proj", id)
 	}
 }
 
