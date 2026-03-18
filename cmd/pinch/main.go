@@ -71,7 +71,7 @@ func main() {
 	// Build indexer
 	idx := index.New(store)
 
-	// Build MCP server with all 14 tools
+	// Build MCP server with all 15 tools
 	srv := server.New(store, idx, version)
 
 	// Context with graceful shutdown

@@ -33,8 +33,7 @@ go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n
 ### Data flow
 
 ```
-cmd/pinch/main.go          ← primary entry point (MCP server + optional HTTP)
-cmd/delproject/main.go     ← utility: removes a project from the index by path
+cmd/pinch/main.go          ← sole entry point (MCP server + optional HTTP + `pincher index` CLI)
   → db.Open()              open/migrate SQLite (schema v5)
   → index.New()            create indexer (holds *db.Store)
   → server.New()           create MCP server (holds *db.Store + *index.Indexer)

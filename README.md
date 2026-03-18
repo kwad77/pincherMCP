@@ -109,9 +109,11 @@ pincher --http :8080 --http-key mysecrettoken
 │  pincher (MCP process)│          │  pincher --http :8080     │
 │                       │          │  (dashboard / REST)        │
 │  • 15 MCP tools       │          │                           │
-│  • idx.Watch()        │          │  • Same 14 tools via POST │
+│  • idx.Watch()        │          │  • POST /v1/{tool}        │
 │  • SessionFlusher     │          │  • GET /v1/dashboard      │
 │    (flush every 10s)  │          │  • GET /v1/openapi.json   │
+│                       │          │  • GET /v1/sessions       │
+│                       │          │  • DELETE /v1/projects    │
 └──────────┬────────────┘          └───────────┬───────────────┘
            │                                   │
            │     Both share the same SQLite file
@@ -218,6 +220,7 @@ All three paths are project-scoped — cross-project data leakage is structurall
 
   idx.Watch() polls every 2s (active) or 30s (idle)
   and re-runs Index() on changed files incrementally.
+  No manual re-index required during a session.
 
   On file move: (qualified_name, kind) match detected →
   symbol_moves redirect recorded → handleSymbol resolves
@@ -242,16 +245,16 @@ All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). To
 
 | Tool | Capability | Token savings |
 |---|---|---|
-| `symbol` | Source for one symbol by stable ID. O(1): 1 SQL + 1 `os.Seek` + 1 `os.Read`. No re-parse. | File size − symbol size (real BPE) |
-| `symbols` | Batch retrieve up to 100 symbols in one call. Always prefer this over calling `symbol` in a loop. | Same per symbol |
+| `symbol` | Source for one symbol by stable ID. O(1): 1 SQL + 1 `os.Seek` + 1 `os.Read`. No re-parse. Supports `fields` projection to return only selected columns. | File size − symbol size (real BPE) |
+| `symbols` | Batch retrieve up to **100** symbols in one call. Hard cap: requests >100 IDs are rejected. Always prefer this over calling `symbol` in a loop. | Same per symbol |
 | `context` | Symbol + all direct callees in one call. The preferred tool for understanding a function. | ~90% vs. reading files |
 
 ### Search & Graph
 
 | Tool | Capability | Tested latency |
 |---|---|---|
-| `search` | FTS5 BM25 full-text across names, signatures, and docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR, `kind`/`language`/`fields` filters. `project=*` searches all indexed repos. | 1ms |
-| `query` | Cypher-like graph queries. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. | 2ms (single-hop) |
+| `search` | FTS5 BM25 full-text across names, signatures, and docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR, `kind`/`language` filters. `fields` param projects columns to reduce token usage. `project=*` searches all indexed repos. | 1ms |
+| `query` | Cypher-like graph queries. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. `max_rows` param (default 200, max 10000). | 2ms (single-hop) |
 | `trace` | BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). | <5ms (depth 3) |
 
 ### Architecture & Knowledge
@@ -260,7 +263,7 @@ All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). To
 |---|---|---|
 | `architecture` | Language breakdown, entry points, hotspot functions (highest in-degree = highest change risk), graph stats. Start here on any unfamiliar project. | 12ms |
 | `schema` | Node kind counts, edge kind counts, totals. Use before `query` to see what's indexed. | 1ms |
-| `adr` | Persistent project knowledge store. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`. | <1ms |
+| `adr` | Persistent key/value store per project. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`. Use to record architectural decisions, known gotchas, or onboarding notes that outlive the conversation. | <1ms |
 | `health` | Schema version, index staleness, per-language extraction coverage. Use to detect stale indexes. | 1ms |
 | `stats` | Session savings as a formatted CLI summary: without-pincher baseline, with-pincher actual, tokens saved, cost avoided, avg latency. Persists across reconnects. | 8ms |
 | `fetch` | Fetch a URL, extract its text, and store it as a searchable `Document` symbol in the project knowledge base. Use for API docs, READMEs, or specs you want to query later. Body cap: 512 KB fetched, 32 KB stored. Retrieve via `search kind:Document` or `symbol`. | ~200ms (network) |
@@ -277,6 +280,20 @@ e.g.  "internal/db/db.go::db.Open#Function"
 ```
 
 When a file is renamed, pincherMCP records a redirect in `symbol_moves`. The `symbol` tool resolves stale IDs transparently — agents never get "not found" because a file moved.
+
+### Field Projection
+
+The `search` and `symbol` tools accept a `fields` parameter — a comma-separated list of columns to return. Use it to cut token usage when you only need specific attributes:
+
+```
+fields="id,name,file_path"           # minimal — just locate the symbol
+fields="id,name,signature,start_line" # enough to understand the interface
+fields="id,name,source"              # name + full source, skip metadata
+```
+
+Available fields: `id`, `name`, `qualified_name`, `kind`, `language`, `file_path`, `start_line`, `end_line`, `signature`, `docstring`, `source`, `is_exported`, `extraction_confidence`
+
+Omitting `fields` returns all columns (default behavior).
 
 ### Extraction Confidence
 
@@ -322,9 +339,11 @@ RETURN f.name, f.file_path LIMIT 50
 
 **Supported operators:** `=`, `<>`, `>`, `<`, `>=`, `<=`, `=~` (regex), `CONTAINS`, `STARTS WITH`
 
+**Supported clauses:** `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`, `SKIP`, `COUNT()`
+
 **Edge kinds indexed:** `CALLS`
 
-**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`)
+**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`) plus `Document` (URLs stored by the `fetch` tool)
 
 ---
 
@@ -393,11 +412,28 @@ Responses compress ~65% with `Accept-Encoding: gzip`.
 
 **Rate limiting:** `--http-rate 60` limits to 60 requests/IP/minute (0 = unlimited).
 
+### Additional HTTP endpoints
+
+Beyond `POST /v1/{tool}`, the HTTP server exposes:
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/v1/health` | GET | No | Liveness probe — schema version, index staleness. Always returns 200. |
+| `/v1/dashboard` | GET | No | Self-contained HTML dashboard — stats, search, project cards, sparkline of last 90 sessions. No external dependencies. |
+| `/v1/openapi.json` | GET | No | OpenAPI 3.1 spec covering all 15 tool endpoints. Import into Postman or Cursor. |
+| `/v1/stats` | GET | Yes | Current session + all-time savings summary as JSON. |
+| `/v1/sessions` | GET | Yes | Per-session history, last 90 sessions, sorted by recency. |
+| `/v1/projects` | GET | Yes | All indexed projects with file/symbol/edge counts. |
+| `/v1/projects` | DELETE | Yes | Remove a project and all its symbols. Body: `{"id":"<project-id>"}`. |
+| `/v1/index-progress` | POST | Yes | Live indexing progress for the given project: `{files_done, files_total, active}`. Useful for progress bars in dashboards. |
+
+**CORS:** All responses include `Access-Control-Allow-Origin: *` — the API is callable directly from browsers and web clients without a proxy.
+
 ---
 
 ## Token Savings
 
-Token counts use the **cl100k_base BPE tokenizer** (same family as Claude) loaded as an embedded Go dependency — no network calls, zero latency after first initialization.
+Token counts use the **cl100k_base BPE tokenizer** (same family as Claude) loaded as an embedded Go dependency — no network calls, zero latency after first initialization. Cost is estimated at **$3.00 per 1M tokens** (Claude Sonnet pricing).
 
 The `stats` tool renders a formatted session summary directly in the chat window:
 
@@ -430,8 +466,6 @@ Savings persist in SQLite across reconnects, process restarts, and binary upgrad
 | `search` | Grep-then-read cycle | ~98% |
 | `architecture` | Reading every file to orient | ~99.99% |
 | `trace` | Manual call-chain traversal | ~99% |
-
-Savings persist in SQLite across reconnects, process restarts, and binary upgrades.
 
 ---
 
@@ -576,11 +610,21 @@ Measured on this codebase (13 files, 618 symbols, 5,785 edges, Windows 11, SQLit
 
 ## Development
 
+### HTTP dashboard
+
+`GET /v1/dashboard` serves a self-contained HTML/CSS/JS page — no CDN, no external requests. Features:
+
+- **Stats tab** — session card (calls, tokens_used, tokens_saved, cost_avoided), all-time totals, sparkline of last 90 sessions
+- **Search tab** — live FTS5 search across all indexed projects, results with file path and line numbers
+- **Projects tab** — per-project cards (files, symbols, edges, last indexed, stale/invalid detection), delete button, live index-progress bar during re-indexing
+
+Authentication: the dashboard itself requires no bearer token (it's a browser page), but the JS it loads calls authenticated endpoints using the token configured at startup.
+
 ### Project layout
 
 ```
 pincherMCP/
-├── cmd/pinch/main.go            # Entry point: MCP server + `pincher index` CLI subcommand
+├── cmd/pinch/main.go            # Sole entry point: MCP server + `pincher index` CLI subcommand
 ├── internal/
 │   ├── db/db.go                 # SQLite store: schema v5, migrations, all CRUD,
 │   │                            # FTS5 ops, graph ops, BPE token counting
@@ -589,7 +633,7 @@ pincherMCP/
 │   │   └── languages.go         # Extension → language detection
 │   ├── cypher/engine.go         # Cypher → SQL: tokenizer → parser → 3 query paths
 │   ├── index/indexer.go         # Index pipeline: walk → hash → extract → store → watch
-│   └── server/server.go         # 15 MCP tools, HTTP REST, gzip, OpenAPI, bearer auth,
+│   └── server/server.go         # 15 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
 │                                # session persistence, token savings accounting
 └── go.mod
 ```

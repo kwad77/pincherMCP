@@ -396,7 +396,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // openAPISpec returns a minimal OpenAPI 3.1 document describing every HTTP tool endpoint.
 // Served at GET /v1/openapi.json so any client (Postman, Cursor, copilots) can auto-import.
 func (s *Server) openAPISpec() map[string]any {
-	tools := []string{"index", "symbol", "symbols", "context", "search", "query", "trace", "changes", "architecture", "schema", "list", "adr", "health", "stats"}
+	tools := []string{"index", "symbol", "symbols", "context", "search", "query", "trace", "changes", "architecture", "schema", "list", "adr", "health", "stats", "fetch"}
 	paths := map[string]any{}
 	for _, t := range tools {
 		paths["/v1/"+t] = map[string]any{
