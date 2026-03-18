@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -8,6 +10,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -163,13 +166,27 @@ func runIndexCLI(args []string) {
 		os.Exit(1)
 	}
 
+	// Fetch totals from DB (IndexResult only has delta counts for this run).
+	totalSyms, totalEdges, _, _, _ := store.GraphStats(result.ProjectID)
+
+	// Count uncommitted changed files via git (best-effort; ignored on error).
+	changedFiles := gitChangedCount(path)
+
 	if *hookMode {
-		msg := fmt.Sprintf(
-			"Pincher auto-indexed '%s': %d files, %d symbols, %d edges (%dms, %d unchanged). "+
-				"The project knowledge graph is ready — use pincher tools freely.",
-			result.Project, result.Files, result.Symbols, result.Edges,
-			result.DurationMS, result.Skipped,
-		)
+		var parts []string
+		parts = append(parts, fmt.Sprintf("project '%s' — %d symbols, %d edges across %d files (%dms, %d unchanged)",
+			result.Project, totalSyms, totalEdges, result.Skipped+result.Files, result.DurationMS, result.Skipped))
+		if changedFiles > 0 {
+			parts = append(parts, fmt.Sprintf("%d file(s) have uncommitted changes — call mcp__pincher__changes to see blast radius", changedFiles))
+		}
+		parts = append(parts, "call mcp__pincher__stats for session savings · mcp__pincher__changes for git diff · use pincher tools before Read/Grep")
+
+		msg := "Pincher ready: " + parts[0] + ". "
+		if changedFiles > 0 {
+			msg += parts[1] + ". "
+		}
+		msg += parts[len(parts)-1] + "."
+
 		out := map[string]any{
 			"hookSpecificOutput": map[string]any{
 				"hookEventName":     "SessionStart",
@@ -178,8 +195,29 @@ func runIndexCLI(args []string) {
 		}
 		json.NewEncoder(os.Stdout).Encode(out)
 	} else {
-		fmt.Printf("indexed %s: %d files, %d symbols, %d edges, %d unchanged (%dms)\n",
-			result.Project, result.Files, result.Symbols, result.Edges,
+		fmt.Printf("indexed %s: %d total symbols, %d total edges, %d files (%d unchanged, %dms)\n",
+			result.Project, totalSyms, totalEdges, result.Skipped+result.Files,
 			result.Skipped, result.DurationMS)
+		if changedFiles > 0 {
+			fmt.Printf("  %d file(s) with uncommitted changes\n", changedFiles)
+		}
 	}
+}
+
+// gitChangedCount returns the number of files with uncommitted changes
+// (staged + unstaged) in the given directory. Returns 0 on any error.
+func gitChangedCount(dir string) int {
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		if line := sc.Text(); len(line) >= 2 && line[0] != '?' {
+			count++
+		}
+	}
+	return count
 }
