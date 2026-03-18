@@ -262,7 +262,7 @@ All latencies measured on this codebase (13 files, 613 symbols, 5,591 edges). To
 | `schema` | Node kind counts, edge kind counts, totals. Use before `query` to see what's indexed. | 1ms |
 | `adr` | Persistent project knowledge store. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`. | <1ms |
 | `health` | Schema version, index staleness, per-language extraction coverage. Use to detect stale indexes. | 1ms |
-| `stats` | Session + all-time savings: tokens used, tokens saved (real BPE counts), cost avoided, call count, avg latency. Persists across reconnects. | 8ms |
+| `stats` | Session savings as a formatted CLI summary: without-pincher baseline, with-pincher actual, tokens saved, cost avoided, avg latency. Persists across reconnects. | 8ms |
 
 ### Stable Symbol IDs
 
@@ -398,26 +398,27 @@ Responses compress ~65% with `Accept-Encoding: gzip`.
 
 Token counts use the **cl100k_base BPE tokenizer** (same family as Claude) loaded as an embedded Go dependency — no network calls, zero latency after first initialization.
 
+The `stats` tool renders a formatted session summary directly in the chat window:
+
 ```
-Baseline: what an agent would spend reading files without pincherMCP
-Actual:   what pincherMCP returns in the _meta.tokens_used field
-Saved:    baseline − actual (capped at 0)
+┌────────────────────────────────────────────┐
+│                  SESSION                   │
+│  Tool calls:          5                   │
+│  Without pincher:   ~45,200 tokens        │
+│  With pincher:        1,200 tokens        │
+│  Saved:             ~44,000 tokens  37x   │
+│  Cost avoided:        $0.1320             │
+│  Avg latency:         2 ms                │
+└────────────────────────────────────────────┘
 ```
 
-The baseline for retrieval tools uses actual `os.Stat` file sizes. The baseline for architecture/query/trace uses `symbol_count × 20,000 chars / 4` (conservative cross-language estimate for "read the whole file per symbol").
+**Without pincher** is the estimated baseline — what an agent would spend reading whole files to find the same information. It uses actual `os.Stat` file sizes for retrieval tools (`symbol`, `context`, `search`, `trace`) and a conservative `symbol_count × 20,000 chars / 4` estimate for graph tools (`architecture`, `query`).
 
-**Observed from active use on this codebase:**
+**With pincher** is the actual token count of what pincherMCP returned (real BPE, not a heuristic).
 
-```json
-{
-  "all_time": {
-    "calls": 244,
-    "tokens_saved": 6508225,
-    "tokens_used": 22787,
-    "total_cost_avoided": "$19.52"
-  }
-}
-```
+**Saved** is the difference, with a `~` to indicate the baseline is estimated. The multiplier (`37x`) is the headline ratio.
+
+Savings persist in SQLite across reconnects, process restarts, and binary upgrades.
 
 **Typical per-call savings:**
 

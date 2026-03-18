@@ -753,6 +753,19 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleStats)
+
+	// 15. fetch
+	s.addTool(&mcp.Tool{
+		Name:        "fetch",
+		Description: "Fetch a URL, extract its text content, and store it in the project knowledge base as a searchable Document. Use for API docs, library READMEs, specs, or any reference material you want to query later. After fetching, use `search` with kind=Document to find it, or `symbol` with the returned ID to retrieve the full text.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["url"],"properties":{
+				"url":{"type":"string","description":"HTTP or HTTPS URL to fetch"},
+				"project":{"type":"string","description":"Project to attach the document to. Defaults to session project."},
+				"title":{"type":"string","description":"Override the page title used as the document name."}
+			}
+		}`),
+	}, s.handleFetch)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -830,6 +843,10 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	source := ""
 	if root != "" {
 		source, _ = index.ReadSymbolSource(root, *sym)
+	}
+	// Document symbols (fetched URLs) store their content in Docstring — no local file to seek.
+	if source == "" && sym.Kind == "Document" {
+		source = sym.Docstring
 	}
 
 	// Estimate token savings vs. reading the whole file.
@@ -1478,14 +1495,12 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 }
 
 func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	start, args := beginCall(req)
-	projectArg := str(args, "project")
+	start, _ := beginCall(req)
 
 	calls := atomic.LoadInt64(&s.statsCalls)
 	tokensUsed := atomic.LoadInt64(&s.statsTokensUsed)
 	tokensSaved := atomic.LoadInt64(&s.statsTokensSaved)
 	totalLatency := atomic.LoadInt64(&s.statsLatencyMS)
-
 	totalCostAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
 
 	avgLatency := int64(0)
@@ -1508,48 +1523,196 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}
 	}
 
-	session := map[string]any{
-		"calls":              calls,
-		"tokens_used":        tokensUsed,
-		"tokens_saved":       tokensSaved,
-		"total_cost_avoided": fmt.Sprintf("$%.4f", totalCostAvoided),
-		"avg_latency_ms":     avgLatency,
-	}
-
-	// All-time cumulative savings across all sessions.
-	var allTime map[string]any
-	if atCalls, atUsed, atSaved, atCost, err := s.store.GetAllTimeSavings(); err == nil {
-		allTime = map[string]any{
-			"calls":              atCalls,
-			"tokens_used":        atUsed,
-			"tokens_saved":       atSaved,
-			"total_cost_avoided": fmt.Sprintf("$%.4f", atCost),
+	const w = 44 // inner width of box
+	line := func(label, value string) string {
+		content := fmt.Sprintf("  %-20s %s", label, value)
+		if len(content) < w {
+			content += strings.Repeat(" ", w-len(content))
 		}
+		return "│" + content + "│\n"
+	}
+	header := func(title string) string {
+		pad := w - 2 - len(title)
+		left := pad / 2
+		right := pad - left
+		return "│ " + strings.Repeat(" ", left) + title + strings.Repeat(" ", right) + " │\n"
+	}
+	commify := func(n int64) string {
+		s := fmt.Sprintf("%d", n)
+		for i := len(s) - 3; i > 0; i -= 3 {
+			s = s[:i] + "," + s[i:]
+		}
+		return s
 	}
 
-	// Per-project index breakdown
-	var projectData map[string]any
-	if pid, err := s.resolveProjectID(projectArg); err == nil {
-		if p, err := s.store.GetProject(pid); err == nil && p != nil {
-			symCount, edgeCount, kindCounts, _, _ := s.store.GraphStats(pid)
-			projectData = map[string]any{
-				"name":        p.Name,
-				"path":        p.Path,
-				"files":       p.FileCount,
-				"symbols":     symCount,
-				"edges":       edgeCount,
-				"node_kinds":  kindCounts,
-				"indexed_at":  p.IndexedAt.Format(time.RFC3339),
+	baseline := tokensUsed + tokensSaved
+	ratio := ""
+	if tokensUsed > 0 && tokensSaved > 0 {
+		ratio = fmt.Sprintf("  %.0fx", float64(baseline)/float64(tokensUsed))
+	}
+
+	var b strings.Builder
+	b.WriteString("┌" + strings.Repeat("─", w) + "┐\n")
+	b.WriteString(header("SESSION"))
+	b.WriteString(line("Tool calls:", commify(calls)))
+	b.WriteString(line("Without pincher:", "~"+commify(baseline)+" tokens"))
+	b.WriteString(line("With pincher:", commify(tokensUsed)+" tokens"))
+	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+ratio))
+	b.WriteString(line("Cost avoided:", fmt.Sprintf("$%.4f", totalCostAvoided)))
+	b.WriteString(line("Avg latency:", fmt.Sprintf("%d ms", avgLatency)))
+	b.WriteString("└" + strings.Repeat("─", w) + "┘")
+	return s.textResultWithMeta(b.String(), start, 0), nil
+}
+
+
+// maxFetchBytes caps the HTTP response body read to 512 KB.
+const maxFetchBytes = 512 * 1024
+
+// maxDocstringBytes caps the extracted text stored per Document symbol to 32 KB.
+const maxDocstringBytes = 32 * 1024
+
+func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start, args := beginCall(req)
+
+	rawURL := str(args, "url")
+	if rawURL == "" {
+		return errResult("url is required"), nil
+	}
+	titleOverride := str(args, "title")
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errResult(fmt.Sprintf("invalid url %q: must be http or https", rawURL)), nil
+	}
+
+	projectID, errRes := s.mustProject(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+
+	// Fetch with a 15-second deadline scoped to this call's context.
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return errResult(fmt.Sprintf("request build error: %v", err)), nil
+	}
+	httpReq.Header.Set("User-Agent", "pincherMCP/1.0")
+	httpReq.Header.Set("Accept", "text/html,text/plain,*/*")
+
+	resp, err := (&http.Client{}).Do(httpReq)
+	if err != nil {
+		return errResult(fmt.Sprintf("fetch error: %v", err)), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return errResult(fmt.Sprintf("server returned HTTP %d for %s", resp.StatusCode, rawURL)), nil
+	}
+
+	rawBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
+	if err != nil {
+		return errResult(fmt.Sprintf("read error: %v", err)), nil
+	}
+
+	pageTitle, text := extractTextFromHTML(string(rawBytes))
+	if titleOverride != "" {
+		pageTitle = titleOverride
+	}
+	if pageTitle == "" {
+		pageTitle = rawURL
+	}
+	if len(text) > maxDocstringBytes {
+		text = text[:maxDocstringBytes] + "\n[truncated]"
+	}
+
+	symID := db.MakeSymbolID(rawURL, rawURL, "Document")
+	sym := db.Symbol{
+		ID:                   symID,
+		ProjectID:            projectID,
+		FilePath:             rawURL,
+		Name:                 pageTitle,
+		QualifiedName:        rawURL,
+		Kind:                 "Document",
+		Language:             "text",
+		Docstring:            text,
+		Signature:            rawURL,
+		ExtractionConfidence: 1.0,
+	}
+	if err := s.store.BulkUpsertSymbols([]db.Symbol{sym}); err != nil {
+		return errResult(fmt.Sprintf("store error: %v", err)), nil
+	}
+
+	// Token savings: baseline = agent reads the raw response; we return compressed text.
+	respJSON, _ := json.Marshal(map[string]any{"text": text})
+	tokensSaved := max(0, len(rawBytes)/charsPerToken-db.ApproxTokens(string(respJSON)))
+
+	data := map[string]any{
+		"id":        symID,
+		"url":       rawURL,
+		"title":     pageTitle,
+		"text":      text,
+		"raw_bytes": len(rawBytes),
+		"stored":    true,
+	}
+	return s.jsonResultWithMeta(data, start, tokensSaved), nil
+}
+
+// extractTextFromHTML strips HTML markup and returns (title, bodyText).
+// It removes <script>, <style>, <head>, <nav>, and <footer> blocks wholesale,
+// then strips remaining tags with a simple scanner. No external dependencies.
+func extractTextFromHTML(raw string) (title, text string) {
+	lower := strings.ToLower(raw)
+
+	// Extract <title> content.
+	if i := strings.Index(lower, "<title"); i >= 0 {
+		if j := strings.Index(lower[i:], ">"); j >= 0 {
+			s := i + j + 1
+			if k := strings.Index(lower[s:], "</title>"); k >= 0 {
+				title = strings.TrimSpace(raw[s : s+k])
 			}
 		}
 	}
 
-	data := map[string]any{
-		"session":  session,
-		"all_time": allTime,
-		"project":  projectData,
+	// Remove noisy blocks wholesale before tag stripping.
+	for _, tag := range []string{"script", "style", "head", "nav", "footer"} {
+		open := "<" + tag
+		close := "</" + tag + ">"
+		for {
+			lo := strings.ToLower(raw)
+			si := strings.Index(lo, open)
+			if si < 0 {
+				break
+			}
+			ei := strings.Index(lo[si:], close)
+			if ei < 0 {
+				raw = raw[:si]
+				break
+			}
+			raw = raw[:si] + " " + raw[si+ei+len(close):]
+		}
 	}
-	return s.jsonResultWithMeta(data, start, 0), nil
+
+	// Strip remaining tags with a single-pass scanner.
+	var b strings.Builder
+	b.Grow(len(raw) / 2)
+	inTag := false
+	for i := 0; i < len(raw); i++ {
+		switch {
+		case raw[i] == '<':
+			inTag = true
+			b.WriteByte(' ')
+		case raw[i] == '>':
+			inTag = false
+		case !inTag:
+			b.WriteByte(raw[i])
+		}
+	}
+
+	// Collapse whitespace.
+	text = strings.Join(strings.Fields(b.String()), " ")
+	return
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1629,6 +1792,30 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tokens
 	out, _ := json.MarshalIndent(data, "", "  ")
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(out)}},
+	}
+}
+
+// textResultWithMeta performs the same session accounting as jsonResultWithMeta
+// but returns a pre-formatted text string rather than a JSON object. Used by
+// handleStats so the output is human-readable on the command line.
+func (s *Server) textResultWithMeta(text string, start time.Time, tokensSaved int) *mcp.CallToolResult {
+	latency := time.Since(start).Milliseconds()
+	tokensUsed := db.ApproxTokens(text)
+	costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
+
+	newCalls := atomic.AddInt64(&s.statsCalls, 1)
+	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
+	atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
+	atomic.AddInt64(&s.statsLatencyMS, latency)
+
+	if newCalls == 1 {
+		go s.flushSession()
+	}
+
+	// Append a compact meta line so callers still see accounting info.
+	full := text + fmt.Sprintf("\n  tokens used %-6d  latency %d ms  cost avoided $%.4f\n", tokensUsed, latency, costAvoided)
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: full}},
 	}
 }
 

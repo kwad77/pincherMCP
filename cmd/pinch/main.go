@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -19,6 +21,13 @@ import (
 const version = "0.1.0"
 
 func main() {
+	// Subcommand dispatch — must happen before flag.Parse() since the global
+	// flagset doesn't know about subcommand flags.
+	if len(os.Args) > 1 && os.Args[1] == "index" {
+		runIndexCLI(os.Args[2:])
+		return
+	}
+
 	var (
 		showVersion = flag.Bool("version", false, "Print version and exit")
 		dataDir     = flag.String("data-dir", "", "Override data directory (default: platform-appropriate)")
@@ -88,5 +97,89 @@ func main() {
 	// Run MCP server over stdio
 	if err := srv.MCPServer().Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 		log.Fatalf("pincherMCP: server error: %v", err)
+	}
+}
+
+// runIndexCLI implements "pincher index [--force] [--hook] [--data-dir DIR] [PATH]".
+//
+// When PATH is omitted the current working directory is used, making it
+// suitable as a zero-argument SessionStart hook:
+//
+//	"C:\\tools\\pincher.exe" index --hook
+//
+// With --hook the output is a Claude Code hook JSON envelope that injects
+// the index summary as additionalContext so Claude knows the project is ready.
+// Without --hook a human-readable one-line summary is printed instead.
+func runIndexCLI(args []string) {
+	// Silence the DB/indexer log output — callers only want the result line.
+	log.SetOutput(io.Discard)
+
+	fs := flag.NewFlagSet("index", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "Override data directory")
+	force := fs.Bool("force", false, "Re-parse all files regardless of content hash")
+	hookMode := fs.Bool("hook", false, "Output Claude Code SessionStart hook JSON instead of plain text")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: pincher index [--force] [--hook] [--data-dir DIR] [PATH]")
+		fmt.Fprintln(os.Stderr, "  Indexes PATH (default: current directory) into the pincher knowledge graph.")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	path := fs.Arg(0)
+	if path == "" {
+		var err error
+		path, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pincher: failed to get working directory: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	dir := *dataDir
+	if dir == "" {
+		var err error
+		dir, err = db.DataDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pincher: failed to determine data directory: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	store, err := db.Open(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	idx := index.New(store)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	result, err := idx.Index(ctx, path, *force)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pincher: index error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *hookMode {
+		msg := fmt.Sprintf(
+			"Pincher auto-indexed '%s': %d files, %d symbols, %d edges (%dms, %d unchanged). "+
+				"The project knowledge graph is ready — use pincher tools freely.",
+			result.Project, result.Files, result.Symbols, result.Edges,
+			result.DurationMS, result.Skipped,
+		)
+		out := map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":     "SessionStart",
+				"additionalContext": msg,
+			},
+		}
+		json.NewEncoder(os.Stdout).Encode(out)
+	} else {
+		fmt.Printf("indexed %s: %d files, %d symbols, %d edges, %d unchanged (%dms)\n",
+			result.Project, result.Files, result.Symbols, result.Edges,
+			result.Skipped, result.DurationMS)
 	}
 }
