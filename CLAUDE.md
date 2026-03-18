@@ -33,8 +33,9 @@ go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n
 ### Data flow
 
 ```
-cmd/pinch/main.go
-  → db.Open()              open/migrate SQLite (schema v4)
+cmd/pinch/main.go          ← primary entry point (MCP server + optional HTTP)
+cmd/delproject/main.go     ← utility: removes a project from the index by path
+  → db.Open()              open/migrate SQLite (schema v5)
   → index.New()            create indexer (holds *db.Store)
   → server.New()           create MCP server (holds *db.Store + *index.Indexer)
   → srv.StartSessionFlusher() background goroutine: flushes session stats to DB every 10s
@@ -55,7 +56,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 ### Package responsibilities
 
-- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v4** (added `sessions` table for persistent savings tracking). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
+- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v5** (added `sessions` table for persistent savings tracking). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
 
 - **`internal/ast/extractor.go`** — Multi-language symbol extraction. `Extract(source, language, relPath)` dispatches to per-language extractors and sets `ExtractionConfidence` on each symbol (1.0 for Go/AST, 0.85 for stable regex languages, 0.70 for approximate ones). Go uses `go/ast`; all other languages use regex. `extractionConfidence` map controls per-language scores.
 
@@ -85,6 +86,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 | 12 | `adr` | Architecture Decision Records: persistent key/value project knowledge |
 | 13 | `health` | Schema version, index staleness, per-language extraction coverage |
 | 14 | `stats` | Session savings summary: tokens used/saved, cost avoided, call count |
+| 15 | `fetch` | Fetch a URL, extract text, store as a searchable `Document` symbol in the knowledge base (512 KB body cap, 32 KB stored). Retrieve later via `search kind:Document` or `symbol`. |
 
 ### Symbol ID format
 

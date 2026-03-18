@@ -21,7 +21,7 @@ Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
 - [What it does](#what-it-does)
 - [Quick Start](#quick-start)
 - [Architectural Diagrams](#architectural-diagrams)
-- [14 Tools — Tested Capabilities](#14-tools--tested-capabilities)
+- [15 Tools — Tested Capabilities](#15-tools--tested-capabilities)
 - [Cypher Query Reference](#cypher-query-reference)
 - [Language Support](#language-support)
 - [HTTP REST API](#http-rest-api)
@@ -35,7 +35,7 @@ Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
 
 ## What it does
 
-pincherMCP is a single Go binary that indexes a codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — and exposes all three through 14 MCP tools or an HTTP REST API.
+pincherMCP is a single Go binary that indexes a codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — and exposes all three through 15 MCP tools or an HTTP REST API.
 
 Every tool response includes a `_meta` envelope with real BPE token counts (cl100k_base, same family as Claude), latency, and cost avoided:
 
@@ -108,7 +108,7 @@ pincher --http :8080 --http-key mysecrettoken
 ┌───────────────────────┐          ┌───────────────────────────┐
 │  pincher (MCP process)│          │  pincher --http :8080     │
 │                       │          │  (dashboard / REST)        │
-│  • 14 MCP tools       │          │                           │
+│  • 15 MCP tools       │          │                           │
 │  • idx.Watch()        │          │  • Same 14 tools via POST │
 │  • SessionFlusher     │          │  • GET /v1/dashboard      │
 │    (flush every 10s)  │          │  • GET /v1/openapi.json   │
@@ -226,9 +226,9 @@ All three paths are project-scoped — cross-project data leakage is structurall
 
 ---
 
-## 14 Tools — Tested Capabilities
+## 15 Tools — Tested Capabilities
 
-All latencies measured on this codebase (13 files, 613 symbols, 5,591 edges). Token counts use cl100k_base BPE — the same tokenizer family as Claude.
+All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). Token counts use cl100k_base BPE — the same tokenizer family as Claude.
 
 ### Indexing & Discovery
 
@@ -263,6 +263,7 @@ All latencies measured on this codebase (13 files, 613 symbols, 5,591 edges). To
 | `adr` | Persistent project knowledge store. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`. | <1ms |
 | `health` | Schema version, index staleness, per-language extraction coverage. Use to detect stale indexes. | 1ms |
 | `stats` | Session savings as a formatted CLI summary: without-pincher baseline, with-pincher actual, tokens saved, cost avoided, avg latency. Persists across reconnects. | 8ms |
+| `fetch` | Fetch a URL, extract its text, and store it as a searchable `Document` symbol in the project knowledge base. Use for API docs, READMEs, or specs you want to query later. Body cap: 512 KB fetched, 32 KB stored. Retrieve via `search kind:Document` or `symbol`. | ~200ms (network) |
 
 ### Stable Symbol IDs
 
@@ -352,7 +353,7 @@ Go is the only language with full AST parsing. All other languages use regex pat
 
 ## HTTP REST API
 
-All 14 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
+All 15 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
 
 ```bash
 # Start with both transports
@@ -501,11 +502,35 @@ pincher --http-key mysecrettoken     # require bearer token on all HTTP requests
 pincher --http-rate 60               # rate limit: 60 requests/IP/minute (0 = unlimited)
 ```
 
+### `pincher index` subcommand
+
+`pincher index` runs a one-shot index without starting an MCP server — useful in CI, pre-commit hooks, or as a Claude Code SessionStart hook:
+
+```bash
+pincher index                        # index current directory (plain text output)
+pincher index /path/to/repo          # index a specific path
+pincher index --force                # re-parse all files, ignore content hashes
+pincher index --hook                 # emit Claude Code SessionStart JSON envelope
+pincher index --data-dir /custom     # override data directory
+```
+
+The `--hook` flag outputs a JSON envelope that Claude Code's SessionStart hook system injects as `additionalContext`, telling Claude which project is indexed and whether uncommitted changes exist. Configure it in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "type": "command", "command": "pincher index --hook" }
+    ]
+  }
+}
+```
+
 ---
 
 ## Performance
 
-Measured on this codebase (13 files, 613 symbols, 5,591 edges, Windows 11, SQLite WAL):
+Measured on this codebase (13 files, 618 symbols, 5,785 edges, Windows 11, SQLite WAL):
 
 | Operation | Measured time | Notes |
 |---|---|---|
@@ -555,23 +580,23 @@ Measured on this codebase (13 files, 613 symbols, 5,591 edges, Windows 11, SQLit
 
 ```
 pincherMCP/
-├── cmd/pinch/main.go            # Entry point: flags, wires db + indexer + server
+├── cmd/pinch/main.go            # Entry point: MCP server + `pincher index` CLI subcommand
 ├── internal/
-│   ├── db/db.go                 # SQLite store: schema v4, migrations, all CRUD,
+│   ├── db/db.go                 # SQLite store: schema v5, migrations, all CRUD,
 │   │                            # FTS5 ops, graph ops, BPE token counting
 │   ├── ast/
 │   │   ├── extractor.go         # Multi-language extraction, byte offsets, confidence
 │   │   └── languages.go         # Extension → language detection
 │   ├── cypher/engine.go         # Cypher → SQL: tokenizer → parser → 3 query paths
 │   ├── index/indexer.go         # Index pipeline: walk → hash → extract → store → watch
-│   └── server/server.go         # 14 MCP tools, HTTP REST, gzip, OpenAPI, bearer auth,
+│   └── server/server.go         # 15 MCP tools, HTTP REST, gzip, OpenAPI, bearer auth,
 │                                # session persistence, token savings accounting
 └── go.mod
 ```
 
 ### Schema
 
-Schema is versioned via `schema_version` table. Current version: **v4** (sessions table for persistent savings). Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`.
+Schema is versioned via `schema_version` table. Current version: **v5**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`.
 
 ### Key invariants
 
