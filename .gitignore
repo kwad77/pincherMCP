@@ -11,3 +11,4 @@ CLAUDE.md
 # Coverage reports
 cover*.out
 cover*.html
+*.exe~
