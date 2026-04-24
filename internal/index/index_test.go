@@ -993,3 +993,108 @@ func TestGetProgress_DuringIndex(t *testing.T) {
 	// sawActive might be false if the index finished before we polled — that's OK
 	_ = sawActive
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTS edges + Module symbols
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestIndex_ImportsEdgesResolve(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.24\n")
+	writeFile(t, dir, "internal/bar/bar.go", `package bar
+
+func Hello() string { return "hi" }
+`)
+	writeFile(t, dir, "internal/foo/foo.go", `package foo
+
+import "example.com/app/internal/bar"
+
+func Use() string { return bar.Hello() }
+`)
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	projectID := db.ProjectIDFromPath(dir)
+
+	// Both files should emit a Module symbol keyed by their within-module path.
+	fooMods, err := store.GetSymbolsByQN(projectID, "internal/foo")
+	if err != nil || len(fooMods) == 0 {
+		t.Fatalf("expected Module symbol for internal/foo, got %d (err=%v)", len(fooMods), err)
+	}
+	if fooMods[0].Kind != "Module" {
+		t.Errorf("foo module kind = %q, want Module", fooMods[0].Kind)
+	}
+	barMods, err := store.GetSymbolsByQN(projectID, "internal/bar")
+	if err != nil || len(barMods) == 0 {
+		t.Fatalf("expected Module symbol for internal/bar, got %d (err=%v)", len(barMods), err)
+	}
+
+	// An IMPORTS edge should resolve foo → bar.
+	edges, err := store.EdgesFrom(fooMods[0].ID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom: %v", err)
+	}
+	found := false
+	for _, e := range edges {
+		if e.Kind == "IMPORTS" && e.ToID == barMods[0].ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected IMPORTS edge from internal/foo to internal/bar; got edges=%v", edges)
+	}
+}
+
+func TestIndex_ImportsEdges_ExternalDropped(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "go.mod", "module example.com/solo\n")
+	writeFile(t, dir, "main.go", `package main
+
+import "fmt"
+
+func main() { fmt.Println("hi") }
+`)
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	projectID := db.ProjectIDFromPath(dir)
+	mods, err := store.GetSymbolsByQN(projectID, "main")
+	if err != nil || len(mods) == 0 {
+		t.Fatalf("expected Module for main pkg, got %d (err=%v)", len(mods), err)
+	}
+
+	// fmt is stdlib → not indexed as a Module → IMPORTS edge must not persist.
+	edges, err := store.EdgesFrom(mods[0].ID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom: %v", err)
+	}
+	for _, e := range edges {
+		if e.Kind == "IMPORTS" {
+			t.Errorf("unexpected persisted IMPORTS edge to external pkg: %+v", e)
+		}
+	}
+}
+
+func TestReadGoModulePath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Missing go.mod → empty string
+	if got := readGoModulePath(dir); got != "" {
+		t.Errorf("missing go.mod: got %q, want \"\"", got)
+	}
+
+	// Well-formed go.mod
+	writeFile(t, dir, "go.mod", "// leading comment\nmodule   github.com/foo/bar\n\ngo 1.24\n")
+	if got := readGoModulePath(dir); got != "github.com/foo/bar" {
+		t.Errorf("readGoModulePath = %q, want github.com/foo/bar", got)
+	}
+}

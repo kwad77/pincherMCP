@@ -114,6 +114,12 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		return nil, fmt.Errorf("upsert project: %w", err)
 	}
 
+	// Best-effort Go module path (from go.mod). Used by the Go extractor to
+	// rewrite intra-module imports to within-module paths so IMPORTS edges
+	// can resolve across files. Missing or malformed go.mod just disables
+	// the rewrite — external imports stay unresolved as before.
+	modulePath := readGoModulePath(absPath)
+
 	// Walk source files using gocodewalker (respects .gitignore)
 	fileListQueue := make(chan *gocodewalker.File, 256)
 	walker := gocodewalker.NewFileWalker(absPath, fileListQueue)
@@ -127,14 +133,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	}()
 
 	var (
-		totalFiles   int
-		totalSymbols int
-		totalEdges   int
-		totalSkipped int
-		wg           sync.WaitGroup
-		symBuf       []db.Symbol
-		edgeBuf      []db.Edge
-		bufMu        sync.Mutex
+		totalFiles    int
+		totalSymbols  int
+		totalEdges    int
+		totalSkipped  int
+		wg            sync.WaitGroup
+		symBuf        []db.Symbol
+		edgeBuf       []db.Edge
+		pendingImport []ast.ExtractedEdge // deferred: resolved globally after full pass
+		bufMu         sync.Mutex
 	)
 
 	// Process files
@@ -184,7 +191,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			}
 
 			// Three-layer extraction in one pass
-			result := ast.Extract(content, lang, relPath)
+			result := ast.ExtractWithModule(content, lang, relPath, modulePath)
 			if result == nil || len(result.Symbols) == 0 {
 				return
 			}
@@ -225,9 +232,16 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 				nameToID[sym.QualifiedName] = sym.ID
 			}
 
-			// Convert extracted edges to DB edges
+			// Convert extracted edges to DB edges. IMPORTS edges cross file
+			// boundaries so local nameToID can't resolve them — defer to the
+			// global post-pass below. Everything else resolves per-file.
 			edges := make([]db.Edge, 0, len(result.Edges))
+			deferredImports := make([]ast.ExtractedEdge, 0)
 			for _, e := range result.Edges {
+				if e.Kind == "IMPORTS" {
+					deferredImports = append(deferredImports, e)
+					continue
+				}
 				fromID := nameToID[e.FromQN]
 				if fromID == "" {
 					// Try fuzzy: last component of FromQN
@@ -252,6 +266,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			bufMu.Lock()
 			symBuf = append(symBuf, syms...)
 			edgeBuf = append(edgeBuf, edges...)
+			pendingImport = append(pendingImport, deferredImports...)
 			// Flush when buffer is large enough
 			if len(symBuf) >= 500 {
 				totalSymbols += len(symBuf)
@@ -276,6 +291,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		}
 	}
 	bufMu.Unlock()
+
+	// Resolve deferred IMPORTS edges against the full symbol table. Both
+	// endpoints (FromQN and ToName) are Module qualified names; we look up
+	// the first matching Module symbol per QN. External imports (qualified
+	// name not indexed as a Module) simply don't resolve and are dropped,
+	// matching today's behaviour for unresolved edges.
+	if n := idx.resolveImports(projectID, pendingImport); n > 0 {
+		totalEdges += n
+	}
 
 	duration := time.Since(start)
 
@@ -554,4 +578,84 @@ func skippedDirSlice() []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// readGoModulePath returns the module declared in repoPath/go.mod, or "" if
+// no go.mod is present or the module line can't be parsed. Non-Go projects
+// and pre-module Go repos both produce "" — callers should treat that as
+// "don't rewrite import paths".
+func readGoModulePath(repoPath string) string {
+	data, err := os.ReadFile(filepath.Join(repoPath, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "module ") {
+			continue
+		}
+		mod := strings.TrimSpace(strings.TrimPrefix(line, "module"))
+		mod = strings.Trim(mod, "\"")
+		return mod
+	}
+	return ""
+}
+
+// resolveImports converts deferred IMPORTS edges into concrete db.Edge rows
+// by matching both endpoints against Module symbols in the project. Edges
+// with no matching Module on either side are dropped. Returns the number
+// of edges actually persisted.
+func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge) int {
+	if len(pending) == 0 {
+		return 0
+	}
+
+	// Cache QN → first matching symbol ID so we don't repeat SELECTs for
+	// packages imported from many files.
+	cache := make(map[string]string)
+	lookup := func(qn string) string {
+		if id, ok := cache[qn]; ok {
+			return id
+		}
+		syms, err := idx.store.GetSymbolsByQN(projectID, qn)
+		if err != nil || len(syms) == 0 {
+			cache[qn] = ""
+			return ""
+		}
+		cache[qn] = syms[0].ID
+		return syms[0].ID
+	}
+
+	// Dedupe by (fromID, toID) — one pair of files can appear many times
+	// when there are multiple Module rows per package.
+	seen := make(map[string]bool)
+	edges := make([]db.Edge, 0, len(pending))
+	for _, e := range pending {
+		fromID := lookup(e.FromQN)
+		toID := lookup(e.ToName)
+		if fromID == "" || toID == "" {
+			continue
+		}
+		key := fromID + "\x00" + toID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		edges = append(edges, db.Edge{
+			ProjectID:  projectID,
+			FromID:     fromID,
+			ToID:       toID,
+			Kind:       "IMPORTS",
+			Confidence: e.Confidence,
+		})
+	}
+
+	if len(edges) == 0 {
+		return 0
+	}
+	if err := idx.store.BulkUpsertEdges(edges); err != nil {
+		slog.Warn("pincher.imports.upsert.err", "err", err)
+		return 0
+	}
+	return len(edges)
 }
