@@ -11,6 +11,15 @@
 <meta property="og:title" content="pincherMCP · Codebase intelligence for LLM agents"/>
 <meta property="og:description" content="Single Go binary. Index, graph, and full-text search a codebase. 15 MCP tools or HTTP REST."/>
 <meta property="og:url" content="https://kwad77.github.io/pincherMCP/"/>
+<meta property="og:image" content="https://kwad77.github.io/pincherMCP/assets/og.png"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:image" content="https://kwad77.github.io/pincherMCP/assets/og.png"/>
+
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png"/>
+<link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png"/>
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png"/>
 
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -31,7 +40,15 @@ pre code{background:none;border:none;padding:0;color:var(--text)}
 nav.top{position:sticky;top:0;background:rgba(13,17,23,.85);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:20px;z-index:10}
 nav.top .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;letter-spacing:-.3px}
 nav.top .brand span{color:var(--accent)}
-nav.top .brand svg{flex-shrink:0}
+nav.top .brand svg,nav.top .brand .pinchy-nav{flex-shrink:0}
+/* Pixel art — force crisp scaling. Browsers default to bilinear which
+   smears pixel-art into a blurry mess when the CSS size doesn't match
+   the source. */
+.pixel{image-rendering:pixelated;image-rendering:-moz-crisp-edges;image-rendering:crisp-edges}
+.pinchy-nav{width:28px;height:28px}
+.pinchy-hero{width:128px;height:128px;margin:0 auto 18px;display:block;filter:drop-shadow(0 6px 18px rgba(0,0,0,.45))}
+@media (max-width:600px){.pinchy-hero{width:96px;height:96px}}
+.crab-divider{width:20px;height:20px;vertical-align:middle;margin-right:8px;opacity:.85}
 nav.top .links{margin-left:auto;display:flex;gap:22px;font-size:13px}
 nav.top .links a{color:var(--muted);font-weight:500}
 nav.top .links a:hover{color:var(--text);text-decoration:none}
@@ -95,13 +112,7 @@ footer a{color:var(--accent)}
 
 <nav class="top">
   <a href="#" class="brand">
-    <svg width="22" height="22" viewBox="0 0 36 36" fill="none" aria-hidden="true">
-      <circle cx="18" cy="18" r="17" stroke="url(#ng)" stroke-width="2"/>
-      <line x1="10" y1="10" x2="26" y2="26" stroke="#58a6ff" stroke-width="2.5" stroke-linecap="round"/>
-      <line x1="26" y1="10" x2="10" y2="26" stroke="#a371f7" stroke-width="2.5" stroke-linecap="round"/>
-      <circle cx="18" cy="18" r="4" fill="#58a6ff"/>
-      <defs><linearGradient id="ng" x1="0" y1="0" x2="36" y2="36"><stop stop-color="#58a6ff"/><stop offset="1" stop-color="#a371f7"/></linearGradient></defs>
-    </svg>
+    <img src="assets/pinchy-nav.png" alt="Pinchy the crab mascot" class="pixel pinchy-nav"/>
     pincher<span>MCP</span>
   </a>
   <div class="links">
@@ -113,6 +124,7 @@ footer a{color:var(--accent)}
 </nav>
 
 <section class="hero">
+  <img src="assets/pinchy.png" alt="Pinchy, the pincherMCP mascot — a pixel-art crab holding a copper penny" class="pixel pinchy-hero"/>
   <div class="pill">Single binary · pure Go · no cloud</div>
   <h1>Codebase intelligence<br/>for LLM agents.</h1>
   <p class="sub">pincherMCP indexes any repo into a byte-offset symbol store, a knowledge graph, and a BM25 full-text search — all populated in one AST pass — then exposes 15 tools over MCP stdio or HTTP REST. Agents get what they need in tokens, not files.</p>
@@ -123,7 +135,7 @@ footer a{color:var(--accent)}
 </section>
 
 <section>
-  <h2>Why it matters</h2>
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Why it matters</h2>
   <p class="section-sub">Every tool response carries a real BPE token count. Real numbers on this codebase (14.7k LOC, 614 symbols, 970 edges):</p>
   <div class="stats">
     <div class="stat"><div class="num green">~95%</div><div class="label">Token reduction<br/>vs reading whole files</div></div>
@@ -134,7 +146,7 @@ footer a{color:var(--accent)}
 </section>
 
 <section id="how">
-  <h2>How it works</h2>
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>How it works</h2>
   <p class="section-sub">Three co-located indexes, one shared symbol table. No duplication, no sync overhead.</p>
   <div class="cards">
     <div class="card">
@@ -153,7 +165,7 @@ footer a{color:var(--accent)}
 </section>
 
 <section id="tools">
-  <h2>15 tools, one mental model</h2>
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>15 tools, one mental model</h2>
   <p class="section-sub">Every tool returns a <code>_meta</code> envelope with tokens used / saved / cost avoided. Pick the tool by what you're trying to do, not by the underlying index.</p>
   <div class="cards">
     <div class="card">
@@ -176,7 +188,7 @@ footer a{color:var(--accent)}
 </section>
 
 <section id="install">
-  <h2>Install</h2>
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Install</h2>
   <p class="section-sub">Pick your platform. Every install produces the same single binary; service templates live under <a href="https://github.com/kwad77/pincherMCP/tree/master/packaging"><code>packaging/</code></a>.</p>
 
   <div class="install-tabs">
@@ -246,7 +258,7 @@ pincher --version</code></pre>
 </section>
 
 <section>
-  <h2>How it compares</h2>
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>How it compares</h2>
   <p class="section-sub">Byte-offset retrieval, a knowledge graph, and FTS5 full-text search, co-located in a single pure-Go binary — populated by one AST pass, no external services.</p>
   <div class="comparison">
     <table>
