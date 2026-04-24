@@ -24,6 +24,9 @@ header p{color:var(--muted);font-size:13px;margin-top:3px}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.4px}
 .badge-green{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
 .badge-blue{background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.25)}
+.header-btn{background:none;border:1px solid var(--border);border-radius:20px;color:var(--muted);cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.4px;padding:3px 12px;transition:all .15s;font-family:inherit}
+.header-btn:hover{border-color:var(--accent);color:var(--accent)}
+.header-btn.authed{border-color:var(--green);color:var(--green)}
 
 /* ── Tab nav ── */
 .tab-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 32px;display:flex;gap:0}
@@ -122,8 +125,10 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .sessions-table{width:100%;border-collapse:collapse;font-size:13px}
 .sessions-table th{border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.5px;padding:8px 12px;text-align:left;text-transform:uppercase}
 .sessions-table td{border-bottom:1px solid rgba(48,54,61,.5);padding:10px 12px;vertical-align:middle}
-.sessions-table tr:last-child td{border-bottom:none}
+.sessions-table tbody tr:last-child td{border-bottom:none}
 .sessions-table tr:hover td{background:rgba(22,27,34,.6)}
+.sessions-table tfoot tr.sessions-total td{background:rgba(88,166,255,.05);border-top:1px solid var(--border);color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;padding-top:12px;padding-bottom:12px}
+.sessions-table tfoot tr.sessions-total:hover td{background:rgba(88,166,255,.08)}
 .mono{font-family:ui-monospace,monospace;font-size:11px}
 
 /* ── Projection banner ── */
@@ -186,6 +191,7 @@ main{max-width:1200px;margin:0 auto;padding:32px}
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-blue" id="last-refresh">—</span>
+    <button class="header-btn" id="auth-btn" title="Set HTTP bearer token (required when pincher is started with --http-key)" onclick="promptForKey()">Auth</button>
   </div>
 </header>
 
@@ -257,7 +263,7 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <main>
   <p class="section-title">Architecture Decision Records</p>
   <div class="adr-toolbar">
-    <select class="adr-select" id="adr-proj" onchange="loadADRs()"><option value="">Select a project…</option></select>
+    <select class="adr-select" id="adr-proj" onchange="onADRProjectChange()"><option value="">Select a project…</option></select>
     <button class="btn secondary" onclick="toggleADRForm()">+ Add Entry</button>
   </div>
   <div class="adr-form" id="adr-form">
@@ -284,6 +290,61 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <div class="toast" id="toast"></div>
 
 <script>
+// ── Auth fetch wrapper ─────────────────────────────────────────────────────
+// Pincher's HTTP server optionally requires a bearer token (--http-key).
+// The dashboard HTML itself loads without auth, but every data fetch it
+// makes needs the token. We stash it in localStorage so users only set it
+// once, then wrap window.fetch so every /v1/ call gets the header.
+const AUTH_KEY_STORAGE = 'pincher_http_key';
+let _authPrompting = false;
+const _origFetch = window.fetch.bind(window);
+window.fetch = async function(input, init) {
+  init = init || {};
+  init.headers = new Headers(init.headers || {});
+  const key = localStorage.getItem(AUTH_KEY_STORAGE);
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (key && url.startsWith('/v1/') && !init.headers.has('Authorization')) {
+    init.headers.set('Authorization', 'Bearer ' + key);
+  }
+  const r = await _origFetch(input, init);
+  if (r.status === 401 && !_authPrompting) {
+    _authPrompting = true;
+    const entered = promptForKey('Server requires a bearer token. Paste the value set via pincher --http-key:');
+    _authPrompting = false;
+    if (entered) {
+      // Retry the original request with the new token.
+      init.headers.set('Authorization', 'Bearer ' + entered);
+      return _origFetch(input, init);
+    }
+  }
+  return r;
+};
+
+function promptForKey(message) {
+  const current = localStorage.getItem(AUTH_KEY_STORAGE) || '';
+  const val = window.prompt(message || 'HTTP bearer token (leave blank to clear):', current);
+  if (val === null) return null; // cancelled
+  if (val === '') {
+    localStorage.removeItem(AUTH_KEY_STORAGE);
+    updateAuthBadge();
+    showToast('Auth token cleared');
+    return '';
+  }
+  localStorage.setItem(AUTH_KEY_STORAGE, val);
+  updateAuthBadge();
+  showToast('Auth token saved; reloading…');
+  setTimeout(() => location.reload(), 400);
+  return val;
+}
+
+function updateAuthBadge() {
+  const btn = document.getElementById('auth-btn');
+  if (!btn) return;
+  const has = !!localStorage.getItem(AUTH_KEY_STORAGE);
+  btn.textContent = has ? 'Auth ✓' : 'Auth';
+  btn.classList.toggle('authed', has);
+}
+
 // ── Utilities ──────────────────────────────────────────────────────────────
 const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
 const fmtMs = ms => ms < 1 ? '<1ms' : ms+'ms';
@@ -533,20 +594,49 @@ async function doSearch() {
 }
 
 // ── ADRs ───────────────────────────────────────────────────────────────────
+const ADR_LAST_PROJECT = 'pincher_adr_last_project';
+
 async function loadADRProjects() {
   try {
-    const data=await fetch('/v1/projects').then(r=>r.json());
+    // Kick off stats + projects in parallel — stats surfaces the live
+    // session project so the dropdown can default to "where you're
+    // actually working" without a second roundtrip.
+    const [projR, statsR] = await Promise.allSettled([
+      fetch('/v1/projects').then(r=>r.json()),
+      fetch('/v1/stats').then(r=>r.json()),
+    ]);
     const sel=document.getElementById('adr-proj');
     const cur=sel.value;
     while(sel.options.length>1) sel.remove(1);
-    (data.projects||[]).forEach(p=>{
+    const projects = projR.status === 'fulfilled' ? (projR.value.projects||[]) : [];
+    projects.forEach(p=>{
       const o=document.createElement('option');
       o.value=p.ID||p.id||''; o.textContent=p.Name||p.name||o.value;
       sel.appendChild(o);
     });
-    if(cur) sel.value=cur;
+    // Priority: 1) current UI value (user just picked), 2) last-used project
+    // from localStorage, 3) session project from /v1/stats, 4) first project
+    // in the list. Keeps users from re-picking every visit.
+    const sessionProject = statsR.status === 'fulfilled' ? statsR.value.session_project : '';
+    const remembered = localStorage.getItem(ADR_LAST_PROJECT) || '';
+    const valid = id => id && projects.some(p => (p.ID||p.id) === id);
+    if (cur && valid(cur)) {
+      sel.value = cur;
+    } else if (valid(remembered)) {
+      sel.value = remembered;
+    } else if (valid(sessionProject)) {
+      sel.value = sessionProject;
+    } else if (projects.length) {
+      sel.value = projects[0].ID || projects[0].id || '';
+    }
     if(sel.value) loadADRs();
   } catch(e) {}
+}
+
+function onADRProjectChange() {
+  const v = document.getElementById('adr-proj').value;
+  if (v) localStorage.setItem(ADR_LAST_PROJECT, v);
+  loadADRs();
 }
 
 async function loadADRs() {
@@ -607,6 +697,13 @@ async function loadSessions() {
     const data=await fetch('/v1/sessions').then(r=>r.json());
     const sessions=data.sessions||[];
     if(!sessions.length){wrap.innerHTML='<div class="empty">No sessions recorded yet.</div>';return;}
+    // Running totals for a footer row so users see the cumulative number
+    // without reaching for a spreadsheet. Cost parsed from "$X.YYYY" strings.
+    const parseDollar=s=>parseFloat(String(s).replace(/[^0-9.]/g,''))||0;
+    const totalCalls=sessions.reduce((a,s)=>a+(s.calls||0),0);
+    const totalSaved=sessions.reduce((a,s)=>a+(s.tokens_saved||0),0);
+    const totalUsed=sessions.reduce((a,s)=>a+(s.tokens_used||0),0);
+    const totalCost=sessions.reduce((a,s)=>a+parseDollar(s.cost_avoided),0);
     wrap.innerHTML='<table class="sessions-table"><thead><tr>'+
       '<th>Started</th><th>Last Seen</th><th>Calls</th><th>Tokens Saved</th><th>Tokens Used</th><th>Cost Avoided</th>'+
       '</tr></thead><tbody>'+
@@ -620,7 +717,13 @@ async function loadSessions() {
         '<td style="color:var(--orange)">'+esc(s.cost_avoided||'$0.0000')+'</td>'+
         '</tr>'
       ).join('')+
-      '</tbody></table>';
+      '</tbody><tfoot><tr class="sessions-total">'+
+      '<td colspan="2">Total across '+sessions.length+' session'+(sessions.length!==1?'s':'')+'</td>'+
+      '<td>'+fmt(totalCalls)+'</td>'+
+      '<td style="color:var(--green)">'+fmt(totalSaved)+'</td>'+
+      '<td>'+fmt(totalUsed)+'</td>'+
+      '<td style="color:var(--orange)">$'+totalCost.toFixed(4)+'</td>'+
+      '</tr></tfoot></table>';
   } catch(e) { wrap.innerHTML='<div class="error">Failed to load sessions: '+esc(e.message)+'</div>'; }
 }
 
@@ -698,6 +801,7 @@ function closeDetail() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
+updateAuthBadge();
 load();
 populateSearchProjects();
 loadProjection();

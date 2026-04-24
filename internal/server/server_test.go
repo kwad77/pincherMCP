@@ -1940,6 +1940,28 @@ func TestServeHTTP_GetStats_WithSession(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_GetStats_SessionProject(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	// No sessionID yet → response must NOT include session_project (so the
+	// dashboard falls back to the first project).
+	w := httpGet(t, srv, "/v1/stats")
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["session_project"]; ok {
+		t.Errorf("session_project should be absent when no root is set; got %v", resp["session_project"])
+	}
+
+	// Once a session root has been detected it must appear so the ADR picker
+	// can default to it.
+	srv.sessionID = "proj-abc"
+	w = httpGet(t, srv, "/v1/stats")
+	json.NewDecoder(w.Body).Decode(&resp)
+	if got := resp["session_project"]; got != "proj-abc" {
+		t.Errorf("session_project = %v, want proj-abc", got)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /v1/sessions
 // ─────────────────────────────────────────────────────────────────────────────
