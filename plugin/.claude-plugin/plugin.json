@@ -1,0 +1,20 @@
+{
+  "name": "pincher",
+  "description": "Codebase intelligence for LLM agents. Indexes any repo into a byte-offset symbol store, knowledge graph, and BM25 full-text search. 15 MCP tools with real BPE token-savings accounting. Pure Go, local-only, no cloud.",
+  "version": "0.2.1",
+  "author": {
+    "name": "Kevin Waddell",
+    "url": "https://github.com/kwad77"
+  },
+  "homepage": "https://github.com/kwad77/pincherMCP",
+  "repository": "https://github.com/kwad77/pincherMCP",
+  "license": "MIT",
+  "keywords": [
+    "codebase",
+    "index",
+    "mcp",
+    "symbols",
+    "graph",
+    "search"
+  ]
+}
