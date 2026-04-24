@@ -2084,6 +2084,31 @@ func httpDelete(t *testing.T, srv *Server, path, body string) *httptest.Response
 	return w
 }
 
+func TestServeHTTP_DeleteEmptyProjects(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	// Two ghosts (sym=0, edge=0) plus one real project.
+	store.UpsertProject(db.Project{ID: "ghost-1", Path: "/g1", Name: "g1", IndexedAt: time.Now()})
+	store.UpsertProject(db.Project{ID: "ghost-2", Path: "/g2", Name: "g2", IndexedAt: time.Now()})
+	store.UpsertProject(db.Project{ID: "real", Path: "/r", Name: "real", IndexedAt: time.Now(), SymCount: 5, EdgeCount: 2})
+
+	w := httpDelete(t, srv, "/v1/projects/empty", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE /v1/projects/empty: got %d, want 200 — body: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if got, want := resp["deleted"], float64(2); got != want {
+		t.Errorf("deleted=%v, want %v", got, want)
+	}
+	// Real one still there, ghosts gone.
+	if p, _ := store.GetProject("real"); p == nil {
+		t.Error("real project was swept")
+	}
+	if p, _ := store.GetProject("ghost-1"); p != nil {
+		t.Error("ghost-1 still present")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // savedVsFileSizes — root="" fallback
 // ─────────────────────────────────────────────────────────────────────────────

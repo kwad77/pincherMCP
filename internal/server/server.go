@@ -327,6 +327,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"projects": projects})
 		return
 	}
+	// DELETE /v1/projects/empty — bulk-delete every project with zero
+	// symbols and zero edges. These accumulate from SessionStart hooks
+	// firing in non-code directories and clutter the dashboard.
+	if path == "projects/empty" && r.Method == http.MethodDelete {
+		n, err := s.store.DeleteEmptyProjects()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"deleted": n})
+		return
+	}
 	// DELETE /v1/projects — remove a project and all its data.
 	if path == "projects" && r.Method == http.MethodDelete {
 		var body struct {

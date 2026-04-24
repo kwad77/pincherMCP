@@ -533,6 +533,36 @@ func (s *Store) DeleteProject(id string) error {
 	})
 }
 
+// DeleteEmptyProjects removes every project with zero symbols AND zero edges
+// (the "ghost" projects that accumulate from SessionStart hooks running in
+// non-code directories). Returns the number of projects deleted.
+//
+// Safe to call alongside active indexing — rows with any symbols or edges
+// are untouched, so a project still being populated won't be swept.
+func (s *Store) DeleteEmptyProjects() (int, error) {
+	var ids []string
+	rows, err := s.db.Query(`SELECT id FROM projects WHERE sym_count = 0 AND edge_count = 0`)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		if err := s.DeleteProject(id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Symbol operations
 // ─────────────────────────────────────────────────────────────────────────────

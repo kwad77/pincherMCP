@@ -2111,3 +2111,51 @@ func TestDeleteSymbolsForFile_NonExistent_NoError(t *testing.T) {
 		t.Errorf("DeleteSymbolsForFile nonexistent: %v", err)
 	}
 }
+
+func TestDeleteEmptyProjects(t *testing.T) {
+	s := newTestStore(t)
+
+	// Three projects: one real, one empty (ghost), one with only edges.
+	real := testProject("real")
+	real.SymCount = 42
+	real.EdgeCount = 7
+	s.UpsertProject(real)
+
+	ghost := testProject("ghost")
+	ghost.SymCount = 0
+	ghost.EdgeCount = 0
+	s.UpsertProject(ghost)
+
+	edgesOnly := testProject("edges-only")
+	edgesOnly.SymCount = 0
+	edgesOnly.EdgeCount = 3
+	s.UpsertProject(edgesOnly)
+
+	n, err := s.DeleteEmptyProjects()
+	if err != nil {
+		t.Fatalf("DeleteEmptyProjects: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted count = %d, want 1", n)
+	}
+
+	// Only the ghost should be gone.
+	if got, _ := s.GetProject("ghost"); got != nil {
+		t.Error("ghost project should be deleted")
+	}
+	if got, _ := s.GetProject("real"); got == nil {
+		t.Error("real project should survive")
+	}
+	if got, _ := s.GetProject("edges-only"); got == nil {
+		t.Error("edges-only project should survive (has edges)")
+	}
+
+	// Idempotent: a second call has nothing to do.
+	n2, err := s.DeleteEmptyProjects()
+	if err != nil {
+		t.Fatalf("second DeleteEmptyProjects: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("second call deleted count = %d, want 0", n2)
+	}
+}
