@@ -21,7 +21,8 @@ import (
 	"github.com/pincherMCP/pincher/internal/server"
 )
 
-const version = "0.1.0"
+// version is overridden at build time via -ldflags="-X main.version=...".
+var version = "0.1.0"
 
 func main() {
 	// Subcommand dispatch — must happen before flag.Parse() since the global
