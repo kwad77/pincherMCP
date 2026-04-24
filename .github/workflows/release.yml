@@ -135,3 +135,123 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.licenses=MIT
           provenance: false
+
+  homebrew:
+    name: Bump Homebrew formula
+    needs: checksums
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch release SHA256SUMS
+        id: hashes
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/SHA256SUMS"
+          # Give the release a brief moment to propagate (rarely needed — checksums
+          # job already uploaded it — but cheap insurance against CDN lag).
+          for i in 1 2 3 4 5; do
+            if curl --fail -sL -o SHA256SUMS "$URL"; then break; fi
+            echo "attempt $i failed; retrying in 5s"
+            sleep 5
+          done
+          cat SHA256SUMS
+
+          get_sha() { awk -v p="$1" '$2==p{print $1}' SHA256SUMS; }
+          DARWIN_ARM=$(get_sha "pincher-${GITHUB_REF_NAME}-darwin-arm64.tar.gz")
+          DARWIN_AMD=$(get_sha "pincher-${GITHUB_REF_NAME}-darwin-amd64.tar.gz")
+          LINUX_ARM=$(get_sha  "pincher-${GITHUB_REF_NAME}-linux-arm64.tar.gz")
+          LINUX_AMD=$(get_sha  "pincher-${GITHUB_REF_NAME}-linux-amd64.tar.gz")
+          for name in DARWIN_ARM DARWIN_AMD LINUX_ARM LINUX_AMD; do
+            val="${!name}"
+            if [[ -z "$val" || ${#val} -ne 64 ]]; then
+              echo "::error::missing or malformed sha for $name (got '$val')"
+              exit 1
+            fi
+          done
+
+          {
+            echo "version=${GITHUB_REF_NAME#v}"
+            echo "darwin_arm=$DARWIN_ARM"
+            echo "darwin_amd=$DARWIN_AMD"
+            echo "linux_arm=$LINUX_ARM"
+            echo "linux_amd=$LINUX_AMD"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Patch formula
+        env:
+          VERSION: ${{ steps.hashes.outputs.version }}
+          DARWIN_ARM: ${{ steps.hashes.outputs.darwin_arm }}
+          DARWIN_AMD: ${{ steps.hashes.outputs.darwin_amd }}
+          LINUX_ARM:  ${{ steps.hashes.outputs.linux_arm }}
+          LINUX_AMD:  ${{ steps.hashes.outputs.linux_amd }}
+          REF: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+          p = pathlib.Path("packaging/homebrew/pincher.rb")
+          s = p.read_text()
+          s = re.sub(r'version "[^"]+"', f'version "{os.environ["VERSION"]}"', s)
+          def patch(s, arch, sha):
+              return re.sub(
+                  rf'(-{re.escape(arch)}\.tar\.gz"\s*\n\s*sha256 ")[0-9a-f]{{64}}"',
+                  rf'\g<1>{sha}"', s)
+          s = patch(s, "darwin-arm64", os.environ["DARWIN_ARM"])
+          s = patch(s, "darwin-amd64", os.environ["DARWIN_AMD"])
+          s = patch(s, "linux-arm64",  os.environ["LINUX_ARM"])
+          s = patch(s, "linux-amd64",  os.environ["LINUX_AMD"])
+          # Keep the canonical "Pinned to" comment fresh
+          s = re.sub(r'Pinned to v[0-9A-Za-z.\-]+\.',
+                     f'Pinned to {os.environ["REF"]}.', s)
+          s = re.sub(r'/v[0-9A-Za-z.\-]+/SHA256SUMS',
+                     f'/{os.environ["REF"]}/SHA256SUMS', s)
+          p.write_text(s)
+          PY
+          git diff --stat packaging/homebrew/pincher.rb
+
+      - name: Commit to main repo
+        run: |
+          set -euo pipefail
+          if git diff --quiet packaging/homebrew/pincher.rb; then
+            echo "formula unchanged; nothing to commit"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add packaging/homebrew/pincher.rb
+          git commit -m "chore(homebrew): bump formula to ${GITHUB_REF_NAME}
+
+          Automated bump from .github/workflows/release.yml after the
+          ${GITHUB_REF_NAME} release produced its SHA256SUMS."
+          git push origin HEAD:master
+
+      - name: Mirror to tap repo
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAP_TOKEN:-}" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping tap mirror."
+            echo "::warning::Users will need to install via direct-URL until the tap is updated manually."
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/kwad77/homebrew-pincher.git" tap
+          cp packaging/homebrew/pincher.rb tap/Formula/pincher.rb
+          cd tap
+          if git diff --quiet Formula/pincher.rb; then
+            echo "tap formula already matches; nothing to push"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add Formula/pincher.rb
+          git commit -m "Bump to ${GITHUB_REF_NAME}
+
+          Mirrored from kwad77/pincherMCP@master packaging/homebrew/pincher.rb
+          after the ${GITHUB_REF_NAME} release automation ran."
+          git push origin master
