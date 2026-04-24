@@ -51,6 +51,11 @@ type Server struct {
 	version  string
 	httpKey  string // optional bearer token; empty = no auth required
 
+	// Actual bound HTTP address — populated by ListenAndServeHTTP after
+	// net.Listen succeeds, so ":0" auto-pick can report the real port.
+	mu       sync.Mutex
+	httpAddr string
+
 	// HTTP rate limiting — sliding window per remote IP.
 	rateMu      sync.Mutex
 	rateWindows map[string][]time.Time // IP → request timestamps in current window
@@ -483,7 +488,15 @@ func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 		return fmt.Errorf("bind %s after retries: %w", addr, bindErr)
 	}
 
-	srv := &http.Server{Addr: addr, Handler: s}
+	// Capture the actual bound address so ":0" (OS-picked port) surfaces the
+	// real port in logs, saves it on the Server for HTTPAddr(), and emits a
+	// friendly stderr line so humans see the URL without hunting in slog.
+	actualAddr := ln.Addr().String()
+	s.mu.Lock()
+	s.httpAddr = actualAddr
+	s.mu.Unlock()
+
+	srv := &http.Server{Addr: actualAddr, Handler: s}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -492,11 +505,33 @@ func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 			slog.Warn("pincher.http.shutdown.err", "err", err)
 		}
 	}()
-	slog.Info("pincher.http.listen", "addr", addr)
+	slog.Info("pincher.http.listen", "addr", actualAddr)
+	fmt.Fprintf(os.Stderr, "pincherMCP: HTTP listening on http://%s\n", displayAddr(actualAddr))
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+// HTTPAddr returns the HTTP server's bound address, or "" if HTTP is not
+// running. For ":0" binds this reflects the port the OS actually chose.
+func (s *Server) HTTPAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.httpAddr
+}
+
+// displayAddr turns a net.Listener address ("[::]:8080", "0.0.0.0:8080",
+// ":8080") into something you can click or paste into curl.
+func displayAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "::" || host == "0.0.0.0" {
+		host = "localhost"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func parseFileURI(uri string) (string, bool) {

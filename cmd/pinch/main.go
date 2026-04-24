@@ -35,11 +35,21 @@ func main() {
 		showVersion = flag.Bool("version", false, "Print version and exit")
 		dataDir     = flag.String("data-dir", "", "Override data directory (default: platform-appropriate)")
 		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
-		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080). Enables any HTTP client to call all tools via POST /v1/{tool}.")
-		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments).")
+		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080, or :0 to let the OS pick a free port). Falls back to $PINCHER_HTTP_ADDR. Enables any HTTP client to call all tools via POST /v1/{tool}.")
+		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments). Falls back to $PINCHER_HTTP_KEY.")
 		httpRate    = flag.Int("http-rate", 0, "Max HTTP requests per IP per minute. 0 = unlimited.")
 	)
 	flag.Parse()
+
+	// Env fallbacks for the HTTP knobs so install-time configuration
+	// (Docker -e, systemd EnvironmentFile, launchd, k8s) doesn't need
+	// to rewrite argv.
+	if *httpAddr == "" {
+		*httpAddr = os.Getenv("PINCHER_HTTP_ADDR")
+	}
+	if *httpKey == "" {
+		*httpKey = os.Getenv("PINCHER_HTTP_KEY")
+	}
 
 	if *showVersion {
 		fmt.Printf("pincherMCP v%s\n", version)

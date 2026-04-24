@@ -532,9 +532,21 @@ pincher --version                    # print version and exit
 pincher --data-dir /custom/path      # override database directory
 pincher --verbose                    # enable verbose logging to stderr
 pincher --http :8080                 # also listen for HTTP REST on :8080
+pincher --http :0                    # let the OS pick a free port (logged on startup)
 pincher --http-key mysecrettoken     # require bearer token on all HTTP requests
 pincher --http-rate 60               # rate limit: 60 requests/IP/minute (0 = unlimited)
 ```
+
+### Environment variables
+
+Used when the matching flag is empty — convenient for Docker, systemd, and launchd.
+
+| Variable | Equivalent flag | Example |
+|---|---|---|
+| `PINCHER_HTTP_ADDR` | `--http` | `PINCHER_HTTP_ADDR=:9000 pincher` |
+| `PINCHER_HTTP_KEY` | `--http-key` | `PINCHER_HTTP_KEY=secret pincher --http :8080` |
+
+`PINCHER_HTTP_ADDR=:0` picks a free port and the bound address is printed to stderr at startup (`pincherMCP: HTTP listening on http://localhost:59726`). The Docker image sets `PINCHER_HTTP_ADDR=:8080` by default — override with `docker run -e PINCHER_HTTP_ADDR=:9000 -p 9000:9000 ghcr.io/.../pinchermcp`.
 
 ### `pincher index` subcommand
 

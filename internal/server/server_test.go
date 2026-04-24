@@ -2331,3 +2331,68 @@ func TestHandleChanges_WithImpact(t *testing.T) {
 	}
 	_ = summary
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP port flexibility (--http :0, HTTPAddr, displayAddr)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestListenAndServeHTTP_AutoPort(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServeHTTP(ctx, "127.0.0.1:0") }()
+
+	// Poll for the bound address (ListenAndServeHTTP sets it after net.Listen).
+	var addr string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := srv.HTTPAddr(); a != "" {
+			addr = a
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("HTTPAddr stayed empty — bind never completed")
+	}
+	if strings.HasSuffix(addr, ":0") {
+		t.Errorf("HTTPAddr = %q, want a resolved port (not :0)", addr)
+	}
+
+	// Hit /v1/health on the OS-picked port to prove the server actually listens.
+	resp, err := http.Get("http://" + addr + "/v1/health")
+	if err != nil {
+		t.Fatalf("GET /v1/health on %s: %v", addr, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("ListenAndServeHTTP did not return after ctx cancel")
+	}
+}
+
+func TestDisplayAddr(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"0.0.0.0:8080", "localhost:8080"},
+		{"[::]:8080", "localhost:8080"},
+		{":8080", "localhost:8080"},
+		{"127.0.0.1:9999", "127.0.0.1:9999"},
+		{"not-an-addr", "not-an-addr"}, // fallthrough on parse error
+	}
+	for _, c := range cases {
+		if got := displayAddr(c.in); got != c.want {
+			t.Errorf("displayAddr(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
