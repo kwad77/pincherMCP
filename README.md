@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/banner.svg" alt="pincherMCP" width="900"/>
+  <img src="assets/banner.png" alt="pincherMCP — pixel-art mascot Pinchy the crab holding a copper penny, wordmark, and tagline" width="900"/>
 </div>
 
 <div align="center">
@@ -33,7 +33,7 @@ Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
 
 ---
 
-## What it does
+## <img src="docs/assets/crab.png" width="22" alt=""/> What it does
 
 pincherMCP is a single Go binary that indexes a codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — and exposes all three through 15 MCP tools or an HTTP REST API.
 
@@ -58,7 +58,7 @@ All three indexes are built in a **single AST parse pass** from one shared `symb
 
 ---
 
-## Quick Start
+## <img src="docs/assets/crab.png" width="22" alt=""/> Quick Start
 
 ```bash
 # 1. Build
@@ -136,7 +136,7 @@ see [`packaging/README.md`](packaging/README.md).
 
 ---
 
-## Architectural Diagrams
+## <img src="docs/assets/crab.png" width="22" alt=""/> Architectural Diagrams
 
 ### Two-Process Architecture
 
@@ -269,7 +269,7 @@ All three paths are project-scoped — cross-project data leakage is structurall
 
 ---
 
-## 15 Tools — Tested Capabilities
+## <img src="docs/assets/crab.png" width="22" alt=""/> 15 Tools — Tested Capabilities
 
 All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). Token counts use cl100k_base BPE — the same tokenizer family as Claude.
 
@@ -347,7 +347,7 @@ Every symbol carries an `extraction_confidence` score surfaced in search results
 
 ---
 
-## Cypher Query Reference
+## <img src="docs/assets/crab.png" width="22" alt=""/> Cypher Query Reference
 
 pincherMCP translates a Cypher subset to SQL at query time. All queries are scoped to one project.
 
@@ -387,7 +387,7 @@ RETURN f.name, f.file_path LIMIT 50
 
 ---
 
-## Language Support
+## <img src="docs/assets/crab.png" width="22" alt=""/> Language Support
 
 | Language | Extraction | Confidence | Symbol kinds extracted |
 |---|---|---|---|
@@ -410,7 +410,7 @@ Go is the only language with full AST parsing. All other languages use regex pat
 
 ---
 
-## HTTP REST API
+## <img src="docs/assets/crab.png" width="22" alt=""/> HTTP REST API
 
 All 15 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
 
@@ -471,7 +471,12 @@ Beyond `POST /v1/{tool}`, the HTTP server exposes:
 
 ---
 
-## Token Savings
+<div align="center">
+  <img src="docs/assets/pinchy.png" alt="Pinchy holding a copper penny" width="140"/>
+  <p><em>Pinchy's day job.</em></p>
+</div>
+
+## <img src="docs/assets/crab.png" width="22" alt=""/> Token Savings
 
 Token counts use the **cl100k_base BPE tokenizer** (same family as Claude) loaded as an embedded Go dependency — no network calls, zero latency after first initialization. Cost is estimated at **$3.00 per 1M tokens** (Claude Sonnet pricing).
 
@@ -509,7 +514,7 @@ Savings persist in SQLite across reconnects, process restarts, and binary upgrad
 
 ---
 
-## Installation
+## <img src="docs/assets/crab.png" width="22" alt=""/> Installation
 
 ### Requirements
 
@@ -624,7 +629,7 @@ The `--hook` flag outputs a JSON envelope that Claude Code's SessionStart hook s
 
 ---
 
-## Performance
+## <img src="docs/assets/crab.png" width="22" alt=""/> Performance
 
 Measured on this codebase (13 files, 618 symbols, 5,785 edges, Windows 11, SQLite WAL):
 
@@ -645,7 +650,7 @@ Measured on this codebase (13 files, 618 symbols, 5,785 edges, Windows 11, SQLit
 
 ---
 
-## Roadmap
+## <img src="docs/assets/crab.png" width="22" alt=""/> Roadmap
 
 ### v0.2 — Parser accuracy
 - **Tree-sitter bindings for Python, TypeScript, Rust, Java** — extraction confidence 1.0 for the four most common non-Go languages; no CGO required via the pure-Go tree-sitter port
@@ -670,7 +675,7 @@ Measured on this codebase (13 files, 618 symbols, 5,785 edges, Windows 11, SQLit
 
 ---
 
-## Development
+## <img src="docs/assets/crab.png" width="22" alt=""/> Development
 
 ### HTTP dashboard
 
@@ -750,3 +755,7 @@ The `internal/server` number is dragged down by `ListenAndServeHTTP`, `handleFet
 ## License
 
 MIT
+
+<div align="center">
+  <img src="docs/assets/crab.png" width="32" alt="Pinchy"/>
+</div>
