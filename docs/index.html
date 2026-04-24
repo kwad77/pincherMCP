@@ -247,7 +247,7 @@ pincher --version</code></pre>
 
 <section>
   <h2>How it compares</h2>
-  <p class="section-sub">The design sits at the intersection of three prior projects. What's new is that they're co-located, single-binary, and pure Go.</p>
+  <p class="section-sub">Byte-offset retrieval, a knowledge graph, and FTS5 full-text search, co-located in a single pure-Go binary — populated by one AST pass, no external services.</p>
   <div class="comparison">
     <table>
       <thead>
@@ -267,24 +267,6 @@ pincher --version</code></pre>
         <tr><td class="tool">Runtime dependencies</td><td class="yes">none (pure Go)</td><td class="no">libc, libsqlite</td><td class="no">interpreter</td></tr>
       </tbody>
     </table>
-  </div>
-</section>
-
-<section>
-  <h2>Inspired by — built differently</h2>
-  <div class="cards">
-    <div class="card">
-      <h3><a href="https://github.com/nicholasgasior/codebase-memory-mcp">codebase-memory-mcp</a></h3>
-      <p>Gave us the knowledge-graph + Cypher-query shape and the incremental re-index model.</p>
-    </div>
-    <div class="card">
-      <h3><a href="https://github.com/jgravelle/jcodemunch-mcp">jcodemunch-mcp</a></h3>
-      <p>Byte-offset O(1) symbol retrieval and the <code>_meta</code> token-budget envelope.</p>
-    </div>
-    <div class="card">
-      <h3><a href="https://github.com/ViperJuice/Code-Index-MCP">Code-Index-MCP</a></h3>
-      <p>FTS5 BM25 full-text search and the file-watch auto-reindex pattern.</p>
-    </div>
   </div>
 </section>
 

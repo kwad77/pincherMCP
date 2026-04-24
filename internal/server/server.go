@@ -1,6 +1,6 @@
 // Package server implements the pincherMCP MCP server with all 14 tools.
 //
-// Every tool response includes a "_meta" envelope (jcodemunch-mcp pattern):
+// Every tool response includes a "_meta" envelope:
 //
 //	{
 //	  "result": { ... },
@@ -1805,7 +1805,7 @@ func extractTextFromHTML(raw string) (title, text string) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _meta envelope (jcodemunch-mcp pattern)
+// _meta envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
 // baseCostPer1M is the approximate cost per 1M tokens for Claude Sonnet (USD).
