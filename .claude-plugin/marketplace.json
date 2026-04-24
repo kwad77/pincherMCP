@@ -1,0 +1,19 @@
+{
+  "name": "pincherMCP",
+  "owner": "kwad77",
+  "description": "Codebase intelligence MCP server for Claude Code. One plugin, one binary, local-only.",
+  "plugins": [
+    {
+      "name": "pincher",
+      "description": "Codebase intelligence for LLM agents. Indexes any repo into a byte-offset symbol store, knowledge graph, and BM25 full-text search. 15 MCP tools with real BPE token-savings accounting. Pure Go, local-only, no cloud.",
+      "source": {
+        "source": "github",
+        "repo": "kwad77/pincherMCP",
+        "path": "./plugin"
+      },
+      "homepage": "https://github.com/kwad77/pincherMCP",
+      "license": "MIT",
+      "tags": ["mcp", "codebase", "search", "graph", "symbols"]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+# Shell scripts must use LF line endings. CRLF breaks bash on macOS/Linux
+# (the shebang fails with "bad interpreter: No such file or directory").
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# PowerShell tolerates both endings but pin CRLF for consistency with
+# Windows-native tooling.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+# Plain text files — let Git normalise on checkout per the user's core.autocrlf.
+*.md   text
+*.json text
+*.yml  text
+*.yaml text
+*.go   text
+
+# Binary files — never normalise.
+*.png  binary
+*.jpg  binary
+*.svg  text
+*.ico  binary
+*.db   binary
