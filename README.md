@@ -37,7 +37,7 @@ Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
 
 pincherMCP is a single Go binary that indexes a codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — and exposes all three through 15 MCP tools or an HTTP REST API.
 
-Every tool response includes a `_meta` envelope with real BPE token counts (cl100k_base, same family as Claude), latency, and cost avoided:
+Every tool response includes a `_meta` envelope with real BPE token counts (cl100k_base — exact for Claude and OpenAI model families, approximate for Gemini/Llama), latency, and cost avoided:
 
 ```json
 {
@@ -73,26 +73,74 @@ All three indexes are built in a **single AST parse pass** from one shared `symb
 git clone https://github.com/kwad77/pincherMCP && cd pincherMCP
 go build -o pincher ./cmd/pinch/
 
-# 2. Add to Claude Code (~/.claude/mcp.json)
+# 2. Point your MCP client at the binary (examples below for Claude Code,
+#    Cursor, and Zed — the stdio command is the same everywhere).
+
+# 3. Index your project
+pincher index /path/to/your/project
+
+# 4. Query (via your MCP client, or via HTTP if you ran with --http)
+# e.g. the `search` tool with query="processPayment"
+#      the `context` tool with id="src/payments/processor.go::payments.processPayment#Function"
+```
+
+### Client configuration
+
+Any MCP-compatible client works — pincher speaks the standard JSON-RPC 2.0
+over stdio protocol. Three common clients:
+
+<details>
+<summary><b>Claude Code</b> — <code>~/.claude/mcp.json</code></summary>
+
+```json
 {
   "mcpServers": {
     "pincher": { "type": "stdio", "command": "/path/to/pincher" }
   }
 }
-
-# 3. Index your project
-# pincher index  path="/path/to/your/project"
-
-# 4. Query
-# pincher search  query="processPayment"
-# pincher context  id="src/payments/processor.go::payments.processPayment#Function"
 ```
+</details>
 
-Or run alongside a local HTTP dashboard:
+<details>
+<summary><b>Cursor</b> — <code>~/.cursor/mcp.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "pincher": { "command": "/path/to/pincher" }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Zed</b> — <code>settings.json</code> under <code>context_servers</code></summary>
+
+```json
+{
+  "context_servers": {
+    "pincher": {
+      "command": { "path": "/path/to/pincher", "args": [] }
+    }
+  }
+}
+```
+</details>
+
+Continue, Windsurf, and any other MCP client follow the same pattern — run
+`pincher` as a stdio subprocess. For editors without MCP support, use the
+HTTP REST API (below) instead.
+
+Or run the local HTTP dashboard alongside the MCP process:
 
 ```bash
 pincher --http :8080 --http-key mysecrettoken
+# or let the OS pick a free port:
+pincher --http :0
 ```
+
+For managed installs (Homebrew, systemd, launchd, Windows service),
+see [`packaging/README.md`](packaging/README.md).
 
 ---
 
@@ -473,8 +521,18 @@ Savings persist in SQLite across reconnects, process restarts, and binary upgrad
 
 ### Requirements
 
-- Go 1.24+ (pure Go — no CGO, no C compiler)
+- Go 1.24+ (pure Go — no CGO, no C compiler) — only needed if building from source
 - Git (for the `changes` blast-radius tool)
+
+### Managed installs
+
+Drop-in service templates and install scripts live under [`packaging/`](packaging/README.md):
+
+- **Homebrew** — tap + formula at `packaging/homebrew/pincher.rb`
+- **Linux systemd** — user unit at `packaging/systemd/pincher.service`
+- **macOS launchd** — LaunchAgent at `packaging/launchd/com.pinchermcp.pincher.plist`
+- **Windows service** — PowerShell installer at `packaging/windows/install-service.ps1`
+- **Docker** — `Dockerfile` at repo root; multi-arch image published to `ghcr.io/kwad77/pinchermcp` on every release
 
 ### Build from source
 
