@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,6 +179,40 @@ func TestMigrate_VersionTracked(t *testing.T) {
 	want := 1 + len(schemaMigrations)
 	if version != want {
 		t.Errorf("schema_version = %d, want %d", version, want)
+	}
+}
+
+// TestMigrate_RejectsNewerDB verifies that an older binary refuses to open
+// a database whose schema version is higher than any migration it knows
+// about. Without this guard, the binary would silently proceed and could
+// read/write rows using its older schema understanding.
+func TestMigrate_RejectsNewerDB(t *testing.T) {
+	dir := t.TempDir()
+
+	// First Open: this binary creates the DB and migrates it to its current
+	// max version.
+	s1, err := Open(dir)
+	if err != nil {
+		t.Fatalf("initial Open: %v", err)
+	}
+	// Simulate a future pincher version by bumping schema_version past
+	// everything this binary knows about.
+	futureVersion := 1 + len(schemaMigrations) + 1
+	if _, err := s1.db.Exec(`UPDATE schema_version SET version = ?`, futureVersion); err != nil {
+		t.Fatalf("bump version: %v", err)
+	}
+	s1.Close()
+
+	// Re-opening with the same binary must fail with a clear message. We
+	// don't check the exact wording, just that the error mentions the
+	// version mismatch so users know what to do.
+	_, err = Open(dir)
+	if err == nil {
+		t.Fatal("Open should have refused a database at a newer schema version")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "newer than this binary") && !strings.Contains(msg, "upgrade pincher") {
+		t.Errorf("error should point at the version mismatch, got: %v", err)
 	}
 }
 
