@@ -24,6 +24,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -95,10 +96,19 @@ var extractionConfidence = map[string]float64{
 // relPath is the file path relative to the project root (used for qualified names).
 // Each returned symbol has ExtractionConfidence set based on the parser used.
 func Extract(source []byte, language, relPath string) *FileResult {
+	return ExtractWithModule(source, language, relPath, "")
+}
+
+// ExtractWithModule is Extract with an optional module path prefix (e.g. the
+// `module` line from go.mod). When set, the Go extractor strips it from
+// intra-module import paths and emits Module-level symbols + IMPORTS edges
+// keyed by within-module paths, enabling cross-file dependency queries.
+// Pass "" to behave exactly like Extract.
+func ExtractWithModule(source []byte, language, relPath, modulePath string) *FileResult {
 	var result *FileResult
 	switch language {
 	case "Go":
-		result = extractGo(source, relPath)
+		result = extractGo(source, relPath, modulePath)
 	case "Python":
 		result = extractPython(source, relPath)
 	case "JavaScript", "JSX":
@@ -135,7 +145,7 @@ func Extract(source []byte, language, relPath string) *FileResult {
 // Go extractor — uses go/ast for precise byte offsets
 // ─────────────────────────────────────────────────────────────────────────────
 
-func extractGo(source []byte, relPath string) *FileResult {
+func extractGo(source []byte, relPath, modulePath string) *FileResult {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, relPath, source, parser.ParseComments)
 	if err != nil {
@@ -159,17 +169,52 @@ func extractGo(source []byte, relPath string) *FileResult {
 		pkg = f.Name.Name
 	}
 
-	// Extract top-level imports as edges
+	// Within-module import path for this file's package (e.g. "internal/db").
+	// Used as the qualified name of the Module symbol and as the FromQN of
+	// IMPORTS edges, so they can be resolved across files by the indexer.
+	fileModuleQN := filepath.ToSlash(filepath.Dir(relPath))
+	if fileModuleQN == "." {
+		fileModuleQN = pkg
+	}
+
+	// Emit a Module symbol for this file — gives IMPORTS edges a stable
+	// endpoint to point at. One Module symbol per file; packages with
+	// multiple files produce multiple Module rows, all sharing qualified_name.
+	if f.Name != nil {
+		pkgPos := fset.Position(f.Name.Pos())
+		pkgEnd := fset.Position(f.Name.End())
+		result.Symbols = append(result.Symbols, ExtractedSymbol{
+			Name:          pkg,
+			QualifiedName: fileModuleQN,
+			Kind:          "Module",
+			StartByte:     pkgPos.Offset,
+			EndByte:       pkgEnd.Offset,
+			StartLine:     pkgPos.Line,
+			EndLine:       pkgEnd.Line,
+			Signature:     "package " + pkg,
+			IsExported:    true,
+		})
+	}
+
+	// Extract top-level imports as edges from this file's Module symbol.
+	// Intra-module imports are rewritten to within-module paths so they
+	// resolve against other Module symbols. External imports keep their
+	// full path and will stay unresolved (no matching symbol indexed).
 	for _, imp := range f.Imports {
-		if imp.Path != nil {
-			path := strings.Trim(imp.Path.Value, `"`)
-			result.Edges = append(result.Edges, ExtractedEdge{
-				FromQN:     pkg,
-				ToName:     path,
-				Kind:       "IMPORTS",
-				Confidence: 1.0,
-			})
+		if imp.Path == nil {
+			continue
 		}
+		path := strings.Trim(imp.Path.Value, `"`)
+		toName := path
+		if modulePath != "" && (path == modulePath || strings.HasPrefix(path, modulePath+"/")) {
+			toName = strings.TrimPrefix(strings.TrimPrefix(path, modulePath), "/")
+		}
+		result.Edges = append(result.Edges, ExtractedEdge{
+			FromQN:     fileModuleQN,
+			ToName:     toName,
+			Kind:       "IMPORTS",
+			Confidence: 1.0,
+		})
 	}
 
 	// Walk top-level declarations

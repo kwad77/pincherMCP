@@ -341,9 +341,9 @@ RETURN f.name, f.file_path LIMIT 50
 
 **Supported clauses:** `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`, `SKIP`, `COUNT()`
 
-**Edge kinds indexed:** `CALLS`
+**Edge kinds indexed:** `CALLS`, `IMPORTS` (Go only — resolved across files against `Module` symbols using the `module` line of `go.mod` to rewrite intra-module paths; external imports stay unresolved)
 
-**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`) plus `Document` (URLs stored by the `fetch` tool)
+**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`), `Module` (one per Go file, qualified by within-module import path, e.g. `internal/db`), plus `Document` (URLs stored by the `fetch` tool)
 
 ---
 

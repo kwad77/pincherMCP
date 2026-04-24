@@ -175,7 +175,7 @@ func main() {}
 `)
 	result := Extract(src, "Go", "main.go")
 	for _, s := range result.Symbols {
-		if s.Name == "main" && !s.IsEntryPoint {
+		if s.Kind == "Function" && s.Name == "main" && !s.IsEntryPoint {
 			t.Error("main() should be marked IsEntryPoint")
 		}
 	}
