@@ -1523,6 +1523,17 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}
 	}
 
+	// All-time savings summed across every persisted session.
+	atCalls, atUsed, atSaved, atCost, _ := s.store.GetAllTimeSavings()
+
+	// Optional session project — populated when a root has been detected.
+	var proj *db.Project
+	if s.sessionID != "" {
+		if p, _ := s.store.GetProject(s.sessionID); p != nil {
+			proj = p
+		}
+	}
+
 	const w = 44 // inner width of box
 	line := func(label, value string) string {
 		content := fmt.Sprintf("  %-20s %s", label, value)
@@ -1537,6 +1548,7 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		right := pad - left
 		return "│ " + strings.Repeat(" ", left) + title + strings.Repeat(" ", right) + " │\n"
 	}
+	sep := "├" + strings.Repeat("─", w) + "┤\n"
 	commify := func(n int64) string {
 		s := fmt.Sprintf("%d", n)
 		for i := len(s) - 3; i > 0; i -= 3 {
@@ -1560,6 +1572,28 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+ratio))
 	b.WriteString(line("Cost avoided:", fmt.Sprintf("$%.4f", totalCostAvoided)))
 	b.WriteString(line("Avg latency:", fmt.Sprintf("%d ms", avgLatency)))
+
+	// ALL-TIME section — only render when the DB has data (otherwise it's
+	// just a row of zeros, noisy for first-use).
+	if atCalls > 0 {
+		b.WriteString(sep)
+		b.WriteString(header("ALL-TIME"))
+		b.WriteString(line("Tool calls:", commify(atCalls)))
+		b.WriteString(line("Tokens used:", commify(atUsed)))
+		b.WriteString(line("Tokens saved:", "~"+commify(atSaved)))
+		b.WriteString(line("Cost avoided:", fmt.Sprintf("$%.4f", atCost)))
+	}
+
+	// PROJECT section — visible whenever a session project is set.
+	if proj != nil {
+		b.WriteString(sep)
+		b.WriteString(header("PROJECT"))
+		b.WriteString(line("Name:", proj.Name))
+		b.WriteString(line("Files:", commify(int64(proj.FileCount))))
+		b.WriteString(line("Symbols:", commify(int64(proj.SymCount))))
+		b.WriteString(line("Edges:", commify(int64(proj.EdgeCount))))
+	}
+
 	b.WriteString("└" + strings.Repeat("─", w) + "┘")
 	return s.textResultWithMeta(b.String(), start, 0), nil
 }

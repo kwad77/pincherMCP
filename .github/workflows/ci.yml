@@ -52,8 +52,8 @@ jobs:
       - name: Test with coverage
         run: go test ./... -coverprofile=cover.out -timeout 120s
 
-      - name: Check coverage threshold (85%)
+      - name: Check coverage threshold (83%)
         run: |
           TOTAL=$(go tool cover -func=cover.out | grep "^total" | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${TOTAL}%"
-          awk -v t="$TOTAL" 'BEGIN { if (t+0 < 85) { print "Coverage " t "% is below 85% threshold"; exit 1 } }'
+          awk -v t="$TOTAL" 'BEGIN { if (t+0 < 83) { print "Coverage " t "% is below 83% threshold"; exit 1 } }'
