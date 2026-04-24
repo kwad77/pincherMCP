@@ -192,16 +192,16 @@ func (s *Store) migrate() error {
 //
 // Three-layer design:
 //
-//	Layer 1 — Byte-Offset Symbol Store (jcodemunch-mcp innovation)
+//	Layer 1 — Byte-Offset Symbol Store
 //	  symbols.start_byte / end_byte → os.File.Seek + Read → O(1) source
 //	  No re-parsing on retrieval, no line scanning.
 //
-//	Layer 2 — Knowledge Graph (codebase-memory-mcp innovation)
+//	Layer 2 — Knowledge Graph
 //	  nodes = symbols rows (shared — no duplication)
 //	  edges = CALLS / IMPORTS / INHERITS / IMPLEMENTS etc.
 //	  Supports Cypher-like MATCH → SQL translation → sub-ms queries
 //
-//	Layer 3 — FTS5 Full-Text Search (code-index-mcp innovation)
+//	Layer 3 — FTS5 Full-Text Search
 //	  symbols_fts virtual table with built-in BM25 ranking
 //	  Auto-synced via AFTER INSERT/UPDATE/DELETE triggers
 const schema = `

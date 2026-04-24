@@ -54,14 +54,6 @@ Every tool response includes a `_meta` envelope with real BPE token counts (cl10
 
 Token savings accumulate across sessions — every reconnect adds to a running all-time total in SQLite.
 
-pincherMCP builds on ideas from three prior projects:
-
-| Inspiration | What we took |
-|---|---|
-| [codebase-memory-mcp](https://github.com/nicholasgasior/codebase-memory-mcp) | Knowledge graph, Cypher queries, incremental re-index |
-| [jcodemunch-mcp](https://github.com/jgravelle/jcodemunch-mcp) | Byte-offset O(1) symbol retrieval, `_meta` token budget envelope |
-| [Code-Index-MCP](https://github.com/ViperJuice/Code-Index-MCP) | FTS5 BM25 full-text search, file-watch auto-reindex |
-
 All three indexes are built in a **single AST parse pass** from one shared `symbols` table. No duplication, no sync overhead.
 
 ---
