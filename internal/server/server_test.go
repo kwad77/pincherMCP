@@ -48,6 +48,17 @@ func makeReq(args map[string]any) *mcp.CallToolRequest {
 // decode unmarshals the text content of a tool result into a map.
 func decode(t *testing.T, result *mcp.CallToolResult) map[string]any {
 	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(textOf(t, result)), &m); err != nil {
+		t.Fatalf("unmarshal result: %v\nraw: %s", err, textOf(t, result))
+	}
+	return m
+}
+
+// textOf returns the raw text of a tool result. Use this for tools that
+// render human-readable output (e.g. handleStats) instead of JSON.
+func textOf(t *testing.T, result *mcp.CallToolResult) string {
+	t.Helper()
 	if result == nil {
 		t.Fatal("result is nil")
 	}
@@ -58,11 +69,7 @@ func decode(t *testing.T, result *mcp.CallToolResult) map[string]any {
 	if !ok {
 		t.Fatalf("content[0] is not TextContent, got %T", result.Content[0])
 	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(text.Text), &m); err != nil {
-		t.Fatalf("unmarshal result: %v\nraw: %s", err, text.Text)
-	}
-	return m
+	return text.Text
 }
 
 func writeGoFile(t *testing.T, dir, rel, src string) {
@@ -725,12 +732,13 @@ func TestHandleStats_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleStats: %v", err)
 	}
-	m := decode(t, result)
-	session := m["session"].(map[string]any)
-	// Stats reads atomics before jsonResultWithMeta increments them,
-	// so on a fresh server the reported calls is 0.
-	if session["calls"].(float64) != 0 {
-		t.Errorf("calls = %v, want 0", session["calls"])
+	text := textOf(t, result)
+	// Fresh server: SESSION section must be present but show zero calls.
+	if !strings.Contains(text, "SESSION") {
+		t.Errorf("missing SESSION header; got:\n%s", text)
+	}
+	if !strings.Contains(text, "Tool calls:          0") {
+		t.Errorf("expected Tool calls: 0 on a fresh server; got:\n%s", text)
 	}
 }
 
@@ -745,14 +753,22 @@ func TestHandleStats_Accumulates(t *testing.T) {
 	srv.handleList(context.Background(), makeReq(nil))
 
 	result, _ := srv.handleStats(context.Background(), makeReq(nil))
-	m := decode(t, result)
-	session := m["session"].(map[string]any)
-	// Stats reads atomics before incrementing itself, so it reports 3 (the 3 list calls).
-	if session["calls"].(float64) < 3 {
-		t.Errorf("expected ≥3 calls tracked, got %v", session["calls"])
+	text := textOf(t, result)
+	// Stats reads atomics before incrementing itself, so it reports 3.
+	// Accept 3+ to avoid races with the async session flusher.
+	matched := false
+	for _, n := range []string{"3", "4", "5"} {
+		if strings.Contains(text, "Tool calls:          "+n) {
+			matched = true
+			break
+		}
 	}
-	if session["tokens_used"].(float64) == 0 {
-		t.Error("tokens_used should be non-zero")
+	if !matched {
+		t.Errorf("expected Tool calls ≥ 3; got:\n%s", text)
+	}
+	// With pincher: should report a non-zero token count.
+	if strings.Contains(text, "With pincher:        0 tokens") {
+		t.Errorf("tokens_used should be non-zero; got:\n%s", text)
 	}
 }
 
@@ -765,9 +781,15 @@ func TestHandleStats_WithProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleStats: %v", err)
 	}
-	m := decode(t, result)
-	if m["project"] == nil {
-		t.Error("expected project data when session project is set")
+	text := textOf(t, result)
+	if !strings.Contains(text, "PROJECT") {
+		t.Errorf("expected PROJECT section when session project is set; got:\n%s", text)
+	}
+	if !strings.Contains(text, "Name:                p1") {
+		t.Errorf("expected project name row; got:\n%s", text)
+	}
+	if !strings.Contains(text, "Symbols:             42") {
+		t.Errorf("expected symbol count row; got:\n%s", text)
 	}
 }
 
@@ -2092,7 +2114,7 @@ func TestSavedVsFileSizes_DuplicatePaths(t *testing.T) {
 
 func TestHandleStats_DBFallback(t *testing.T) {
 	srv, store, _ := newTestServer(t)
-	// Inject a session row directly; stats atomic counters stay at 0
+	// Inject a session row directly; stats atomic counters stay at 0.
 	store.RecordSession("fallback-sess", time.Now(), 42, 9000, 18000, 0.90)
 
 	ctx := context.Background()
@@ -2100,15 +2122,10 @@ func TestHandleStats_DBFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleStats: %v", err)
 	}
-	m := decode(t, result)
-	sess, _ := m["session"].(map[string]any)
-	if sess == nil {
-		t.Fatal("handleStats: session field missing")
-	}
-	// calls should come from the DB row (42), not from in-memory counter (0)
-	calls, _ := sess["calls"].(float64)
-	if calls != 42 {
-		t.Errorf("handleStats DB fallback: calls=%v, want 42", calls)
+	text := textOf(t, result)
+	// calls should come from the DB row (42), not from in-memory counter (0).
+	if !strings.Contains(text, "Tool calls:          42") {
+		t.Errorf("expected DB-sourced calls=42 in SESSION; got:\n%s", text)
 	}
 }
 
@@ -2122,14 +2139,13 @@ func TestHandleStats_AllTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleStats: %v", err)
 	}
-	m := decode(t, result)
-	at, _ := m["all_time"].(map[string]any)
-	if at == nil {
-		t.Fatal("handleStats: all_time field missing")
+	text := textOf(t, result)
+	if !strings.Contains(text, "ALL-TIME") {
+		t.Fatalf("expected ALL-TIME section with two recorded sessions; got:\n%s", text)
 	}
-	atCalls, _ := at["calls"].(float64)
-	if atCalls != 30 {
-		t.Errorf("all_time calls: got %v, want 30", atCalls)
+	// ALL-TIME calls should sum to 30 (10 + 20).
+	if !strings.Contains(text, "Tool calls:          30") {
+		t.Errorf("all_time calls should show 30; got:\n%s", text)
 	}
 }
 

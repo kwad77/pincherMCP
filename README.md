@@ -7,7 +7,7 @@
 [![CI](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml)
 [![Go 1.24](https://img.shields.io/badge/go-1.24-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
-[![Coverage](https://img.shields.io/badge/coverage-88.8%25-22c55e.svg)](#development)
+[![Coverage](https://img.shields.io/badge/coverage-84%25-22c55e.svg)](#development)
 
 **Codebase intelligence server for LLM agents.**
 Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
@@ -655,7 +655,7 @@ Schema is versioned via `schema_version` table. Current version: **v5**. Migrati
 ```bash
 go test ./...                                              # run all tests
 go test ./... -coverprofile=cover.out                      # with coverage
-go tool cover -func=cover.out | grep "^total"              # total: 88.8%
+go tool cover -func=cover.out | grep "^total"              # total: 84.0%
 go test ./internal/db/ -run TestGraphStats_WithData -v     # single test
 go test ./internal/server/ -v                              # server package
 ```
@@ -667,9 +667,11 @@ Current coverage by package:
 | `internal/ast` | 98.5% |
 | `internal/cypher` | 93.7% |
 | `internal/index` | 86.7% |
-| `internal/server` | 87.6% |
 | `internal/db` | 85.0% |
-| **total** | **88.8%** |
+| `internal/server` | 80.7% |
+| **total** | **84.0%** |
+
+The `internal/server` number is dragged down by `ListenAndServeHTTP`, `handleFetch`, `extractTextFromHTML`, and the MCP `onInit`/`onRoots`/`detectRoot` callbacks — network/runtime code that needs integration-style tests. The CI gate is set to 83%.
 
 ### Dependencies
 
