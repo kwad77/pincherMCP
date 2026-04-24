@@ -1,0 +1,49 @@
+# Systemd user service for pincherMCP HTTP dashboard / REST server.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp pincher.service ~/.config/systemd/user/pincher.service
+#   # Optionally edit the ExecStart line to point at your binary location
+#   # and change the port / token via the Environment= lines below.
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pincher
+#   systemctl --user status pincher
+#
+# View logs:   journalctl --user -u pincher -f
+# Stop / restart / disable via: systemctl --user stop|restart|disable pincher
+#
+# For a system-wide install (runs as a dedicated user), move the file to
+# /etc/systemd/system/pincher.service, drop the "--user" flag from all
+# commands, and set User=/Group= below.
+[Unit]
+Description=pincherMCP codebase intelligence server
+Documentation=https://github.com/kwad77/pincherMCP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Override these via `systemctl --user edit pincher` (drop-in override)
+# rather than editing this file directly so upgrades don't stomp your config.
+Environment=PINCHER_HTTP_ADDR=:8080
+# Uncomment and set if you want bearer-token auth on HTTP:
+# Environment=PINCHER_HTTP_KEY=replace-with-a-secret
+
+# Default assumes `pincher` is on PATH (via homebrew, a manual install, or
+# a symlink). Edit the absolute path if that isn't true on your system.
+ExecStart=%h/.local/bin/pincher --http ${PINCHER_HTTP_ADDR}
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening — restrict the service to what a data-indexing binary actually
+# needs. These are safe defaults; loosen only if you hit a PermissionDenied.
+ProtectSystem=full
+ProtectHome=read-only
+# Override if you mount the data dir elsewhere:
+ReadWritePaths=%h/.local/share/pincherMCP
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

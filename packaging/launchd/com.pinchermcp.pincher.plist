@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Launchd user agent for pincherMCP HTTP dashboard / REST server.
+
+     Install:
+       cp com.pinchermcp.pincher.plist ~/Library/LaunchAgents/
+       # Edit the ProgramArguments path if your binary is elsewhere (default
+       # assumes Homebrew /opt/homebrew/bin on Apple Silicon; use
+       # /usr/local/bin on Intel Macs). Adjust PINCHER_HTTP_ADDR / KEY below.
+       launchctl load  ~/Library/LaunchAgents/com.pinchermcp.pincher.plist
+       launchctl start com.pinchermcp.pincher
+
+     Logs are at ~/Library/Logs/pincher.out / ~/Library/Logs/pincher.err.
+     Stop + unload:
+       launchctl unload ~/Library/LaunchAgents/com.pinchermcp.pincher.plist
+
+     For system-wide installs, move the file to /Library/LaunchDaemons/,
+     remove UserAgent semantics, and set RunAtLoad + KeepAlive accordingly.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pinchermcp.pincher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/pincher</string>
+        <string>--http</string>
+        <string>:8080</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PINCHER_HTTP_ADDR</key>
+        <string>:8080</string>
+        <!-- Uncomment and set to require bearer auth on HTTP:
+        <key>PINCHER_HTTP_KEY</key>
+        <string>replace-with-a-secret</string>
+        -->
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/pincher.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/pincher.err</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
