@@ -171,6 +171,18 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 
+	// Step 3.5: refuse to proceed against a database newer than this binary
+	// understands. Without this check an older binary would read/write rows
+	// using its older schema knowledge and silently corrupt newer columns.
+	// The highest version this binary knows is baseline (v1) + len(migrations).
+	maxKnown := len(schemaMigrations) + 1
+	if version > maxKnown {
+		return fmt.Errorf(
+			"pincher database is at schema v%d but this binary only understands up to v%d — upgrade pincher to continue, or restore an older pincher.db from backup",
+			version, maxKnown,
+		)
+	}
+
 	// Step 4: apply any migrations the database hasn't seen yet.
 	for i := version - 1; i < len(schemaMigrations); i++ {
 		if _, err := s.db.Exec(schemaMigrations[i]); err != nil {
