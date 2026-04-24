@@ -78,6 +78,45 @@ so config stays consistent across platforms:
 | `PINCHER_HTTP_KEY` | Bearer token required on every HTTP request. Recommended for non-localhost. |
 | `--data-dir` (flag) | Override the SQLite directory (default is platform-appropriate). |
 
+## Release automation
+
+`.github/workflows/release.yml` has a `homebrew` job that fires after every
+tag push. It:
+
+1. Downloads the release's `SHA256SUMS` file (produced by the same workflow
+   a few steps earlier).
+2. Rewrites `packaging/homebrew/pincher.rb` — version line + the four
+   Darwin/Linux (arm64/amd64) `sha256` lines + the "Pinned to vX.Y.Z"
+   comment — using a Python regex patcher. The patch is diff-verified by
+   CI (`git diff --stat`) before committing.
+3. Commits the updated formula back to `master` under the
+   `github-actions[bot]` identity.
+4. Mirrors the exact same file into the external tap repo at
+   `kwad77/homebrew-pincher` (path: `Formula/pincher.rb`), so end users
+   running `brew upgrade pincher` pick up the bump automatically.
+
+### Required secret
+
+Step 4 cross-repo push needs a PAT; `GITHUB_TOKEN` alone is scoped to the
+current repo. The workflow expects a secret named `HOMEBREW_TAP_TOKEN`.
+
+Setup (one-time):
+
+1. Create a fine-grained personal access token at
+   [github.com/settings/tokens?type=beta](https://github.com/settings/personal-access-tokens/new).
+2. Scope it to **only** the `kwad77/homebrew-pincher` repository.
+3. Permissions: `Contents: Read and write`. Nothing else.
+4. Add it to the main repo:
+   ```
+   gh secret set HOMEBREW_TAP_TOKEN --repo kwad77/pincherMCP
+   ```
+
+If the secret is missing, the mirror step emits a warning and exits
+cleanly — the in-repo formula still gets bumped, but users on the tap
+will have to wait for a manual push. The main-repo commit and the tap
+push are intentionally independent so a tap outage never blocks a
+release.
+
 ## Adding a package manager
 
 Other package-manager formulae are welcome — AUR for Arch, Scoop for
