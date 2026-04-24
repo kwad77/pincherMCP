@@ -81,6 +81,13 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .proj-stat-val{font-size:18px;font-weight:700;color:var(--accent)}
 .proj-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 
+/* ── Projects toolbar ── */
+.proj-toolbar{display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+.proj-toolbar .search-input{flex:1;min-width:200px}
+.toolbar-check{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;white-space:nowrap}
+.toolbar-check input{accent-color:var(--accent);cursor:pointer}
+.toolbar-count{color:var(--muted);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
+
 /* ── Pills ── */
 .pill{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.2);font-family:ui-monospace,monospace}
 .pill.warn{background:rgba(248,81,73,.1);color:var(--red);border-color:rgba(248,81,73,.3)}
@@ -94,7 +101,13 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .search-btn{background:var(--accent);border:none;border-radius:8px;color:#0d1117;cursor:pointer;font-size:13px;font-weight:600;padding:10px 20px;transition:opacity .15s}
 .search-btn:hover{opacity:.85}
 .result-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:10px}
-.result-name{font-size:14px;font-weight:600;color:var(--accent);margin-bottom:2px}
+.result-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:2px}
+.result-name{font-size:14px;font-weight:600;color:var(--accent)}
+.copy-id-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;font-size:11px;padding:3px 10px;transition:all .15s;flex-shrink:0;font-family:inherit}
+.copy-id-btn:hover{border-color:var(--accent);color:var(--accent)}
+.copy-id-btn.copied{border-color:var(--green);color:var(--green)}
+.first-run{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:28px;text-align:left;line-height:1.6;grid-column:1/-1}
+.first-run code{background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-family:ui-monospace,monospace;color:var(--accent);font-size:12px}
 .result-meta{font-size:11px;color:var(--muted);margin-bottom:8px}
 .result-snippet{background:#0d1117;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;overflow-x:auto;padding:10px 12px;white-space:pre;color:var(--text)}
 
@@ -223,6 +236,14 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 <div id="tab-projects" class="tab-pane">
 <main>
   <p class="section-title">Indexed Projects</p>
+  <div class="proj-toolbar">
+    <input class="search-input" id="proj-filter" type="text" placeholder="Filter by name or path…" oninput="renderProjects()"/>
+    <label class="toolbar-check" title="Hide projects with zero symbols and zero edges">
+      <input type="checkbox" id="proj-hide-empty" onchange="renderProjects()"/> Hide empty
+    </label>
+    <button class="btn secondary" id="proj-cleanup-btn" onclick="cleanupEmpty()">Remove all empty</button>
+    <span class="toolbar-count" id="proj-count">&nbsp;</span>
+  </div>
   <div class="grid grid-2" id="projects-grid"><div class="loading">Loading…</div></div>
   <div class="detail-panel" id="proj-detail-panel">
     <div class="detail-panel-title">
@@ -298,6 +319,27 @@ function timeAgo(iso) {
 }
 const STALE_HOURS = 24;
 
+async function copyID(id, btn) {
+  const original = btn.textContent;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(id);
+    } else {
+      // Fallback for http:// non-secure contexts (common for local dashboards)
+      const ta = document.createElement('textarea');
+      ta.value = id; ta.style.position = 'fixed'; ta.style.top = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    btn.textContent = 'Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1400);
+  } catch(e) {
+    showToast('Copy failed: '+e.message, false);
+  }
+}
+
 function showToast(msg, ok=true) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -330,18 +372,26 @@ async function load() {
   document.getElementById('last-refresh').textContent = 'refreshing…';
   document.getElementById('error-box').innerHTML = '';
 
-  try {
-    const h = await fetch('/v1/health').then(r=>r.json());
+  // Kick off every independent fetch in parallel — sequential awaits were
+  // adding ~2s to time-to-interactive. Each result is handled independently
+  // so one failing endpoint doesn't block the rest.
+  const [healthR, statsR] = await Promise.allSettled([
+    fetch('/v1/health').then(r=>r.json()),
+    fetch('/v1/stats').then(r=>r.json()),
+  ]);
+
+  if (healthR.status === 'fulfilled') {
+    const h = healthR.value;
     const hb = document.getElementById('health-badge');
     hb.textContent = '● online'; hb.className = 'badge badge-green';
     document.getElementById('ver').textContent = h.version ? 'v'+h.version : '';
-  } catch(e) {
+  } else {
     document.getElementById('health-badge').textContent = '● offline';
     document.getElementById('health-badge').style.color = 'var(--red)';
   }
 
-  try {
-    const data = await fetch('/v1/stats').then(r=>r.json());
+  if (statsR.status === 'fulfilled') {
+    const data = statsR.value;
     const s = data.session || {};
     const a = data.all_time || {};
     // Determine if the session data is from the current session or a stale one.
@@ -351,21 +401,32 @@ async function load() {
     const sessLabel = isLive ? 'Current Session' : 'Last Session';
     const sessAge = s.last_seen ? (isLive ? 'active '+timeAgo(s.last_seen) : 'ended '+timeAgo(s.last_seen)) : 'no data yet';
     document.getElementById('session-title').textContent = sessLabel;
-    document.getElementById('session-cards').innerHTML =
-      statCard('Tool Calls', fmt(s.calls||0), 'blue', sessAge, '') +
-      statCard('Tokens Saved', fmt(s.tokens_saved||0), 'green', 'vs reading full files', 'green') +
-      statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed', 'purple') +
-      statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange');
-    document.getElementById('alltime-cards').innerHTML = (a.calls||0) > 0 ?
-      statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
-      statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
-      statCard('Total Cost Avoided', a.total_cost_avoided||'$0.0000', 'orange', 'provable ROI', 'orange') +
-      statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple') :
-      '<div class="empty">No sessions recorded yet.</div>';
-  } catch(e) {
-    document.getElementById('error-box').innerHTML = '<div class="error">Failed to load stats: '+esc(e.message)+'</div>';
+    if ((a.calls||0) === 0 && (s.calls||0) === 0) {
+      // First-run: skip the all-zero stat cards and show onboarding instead.
+      document.getElementById('session-cards').innerHTML =
+        '<div class="empty first-run">Welcome to pincher.<br/><br/>' +
+        'Index your first repo with <code>pincher index /path/to/repo</code> ' +
+        'and start using pincher tools in Claude Code — your stats will populate here.</div>';
+      document.getElementById('alltime-cards').innerHTML = '';
+    } else {
+      document.getElementById('session-cards').innerHTML =
+        statCard('Tool Calls', fmt(s.calls||0), 'blue', sessAge, '') +
+        statCard('Tokens Saved', fmt(s.tokens_saved||0), 'green', 'vs reading full files', 'green') +
+        statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed', 'purple') +
+        statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange');
+      document.getElementById('alltime-cards').innerHTML = (a.calls||0) > 0 ?
+        statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
+        statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
+        statCard('Total Cost Avoided', a.total_cost_avoided||'$0.0000', 'orange', 'provable ROI', 'orange') +
+        statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple') :
+        '<div class="empty">No sessions recorded yet.</div>';
+    }
+  } else {
+    document.getElementById('error-box').innerHTML = '<div class="error">Failed to load stats: '+esc(statsR.reason)+'</div>';
   }
 
+  // Projects + sparkline load concurrently in the background — the overview
+  // is already interactive once stats resolve.
   loadProjects();
   loadSparkline();
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
@@ -397,17 +458,62 @@ async function loadSparkline() {
 }
 
 // ── Projects ───────────────────────────────────────────────────────────────
+let _allProjects = [];
+
 async function loadProjects() {
   try {
     const data = await fetch('/v1/projects').then(r=>r.json());
-    const projects = data.projects || [];
-    const grid = document.getElementById('projects-grid');
-    if (!projects.length) { grid.innerHTML = '<div class="empty">No projects indexed yet.</div>'; return; }
-    grid.innerHTML = projects.map(p => {
-      const id=p.ID||p.id||'', name=p.Name||p.name||'—', path=p.Path||p.path||'';
-      const syms=p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0, files=p.FileCount||p.file_count||0;
-      const ts=p.IndexedAt||p.indexed_at||'';
-      const isEmpty=syms===0&&edges===0;
+    _allProjects = data.projects || [];
+    renderProjects();
+  } catch(e) {
+    document.getElementById('projects-grid').innerHTML = '<div class="error">Failed to load projects: '+esc(e.message)+'</div>';
+  }
+}
+
+function renderProjects() {
+  const grid = document.getElementById('projects-grid');
+  const countEl = document.getElementById('proj-count');
+  const filterInput = document.getElementById('proj-filter');
+  const hideEmptyInput = document.getElementById('proj-hide-empty');
+  const cleanupBtn = document.getElementById('proj-cleanup-btn');
+
+  const filter = (filterInput ? filterInput.value : '').toLowerCase().trim();
+  const hideEmpty = hideEmptyInput ? hideEmptyInput.checked : false;
+
+  if (!_allProjects.length) {
+    grid.innerHTML = '<div class="empty">No projects indexed yet.<br/><br/>Run <code>pincher index /path/to/your/repo</code> to get started.</div>';
+    if (countEl) countEl.textContent = '';
+    if (cleanupBtn) cleanupBtn.disabled = true;
+    return;
+  }
+
+  const emptyCount = _allProjects.filter(p => (p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
+  if (cleanupBtn) {
+    cleanupBtn.disabled = emptyCount === 0;
+    cleanupBtn.textContent = emptyCount > 0 ? 'Remove '+emptyCount+' empty' : 'Remove all empty';
+  }
+
+  const shown = _allProjects.filter(p => {
+    const name=(p.Name||p.name||'').toLowerCase();
+    const path=(p.Path||p.path||'').toLowerCase();
+    const syms=p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0;
+    if (hideEmpty && syms===0 && edges===0) return false;
+    if (filter && !name.includes(filter) && !path.includes(filter)) return false;
+    return true;
+  });
+
+  if (countEl) countEl.textContent = shown.length+' / '+_allProjects.length+' shown';
+
+  if (!shown.length) {
+    grid.innerHTML = '<div class="empty">No projects match the current filter.</div>';
+    return;
+  }
+
+  grid.innerHTML = shown.map(p => {
+    const id=p.ID||p.id||'', name=p.Name||p.name||'—', path=p.Path||p.path||'';
+    const syms=p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0, files=p.FileCount||p.file_count||0;
+    const ts=p.IndexedAt||p.indexed_at||'';
+    const isEmpty=syms===0&&edges===0;
       const ageHours=ts?(Date.now()-new Date(ts))/3600000:0;
       const isStale=!isEmpty&&ageHours>STALE_HOURS;
       const cardCls=isEmpty?' invalid':isStale?' stale':'';
@@ -429,11 +535,22 @@ async function loadProjects() {
         '<div class="progress-wrap" id="prog-'+esc(id)+'"><div class="progress-bar" id="progbar-'+esc(id)+'" style="width:0%"></div></div>'+
         '<div class="progress-label" id="proglabel-'+esc(id)+'"></div>'+
         (ts?'<div style="margin-top:10px" title="'+esc(new Date(ts).toLocaleString())+'"><span class="pill'+pillCls+'">indexed '+timeAgo(ts)+'</span></div>':'')+
-        '</div>';
-    }).join('');
-  } catch(e) {
-    document.getElementById('projects-grid').innerHTML = '<div class="error">Failed to load projects: '+esc(e.message)+'</div>';
-  }
+      '</div>';
+  }).join('');
+}
+
+async function cleanupEmpty() {
+  const emptyCount = _allProjects.filter(p => (p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
+  if (!emptyCount) { showToast('No empty projects to remove.'); return; }
+  if (!confirm('Remove '+emptyCount+' empty project'+(emptyCount>1?'s':'')+' from the index?\n\nOnly projects with zero symbols and zero edges are affected.\nSource files are NOT deleted.')) return;
+  try {
+    const r = await fetch('/v1/projects/empty', {method:'DELETE'});
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    showToast('Removed '+(d.deleted||0)+' empty project'+((d.deleted||0)!==1?'s':'')+'.');
+    loadProjects();
+    populateSearchProjects();
+  } catch(e) { showToast('Cleanup failed: '+e.message, false); }
 }
 
 async function reindex(id, btn) {
@@ -519,7 +636,10 @@ async function doSearch() {
     if(!results.length){out.innerHTML='<div class="empty">No results for "'+esc(q)+'"</div>';return;}
     out.innerHTML=results.map(r=>
       '<div class="result-card">'+
-      '<div class="result-name">'+esc(r.name||'')+'</div>'+
+      '<div class="result-header">'+
+        '<div class="result-name">'+esc(r.name||'')+'</div>'+
+        (r.id?'<button class="copy-id-btn" title="Copy symbol ID" onclick="copyID('+JSON.stringify(r.id)+',this)">Copy ID</button>':'')+
+      '</div>'+
       '<div class="result-meta">'+
         '<span class="pill">'+esc(r.kind||'')+'</span> &nbsp;'+
         esc(r.file_path||'')+(r.start_line?' :'+r.start_line:'')+
