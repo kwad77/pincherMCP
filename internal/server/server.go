@@ -271,7 +271,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"total_cost_avoided": fmt.Sprintf("$%.4f", atCost),
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"session": sess, "all_time": allTime})
+		// Session-scoped project ID, if a root has been detected. The
+		// dashboard uses this to default the ADR project picker so users
+		// don't re-select it every page load.
+		resp := map[string]any{"session": sess, "all_time": allTime}
+		if s.sessionID != "" {
+			resp["session_project"] = s.sessionID
+		}
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 	// GET /v1/sessions — per-session savings history for sparkline chart.
