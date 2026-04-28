@@ -4,9 +4,16 @@
 // This enables O(1) source retrieval at query time: one SQL lookup, one file seek,
 // one read — no re-parsing, no line scanning.
 //
+// Extractors implement the Extractor interface (registry.go) and self-register
+// in init(). Adding a new language is one file: implement Extractor and call
+// Register(). The DetectLanguage / IsSourceFile / SupportedLanguages helpers
+// consult the registry.
+//
 // Language support:
 //   - Go:         go/ast + go/parser (precise byte offsets via token.Pos)
 //   - YAML/JSON:  gopkg.in/yaml.v3 Node tree (Setting symbols with dotted paths)
+//   - Markdown:   github.com/yuin/goldmark CommonMark parser (Section symbols
+//                 keyed by dotted heading hierarchy; covers .md, .markdown, .mdx)
 //   - Python:     regex patterns (function/class/method definitions)
 //   - JavaScript: regex patterns (function/class/method/arrow definitions)
 //   - TypeScript: regex patterns (extends JavaScript, adds interface/type)
@@ -14,9 +21,11 @@
 //   - Java:       regex patterns (class/interface/method)
 //   - Ruby, PHP, C, C++, C#, Kotlin, Swift: regex fallback
 //
-// The regex approach covers ~80% of real-world symbols accurately.
-// To upgrade to full tree-sitter accuracy, replace the language extractors
-// with tree-sitter bindings — the interface remains identical.
+// Regex extractors cover ~80% of real-world symbols accurately. The plan for
+// lifting them to confidence 1.0 favours per-language pure-Go AST libraries
+// (esbuild, modernc/cc, gpython, etc.) over tree-sitter, to preserve pincher's
+// pure-Go / tiny-binary invariants. Any backend plugs in via the Extractor
+// interface without touching callers.
 package ast
 
 import (

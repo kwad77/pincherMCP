@@ -341,7 +341,7 @@ Every symbol carries an `extraction_confidence` score surfaced in search results
 
 | Score | Parser | Languages |
 |---|---|---|
-| `1.0` | `go/ast` full AST / `gopkg.in/yaml.v3` Node tree | Go, YAML, JSON |
+| `1.0` | `go/ast` full AST / `gopkg.in/yaml.v3` Node tree / `goldmark` CommonMark parser | Go, YAML, JSON, Markdown |
 | `0.85` | Stable regex | Python, JavaScript, JSX, TypeScript, TSX, Rust, Java |
 | `0.70` | Approximate regex | Ruby, PHP, C, C++, C#, Kotlin, Swift |
 
@@ -383,7 +383,7 @@ RETURN f.name, f.file_path LIMIT 50
 
 **Edge kinds indexed:** `CALLS`, `IMPORTS`. For Go, both edge kinds are resolved **across files** using a deferred project-wide pass — `Bar()` calling `Foo()` from a different file in the same module produces a real `CALLS` edge, not a dropped reference. `IMPORTS` is resolved against `Module` symbols using the `module` line of `go.mod` to rewrite intra-module paths; external imports stay unresolved. For other languages, `CALLS` and `IMPORTS` are scoped to within a single file (the per-file regex-extracted name table can't safely match across files without producing false positives).
 
-**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`), `Module` (one per Go file, qualified by within-module import path, e.g. `internal/db`), `Setting` (one per YAML/JSON key, qualified by dotted path, e.g. `services.web.image`), plus `Document` (URLs stored by the `fetch` tool)
+**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`), `Module` (one per Go file, qualified by within-module import path, e.g. `internal/db`), `Setting` (one per YAML/JSON key, qualified by dotted path, e.g. `services.web.image`), `Section` (one per Markdown heading, qualified by dotted ancestor path, e.g. `README.Installation.Build`), plus `Document` (URLs stored by the `fetch` tool)
 
 ---
 
@@ -393,6 +393,7 @@ RETURN f.name, f.file_path LIMIT 50
 |---|---|---|---|
 | Go | `go/ast` full AST | 1.0 | Functions, Methods, Types, Interfaces, Structs, Constants, Variables |
 | YAML / JSON | `gopkg.in/yaml.v3` Node tree | 1.0 | Settings (dotted-path keys, sequence elements, multi-doc-aware) |
+| Markdown | `github.com/yuin/goldmark` CommonMark parser | 1.0 | Sections (heading hierarchy as dotted-path qualified names; covers `.md`, `.markdown`, `.mdx`) |
 | Python | Regex | 0.85 | Functions, Classes, Methods |
 | TypeScript / TSX | Regex | 0.85 | Functions, Classes, Interfaces, Methods |
 | JavaScript / JSX | Regex | 0.85 | Functions, Classes, Methods |
