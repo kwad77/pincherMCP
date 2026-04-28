@@ -70,34 +70,10 @@ type FileResult struct {
 	Module  string // module/package name
 }
 
-// extractionConfidence maps language to parser reliability score.
-//   - 1.00: go/ast (exact — every symbol, exact byte offsets)
-//   - 0.85: stable regex grammars — well-tested for Python, TS/JS, Rust, Java
-//   - 0.70: approximate regex — heuristic patterns for Ruby, PHP, C/C++, C#, Kotlin, Swift
-var extractionConfidence = map[string]float64{
-	"Go":         1.00,
-	"YAML":       1.00,
-	"JSON":       1.00,
-	"Python":     0.85,
-	"JavaScript": 0.85,
-	"JSX":        0.85,
-	"TypeScript": 0.85,
-	"TSX":        0.85,
-	"Rust":       0.85,
-	"Java":       0.85,
-	"Ruby":       0.70,
-	"PHP":        0.70,
-	"C":          0.70,
-	"C++":        0.70,
-	"C#":         0.70,
-	"Kotlin":     0.70,
-	"Swift":      0.70,
-}
-
-// Extract dispatches to the appropriate language extractor.
+// Extract dispatches to the registered Extractor for the given language.
 // source is the raw file content; language is the detected language string.
 // relPath is the file path relative to the project root (used for qualified names).
-// Each returned symbol has ExtractionConfidence set based on the parser used.
+// Each returned symbol has ExtractionConfidence stamped from the chosen extractor.
 func Extract(source []byte, language, relPath string) *FileResult {
 	return ExtractWithModule(source, language, relPath, "")
 }
@@ -108,42 +84,194 @@ func Extract(source []byte, language, relPath string) *FileResult {
 // keyed by within-module paths, enabling cross-file dependency queries.
 // Pass "" to behave exactly like Extract.
 func ExtractWithModule(source []byte, language, relPath, modulePath string) *FileResult {
-	var result *FileResult
-	switch language {
-	case "Go":
-		result = extractGo(source, relPath, modulePath)
-	case "Python":
-		result = extractPython(source, relPath)
-	case "JavaScript", "JSX":
-		result = extractJavaScript(source, relPath)
-	case "TypeScript", "TSX":
-		result = extractTypeScript(source, relPath)
-	case "Rust":
-		result = extractRust(source, relPath)
-	case "Java":
-		result = extractJava(source, relPath)
-	case "Ruby":
-		result = extractRuby(source, relPath)
-	case "PHP":
-		result = extractPHP(source, relPath)
-	case "C", "C++":
-		result = extractC(source, relPath)
-	case "C#":
-		result = extractCSharp(source, relPath)
-	case "Kotlin":
-		result = extractKotlin(source, relPath)
-	case "Swift":
-		result = extractSwift(source, relPath)
-	case "YAML", "JSON":
-		result = extractYAML(source, relPath)
-	default:
+	e := extractorFor(language)
+	if e == nil {
 		return &FileResult{}
 	}
-	conf := extractionConfidence[language]
+	result := e.Extract(source, language, relPath, ExtractOptions{ModulePath: modulePath})
+	if result == nil {
+		return &FileResult{}
+	}
+	conf := e.Confidence()
 	for i := range result.Symbols {
 		result.Symbols[i].ExtractionConfidence = conf
 	}
 	return result
+}
+
+// langAdapter wraps a free per-language extract function in the Extractor
+// interface. Useful for the existing extractGo / extractPython / ... helpers
+// that pre-date the interface; new extractors should be full structs so they
+// can carry per-extractor state (e.g. a cached parser instance).
+type langAdapter struct {
+	primary    string                                                                          // primary language name (e.g. "JavaScript")
+	aliases    []string                                                                        // additional language names this extractor handles ("JSX")
+	exts       map[string]string                                                               // extension → language name (e.g. {".jsx": "JSX"})
+	confidence float64                                                                         // 0.0–1.0
+	fn         func(source []byte, language, relPath string, opts ExtractOptions) *FileResult // delegate
+}
+
+func (a *langAdapter) Languages() []string {
+	out := make([]string, 0, 1+len(a.aliases))
+	out = append(out, a.primary)
+	out = append(out, a.aliases...)
+	return out
+}
+func (a *langAdapter) Extensions() map[string]string { return a.exts }
+func (a *langAdapter) Confidence() float64           { return a.confidence }
+func (a *langAdapter) Extract(source []byte, language, relPath string, opts ExtractOptions) *FileResult {
+	return a.fn(source, language, relPath, opts)
+}
+
+// stubAdapter registers a language as detected (so IsSourceFile returns true)
+// but produces zero symbols. Used for languages pincher recognises but doesn't
+// yet have an extractor for (Scala, Lua, Bash, Elixir, Haskell, Dart, Zig, R).
+func stubAdapter(name string, exts ...string) *langAdapter {
+	em := make(map[string]string, len(exts))
+	for _, e := range exts {
+		em[e] = name
+	}
+	return &langAdapter{
+		primary: name, exts: em, confidence: 0,
+		fn: func([]byte, string, string, ExtractOptions) *FileResult { return &FileResult{} },
+	}
+}
+
+func init() {
+	// AST-exact extractors (confidence 1.0)
+	Register(&langAdapter{
+		primary: "Go",
+		exts:    map[string]string{".go": "Go"},
+		confidence: 1.0,
+		fn: func(s []byte, _, p string, o ExtractOptions) *FileResult {
+			return extractGo(s, p, o.ModulePath)
+		},
+	})
+	Register(&langAdapter{
+		primary: "YAML", aliases: []string{"JSON"},
+		exts: map[string]string{
+			".yml": "YAML", ".yaml": "YAML",
+			".json": "JSON",
+		},
+		confidence: 1.0,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractYAML(s, p)
+		},
+	})
+
+	// Stable regex (confidence 0.85)
+	Register(&langAdapter{
+		primary: "Python",
+		exts:    map[string]string{".py": "Python", ".pyw": "Python"},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractPython(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "JavaScript", aliases: []string{"JSX"},
+		exts: map[string]string{
+			".js": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
+			".jsx": "JSX",
+		},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractJavaScript(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "TypeScript", aliases: []string{"TSX"},
+		exts: map[string]string{
+			".ts":  "TypeScript",
+			".tsx": "TSX",
+		},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractTypeScript(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "Rust",
+		exts:    map[string]string{".rs": "Rust"},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractRust(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "Java",
+		exts:    map[string]string{".java": "Java"},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractJava(s, p)
+		},
+	})
+
+	// Approximate regex (confidence 0.70)
+	Register(&langAdapter{
+		primary: "Ruby",
+		exts:    map[string]string{".rb": "Ruby", ".rake": "Ruby"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractRuby(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "PHP",
+		exts:    map[string]string{".php": "PHP"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractPHP(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "C", aliases: []string{"C++"},
+		exts: map[string]string{
+			".c": "C", ".h": "C",
+			".cpp": "C++", ".cxx": "C++", ".cc": "C++",
+			".hpp": "C++", ".hh": "C++",
+		},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractC(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "C#",
+		exts:    map[string]string{".cs": "C#"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractCSharp(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "Kotlin",
+		exts:    map[string]string{".kt": "Kotlin", ".kts": "Kotlin"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractKotlin(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary: "Swift",
+		exts:    map[string]string{".swift": "Swift"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractSwift(s, p)
+		},
+	})
+
+	// Detected-but-no-extractor languages (confidence 0; FileResult always empty).
+	// Preserves prior IsSourceFile behaviour while making the gap visible via
+	// the registry's Confidence() == 0.
+	Register(stubAdapter("Scala", ".scala"))
+	Register(stubAdapter("Lua", ".lua"))
+	Register(stubAdapter("Zig", ".zig"))
+	Register(stubAdapter("Elixir", ".ex", ".exs"))
+	Register(stubAdapter("Haskell", ".hs"))
+	Register(stubAdapter("Dart", ".dart"))
+	Register(stubAdapter("Bash", ".sh", ".bash"))
+	Register(stubAdapter("R", ".r"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

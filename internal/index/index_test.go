@@ -487,7 +487,7 @@ func TestHasChanges_NoSourceFiles(t *testing.T) {
 	_, store := newTestIndexer(t)
 	idx := New(store)
 	dir := t.TempDir()
-	writeFile(t, dir, "README.md", "# readme\n")
+	writeFile(t, dir, "data.bin", "binary blob\n")
 	writeFile(t, dir, "notes.txt", "free-form notes\n")
 
 	p := db.Project{
@@ -596,8 +596,8 @@ func TestReadSymbolSource_NegativeSize(t *testing.T) {
 func TestIndex_NonSourceFiles(t *testing.T) {
 	idx, _ := newTestIndexer(t)
 	dir := t.TempDir()
-	// Write only non-source files
-	writeFile(t, dir, "README.md", "# readme\n")
+	// Write only non-source files (no extension we recognise)
+	writeFile(t, dir, "data.bin", "binary blob\n")
 	writeFile(t, dir, "notes.txt", "free-form notes\n")
 	writeFile(t, dir, ".gitignore", "*.tmp\n")
 
