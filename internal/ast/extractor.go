@@ -14,6 +14,8 @@
 //   - YAML/JSON:  gopkg.in/yaml.v3 Node tree (Setting symbols with dotted paths)
 //   - Markdown:   github.com/yuin/goldmark CommonMark parser (Section symbols
 //                 keyed by dotted heading hierarchy; covers .md, .markdown, .mdx)
+//   - Bash:       mvdan.cc/sh/v3/syntax (the shfmt parser; Function symbols
+//                 from POSIX and reserved-word style declarations)
 //   - Python:     regex patterns (function/class/method definitions)
 //   - JavaScript: regex patterns (function/class/method/arrow definitions)
 //   - TypeScript: regex patterns (extends JavaScript, adds interface/type)

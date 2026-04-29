@@ -341,7 +341,7 @@ Every symbol carries an `extraction_confidence` score surfaced in search results
 
 | Score | Parser | Languages |
 |---|---|---|
-| `1.0` | `go/ast` full AST / `gopkg.in/yaml.v3` Node tree / `goldmark` CommonMark parser | Go, YAML, JSON, Markdown |
+| `1.0` | `go/ast` full AST / `gopkg.in/yaml.v3` Node tree / `goldmark` CommonMark parser / `mvdan.cc/sh/v3` shell parser | Go, YAML, JSON, Markdown, Bash |
 | `0.85` | Stable regex | Python, JavaScript, JSX, TypeScript, TSX, Rust, Java |
 | `0.70` | Approximate regex | Ruby, PHP, C, C++, C#, Kotlin, Swift |
 
@@ -394,6 +394,7 @@ RETURN f.name, f.file_path LIMIT 50
 | Go | `go/ast` full AST | 1.0 | Functions, Methods, Types, Interfaces, Structs, Constants, Variables |
 | YAML / JSON | `gopkg.in/yaml.v3` Node tree | 1.0 | Settings (dotted-path keys, sequence elements, multi-doc-aware) |
 | Markdown | `github.com/yuin/goldmark` CommonMark parser | 1.0 | Sections (heading hierarchy as dotted-path qualified names; covers `.md`, `.markdown`, `.mdx`) |
+| Bash | `mvdan.cc/sh/v3/syntax` (the `shfmt` parser) | 1.0 | Functions (POSIX `name() { … }` and reserved-word `function name { … }` styles; covers `.sh`, `.bash`) |
 | Python | Regex | 0.85 | Functions, Classes, Methods |
 | TypeScript / TSX | Regex | 0.85 | Functions, Classes, Interfaces, Methods |
 | JavaScript / JSX | Regex | 0.85 | Functions, Classes, Methods |
@@ -406,7 +407,7 @@ RETURN f.name, f.file_path LIMIT 50
 | Kotlin | Regex | 0.70 | Functions, Classes |
 | Swift | Regex | 0.70 | Functions, Classes |
 
-Files in Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, and R are detected as source files but skipped — no extraction yet.
+Files in Scala, Lua, Zig, Elixir, Haskell, Dart, and R are detected as source files but skipped — no extraction yet.
 
 Go and YAML/JSON have full parser-based extraction (confidence 1.0). All other languages use regex patterns. The interface is stable: replace any language's extractor with tree-sitter bindings and confidence jumps to 1.0 with no other changes.
 
