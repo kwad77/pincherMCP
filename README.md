@@ -408,6 +408,16 @@ Files in Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, and R are detected as sou
 
 Go is the only language with full AST parsing. All other languages use regex patterns. The interface is stable: replace any language's extractor with tree-sitter bindings and confidence jumps to 1.0 with no other changes.
 
+### Skip rules
+
+The indexer refuses to extract from files that are guaranteed to produce noise rather than signal, regardless of extension:
+
+- **Lockfiles** by exact basename: `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock(b)`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `pdm.lock`, `mix.lock`, `pubspec.lock`, `Podfile.lock`, `Cartfile.resolved`, `Package.resolved`, `flake.lock`, `go.sum`. Without this rule a 700 KB `package-lock.json` would emit thousands of low-signal `Setting` symbols.
+- **Minified bundles** by suffix: `*.min.js`, `*.min.mjs`, `*.min.cjs`, `*.min.jsx`, `*.min.ts`, `*.min.tsx`, `*.min.css`.
+- **Source maps** by suffix: `*.map`.
+
+The skip count is reported in the indexer's structured log line as `blocked=N` and on `IndexResult.Blocked` for programmatic callers.
+
 ---
 
 ## <img src="docs/assets/crab.png" width="22" alt=""/> HTTP REST API

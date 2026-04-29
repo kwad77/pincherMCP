@@ -64,13 +64,14 @@ func (idx *Indexer) GetProgress(projectID string) (done, total int64, active boo
 
 // IndexResult summarises a completed indexing run.
 type IndexResult struct {
-	ProjectID string
-	Project   string
-	Path      string
-	Files     int
-	Symbols   int
-	Edges     int
-	Skipped   int // files skipped (unchanged hash)
+	ProjectID  string
+	Project    string
+	Path       string
+	Files      int
+	Symbols    int
+	Edges      int
+	Skipped    int // files skipped (unchanged hash)
+	Blocked    int // files refused by ast.ShouldSkip (lockfiles, minified bundles, source maps)
 	DurationMS int64
 }
 
@@ -137,6 +138,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		totalSymbols  int
 		totalEdges    int
 		totalSkipped  int
+		totalBlocked  int
 		wg            sync.WaitGroup
 		symBuf        []db.Symbol
 		edgeBuf       []db.Edge
@@ -155,6 +157,11 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		}
 
 		path := fileJob.Location
+		if skip, reason := ast.ShouldSkip(path); skip {
+			totalBlocked++
+			slog.Debug("pincher.index.blocked", "path", path, "reason", reason)
+			continue
+		}
 		if !ast.IsSourceFile(path) {
 			continue
 		}
@@ -325,6 +332,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		"symbols", totalSymbols,
 		"edges", totalEdges,
 		"skipped", totalSkipped,
+		"blocked", totalBlocked,
 		"ms", duration.Milliseconds(),
 	)
 
@@ -336,6 +344,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		Symbols:    totalSymbols,
 		Edges:      totalEdges,
 		Skipped:    totalSkipped,
+		Blocked:    totalBlocked,
 		DurationMS: duration.Milliseconds(),
 	}, nil
 }
@@ -455,6 +464,9 @@ func (idx *Indexer) hasChanges(p db.Project) bool {
 	}
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		if skip, _ := ast.ShouldSkip(e.Name()); skip {
 			continue
 		}
 		if !ast.IsSourceFile(e.Name()) {
