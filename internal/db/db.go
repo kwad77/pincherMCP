@@ -501,6 +501,18 @@ func (s *Store) UpsertProject(p Project) error {
 	return err
 }
 
+// UpdateProjectCounts writes only the cached file/symbol/edge counts for a
+// project. Used to refresh `pincher list` output during a long index run so
+// callers see in-flight progress instead of zeros until the final
+// UpsertProject at the end of Index().
+func (s *Store) UpdateProjectCounts(projectID string, files, syms, edges int) error {
+	_, err := s.db.Exec(
+		`UPDATE projects SET file_count=?, sym_count=?, edge_count=? WHERE id=?`,
+		files, syms, edges, projectID,
+	)
+	return err
+}
+
 // ListProjects returns all indexed projects.
 func (s *Store) ListProjects() ([]Project, error) {
 	rows, err := s.db.Query(

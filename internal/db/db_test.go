@@ -389,6 +389,46 @@ func TestUpsertProject_Update(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectCounts(t *testing.T) {
+	s := newTestStore(t)
+	p := testProject("counts-proj")
+	p.FileCount = 5
+	p.SymCount = 50
+	p.EdgeCount = 25
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	// UpdateProjectCounts overwrites only the cached count columns,
+	// leaving path/name/indexed_at intact.
+	if err := s.UpdateProjectCounts("counts-proj", 12, 200, 80); err != nil {
+		t.Fatalf("UpdateProjectCounts: %v", err)
+	}
+
+	got, _ := s.GetProject("counts-proj")
+	if got == nil {
+		t.Fatal("project disappeared after UpdateProjectCounts")
+	}
+	if got.FileCount != 12 || got.SymCount != 200 || got.EdgeCount != 80 {
+		t.Errorf("counts after update = (%d,%d,%d), want (12,200,80)",
+			got.FileCount, got.SymCount, got.EdgeCount)
+	}
+	// Other fields untouched
+	if got.Path != p.Path || got.Name != p.Name {
+		t.Errorf("non-count fields changed: path=%q name=%q", got.Path, got.Name)
+	}
+}
+
+func TestUpdateProjectCounts_NonExistent_NoError(t *testing.T) {
+	s := newTestStore(t)
+	// Updating a project that doesn't exist is a silent no-op (UPDATE on
+	// zero rows is not an error in SQLite). The caller doesn't need to
+	// gate on existence — Index() upserts the project before any flush.
+	if err := s.UpdateProjectCounts("never-existed", 1, 1, 1); err != nil {
+		t.Errorf("UpdateProjectCounts on missing project should not error, got %v", err)
+	}
+}
+
 func TestGetProject_NotFound(t *testing.T) {
 	s := newTestStore(t)
 	got, err := s.GetProject("nonexistent")

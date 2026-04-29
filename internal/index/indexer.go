@@ -143,17 +143,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	}()
 
 	var (
-		totalFiles    int
-		totalSymbols  int
-		totalEdges    int
-		totalSkipped  int
-		totalBlocked  int
-		wg            sync.WaitGroup
-		symBuf        []db.Symbol
-		edgeBuf       []db.Edge
-		pendingImport []ast.ExtractedEdge // deferred IMPORTS: resolved globally after full pass
-		pendingCalls  []ast.ExtractedEdge // deferred Go CALLS: resolved globally after full pass
-		bufMu         sync.Mutex
+		totalFiles     int
+		totalSymbols   int
+		totalEdges     int
+		totalSkipped   int
+		totalBlocked   int
+		wg             sync.WaitGroup
+		symBuf         []db.Symbol
+		edgeBuf        []db.Edge
+		pendingImport  []ast.ExtractedEdge // deferred IMPORTS: resolved globally after full pass
+		pendingCalls   []ast.ExtractedEdge // deferred Go CALLS: resolved globally after full pass
+		bufMu          sync.Mutex
+		lastStatsFlush time.Time // throttle for in-flight project counts; guarded by bufMu
 	)
 
 	// Process files
@@ -301,6 +302,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 				})
 			}
 
+			refreshCounts := false
 			bufMu.Lock()
 			symBuf = append(symBuf, syms...)
 			edgeBuf = append(edgeBuf, edges...)
@@ -313,8 +315,21 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 				if flushErr := idx.flushBuffers(projectID, &symBuf, &edgeBuf); flushErr != nil {
 					slog.Warn("pincher.index.flush.err", "err", flushErr)
 				}
+				// Refresh the cached projects.* counts at most once every 5s
+				// per project so `pincher list` reflects in-flight progress
+				// during long index runs instead of reporting zeros.
+				if time.Since(lastStatsFlush) > 5*time.Second {
+					lastStatsFlush = time.Now()
+					refreshCounts = true
+				}
 			}
 			bufMu.Unlock()
+
+			if refreshCounts {
+				if dbSyms, dbEdges, _, _, _ := idx.store.GraphStats(projectID); dbSyms > 0 {
+					_ = idx.store.UpdateProjectCounts(projectID, int(prog.FilesDone.Load()), dbSyms, dbEdges)
+				}
+			}
 		}(path, relPath, hash, content)
 	}
 
