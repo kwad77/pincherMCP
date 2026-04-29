@@ -1,6 +1,6 @@
 module github.com/pincherMCP/pincher
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/boyter/gocodewalker v1.5.1
@@ -26,9 +26,10 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sync v0.12.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
+	mvdan.cc/sh/v3 v3.13.1 // indirect
 )

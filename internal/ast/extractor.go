@@ -279,7 +279,7 @@ func init() {
 	Register(stubAdapter("Elixir", ".ex", ".exs"))
 	Register(stubAdapter("Haskell", ".hs"))
 	Register(stubAdapter("Dart", ".dart"))
-	Register(stubAdapter("Bash", ".sh", ".bash"))
+	// Bash is registered separately by bashExtractor in bash.go (real parser).
 	Register(stubAdapter("R", ".r"))
 }
 
