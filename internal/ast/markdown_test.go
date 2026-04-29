@@ -190,6 +190,13 @@ func TestExtractMarkdown_MdxExtension(t *testing.T) {
 	}
 }
 
+func TestExtractMarkdown_MdcExtension(t *testing.T) {
+	// Verify .mdc files (Cursor rule files) dispatch through the Markdown extractor.
+	if got := DetectLanguage("rules.mdc"); got != "Markdown" {
+		t.Errorf("DetectLanguage(rules.mdc) = %q, want Markdown", got)
+	}
+}
+
 func TestExtractMarkdown_SignatureFormat(t *testing.T) {
 	result := Extract([]byte(mdSrc), "Markdown", "README.md")
 	byQN := map[string]ExtractedSymbol{}

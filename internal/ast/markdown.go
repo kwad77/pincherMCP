@@ -35,6 +35,7 @@ func (m *markdownExtractor) Extensions() map[string]string {
 		".md":       "Markdown",
 		".markdown": "Markdown",
 		".mdx":      "Markdown",
+		".mdc":      "Markdown", // Cursor rule files (markdown + frontmatter)
 	}
 }
 func (m *markdownExtractor) Confidence() float64 { return 1.0 }
