@@ -253,6 +253,197 @@ func TestExtractJSON(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Scalar Setting byte-range correctness (LATENT_ISSUES #3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExtractYAML_ScalarLastInMappingDoesNotOverextend(t *testing.T) {
+	// A scalar that's the last key in its parent mapping should end at the
+	// end of its own line, not extend through every aunt/uncle. Pre-fix,
+	// `services.web.image` would cover ports/environment/api too.
+	src := []byte(`services:
+  web:
+    image: nginx:1.25
+    ports:
+      - "80:80"
+    environment:
+      LOG_LEVEL: info
+  api:
+    image: myapp:latest
+`)
+	result := Extract(src, "YAML", "docker-compose.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+
+	webImage, ok := byQN["services.web.image"]
+	if !ok {
+		t.Fatalf("expected services.web.image, got: %v", keysOf(byQN))
+	}
+	body := string(src[webImage.StartByte:webImage.EndByte])
+
+	if strings.Contains(body, "ports") {
+		t.Errorf("services.web.image leaks into ports — over-extending. body:\n%s", body)
+	}
+	if strings.Contains(body, "environment") {
+		t.Errorf("services.web.image leaks into environment. body:\n%s", body)
+	}
+	if strings.Contains(body, "myapp") {
+		t.Errorf("services.web.image leaks into services.api. body:\n%s", body)
+	}
+	if !strings.Contains(body, "nginx:1.25") {
+		t.Errorf("services.web.image missing the actual value. body:\n%s", body)
+	}
+}
+
+func TestExtractYAML_TopLevelTrailingScalar(t *testing.T) {
+	// A top-level scalar that comes after a complex mapping should not
+	// extend backwards — its byte range should be just its own line.
+	src := []byte(`services:
+  web:
+    image: nginx
+version: "3.8"
+`)
+	result := Extract(src, "YAML", "x.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+
+	version := byQN["version"]
+	body := string(src[version.StartByte:version.EndByte])
+	if strings.Contains(body, "services") || strings.Contains(body, "image") {
+		t.Errorf("version Setting should be one line only. body:\n%s", body)
+	}
+	if !strings.Contains(body, "3.8") {
+		t.Errorf("version body missing the value. body:\n%s", body)
+	}
+}
+
+func TestExtractYAML_BlockScalarLiteralRespectsIndent(t *testing.T) {
+	// Block scalars (`|`) span multiple lines until an outdent.
+	src := []byte(`description: |
+  line one of block
+  line two of block
+  line three of block
+next_key: foo
+`)
+	result := Extract(src, "YAML", "x.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+
+	desc := byQN["description"]
+	body := string(src[desc.StartByte:desc.EndByte])
+
+	for _, want := range []string{"line one of block", "line two of block", "line three of block"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("description body missing %q\nbody:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "next_key") {
+		t.Errorf("description block scalar leaks into next_key:\n%s", body)
+	}
+}
+
+func TestExtractYAML_BlockScalarFoldedRespectsIndent(t *testing.T) {
+	src := []byte(`summary: >
+  this folded
+  scalar wraps
+  multiple lines
+done: true
+`)
+	result := Extract(src, "YAML", "x.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	body := string(src[byQN["summary"].StartByte:byQN["summary"].EndByte])
+	if !strings.Contains(body, "multiple lines") {
+		t.Errorf("folded scalar should include all content lines:\n%s", body)
+	}
+	if strings.Contains(body, "done") {
+		t.Errorf("folded scalar leaked into next sibling key:\n%s", body)
+	}
+}
+
+func TestExtractYAML_QuotedScalarSingleLine(t *testing.T) {
+	// Quoted scalars are still single-line.
+	src := []byte(`label: "hello world"
+other: 42
+`)
+	result := Extract(src, "YAML", "x.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	body := string(src[byQN["label"].StartByte:byQN["label"].EndByte])
+	if strings.Contains(body, "other") {
+		t.Errorf("quoted scalar over-extends:\n%s", body)
+	}
+}
+
+func TestExtractYAML_SequenceElementScalar(t *testing.T) {
+	// Sequence elements that are scalars should also have one-line ranges.
+	src := []byte(`tags:
+  - first
+  - second
+  - third
+next: val
+`)
+	result := Extract(src, "YAML", "x.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	// tags.0, tags.1, tags.2 should each be a one-line scalar
+	for _, qn := range []string{"tags.0", "tags.1", "tags.2"} {
+		s, ok := byQN[qn]
+		if !ok {
+			t.Errorf("missing %q", qn)
+			continue
+		}
+		body := string([]byte(src)[s.StartByte:s.EndByte])
+		// The last sequence element ("third") would over-extend into next:
+		// pre-fix; verify that it doesn't.
+		if strings.Contains(body, "next: val") {
+			t.Errorf("%s sequence element leaks into next:\n%s", qn, body)
+		}
+	}
+}
+
+func TestExtractYAML_MappingStillCoversWholeSubtree(t *testing.T) {
+	// Sanity: the fix should NOT break the existing mapping behaviour.
+	// Retrieving services.web should still return image + ports + environment.
+	src := []byte(`services:
+  web:
+    image: nginx
+    ports:
+      - "80:80"
+    environment:
+      LOG_LEVEL: info
+  api:
+    image: other
+`)
+	result := Extract(src, "YAML", "compose.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	web := byQN["services.web"]
+	body := string(src[web.StartByte:web.EndByte])
+	for _, want := range []string{"image: nginx", "ports", "80:80", "environment", "LOG_LEVEL"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("services.web mapping missing %q\nbody:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "api:") || strings.Contains(body, "image: other") {
+		t.Errorf("services.web should not leak into services.api:\n%s", body)
+	}
+}
+
 func TestExtractYAML_ModuleName(t *testing.T) {
 	result := Extract([]byte("foo: bar\n"), "YAML", "infrastructure/ansible/site.yml")
 	if result.Module != "site" {

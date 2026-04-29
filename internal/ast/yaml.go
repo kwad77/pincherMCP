@@ -124,17 +124,36 @@ func extractYAML(source []byte, relPath string) *FileResult {
 		walk(doc, prefix)
 	}
 
-	// Convert entries to symbols. End offset = start of next entry at same-or-shallower depth.
+	// Convert entries to symbols.
+	//
+	// End-byte rule depends on the entry's value kind:
+	//
+	//   - Scalar / Alias: end at the end of the value's own line(s). For plain
+	//     scalars that's the start of the next line; for block scalars (`|` /
+	//     `>`) it's the first line whose non-blank column is shallower than
+	//     the key's column. Without this carve-out, a scalar that's the last
+	//     key in its parent mapping would extend through every aunt/uncle
+	//     because the depth-aware rule below picks the parent's next sibling
+	//     as the boundary.
+	//
+	//   - Mapping / Sequence / Document: end at the start of the next entry
+	//     at same-or-shallower depth — the original "depth-aware" rule.
 	for i, e := range entries {
 		startByte := lineColToOffset(lineOffsets, e.line, e.col, sourceLen)
 
-		endByte := sourceLen
-		for j := i + 1; j < len(entries); j++ {
-			if len(entries[j].path) <= len(e.path) {
-				endByte = lineColToOffset(lineOffsets, entries[j].line, 1, sourceLen)
-				break
+		var endByte int
+		if e.val != nil && (e.val.Kind == yaml.ScalarNode || e.val.Kind == yaml.AliasNode) {
+			endByte = scalarEndByte(source, lineOffsets, e.val, e.line, e.col, sourceLen)
+		} else {
+			endByte = sourceLen
+			for j := i + 1; j < len(entries); j++ {
+				if len(entries[j].path) <= len(e.path) {
+					endByte = lineColToOffset(lineOffsets, entries[j].line, 1, sourceLen)
+					break
+				}
 			}
 		}
+
 		if endByte <= startByte {
 			if e.line < len(lineOffsets) {
 				endByte = lineOffsets[e.line]
@@ -202,6 +221,61 @@ func yamlSignature(n *yaml.Node) string {
 		return "<document>"
 	}
 	return ""
+}
+
+// scalarEndByte returns the end-byte offset for an entry whose value is a
+// scalar or alias. For a single-line scalar the end is the start of the next
+// line. For a block scalar (literal `|` or folded `>`) it walks forward from
+// the key line until it finds a non-blank line whose first-non-blank column
+// is ≤ the key's column — that line marks the start of the next sibling-or-
+// shallower entry, so the block scalar ends at its byte offset. Reaching
+// end-of-file ends the block scalar at sourceLen.
+//
+// yaml.v3's Node API doesn't expose end positions, so block-scalar end has
+// to be derived from indentation rather than the parser's structural model.
+func scalarEndByte(source []byte, lineOffsets []int, val *yaml.Node, keyLine, keyCol, sourceLen int) int {
+	isBlock := val != nil && val.Kind == yaml.ScalarNode &&
+		(val.Style == yaml.LiteralStyle || val.Style == yaml.FoldedStyle)
+
+	if !isBlock {
+		// Plain scalar / quoted scalar / alias — end at start of next line.
+		if keyLine < len(lineOffsets) {
+			return lineOffsets[keyLine]
+		}
+		return sourceLen
+	}
+
+	// Block scalar — walk forward looking for an outdent.
+	if keyCol < 1 {
+		keyCol = 1
+	}
+	for line := keyLine + 1; line-1 < len(lineOffsets); line++ {
+		lineStart := lineOffsets[line-1]
+		lineEnd := sourceLen
+		if line < len(lineOffsets) {
+			lineEnd = lineOffsets[line]
+		}
+		// First non-blank column on this line (1-based). Pure blank lines
+		// don't count — they belong to the block scalar.
+		col := 0
+		for i := lineStart; i < lineEnd; i++ {
+			ch := source[i]
+			if ch == '\n' || ch == '\r' {
+				break
+			}
+			if ch != ' ' && ch != '\t' {
+				col = (i - lineStart) + 1
+				break
+			}
+		}
+		if col == 0 {
+			continue // blank line — still inside the block scalar
+		}
+		if col <= keyCol {
+			return lineStart
+		}
+	}
+	return sourceLen
 }
 
 // lineColToOffset converts a 1-based (line, col) to a byte offset, clamped to source bounds.
