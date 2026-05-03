@@ -137,6 +137,54 @@ var schemaMigrations = []string{
 		tokens_saved INTEGER NOT NULL DEFAULT 0,
 		cost_avoided REAL    NOT NULL DEFAULT 0.0
 	)`,
+
+	// v5 → v6: rename the FTS5 first column from `symbol_id` to `id` so it
+	// matches symbols.id. External-content FTS5 (`content='symbols'`) reads
+	// original values via `SELECT <fts_columns> FROM symbols WHERE rowid=?`
+	// when answering COUNT(*), highlight/snippet, integrity-check, optimize,
+	// and similar operations. Declaring the column as `symbol_id` made every
+	// such read fail with `no such column: T.symbol_id` on older databases —
+	// MATCH-with-rowid-join queries happened to work because they never
+	// trigger a content read, which masked the bug.
+	//
+	// Drop+recreate is the only way to rename an FTS5 column. The migration
+	// also reseeds the inverted index from the live symbols table so existing
+	// databases come out of the migration with a complete, queryable index.
+	`DROP TRIGGER IF EXISTS sym_fts_insert;
+	DROP TRIGGER IF EXISTS sym_fts_update;
+	DROP TRIGGER IF EXISTS sym_fts_delete;
+	DROP TABLE IF EXISTS symbols_fts;
+	CREATE VIRTUAL TABLE symbols_fts USING fts5(
+		id UNINDEXED,
+		name,
+		qualified_name,
+		signature,
+		docstring,
+		content='symbols',
+		content_rowid='rowid',
+		tokenize='unicode61 remove_diacritics 1'
+	);
+	CREATE TRIGGER sym_fts_insert AFTER INSERT ON symbols BEGIN
+		INSERT INTO symbols_fts(rowid, id, name, qualified_name, signature, docstring)
+		VALUES (new.rowid, new.id, new.name, new.qualified_name,
+				COALESCE(new.signature,''), COALESCE(new.docstring,''));
+	END;
+	CREATE TRIGGER sym_fts_delete AFTER DELETE ON symbols BEGIN
+		INSERT INTO symbols_fts(symbols_fts, rowid, id, name, qualified_name, signature, docstring)
+		VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
+				COALESCE(old.signature,''), COALESCE(old.docstring,''));
+	END;
+	CREATE TRIGGER sym_fts_update AFTER UPDATE ON symbols BEGIN
+		INSERT INTO symbols_fts(symbols_fts, rowid, id, name, qualified_name, signature, docstring)
+		VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
+				COALESCE(old.signature,''), COALESCE(old.docstring,''));
+		INSERT INTO symbols_fts(rowid, id, name, qualified_name, signature, docstring)
+		VALUES (new.rowid, new.id, new.name, new.qualified_name,
+				COALESCE(new.signature,''), COALESCE(new.docstring,''));
+	END;
+	INSERT INTO symbols_fts(rowid, id, name, qualified_name, signature, docstring)
+	SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
+	FROM symbols;`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -267,8 +315,13 @@ CREATE INDEX IF NOT EXISTS idx_sym_qn      ON symbols(project_id, qualified_name
 
 -- Layer 3: FTS5 full-text search with BM25 ranking.
 -- content= avoids storing duplicate text; triggers keep the index in sync.
+-- The first column name MUST match a real column on the symbols (content)
+-- table. External-content FTS5 reads original values via
+-- "SELECT <fts_columns> FROM <content> WHERE rowid=?" whenever it needs
+-- them (COUNT(*), snippet/highlight, integrity-check, etc.). Naming the
+-- first FTS column "id" matches symbols.id directly.
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-    symbol_id UNINDEXED,
+    id UNINDEXED,
     name,
     qualified_name,
     signature,
@@ -279,20 +332,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 
 CREATE TRIGGER IF NOT EXISTS sym_fts_insert AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    INSERT INTO symbols_fts(rowid, id, name, qualified_name, signature, docstring)
     VALUES (new.rowid, new.id, new.name, new.qualified_name,
             COALESCE(new.signature,''), COALESCE(new.docstring,''));
 END;
 CREATE TRIGGER IF NOT EXISTS sym_fts_delete AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    INSERT INTO symbols_fts(symbols_fts, rowid, id, name, qualified_name, signature, docstring)
     VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
             COALESCE(old.signature,''), COALESCE(old.docstring,''));
 END;
 CREATE TRIGGER IF NOT EXISTS sym_fts_update AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    INSERT INTO symbols_fts(symbols_fts, rowid, id, name, qualified_name, signature, docstring)
     VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
             COALESCE(old.signature,''), COALESCE(old.docstring,''));
-    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    INSERT INTO symbols_fts(rowid, id, name, qualified_name, signature, docstring)
     VALUES (new.rowid, new.id, new.name, new.qualified_name,
             COALESCE(new.signature,''), COALESCE(new.docstring,''));
 END;

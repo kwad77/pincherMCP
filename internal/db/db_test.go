@@ -454,6 +454,164 @@ func TestSearchSymbols_KindFilter(t *testing.T) {
 	}
 }
 
+// TestSearchSymbols_FTSContentReadable guards against a regression of the
+// schema bug where the FTS5 vtab declared its first column as `symbol_id`
+// while the underlying content table column is `symbols.id`. Under that
+// bug, MATCH-with-rowid-join queries (the main SearchSymbols path) worked
+// because they never trigger a content-table read, but any operation that
+// does — COUNT(*), SELECT * FROM symbols_fts, snippet/highlight, optimize,
+// integrity-check — failed with `no such column: T.symbol_id`. The fix is
+// to name the FTS column `id` so it matches the content column. This test
+// asserts that all three read paths succeed on a fresh DB.
+func TestSearchSymbols_FTSContentReadable(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertProject(testProject("p1")); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := s.BulkUpsertSymbols([]Symbol{
+		{ID: "s1", ProjectID: "p1", FilePath: "a.yml", Name: "dhcp_domain",
+			QualifiedName: "dhcp_domain", Kind: "Setting", Language: "YAML",
+			Signature: "lan", StartByte: 0, EndByte: 16, StartLine: 1, EndLine: 1},
+		{ID: "s2", ProjectID: "p1", FilePath: "a.yml", Name: "dhcp_start",
+			QualifiedName: "dhcp_start", Kind: "Setting", Language: "YAML",
+			Signature: "10", StartByte: 17, EndByte: 32, StartLine: 2, EndLine: 2},
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	// 1. Direct content read on the vtab. Before the fix, the rowid lookup
+	//    against `symbols` selects the FTS-declared columns by name; if the
+	//    first column is `symbol_id` and `symbols.id` is the real column,
+	//    SQLite errors out.
+	var fts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbols_fts`).Scan(&fts); err != nil {
+		t.Fatalf("COUNT(*) FROM symbols_fts: %v", err)
+	}
+	if fts != 2 {
+		t.Errorf("symbols_fts row count = %d, want 2", fts)
+	}
+
+	// 2. Reading the UNINDEXED `id` column back through the vtab.
+	var id string
+	if err := s.db.QueryRow(`SELECT id FROM symbols_fts WHERE symbols_fts MATCH 'dhcp_domain'`).Scan(&id); err != nil {
+		t.Fatalf("SELECT id FROM symbols_fts MATCH: %v", err)
+	}
+	if id != "s1" {
+		t.Errorf("id = %q, want %q", id, "s1")
+	}
+
+	// 3. The MCP search path itself still works.
+	results, err := s.SearchSymbols("p1", "dhcp*", "", "", 10)
+	if err != nil {
+		t.Fatalf("SearchSymbols: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("SearchSymbols returned %d results, want 2", len(results))
+	}
+}
+
+// TestMigrate_FTSColumnRename_V5toV6 simulates a database created by an
+// older binary (broken FTS5 schema with first column `symbol_id`), then
+// opens it through the normal Open() path and verifies the v5→v6 migration
+// repairs the index in place: the table is recreated with the corrected
+// column name and existing symbol rows are reseeded into the inverted
+// index so search keeps working without an explicit re-index.
+func TestMigrate_FTSColumnRename_V5toV6(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pincher.db")
+
+	// Build a v5-era database by hand: baseline non-FTS tables + the broken
+	// FTS5 schema, and pin schema_version to 5 so migrate() resumes from
+	// there.
+	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)")
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	const v5BrokenSchema = `
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL,
+    indexed_at INTEGER, file_count INTEGER DEFAULT 0,
+    sym_count INTEGER DEFAULT 0, edge_count INTEGER DEFAULT 0
+);
+CREATE TABLE symbols (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    file_path TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL,
+    kind TEXT NOT NULL, language TEXT NOT NULL,
+    start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL,
+    start_line INTEGER NOT NULL, end_line INTEGER NOT NULL,
+    signature TEXT, return_type TEXT, docstring TEXT, parent TEXT,
+    complexity INTEGER DEFAULT 0, is_exported INTEGER DEFAULT 0,
+    is_test INTEGER DEFAULT 0, is_entry_point INTEGER DEFAULT 0,
+    file_hash TEXT,
+    extraction_confidence REAL NOT NULL DEFAULT 1.0
+);
+CREATE VIRTUAL TABLE symbols_fts USING fts5(
+    symbol_id UNINDEXED, name, qualified_name, signature, docstring,
+    content='symbols', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 1'
+);
+CREATE TRIGGER sym_fts_insert AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES (new.rowid, new.id, new.name, new.qualified_name,
+            COALESCE(new.signature,''), COALESCE(new.docstring,''));
+END;
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version(version) VALUES(5);
+INSERT INTO projects(id,path,name,indexed_at) VALUES('p','/tmp/p','p',0);
+INSERT INTO symbols(id,project_id,file_path,name,qualified_name,kind,language,start_byte,end_byte,start_line,end_line,signature)
+VALUES('s1','p','a.yml','dhcp_domain','dhcp_domain','Setting','YAML',0,16,1,1,'lan');
+`
+	if _, err := raw.Exec(v5BrokenSchema); err != nil {
+		raw.Close()
+		t.Fatalf("seed v5 broken schema: %v", err)
+	}
+
+	// Confirm the broken schema actually breaks: COUNT(*) errors before
+	// the migration runs. If this ever stops erroring on its own, the test
+	// no longer reproduces the original bug and should be revisited.
+	var probe int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM symbols_fts`).Scan(&probe); err == nil {
+		raw.Close()
+		t.Fatalf("expected pre-migration COUNT(*) to fail with column-name error, got %d rows", probe)
+	}
+	raw.Close()
+
+	// Open via the normal path — migrate() must apply v5→v6 and repair the
+	// FTS index.
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open after v5 seed: %v", err)
+	}
+	defer s.Close()
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if want := 1 + len(schemaMigrations); version != want {
+		t.Errorf("version = %d, want %d", version, want)
+	}
+
+	// Post-migration the broken read must succeed.
+	var fts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbols_fts`).Scan(&fts); err != nil {
+		t.Fatalf("post-migration COUNT(*): %v", err)
+	}
+	if fts != 1 {
+		t.Errorf("symbols_fts row count after migration = %d, want 1", fts)
+	}
+
+	// Existing symbols must be searchable without a manual re-index.
+	results, err := s.SearchSymbols("p", "dhcp*", "", "", 10)
+	if err != nil {
+		t.Fatalf("SearchSymbols: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("SearchSymbols after migration returned %d results, want 1", len(results))
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Edge operations
 // ─────────────────────────────────────────────────────────────────────────────
