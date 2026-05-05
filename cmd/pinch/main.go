@@ -39,6 +39,8 @@ func main() {
 		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080, or :0 to let the OS pick a free port). Falls back to $PINCHER_HTTP_ADDR. Enables any HTTP client to call all tools via POST /v1/{tool}.")
 		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments). Falls back to $PINCHER_HTTP_KEY.")
 		httpRate    = flag.Int("http-rate", 0, "Max HTTP requests per IP per minute. 0 = unlimited.")
+		basePath    = flag.String("basepath", "", "External URL prefix when behind a reverse proxy (e.g. /pincher). Both /pincher/v1/* and /v1/* will route. Falls back to $PINCHER_BASEPATH.")
+		trustProxy  = flag.Bool("trust-proxy", false, "Honor X-Forwarded-Prefix / X-Forwarded-Proto / X-Forwarded-Host headers. Only enable when behind a trusted proxy. Falls back to $PINCHER_TRUST_PROXY=1.")
 	)
 	flag.Parse()
 
@@ -50,6 +52,12 @@ func main() {
 	}
 	if *httpKey == "" {
 		*httpKey = os.Getenv("PINCHER_HTTP_KEY")
+	}
+	if *basePath == "" {
+		*basePath = os.Getenv("PINCHER_BASEPATH")
+	}
+	if !*trustProxy && os.Getenv("PINCHER_TRUST_PROXY") == "1" {
+		*trustProxy = true
 	}
 
 	if *showVersion {
@@ -100,6 +108,12 @@ func main() {
 		}
 		if *httpRate > 0 {
 			srv.SetRateLimit(*httpRate, time.Minute)
+		}
+		if *basePath != "" {
+			srv.SetBasePath(*basePath)
+		}
+		if *trustProxy {
+			srv.SetTrustProxy(true)
 		}
 		go func() {
 			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {

@@ -51,6 +51,18 @@ type Server struct {
 	version  string
 	httpKey  string // optional bearer token; empty = no auth required
 
+	// basePath is the externally-visible URL prefix when pincher is served
+	// behind a reverse proxy (e.g. "/pincher"). Always normalized: empty,
+	// or starts with "/" and has no trailing "/". Affects request routing
+	// (incoming prefix is stripped) and link generation (OpenAPI spec,
+	// dashboard fetches). See SetBasePath.
+	basePath string
+
+	// trustProxy controls whether X-Forwarded-Prefix / X-Forwarded-Proto /
+	// X-Forwarded-Host headers are honored. Off by default so a direct
+	// (non-proxied) caller can't spoof headers to manipulate generated URLs.
+	trustProxy bool
+
 	// Actual bound HTTP address — populated by ListenAndServeHTTP after
 	// net.Listen succeeds, so ":0" auto-pick can report the real port.
 	mu       sync.Mutex
@@ -231,18 +243,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w = &gzipResponseWriter{ResponseWriter: w, gz: gz}
 	}
 
+	// Reverse-proxy basepath: when configured (or advertised via
+	// X-Forwarded-Prefix with trustProxy on), strip the prefix from the
+	// request path so /pincher/v1/health and /v1/health both route to the
+	// same handler. This lets the proxy preserve OR strip the prefix.
+	if prefix := s.effectivePrefix(r); prefix != "" {
+		if stripped := strings.TrimPrefix(r.URL.Path, prefix); stripped != r.URL.Path {
+			r.URL.Path = stripped
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+		}
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
 	if path == "health" {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": s.version})
 		return
 	}
 	if path == "openapi.json" {
-		json.NewEncoder(w).Encode(s.openAPISpec())
+		json.NewEncoder(w).Encode(s.openAPISpec(r))
 		return
 	}
 	if path == "dashboard" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(dashboardHTML))
+		w.Write([]byte(renderDashboard(s.effectivePrefix(r))))
 		return
 	}
 	// GET /v1/stats — dashboard-safe stats reader. Reads from DB only; never
@@ -420,11 +445,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // openAPISpec returns a minimal OpenAPI 3.1 document describing every HTTP tool endpoint.
 // Served at GET /v1/openapi.json so any client (Postman, Cursor, copilots) can auto-import.
-func (s *Server) openAPISpec() map[string]any {
+//
+// When deployed behind a reverse proxy, the path keys are prefixed with the
+// effective basepath and a "servers" block is added so imported clients build
+// the right base URL.
+func (s *Server) openAPISpec(r *http.Request) map[string]any {
+	prefix := s.effectivePrefix(r)
 	tools := []string{"index", "symbol", "symbols", "context", "search", "query", "trace", "changes", "architecture", "schema", "list", "adr", "health", "stats", "fetch"}
 	paths := map[string]any{}
 	for _, t := range tools {
-		paths["/v1/"+t] = map[string]any{
+		paths[prefix+"/v1/"+t] = map[string]any{
 			"post": map[string]any{
 				"operationId": t,
 				"summary":     "Call the " + t + " tool",
@@ -438,14 +468,28 @@ func (s *Server) openAPISpec() map[string]any {
 			},
 		}
 	}
-	paths["/v1/health"] = map[string]any{
+	paths[prefix+"/v1/health"] = map[string]any{
 		"get": map[string]any{"operationId": "health", "summary": "Liveness probe", "responses": map[string]any{"200": map[string]any{"description": "ok"}}},
 	}
-	return map[string]any{
+	spec := map[string]any{
 		"openapi": "3.1.0",
 		"info":    map[string]any{"title": "pincherMCP HTTP API", "version": s.version},
 		"paths":   paths,
 	}
+	if prefix != "" || (s.trustProxy && r.Header.Get("X-Forwarded-Host") != "") {
+		proto := "http"
+		host := r.Host
+		if s.trustProxy {
+			if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+				proto = p
+			}
+			if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+				host = h
+			}
+		}
+		spec["servers"] = []any{map[string]any{"url": fmt.Sprintf("%s://%s%s", proto, host, prefix)}}
+	}
+	return spec
 }
 
 // ListenAndServeHTTP starts an HTTP server on addr (e.g. ":8080").
@@ -453,6 +497,53 @@ func (s *Server) openAPISpec() map[string]any {
 // SetHTTPKey configures a required bearer token for all HTTP requests.
 // If key is empty, authentication is disabled (suitable for localhost-only deployments).
 func (s *Server) SetHTTPKey(key string) { s.httpKey = key }
+
+// SetBasePath sets the externally-visible URL prefix (e.g. "/pincher") for
+// reverse-proxy deployments. Input is normalized: leading "/" is added if
+// missing, trailing "/" is stripped, and "" or "/" both clear the prefix.
+//
+// When set, ServeHTTP strips this prefix from incoming requests before
+// routing — so both /pincher/v1/health and /v1/health route to the health
+// handler. The OpenAPI spec and embedded dashboard also pick up the prefix
+// so generated links and fetches go through the proxy correctly.
+func (s *Server) SetBasePath(p string) { s.basePath = normalizeBasePath(p) }
+
+// SetTrustProxy enables honoring X-Forwarded-Prefix / X-Forwarded-Proto /
+// X-Forwarded-Host headers for prefix detection and OpenAPI server URL
+// generation. Disabled by default — only turn on when behind a trusted
+// proxy that strips and re-adds these headers itself.
+func (s *Server) SetTrustProxy(t bool) { s.trustProxy = t }
+
+// BasePath returns the configured basepath, or "" if none.
+func (s *Server) BasePath() string { return s.basePath }
+
+// normalizeBasePath canonicalizes user-supplied prefixes:
+//
+//	""        → ""
+//	"/"       → ""
+//	"pincher" → "/pincher"
+//	"/api/"   → "/api"
+func normalizeBasePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || p == "/" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return strings.TrimRight(p, "/")
+}
+
+// effectivePrefix returns the externally-visible URL prefix for this request.
+// Precedence: X-Forwarded-Prefix (only when trustProxy is on) → s.basePath → "".
+func (s *Server) effectivePrefix(r *http.Request) string {
+	if s.trustProxy {
+		if p := r.Header.Get("X-Forwarded-Prefix"); p != "" {
+			return normalizeBasePath(p)
+		}
+	}
+	return s.basePath
+}
 
 // SetRateLimit caps HTTP requests to limit per window duration per remote IP.
 // limit=0 disables rate limiting. Typical: SetRateLimit(60, time.Minute).
@@ -526,7 +617,7 @@ func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 		}
 	}()
 	slog.Info("pincher.http.listen", "addr", actualAddr)
-	fmt.Fprintf(os.Stderr, "pincherMCP: HTTP listening on http://%s\n", displayAddr(actualAddr))
+	fmt.Fprintf(os.Stderr, "pincherMCP: HTTP listening on http://%s%s\n", displayAddr(actualAddr), s.basePath)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}

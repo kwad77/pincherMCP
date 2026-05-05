@@ -2459,3 +2459,211 @@ func TestDisplayAddr(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reverse-proxy basepath tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func httpGetWithHeader(srv *Server, path string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func TestNormalizeBasePath(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"/", ""},
+		{"  ", ""},
+		{"/pincher", "/pincher"},
+		{"pincher", "/pincher"},
+		{"/pincher/", "/pincher"},
+		{"pincher/", "/pincher"},
+		{"/api/v1", "/api/v1"},
+		{"/api/v1/", "/api/v1"},
+	}
+	for _, c := range cases {
+		if got := normalizeBasePath(c.in); got != c.want {
+			t.Errorf("normalizeBasePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestServeHTTP_BasePath_StripsPrefix(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetBasePath("/pincher")
+	w := httpGet(t, srv, "/pincher/v1/health")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["ok"] != true {
+		t.Errorf("ok field: got %v, want true", resp["ok"])
+	}
+}
+
+func TestServeHTTP_BasePath_AcceptsRootPath(t *testing.T) {
+	// When the proxy strips the prefix before forwarding, requests arrive
+	// at /v1/* directly. Pincher must still serve them.
+	srv, _, _ := newTestServer(t)
+	srv.SetBasePath("/pincher")
+	w := httpGet(t, srv, "/v1/health")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestServeHTTP_BasePath_NormalizesInput(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetBasePath("pincher/")
+	if got := srv.BasePath(); got != "/pincher" {
+		t.Errorf("after Set(\"pincher/\"): got %q, want %q", got, "/pincher")
+	}
+	srv.SetBasePath("/")
+	if got := srv.BasePath(); got != "" {
+		t.Errorf("after Set(\"/\"): got %q, want \"\"", got)
+	}
+}
+
+func TestServeHTTP_BasePath_OpenAPIPathsPrefixed(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetBasePath("/pincher")
+	w := httpGet(t, srv, "/pincher/v1/openapi.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", w.Code)
+	}
+	var spec map[string]any
+	json.NewDecoder(w.Body).Decode(&spec)
+
+	paths, ok := spec["paths"].(map[string]any)
+	if !ok || len(paths) == 0 {
+		t.Fatal("openapi spec missing paths")
+	}
+	for k := range paths {
+		if !strings.HasPrefix(k, "/pincher/v1/") {
+			t.Errorf("path key %q not prefixed with /pincher/v1/", k)
+		}
+	}
+	servers, ok := spec["servers"].([]any)
+	if !ok || len(servers) == 0 {
+		t.Fatal("openapi spec missing servers block")
+	}
+	srvMap := servers[0].(map[string]any)
+	url, _ := srvMap["url"].(string)
+	if !strings.HasSuffix(url, "/pincher") {
+		t.Errorf("servers[0].url = %q, want suffix /pincher", url)
+	}
+}
+
+func TestServeHTTP_TrustProxy_HonorsXForwardedPrefix(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetTrustProxy(true)
+	// Note: no SetBasePath — the prefix comes only from the header.
+	w := httpGetWithHeader(srv, "/pincher/v1/health", map[string]string{
+		"X-Forwarded-Prefix": "/pincher",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("with X-Forwarded-Prefix: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// And the OpenAPI spec for the same trusted request should reflect the
+	// header-derived prefix in both paths and the servers URL.
+	w = httpGetWithHeader(srv, "/pincher/v1/openapi.json", map[string]string{
+		"X-Forwarded-Prefix": "/pincher",
+		"X-Forwarded-Proto":  "https",
+		"X-Forwarded-Host":   "example.com",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("openapi: got %d, want 200", w.Code)
+	}
+	var spec map[string]any
+	json.NewDecoder(w.Body).Decode(&spec)
+	paths := spec["paths"].(map[string]any)
+	for k := range paths {
+		if !strings.HasPrefix(k, "/pincher/v1/") {
+			t.Errorf("path key %q not prefixed with /pincher/v1/", k)
+			break
+		}
+	}
+	servers := spec["servers"].([]any)
+	url := servers[0].(map[string]any)["url"].(string)
+	if url != "https://example.com/pincher" {
+		t.Errorf("servers[0].url = %q, want https://example.com/pincher", url)
+	}
+}
+
+func TestServeHTTP_TrustProxy_IgnoresHeaderByDefault(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// trustProxy stays at its zero value (false).
+	// X-Forwarded-Prefix must NOT influence routing — request to a
+	// prefixed URL with no basepath configured should miss.
+	w := httpGetWithHeader(srv, "/pincher/v1/health", map[string]string{
+		"X-Forwarded-Prefix": "/pincher",
+	})
+	// /pincher/v1/health doesn't match any handler; routing falls into the
+	// POST-only catch at the bottom and returns 405 (GET on tool path).
+	if w.Code == http.StatusOK {
+		t.Errorf("untrusted X-Forwarded-Prefix should not route; got 200")
+	}
+
+	// And the OpenAPI spec must NOT pick up the spoofed prefix.
+	w = httpGetWithHeader(srv, "/v1/openapi.json", map[string]string{
+		"X-Forwarded-Prefix": "/pincher",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("openapi: got %d, want 200", w.Code)
+	}
+	var spec map[string]any
+	json.NewDecoder(w.Body).Decode(&spec)
+	for k := range spec["paths"].(map[string]any) {
+		if strings.HasPrefix(k, "/pincher/") {
+			t.Errorf("path %q should not be prefixed when trustProxy is false", k)
+			break
+		}
+	}
+	if _, hasServers := spec["servers"]; hasServers {
+		t.Error("servers block should be absent when no basepath and trustProxy=false")
+	}
+}
+
+func TestServeHTTP_Dashboard_InjectsBasePath(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetBasePath("/pincher")
+	w := httpGet(t, srv, "/pincher/v1/dashboard")
+	if w.Code != http.StatusOK {
+		t.Fatalf("dashboard: got %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `const BP = "/pincher"`) {
+		t.Error("dashboard HTML missing injected BP constant")
+	}
+	if !strings.Contains(body, `href="/pincher/v1/openapi.json"`) {
+		t.Error("dashboard footer link not prefixed")
+	}
+	// The placeholder must be fully substituted.
+	if strings.Contains(body, "__PINCHER_BASEPATH__") {
+		t.Error("dashboard HTML still contains unresolved __PINCHER_BASEPATH__ token")
+	}
+}
+
+func TestServeHTTP_Dashboard_NoBasePath(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	w := httpGet(t, srv, "/v1/dashboard")
+	if w.Code != http.StatusOK {
+		t.Fatalf("dashboard: got %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `const BP = ""`) {
+		t.Error("dashboard HTML should have empty BP when no basepath set")
+	}
+	if strings.Contains(body, "__PINCHER_BASEPATH__") {
+		t.Error("dashboard still contains unresolved placeholder")
+	}
+}

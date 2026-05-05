@@ -1,8 +1,20 @@
 package server
 
-// dashboardHTML is the self-contained stats dashboard served at GET /v1/dashboard.
+import "strings"
+
+// renderDashboard returns the dashboard HTML with the reverse-proxy basepath
+// (e.g. "/pincher") substituted in. Pass "" for direct deployment. The prefix
+// flows into:
+//   - window.PINCHER_BASEPATH (read by the fetch interceptor + auth check)
+//   - footer anchor hrefs (plain HTML — can't use the interceptor)
+func renderDashboard(prefix string) string {
+	return strings.ReplaceAll(dashboardTemplate, "__PINCHER_BASEPATH__", prefix)
+}
+
+// dashboardTemplate is the self-contained stats dashboard served at GET /v1/dashboard.
 // Fetches all data live from /v1/* endpoints; no external dependencies.
-const dashboardHTML = `<!DOCTYPE html>
+// __PINCHER_BASEPATH__ tokens are substituted at render time by renderDashboard.
+const dashboardTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -307,10 +319,16 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 </main>
 </div>
 
-<div class="footer">pincherMCP · <a href="/v1/openapi.json" target="_blank">OpenAPI</a> · <a href="/v1/health" target="_blank">Health</a></div>
+<div class="footer">pincherMCP · <a href="__PINCHER_BASEPATH__/v1/openapi.json" target="_blank">OpenAPI</a> · <a href="__PINCHER_BASEPATH__/v1/health" target="_blank">Health</a></div>
 <div class="toast" id="toast"></div>
 
 <script>
+// ── Reverse-proxy basepath ─────────────────────────────────────────────────
+// When pincher is served behind a proxy at e.g. /pincher, the server injects
+// the prefix here. All call sites still write fetch('/v1/...') — the wrapper
+// below rewrites those to BP + '/v1/...' so the proxy sees the prefixed URL.
+const BP = "__PINCHER_BASEPATH__";
+
 // ── Auth fetch wrapper ─────────────────────────────────────────────────────
 // Pincher's HTTP server optionally requires a bearer token (--http-key).
 // The dashboard HTML itself loads without auth, but every data fetch it
@@ -322,9 +340,15 @@ const _origFetch = window.fetch.bind(window);
 window.fetch = async function(input, init) {
   init = init || {};
   init.headers = new Headers(init.headers || {});
+  // Rewrite /v1/* → BP + /v1/* so the dashboard works behind a reverse proxy
+  // without changing every fetch call site.
+  if (BP && typeof input === 'string' && input.startsWith('/v1/')) {
+    input = BP + input;
+  }
   const key = localStorage.getItem(AUTH_KEY_STORAGE);
   const url = typeof input === 'string' ? input : (input && input.url) || '';
-  if (key && url.startsWith('/v1/') && !init.headers.has('Authorization')) {
+  const isV1 = url.startsWith('/v1/') || (BP && url.startsWith(BP + '/v1/'));
+  if (key && isV1 && !init.headers.has('Authorization')) {
     init.headers.set('Authorization', 'Bearer ' + key);
   }
   const r = await _origFetch(input, init);
