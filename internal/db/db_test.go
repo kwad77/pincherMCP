@@ -204,6 +204,53 @@ func TestMigrate_UpgradeFromV1(t *testing.T) {
 	if _, err := s.db.Exec(`INSERT INTO symbol_moves(old_id,new_id,project_id,moved_at) VALUES('old','new','p',0)`); err != nil {
 		t.Errorf("symbol_moves table missing after migration: %v", err)
 	}
+
+	// Spot-check: the v5→v6 generated `symbol_id` column must exist and
+	// mirror `id` so FTS5 content lookups (issue #19) can succeed.
+	var symID string
+	if err := s.db.QueryRow(`SELECT symbol_id FROM symbols WHERE id='x'`).Scan(&symID); err != nil {
+		t.Errorf("symbol_id column missing after migration: %v", err)
+	} else if symID != "x" {
+		t.Errorf("symbol_id = %q, want %q (must mirror id)", symID, "x")
+	}
+}
+
+// TestFTS_ContentLookup is the regression test for issue #19: the symbols_fts
+// vtab declares first column `symbol_id` but the underlying `symbols` table
+// column is `id`. FTS5 ops that need a content lookup (integrity-check,
+// optimize, snippet/highlight, bare reads) issue `SELECT symbol_id, ...
+// FROM symbols WHERE rowid = ?` and fail without the v5→v6 generated column.
+//
+// SearchSymbols' query plan hand-joins on rowid and reads from the source
+// table directly so it never triggers content lookup — which is why the bug
+// stayed latent. integrity-check exercises the broken path explicitly.
+func TestFTS_ContentLookup(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert a project + symbol so FTS has content to verify.
+	if _, err := s.db.Exec(`INSERT INTO projects(id,path,name,indexed_at) VALUES('p','/tmp/p','p',0)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO symbols(id,project_id,file_path,name,qualified_name,kind,language,start_byte,end_byte,start_line,end_line) VALUES('s1','p','f.go','Foo','pkg.Foo','Function','Go',0,1,1,1)`); err != nil {
+		t.Fatalf("seed symbol: %v", err)
+	}
+
+	// integrity-check forces FTS5 to read original content from `symbols`
+	// using the FTS column names. Pre-fix this errored with
+	// `no such column: T.symbol_id`. Post-fix it returns 'ok'.
+	if _, err := s.db.Exec(`INSERT INTO symbols_fts(symbols_fts) VALUES('integrity-check')`); err != nil {
+		t.Fatalf("FTS integrity-check failed (issue #19 regression): %v", err)
+	}
+
+	// COUNT(*) on the vtab also routes through content lookup on some
+	// FTS5 paths — verify it succeeds.
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbols_fts`).Scan(&n); err != nil {
+		t.Fatalf("COUNT(*) FROM symbols_fts: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("symbols_fts row count = %d, want 1", n)
+	}
 }
 
 func TestMigrate_VersionTracked(t *testing.T) {

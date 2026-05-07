@@ -156,6 +156,18 @@ var schemaMigrations = []string{
 		tokens_saved INTEGER NOT NULL DEFAULT 0,
 		cost_avoided REAL    NOT NULL DEFAULT 0.0
 	)`,
+
+	// v5 → v6: add a generated `symbol_id` column on `symbols` that mirrors `id`.
+	// The symbols_fts virtual table uses external content (content='symbols') and
+	// declares its first column as `symbol_id`, while the source column is `id`.
+	// Any FTS op that needs to consult the source table by FTS column name —
+	// integrity-check, optimize, snippet()/highlight() aux functions, raw
+	// SELECT * FROM symbols_fts — issues `SELECT symbol_id, ... FROM symbols
+	// WHERE rowid = ?` and fails with `no such column: T.symbol_id` without
+	// this column. The MATCH-then-JOIN query path used by SearchSymbols never
+	// triggers a content lookup, which is why the bug stayed latent.
+	// VIRTUAL = computed at read time, zero storage, no FTS rebuild required.
+	`ALTER TABLE symbols ADD COLUMN symbol_id TEXT GENERATED ALWAYS AS (id) VIRTUAL`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.

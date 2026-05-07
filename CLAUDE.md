@@ -34,7 +34,7 @@ go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n
 
 ```
 cmd/pinch/main.go          ← sole entry point (MCP server + optional HTTP + `pincher index` CLI)
-  → db.Open()              open/migrate SQLite (schema v5)
+  → db.Open()              open/migrate SQLite (schema v6)
   → index.New()            create indexer (holds *db.Store)
   → server.New()           create MCP server (holds *db.Store + *index.Indexer)
   → srv.StartSessionFlusher() background goroutine: flushes session stats to DB every 10s
@@ -55,7 +55,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 ### Package responsibilities
 
-- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v5** (added `sessions` table for persistent savings tracking). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
+- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v6** (added generated `symbol_id` column on `symbols` to match the FTS5 vtab's first column name, fixing latent content-lookup errors — issue #19). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
 
 - **`internal/ast/extractor.go`** — Multi-language symbol extraction. `Extract(source, language, relPath)` dispatches to per-language extractors and sets `ExtractionConfidence` on each symbol (1.0 for Go/AST, 0.85 for stable regex languages, 0.70 for approximate ones). Go uses `go/ast`; all other languages use regex. `extractionConfidence` map controls per-language scores.
 
