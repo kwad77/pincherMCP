@@ -433,7 +433,7 @@ func TestHandleSearch_CorpusParameter(t *testing.T) {
 		t.Errorf("corpus=config count = %v, want 1 (YAML only)", m["count"])
 	}
 
-	// Empty corpus = legacy = both hits.
+	// Empty corpus = code (post-#32 part 3 flip). Should hide YAML.
 	result, err = srv.handleSearch(context.Background(), makeReq(map[string]any{
 		"query": "ZZSrv*",
 	}))
@@ -441,8 +441,20 @@ func TestHandleSearch_CorpusParameter(t *testing.T) {
 		t.Fatalf("corpus=empty: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
 	}
 	m = decode(t, result)
+	if int(m["count"].(float64)) != 1 {
+		t.Errorf("corpus=empty (now code) count = %v, want 1 (Go only)", m["count"])
+	}
+
+	// corpus=all = legacy mixed = both Go + YAML.
+	result, err = srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "ZZSrv*", "corpus": "all",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("corpus=all: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m = decode(t, result)
 	if int(m["count"].(float64)) != 2 {
-		t.Errorf("corpus=empty (legacy) count = %v, want 2", m["count"])
+		t.Errorf("corpus=all (legacy) count = %v, want 2 (Go + YAML)", m["count"])
 	}
 }
 

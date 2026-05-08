@@ -251,7 +251,10 @@ func TestHCLIntegration_FTS5SearchRoundTrip(t *testing.T) {
 		{"common_tags", "local.common_tags"},
 	}
 	for _, c := range cases {
-		hits, err := store.SearchSymbols(pid, c.query, "", "HCL", 50)
+		// HCL symbols route to the config corpus; after the #32 part-3
+		// default flip, the SearchSymbols shim hits the code corpus and
+		// would return zero. Pass corpus=config explicitly.
+		hits, err := store.SearchSymbolsByCorpus(pid, c.query, "", "HCL", db.CorpusConfig, 50)
 		if err != nil {
 			t.Fatalf("SearchSymbols(%q): %v", c.query, err)
 		}
@@ -360,7 +363,8 @@ func TestHCLIntegration_SearchKindFilter(t *testing.T) {
 		{"Setting", "instance_count"},
 	}
 	for _, c := range cases {
-		hits, err := store.SearchSymbols(pid, c.query, c.kind, "HCL", 50)
+		// Same rationale as above — HCL is in the config corpus.
+		hits, err := store.SearchSymbolsByCorpus(pid, c.query, c.kind, "HCL", db.CorpusConfig, 50)
 		if err != nil {
 			t.Fatalf("SearchSymbols(%q, kind=%s): %v", c.query, c.kind, err)
 		}

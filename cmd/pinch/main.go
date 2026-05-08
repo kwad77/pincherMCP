@@ -325,38 +325,51 @@ func emitSnapshotJSON(store *db.Store, result *index.IndexResult, dataDir string
 	_ = enc.Encode(summary)
 }
 
-// searchRelevanceQueries maps a corpus name (== project name) to the curated
-// query set whose top-hit metadata is locked into the snapshot. Adding a
-// query to a corpus = a new line here + run `make corpus-snapshot-update`
-// to record the current top-hit. A future PR that shifts ranking — including
-// #32's per-corpus FTS5 split — produces a snapshot diff that surfaces
-// every shift explicitly for review.
+// searchRelevanceQuery captures one curated query plus the FTS5 corpus
+// that should answer it. Each query is paired with the corpus it tests
+// because, after the #32 part-3 default flip, an unparameterized search
+// against a YAML-only corpus would return zero hits — pinning the
+// corpus per query makes the snapshot semantically meaningful (it
+// answers "for THIS corpus, does THIS query rank the right symbol on top?").
+type searchRelevanceQuery struct {
+	Query  string
+	Corpus string
+}
+
+// searchRelevanceQueries maps a corpus name (== project name) to the
+// curated query set whose top-hit metadata is locked into the snapshot.
+// Adding a query = a new line here + `make corpus-snapshot-update` to
+// record the current top-hit. A future PR that shifts ranking produces
+// a snapshot diff that surfaces every shift explicitly for review.
 //
 // Each entry is a curated representative: a query whose intended top hit
 // is unambiguous on its corpus. Avoid queries that match multiple symbols
-// equally well (the BM25 tiebreak is implementation-defined and would
-// cause flaky snapshots).
-var searchRelevanceQueries = map[string][]string{
+// equally well (the BM25 tiebreak is implementation-defined and flaky).
+var searchRelevanceQueries = map[string][]searchRelevanceQuery{
 	"go-project": {
-		"Open",   // Function in internal/auth/auth.go — the marquee Go API
-		"Greet",  // Function in cmd/cli/main.go — distinct second hit
-		"User",   // Method on Session — proves Method routing
+		// Code corpus — Go identifiers.
+		{Query: "Open", Corpus: db.CorpusCode},   // Function in internal/auth/auth.go
+		{Query: "Greet", Corpus: db.CorpusCode},  // Function in cmd/cli/main.go
+		{Query: "User", Corpus: db.CorpusCode},   // Method on Session
 	},
 	"k8s-ops": {
-		"image",        // Setting (services.web.image, helm.values.image, etc.)
-		"replicaCount", // Setting in helm/values.yaml
-		"deployment",   // Module — the deployment.yaml file's module name
+		// Config corpus — YAML Settings.
+		{Query: "image", Corpus: db.CorpusConfig},        // services.web.image / helm.values.image
+		{Query: "replicaCount", Corpus: db.CorpusConfig}, // helm/values.yaml
+		{Query: "deployment", Corpus: db.CorpusConfig},   // deployment.yaml metadata
 	},
 	"node-monorepo": {
-		"Greeter",         // Class in src/index.ts
-		"compilerOptions", // Setting in tsconfig.json
-		"makeGreeter",     // Function in src/index.ts
+		// Mixed: Greeter is a code Class; compilerOptions is a JSON Setting.
+		{Query: "Greeter", Corpus: db.CorpusCode},
+		{Query: "compilerOptions", Corpus: db.CorpusConfig},
+		{Query: "makeGreeter", Corpus: db.CorpusCode},
 	},
 }
 
 // SearchRelevanceHit is the per-query record persisted to the snapshot.
 type SearchRelevanceHit struct {
 	Query       string `json:"query"`
+	Corpus      string `json:"corpus,omitempty"`
 	TopHitKind  string `json:"top_hit_kind,omitempty"`
 	TopHitQN    string `json:"top_hit_qn,omitempty"`
 	NoMatch     bool   `json:"no_match,omitempty"`
@@ -372,8 +385,8 @@ func computeSearchRelevance(store *db.Store, result *index.IndexResult) []Search
 	}
 	out := make([]SearchRelevanceHit, 0, len(queries))
 	for _, q := range queries {
-		hit := SearchRelevanceHit{Query: q}
-		results, err := store.SearchSymbols(result.ProjectID, q, "", "", 1)
+		hit := SearchRelevanceHit{Query: q.Query, Corpus: q.Corpus}
+		results, err := store.SearchSymbolsByCorpus(result.ProjectID, q.Query, "", "", q.Corpus, 1)
 		if err != nil || len(results) == 0 {
 			hit.NoMatch = true
 			out = append(out, hit)

@@ -1051,7 +1051,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string"},
 				"kind":{"type":"string","description":"Filter by symbol kind: Function|Method|Class|Interface|Enum|Type|Variable|Module|Setting|Section|Document|Resource|DataSource|Output|Local|Provider|Block"},
 				"language":{"type":"string","description":"Filter by language: Go|Python|TypeScript|HCL|YAML|Markdown|etc"},
-				"corpus":{"type":"string","description":"Optional FTS5 corpus to search. Default '' searches all symbols (legacy). 'code' restricts to source code identifiers; 'config' to YAML/JSON/HCL Settings; 'docs' to Markdown sections + fetched Documents. Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds."},
+				"corpus":{"type":"string","description":"FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents; 'all' searches the legacy mixed index across every symbol kind (deprecated, kept for cross-corpus queries). Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds."},
 				"limit":{"type":"integer","description":"Max results (default 20)"},
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."}
 			}

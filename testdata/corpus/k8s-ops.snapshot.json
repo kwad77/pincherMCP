@@ -9,16 +9,19 @@
   "schema_version": 9,
   "search_relevance": [
     {
+      "corpus": "config",
       "query": "image",
       "top_hit_kind": "Setting",
       "top_hit_qn": "image"
     },
     {
+      "corpus": "config",
       "query": "replicaCount",
       "top_hit_kind": "Setting",
       "top_hit_qn": "replicaCount"
     },
     {
+      "corpus": "config",
       "query": "deployment",
       "top_hit_kind": "Setting",
       "top_hit_qn": "doc0.kind"

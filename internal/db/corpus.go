@@ -50,17 +50,27 @@ func ClassifyCorpus(language, kind string) string {
 }
 
 // corpusVtab maps a corpus parameter (the user-facing label) to the SQL
-// vtab name used in queries. The empty string and "all" both route to
-// the legacy `symbols_fts` index.
+// vtab name used in queries.
+//
+// **Default flipped in #32 part 3**: empty string now routes to
+// `symbols_code_fts` (the code-corpus index), not the legacy mixed
+// `symbols_fts`. Pincher is a code-intelligence tool; the most common
+// `search` call is for an identifier and code is the right default. Use
+// "all" to explicitly hit the legacy mixed index when you want config or
+// docs results in the same query.
 //
 // Returns an error on unknown corpus names — a typo from a caller should
 // fail loudly, not silently fall through to legacy.
 func corpusVtab(corpus string) (string, error) {
 	switch corpus {
-	case "", "all":
-		return "symbols_fts", nil
-	case CorpusCode:
+	case "", CorpusCode:
 		return "symbols_code_fts", nil
+	case "all":
+		// Legacy mixed index — kept populated by the v9 triggers for
+		// callers that want all corpora in one query. Slated for
+		// removal in a future release; new code should use `code` /
+		// `config` / `docs` instead, or run separate queries.
+		return "symbols_fts", nil
 	case CorpusConfig:
 		return "symbols_config_fts", nil
 	case CorpusDocs:

@@ -1273,32 +1273,29 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 // SearchSymbols performs BM25-ranked full-text search.
 // query uses FTS5 match syntax (e.g. "auth*", "login authenticate").
 //
-// Backward-compatible shim that delegates to SearchSymbolsByCorpus with
-// an empty corpus (= legacy `symbols_fts` index). Existing callers
-// continue to behave identically.
+// Shim that delegates to SearchSymbolsByCorpus with an empty corpus —
+// which since #32 part 3 means the **code** corpus (not the legacy mixed
+// index). Callers that need cross-corpus results in one query should
+// pass `corpus="all"` explicitly.
 func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int) ([]SearchResult, error) {
 	return s.SearchSymbolsByCorpus(projectID, query, kind, language, "", limit)
 }
 
 // SearchSymbolsByCorpus performs BM25-ranked full-text search against a
-// specific corpus index (#32 part 2).
+// specific corpus index (#32).
 //
 // corpus parameter:
-//   - ""        → legacy `symbols_fts` (mixed corpus; current default)
+//   - ""        → `symbols_code_fts` (DEFAULT since part 3 — was legacy in part 2)
 //   - "code"    → `symbols_code_fts`   (Function/Method/Class/etc)
 //   - "config"  → `symbols_config_fts` (YAML/JSON/HCL Settings, Resources, etc)
 //   - "docs"    → `symbols_docs_fts`   (Markdown sections, Documents)
-//   - "all"     → alias for "" (explicit form for callers who want the
-//                 mixed-corpus behavior to be obvious in their code)
+//   - "all"     → legacy `symbols_fts` (mixed corpus; deprecated, slated
+//                 for removal — kept for callers that want a single
+//                 cross-corpus query)
 //
 // Anything else returns an error so a typo doesn't silently fall back to
-// legacy. The corpus → vtab mapping mirrors ClassifyCorpus + the v9
-// trigger routing.
-//
-// **Why the legacy default**: this PR changes no caller's behavior. Tools
-// passing the empty string still get the legacy mixed index. Part 3 of
-// the per-corpus split flips the default to "code" and deprecates the
-// legacy path.
+// the wrong index. The corpus → vtab mapping mirrors ClassifyCorpus +
+// the v9 trigger routing.
 func (s *Store) SearchSymbolsByCorpus(projectID, query, kind, language, corpus string, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 20

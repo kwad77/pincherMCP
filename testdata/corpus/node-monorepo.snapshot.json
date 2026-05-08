@@ -11,16 +11,19 @@
   "schema_version": 9,
   "search_relevance": [
     {
+      "corpus": "code",
       "query": "Greeter",
       "top_hit_kind": "Class",
       "top_hit_qn": "src.index.Greeter"
     },
     {
+      "corpus": "config",
       "query": "compilerOptions",
       "top_hit_kind": "Setting",
       "top_hit_qn": "compilerOptions"
     },
     {
+      "corpus": "code",
       "query": "makeGreeter",
       "top_hit_kind": "Function",
       "top_hit_qn": "src.index.makeGreeter"

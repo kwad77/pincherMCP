@@ -15,16 +15,19 @@
   "schema_version": 9,
   "search_relevance": [
     {
+      "corpus": "code",
       "query": "Open",
       "top_hit_kind": "Function",
       "top_hit_qn": "auth.Open"
     },
     {
+      "corpus": "code",
       "query": "Greet",
       "top_hit_kind": "Function",
       "top_hit_qn": "main.Greet"
     },
     {
+      "corpus": "code",
       "query": "User",
       "top_hit_kind": "Method",
       "top_hit_qn": "auth.*Session.User"

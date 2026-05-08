@@ -273,6 +273,8 @@ func TestSearchSymbolsByCorpus_RoutingTable(t *testing.T) {
 	})
 
 	// Each corpus query should return ONLY its own slice.
+	// Default flipped in #32 part 3: empty corpus now routes to code, NOT
+	// to the legacy mixed index. `all` is the explicit opt-in for legacy.
 	for _, c := range []struct {
 		name      string
 		corpus    string
@@ -282,7 +284,9 @@ func TestSearchSymbolsByCorpus_RoutingTable(t *testing.T) {
 		{"code finds Go", CorpusCode, "ZZRtFoo", "s-go"},
 		{"config finds YAML", CorpusConfig, "ZZRtImage", "s-yaml"},
 		{"docs finds Markdown", CorpusDocs, "ZZRtIntro", "s-md"},
-		{"empty = legacy finds Go", "", "ZZRtFoo", "s-go"},
+		// empty defaults to code — finds the Go function.
+		{"empty = code finds Go", "", "ZZRtFoo", "s-go"},
+		// `all` = legacy mixed; finds the YAML setting via the legacy index.
 		{"all = legacy finds YAML", "all", "ZZRtImage", "s-yaml"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -298,6 +302,20 @@ func TestSearchSymbolsByCorpus_RoutingTable(t *testing.T) {
 			}
 		})
 	}
+
+	// Regression gate for the part-3 flip: empty corpus MUST NOT find a
+	// YAML symbol now (pre-flip it would have, via the legacy index).
+	// If corpusVtab gets reverted to "" → symbols_fts, this case
+	// surfaces the regression immediately.
+	t.Run("empty does NOT find YAML (flip regression gate)", func(t *testing.T) {
+		results, err := s.SearchSymbolsByCorpus("p1", "ZZRtImage", "", "", "", 10)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("empty corpus returned %d hits for YAML — default flipped back to legacy?", len(results))
+		}
+	})
 
 	// Cross-corpus isolation: code corpus must NOT find YAML or Markdown tokens.
 	for _, c := range []struct{ corpus, matchTok string }{

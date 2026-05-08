@@ -217,7 +217,7 @@ All three layers are populated in **one AST parse pass** from one `symbols` row.
   └───────────────┘    └──────────────┘   └────────────────────┘
 ```
 
-**Per-corpus FTS5 (#32 parts 1+2)**: One symbol → one corpus. The `corpus` parameter on the `search` tool routes to a specific BM25 index so identifier searches aren't diluted by config keys or doc prose. Routing is `language`-driven (`YAML`/`JSON`/`HCL` → config, `Markdown` → docs, everything else → code; `Document` kind always → docs). The legacy mixed `symbols_fts` stays populated and remains the default — part 3 will flip that.
+**Per-corpus FTS5 (#32 ✅)**: One symbol → one corpus. The `corpus` parameter on the `search` tool routes to a specific BM25 index so identifier searches aren't diluted by config keys or doc prose. Routing is `language`-driven (`YAML`/`JSON`/`HCL` → config, `Markdown` → docs, everything else → code; `Document` kind always → docs). **Default is `code`** — the most common search is for an identifier. Pass `corpus=config` for YAML/JSON/HCL settings, `corpus=docs` for Markdown / fetched Documents, or `corpus=all` to hit the legacy mixed index (deprecated, slated for removal in a future release).
 
 ---
 
@@ -295,7 +295,7 @@ All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). To
 
 | Tool | Capability | Tested latency |
 |---|---|---|
-| `search` | FTS5 BM25 full-text across names, signatures, and docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR, `kind`/`language`/`corpus` filters. `corpus` (`code`/`config`/`docs`) routes the query to a per-corpus index so identifier searches aren't diluted by config or doc rows. `fields` param projects columns to reduce token usage. `project=*` searches all indexed repos. | 1ms |
+| `search` | FTS5 BM25 full-text across names, signatures, and docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR, `kind`/`language`/`corpus` filters. `corpus` defaults to `code` (source-code identifiers) — pass `config` for YAML/JSON/HCL settings, `docs` for Markdown sections + fetched Documents, or `all` for the legacy mixed index. `fields` param projects columns to reduce token usage. `project=*` searches all indexed repos. | 1ms |
 | `query` | Cypher-like graph queries. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. `max_rows` param (default 200, max 10000). | 2ms (single-hop) |
 | `trace` | BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). | <5ms (depth 3) |
 
@@ -713,7 +713,7 @@ The story: more languages and bigger projects without silent degradation.
 - ✅ **Pinned-corpus snapshot tests** — three corpora (`testdata/corpus/{go-project,k8s-ops,node-monorepo}`) with committed JSON snapshots; CI gate catches extraction drift on every PR. Search-relevance fields (#68) pin top BM25 hits per corpus. ([#33](https://github.com/kwad77/pincherMCP/issues/33) — substrate landed; fourth corpus + comprehensive negative assertions remain)
 - ✅ **Bash extractor** — `mvdan.cc/sh/v3/syntax` (the shfmt parser) at confidence 1.0. ([#38](https://github.com/kwad77/pincherMCP/pull/38))
 - ✅ **HCL/Terraform extractor** — `hashicorp/hcl/v2/hclsyntax` at confidence 1.0; covers `.tf` and `.tfvars`, recurses into nested blocks. ([#67](https://github.com/kwad77/pincherMCP/pull/67))
-- 🟡 **Per-corpus FTS5 split** — three new vtabs (`symbols_{code,config,docs}_fts`) populate alongside legacy via v9 triggers; `corpus=` parameter on the `search` tool routes queries to the right index. **Parts 1+2 landed; part 3** flips the default and deprecates legacy. ([#32](https://github.com/kwad77/pincherMCP/issues/32))
+- ✅ **Per-corpus FTS5 split** — three new vtabs (`symbols_{code,config,docs}_fts`) populate alongside legacy via v9 triggers. `corpus=` parameter on the `search` tool routes queries to the right index; default is `code`. Legacy `symbols_fts` is reachable via `corpus=all` and deprecated for future removal. ([#32](https://github.com/kwad77/pincherMCP/issues/32))
 - **Markdown extractor** — pure-Go AST extraction via `goldmark`; deferred from #38 pending the per-corpus FTS5 split (avoids BM25 dilution).
 - **Per-symbol confidence scoring** — replaces the per-language constant with composable signals (path patterns, content shape, identifier quality). Subsumes the static blocklist into a tunable score. ([#34](https://github.com/kwad77/pincherMCP/issues/34))
 
