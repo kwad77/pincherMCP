@@ -39,6 +39,10 @@ make bench-server                 # only internal/server benchmarks
 pincher doctor                    # human-readable health report
 pincher doctor --json             # structured output for CI / dashboard
 pincher --slow-query-ms 50        # opt-in slow-query capture (also via env)
+
+# FTS5 escape hatch (#33 prerequisite for #32)
+pincher rebuild-fts               # drop + recreate the symbols_fts index from canonical symbols
+pincher rebuild-fts --quiet       # row count only — pipe-friendly
 ```
 
 **After any schema change** (adding a column to `db.go`), rebuild `pincher.exe` and reconnect via `/mcp` in Claude Code so the binary serving MCP requests picks up the new schema.

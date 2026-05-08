@@ -427,6 +427,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	// Pragmas / lifecycle (writer-pool by definition).
 	"Optimize":           true,
 	"CheckpointTruncate": true,
+	"RebuildFTS":         true,
 	"Close":              true,
 	"DB":                 true,
 	// Configuration (operates on the reader pool but is itself a write
@@ -2870,5 +2871,140 @@ func TestDeleteEmptyProjects(t *testing.T) {
 	}
 	if n2 != 0 {
 		t.Errorf("second call deleted count = %d, want 0", n2)
+	}
+}
+
+// TestRebuildFTS_HappyPath asserts that calling RebuildFTS on a healthy
+// index returns the symbol count and leaves search working. This is the
+// no-op case — proves the rebuild path produces an equivalent index.
+func TestRebuildFTS_HappyPath(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		{ID: "s1", ProjectID: "p1", FilePath: "auth.go", Name: "AuthService",
+			QualifiedName: "auth.AuthService", Kind: "Class", Language: "Go"},
+		{ID: "s2", ProjectID: "p1", FilePath: "user.go", Name: "UserService",
+			QualifiedName: "user.UserService", Kind: "Class", Language: "Go"},
+		{ID: "s3", ProjectID: "p1", FilePath: "auth.go", Name: "Login",
+			QualifiedName: "auth.Login", Kind: "Function", Language: "Go"},
+	})
+
+	rows, err := s.RebuildFTS()
+	if err != nil {
+		t.Fatalf("RebuildFTS: %v", err)
+	}
+	if rows != 3 {
+		t.Errorf("rebuilt rows = %d, want 3", rows)
+	}
+
+	results, err := s.SearchSymbols("p1", "auth*", "", "", 10)
+	if err != nil {
+		t.Fatalf("post-rebuild SearchSymbols: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected post-rebuild results for 'auth*'")
+	}
+}
+
+// TestRebuildFTS_RestoresAfterCorruption simulates a drift scenario where
+// the FTS5 index has rows that no longer match `symbols`, then verifies
+// rebuild restores parity. This is the actual escape-hatch use case.
+//
+// We simulate corruption by deleting symbols rows directly via raw SQL
+// (bypassing the trigger contract) — the FTS5 index is left holding
+// stale entries pointing at removed rows. Search then returns ghost
+// hits, which is exactly the symptom users would see in a real bug.
+func TestRebuildFTS_RestoresAfterCorruption(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		{ID: "s1", ProjectID: "p1", FilePath: "auth.go", Name: "Login",
+			QualifiedName: "auth.Login", Kind: "Function", Language: "Go"},
+		{ID: "s2", ProjectID: "p1", FilePath: "auth.go", Name: "Logout",
+			QualifiedName: "auth.Logout", Kind: "Function", Language: "Go"},
+	})
+
+	// Confirm baseline: both rows match.
+	pre, err := s.SearchSymbols("p1", "Log*", "", "", 10)
+	if err != nil {
+		t.Fatalf("baseline SearchSymbols: %v", err)
+	}
+	if len(pre) != 2 {
+		t.Fatalf("baseline rows = %d, want 2", len(pre))
+	}
+
+	// Disable triggers and remove a symbol — this leaves the FTS5 index
+	// holding a ghost entry. Real-world corruption is structurally similar:
+	// the FTS shadow table holds rowids that the symbols table no longer has.
+	if _, err := s.DB().Exec(`DROP TRIGGER sym_fts_delete`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if _, err := s.DB().Exec(`DELETE FROM symbols WHERE id='s2'`); err != nil {
+		t.Fatalf("orphan delete: %v", err)
+	}
+
+	// Rebuild restores the FTS index from the canonical symbols table.
+	rows, err := s.RebuildFTS()
+	if err != nil {
+		t.Fatalf("RebuildFTS: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("rebuilt rows = %d, want 1", rows)
+	}
+
+	post, err := s.SearchSymbols("p1", "Log*", "", "", 10)
+	if err != nil {
+		t.Fatalf("post-rebuild SearchSymbols: %v", err)
+	}
+	if len(post) != 1 {
+		t.Errorf("post-rebuild rows = %d, want 1", len(post))
+	}
+	if len(post) == 1 && post[0].Symbol.ID != "s1" {
+		t.Errorf("post-rebuild kept wrong row: %s", post[0].Symbol.ID)
+	}
+}
+
+// TestRebuildFTS_TriggersRestored confirms that after rebuild, the
+// auto-sync triggers are reinstalled — subsequent inserts must show up
+// in search without a second rebuild.
+func TestRebuildFTS_TriggersRestored(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		{ID: "s1", ProjectID: "p1", FilePath: "auth.go", Name: "Login",
+			QualifiedName: "auth.Login", Kind: "Function", Language: "Go"},
+	})
+
+	if _, err := s.RebuildFTS(); err != nil {
+		t.Fatalf("RebuildFTS: %v", err)
+	}
+
+	// Insert a new symbol AFTER rebuild — the triggers should fire and
+	// it should be searchable.
+	s.BulkUpsertSymbols([]Symbol{
+		{ID: "s2", ProjectID: "p1", FilePath: "user.go", Name: "Register",
+			QualifiedName: "user.Register", Kind: "Function", Language: "Go"},
+	})
+
+	results, err := s.SearchSymbols("p1", "Register", "", "", 10)
+	if err != nil {
+		t.Fatalf("post-rebuild SearchSymbols: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("triggers not restored — got %d hits, want 1", len(results))
+	}
+}
+
+// TestRebuildFTS_EmptyDB asserts the no-symbols case returns 0, no error.
+// Edge case: a fresh install with no projects yet should still rebuild
+// cleanly without panicking.
+func TestRebuildFTS_EmptyDB(t *testing.T) {
+	s := newTestStore(t)
+	rows, err := s.RebuildFTS()
+	if err != nil {
+		t.Fatalf("RebuildFTS on empty: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("empty rebuild rows = %d, want 0", rows)
 	}
 }

@@ -37,6 +37,10 @@ func main() {
 		runDoctorCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "rebuild-fts" {
+		runRebuildFTSCLI(os.Args[2:])
+		return
+	}
 
 	var (
 		showVersion = flag.Bool("version", false, "Print version and exit")

@@ -309,6 +309,68 @@ func (s *Store) CheckpointTruncate() error {
 	return err
 }
 
+// RebuildFTS drops the symbols_fts virtual table and its sync triggers,
+// recreates them from the canonical ftsDDL, and bulk-loads them from the
+// symbols table. Returns the number of symbol rows ingested.
+//
+// This is the FTS5 escape hatch — for situations where the trigger-driven
+// index has drifted from `symbols`: an interrupted index that left FTS5
+// shadow tables inconsistent, a bug in a previous version that bypassed
+// the triggers, or a SQLite/FTS5 version mismatch on the underlying
+// module. It's also the safety net for the upcoming per-corpus FTS5
+// split (#32) — if the migration produces a degraded index, users can
+// always rebuild without re-indexing source files.
+//
+// Operates atomically inside a single transaction: if any step fails
+// the original FTS5 state is preserved. Cost is proportional to the
+// symbol count — this is not a hot path, expect seconds-to-minutes on
+// large repos.
+func (s *Store) RebuildFTS() (rows int64, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// Drop triggers BEFORE the vtab so the trigger DROPs don't try to
+	// fire against a missing vtab, and so a subsequent insert from
+	// symbols isn't shadow-written by a stale trigger.
+	for _, stmt := range []string{
+		`DROP TRIGGER IF EXISTS sym_fts_insert`,
+		`DROP TRIGGER IF EXISTS sym_fts_delete`,
+		`DROP TRIGGER IF EXISTS sym_fts_update`,
+		`DROP TABLE IF EXISTS symbols_fts`,
+	} {
+		if _, err = tx.Exec(stmt); err != nil {
+			return 0, fmt.Errorf("drop %s: %w", stmt, err)
+		}
+	}
+
+	// Recreate from canonical DDL — same string the schema bootstrap uses.
+	if _, err = tx.Exec(ftsDDL); err != nil {
+		return 0, fmt.Errorf("recreate fts ddl: %w", err)
+	}
+
+	res, err := tx.Exec(`
+		INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+		SELECT rowid, id, name, qualified_name,
+		       COALESCE(signature, ''), COALESCE(docstring, '')
+		FROM symbols`)
+	if err != nil {
+		return 0, fmt.Errorf("bulk insert: %w", err)
+	}
+	rows, _ = res.RowsAffected()
+
+	if err = tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return rows, nil
+}
+
 // schemaMigrations is an ordered list of incremental SQL migrations applied
 // after the baseline schema. migrations[i] upgrades version (i+1) → (i+2).
 // To add a schema change: append a SQL string here and bump nothing else —
@@ -510,6 +572,43 @@ func (s *Store) migrate() error {
 //	Layer 3 — FTS5 Full-Text Search
 //	  symbols_fts virtual table with built-in BM25 ranking
 //	  Auto-synced via AFTER INSERT/UPDATE/DELETE triggers
+
+// ftsDDL is the FTS5 vtab + sync triggers, named separately from the
+// rest of the schema so RebuildFTS can drop-and-recreate using the
+// canonical DDL. Both the initial schema and the rebuild path consume
+// this constant — they cannot drift.
+const ftsDDL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    symbol_id UNINDEXED,
+    name,
+    qualified_name,
+    signature,
+    docstring,
+    content='symbols',
+    content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 1'
+);
+
+CREATE TRIGGER IF NOT EXISTS sym_fts_insert AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES (new.rowid, new.id, new.name, new.qualified_name,
+            COALESCE(new.signature,''), COALESCE(new.docstring,''));
+END;
+CREATE TRIGGER IF NOT EXISTS sym_fts_delete AFTER DELETE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
+            COALESCE(old.signature,''), COALESCE(old.docstring,''));
+END;
+CREATE TRIGGER IF NOT EXISTS sym_fts_update AFTER UPDATE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
+            COALESCE(old.signature,''), COALESCE(old.docstring,''));
+    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    VALUES (new.rowid, new.id, new.name, new.qualified_name,
+            COALESCE(new.signature,''), COALESCE(new.docstring,''));
+END;
+`
+
 const schema = `
 CREATE TABLE IF NOT EXISTS projects (
     id          TEXT    PRIMARY KEY,
@@ -561,36 +660,7 @@ CREATE INDEX IF NOT EXISTS idx_sym_qn      ON symbols(project_id, qualified_name
 
 -- Layer 3: FTS5 full-text search with BM25 ranking.
 -- content= avoids storing duplicate text; triggers keep the index in sync.
-CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-    symbol_id UNINDEXED,
-    name,
-    qualified_name,
-    signature,
-    docstring,
-    content='symbols',
-    content_rowid='rowid',
-    tokenize='unicode61 remove_diacritics 1'
-);
-
-CREATE TRIGGER IF NOT EXISTS sym_fts_insert AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES (new.rowid, new.id, new.name, new.qualified_name,
-            COALESCE(new.signature,''), COALESCE(new.docstring,''));
-END;
-CREATE TRIGGER IF NOT EXISTS sym_fts_delete AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
-            COALESCE(old.signature,''), COALESCE(old.docstring,''));
-END;
-CREATE TRIGGER IF NOT EXISTS sym_fts_update AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
-            COALESCE(old.signature,''), COALESCE(old.docstring,''));
-    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES (new.rowid, new.id, new.name, new.qualified_name,
-            COALESCE(new.signature,''), COALESCE(new.docstring,''));
-END;
-
+` + ftsDDL + `
 CREATE TABLE IF NOT EXISTS edges (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT    NOT NULL REFERENCES projects(id),

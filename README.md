@@ -661,6 +661,18 @@ The `--hook` flag outputs a JSON envelope that Claude Code's SessionStart hook s
 }
 ```
 
+### `pincher rebuild-fts` subcommand
+
+`pincher rebuild-fts` is the escape hatch for FTS5 corruption. It drops the `symbols_fts` virtual table and its sync triggers, then bulk-loads them back from the canonical `symbols` table:
+
+```bash
+pincher rebuild-fts                  # rebuild and print row count
+pincher rebuild-fts --quiet          # row count only — pipe-friendly
+pincher rebuild-fts --data-dir /x    # override data directory
+```
+
+Use this if `pincher search` returns results inconsistent with `pincher query` against the same project — e.g. ghost hits for symbols you've deleted, or missing hits for symbols that exist in the graph. Cost is proportional to symbol count (seconds-to-minutes on large repos). Source files are not re-walked.
+
 ---
 
 ## <img src="docs/assets/crab.png" width="22" alt=""/> Performance
