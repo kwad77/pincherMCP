@@ -875,9 +875,36 @@ var cRE = &regexExtractor{
 var cMacroRE = regexp.MustCompile(
 	`(?m)^[ \t]*(?:static\s+)?(?P<macro>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\s*\(\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)`)
 
+// extractC runs the regex extractor over a C source file, then applies
+// four post-processing passes that the regex alone can't handle:
+//
+//  1. rewriteCMacroSymbols (#69/#73): SCREAM_CASE_MACRO(arg, ...) — name
+//     the symbol after `arg`, not the macro.
+//  2. dropCForwardDecls (#79 part 1): drop `name(args);` declarations.
+//     The body's where the source lives; a decl-only symbol has nothing
+//     useful to fetch and collides on QN with the matching definition.
+//  3. extractCBareMacros (#74): emit Function symbols for column-0
+//     bare-prefix macros (EXPORT_SYMBOL, MODULE_PARM_DESC) that funcRE
+//     can't match because they have no preceding word.
+//  4. dedupCSymbolsByQN (#79 part 2): when #ifdef / #else branches both
+//     define the same function, keep the first symbol and drop the
+//     duplicates. Preserves the user's experience that a single QN
+//     resolves to a single symbol — which-variant-is-active needs
+//     preprocessor awareness we don't have.
+//
+// Each pass is independently testable; the order matters because:
+//   - rewriteCMacro must run BEFORE dedup so DEVICE_ATTR and friends get
+//     their proper per-instance names rather than colliding on the
+//     macro name.
+//   - extractCBareMacros must run AFTER dropForwardDecls so the bare
+//     macro pass doesn't re-emit names just removed.
+//   - dedup must run LAST so all upstream renames have settled.
 func extractC(source []byte, relPath string) *FileResult {
 	result := cRE.extract(source, relPath, "C", simpleOpts("::", '{'))
 	rewriteCMacroSymbols(result, source, relPath)
+	result.Symbols = dropCForwardDecls(result.Symbols, source)
+	result.Symbols = append(result.Symbols, extractCBareMacros(source, relPath, result.Symbols)...)
+	result.Symbols = dedupCSymbolsByQN(result.Symbols)
 	return result
 }
 
@@ -942,6 +969,207 @@ func sourceLineAt(source []byte, off int) string {
 		end++
 	}
 	return string(source[start:end])
+}
+
+// dropCForwardDecls removes Function symbols whose source position is a
+// `name(args);` forward declaration rather than a `name(args) { ... }`
+// definition. The decl-only form has no body to fetch and collides on
+// qualified_name with the matching definition (#79 part 1).
+//
+// Detection walks forward from the symbol's StartByte, tracking
+// parenthesis depth, then inspects the first non-whitespace, non-comment
+// character after the parameter list closes. `;` → forward decl (drop).
+// `{` → definition (keep). Anything else (e.g. `__attribute__((...))`)
+// is treated as a definition to err on the side of keeping symbols.
+//
+// Multi-line forward decls (parameters on separate lines) are handled
+// because the scan tracks paren depth, not line-by-line.
+func dropCForwardDecls(syms []ExtractedSymbol, source []byte) []ExtractedSymbol {
+	out := syms[:0]
+	for _, s := range syms {
+		if s.Kind == "Function" && cIsForwardDecl(source, s.StartByte) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// cIsForwardDecl returns true if the C function declaration starting at
+// `off` is a forward declaration (terminated by `;`, no body) rather
+// than a definition (followed by `{`).
+func cIsForwardDecl(source []byte, off int) bool {
+	if off < 0 || off >= len(source) {
+		return false
+	}
+	// Find the first `(` after off.
+	i := off
+	for i < len(source) && source[i] != '(' && source[i] != '\n' {
+		i++
+	}
+	if i >= len(source) || source[i] != '(' {
+		// No `(` on this line — bail. The regex extractor wouldn't have
+		// matched without one, but be defensive.
+		return false
+	}
+
+	// Walk through the parameter list, tracking paren depth.
+	depth := 0
+	for ; i < len(source); i++ {
+		switch source[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				// Past the closing `)`. Find the next non-whitespace,
+				// non-comment char.
+				return cNextSignificantByteIs(source, i+1, ';')
+			}
+		}
+	}
+	return false // EOF inside parens — treat as definition (don't drop)
+}
+
+// cNextSignificantByteIs returns true if the next non-whitespace,
+// non-comment character starting at `off` equals `want`. Skips
+// `// line` and `/* block */` comments and ASCII whitespace. Returns
+// false on EOF or any other character.
+func cNextSignificantByteIs(source []byte, off int, want byte) bool {
+	for i := off; i < len(source); i++ {
+		c := source[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			continue
+		case c == '/' && i+1 < len(source) && source[i+1] == '/':
+			// Skip to end of line.
+			for i < len(source) && source[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(source) && source[i+1] == '*':
+			// Skip to */
+			i += 2
+			for i+1 < len(source) && !(source[i] == '*' && source[i+1] == '/') {
+				i++
+			}
+			i++ // step past `/`
+		case c == want:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// extractCBareMacros emits Function symbols for column-0 bare-prefix
+// declaration macros (`EXPORT_SYMBOL(name);`, `MODULE_PARM_DESC(...)`)
+// that the main funcRE can't match because they have no preceding word
+// or `static`/`inline` keyword (#74). The first arg of the macro is the
+// symbol name, mirroring the rewriteCMacroSymbols rule for the
+// `static MACRO(...)` form.
+//
+// Skips lines whose start byte is already covered by an existing
+// symbol — avoids double-emit when the same line was matched by the
+// main extractor and rewriteCMacroSymbols renamed it.
+func extractCBareMacros(source []byte, relPath string, existing []ExtractedSymbol) []ExtractedSymbol {
+	if len(source) == 0 {
+		return nil
+	}
+
+	taken := make(map[int]struct{}, len(existing))
+	for _, s := range existing {
+		taken[s.StartByte] = struct{}{}
+	}
+
+	mod := moduleQN(relPath, "::")
+	argIdx := cMacroRE.SubexpIndex("arg")
+	if argIdx < 0 {
+		return nil
+	}
+
+	matches := cMacroRE.FindAllSubmatchIndex(source, -1)
+	out := make([]ExtractedSymbol, 0, len(matches))
+	for _, m := range matches {
+		startByte := m[0]
+		if _, alreadyEmitted := taken[startByte]; alreadyEmitted {
+			continue
+		}
+		argStart, argEnd := m[2*argIdx], m[2*argIdx+1]
+		if argStart < 0 || argEnd <= argStart {
+			continue
+		}
+		arg := string(source[argStart:argEnd])
+
+		// EndByte: scan forward from match end to the line's terminating
+		// newline OR the matching `;`, whichever comes first. Bare-prefix
+		// macros are typically single-line, so this is usually short.
+		endByte := startByte
+		for endByte < len(source) && source[endByte] != '\n' && source[endByte] != ';' {
+			endByte++
+		}
+		if endByte < len(source) && source[endByte] == ';' {
+			endByte++ // include the `;`
+		}
+
+		startLine := offsetToLineNumber(source, startByte)
+		endLine := offsetToLineNumber(source, endByte)
+		sig := strings.TrimSpace(sourceLineAt(source, startByte))
+		out = append(out, ExtractedSymbol{
+			Name:          arg,
+			QualifiedName: mod + "::" + arg,
+			Kind:          "Function",
+			StartByte:     startByte,
+			EndByte:       endByte,
+			StartLine:     startLine,
+			EndLine:       endLine,
+			Signature:     sig,
+			IsExported:    true,
+		})
+	}
+	return out
+}
+
+// offsetToLineNumber returns the 1-indexed line number for byte offset
+// off. O(off) — fine for our use case (one call per symbol).
+func offsetToLineNumber(source []byte, off int) int {
+	if off > len(source) {
+		off = len(source)
+	}
+	line := 1
+	for i := 0; i < off; i++ {
+		if source[i] == '\n' {
+			line++
+		}
+	}
+	return line
+}
+
+// dedupCSymbolsByQN keeps the first symbol per qualified_name and drops
+// duplicates. C's preprocessor permits multiple definitions of the same
+// function name in mutually-exclusive `#ifdef` / `#else` branches; the
+// regex extractor can't tell which branch the active build configures,
+// so emitting both produces a qualified_name_collision (#79 part 2).
+//
+// The first occurrence wins. This is a heuristic — a real fix needs
+// preprocessor awareness (modernc.org/cc/v4 is the documented next
+// step). The user-visible improvement is that `pincher search` returns
+// one canonical symbol per name rather than silently picking the last
+// one via BulkUpsertSymbols' last-write-wins behaviour.
+func dedupCSymbolsByQN(syms []ExtractedSymbol) []ExtractedSymbol {
+	if len(syms) <= 1 {
+		return syms
+	}
+	seen := make(map[string]struct{}, len(syms))
+	out := make([]ExtractedSymbol, 0, len(syms))
+	for _, s := range syms {
+		if _, ok := seen[s.QualifiedName]; ok {
+			continue
+		}
+		seen[s.QualifiedName] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 var csRE = &regexExtractor{

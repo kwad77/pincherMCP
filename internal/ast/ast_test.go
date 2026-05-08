@@ -700,6 +700,175 @@ func sortedNames(byName map[string]ExtractedSymbol) []string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #74 — bare-prefix declaration macros (EXPORT_SYMBOL, MODULE_PARM_DESC)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// cBareMacroSrc reproduces the column-0 declaration-macro pattern from
+// issue #74. These lines have no preceding word or `static` keyword, so
+// the funcRE never matches them — they were silently missing from
+// extraction before this PR.
+const cBareMacroSrc = `#include <linux/module.h>
+
+static int gpio_keys_show_keys(struct device *d) { return 0; }
+static int driver_register(void) { return 0; }
+
+EXPORT_SYMBOL(gpio_keys_show_keys);
+EXPORT_SYMBOL_GPL(driver_register);
+MODULE_PARM_DESC(timeout, "watchdog timeout");
+MODULE_AUTHOR("Some Person");
+`
+
+// TestExtractC_BareMacros is the regression gate for #74: bare-prefix
+// macros at column 0 MUST emit a Function symbol whose name is the
+// macro's first arg (the actual identifier).
+func TestExtractC_BareMacros(t *testing.T) {
+	result := Extract([]byte(cBareMacroSrc), "C", "drivers/gpio_keys.c")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+
+	// Real function bodies from the regular extractor.
+	for _, want := range []string{"gpio_keys_show_keys", "driver_register"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("expected real function %q to still extract; got names %v", want, sortedNames(byName))
+		}
+	}
+	// Bare-prefix macros — the new behavior. Each macro's first arg
+	// becomes the symbol name. Note: gpio_keys_show_keys is also a real
+	// function; the dedup pass (#79 part 2) means we keep only one
+	// symbol with that QN — the first one wins, which is the real
+	// function definition. EXPORT_SYMBOL(gpio_keys_show_keys) gets
+	// deduped away.
+	for _, want := range []string{"timeout", "driver_register"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("expected bare-macro symbol %q; got names %v", want, sortedNames(byName))
+		}
+	}
+
+	// MODULE_AUTHOR has a string literal as its first arg, not an
+	// identifier — cMacroRE requires `[A-Za-z_]` at the arg start, so
+	// `"Some Person"` doesn't match. That's correct: there's no
+	// identifier to attach a Function symbol to.
+	if _, ok := byName["Some"]; ok {
+		t.Errorf("MODULE_AUTHOR string-literal first-arg leaked as a symbol")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #79 part 1 — forward declarations
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cForwardDeclSrc = `#include <linux/module.h>
+
+static int helper_a(void);
+static int helper_b(int arg);
+
+static int helper_a(void) {
+    return 1;
+}
+
+static int helper_b(int arg) {
+    return arg + 1;
+}
+`
+
+// TestExtractC_ForwardDeclsDropped pins the regression gate for #79
+// part 1: forward declarations (terminated by `;`) MUST be dropped so
+// the symbol that survives is the DEFINITION, not the decl-only line.
+//
+// The strict assertion: each kept symbol's StartLine must correspond to
+// the line containing the definition body, not the forward decl. In
+// the fixture, helper_a's forward decl is on line 3 and its definition
+// is on line 6. Without dropCForwardDecls, dedup would keep the
+// first-encountered symbol — the forward decl on line 3 — and the
+// test fails.
+func TestExtractC_ForwardDeclsDropped(t *testing.T) {
+	result := Extract([]byte(cForwardDeclSrc), "C", "drivers/x.c")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+
+	// Each name appears exactly once.
+	count := make(map[string]int)
+	for _, s := range result.Symbols {
+		count[s.QualifiedName]++
+	}
+	for qn, n := range count {
+		if n > 1 {
+			t.Errorf("qualified_name %q appears %d times — forward-decl drop missed", qn, n)
+		}
+	}
+
+	// Find helper_a and assert its StartLine is the DEFINITION line,
+	// not the forward-decl line. The forward decl lives at line 3
+	// (1-indexed); the definition's `{` is at line 6.
+	for _, s := range result.Symbols {
+		if s.Name != "helper_a" {
+			continue
+		}
+		if s.StartLine != 6 {
+			t.Errorf("helper_a kept the wrong line: StartLine=%d, want 6 (the definition). "+
+				"StartLine=3 means dedup kept the forward decl from line 3.", s.StartLine)
+		}
+	}
+	for _, s := range result.Symbols {
+		if s.Name != "helper_b" {
+			continue
+		}
+		// helper_b: forward decl on line 4, definition on line 10.
+		if s.StartLine != 10 {
+			t.Errorf("helper_b kept the wrong line: StartLine=%d, want 10 (the definition).", s.StartLine)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #79 part 2 — #ifdef / #else duplicate definitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cIfdefSrc = `#include <linux/module.h>
+
+#ifdef CONFIG_PM_SLEEP
+static void gpio_keys_syscore_resume(void) {
+    real_resume();
+}
+#else
+static void gpio_keys_syscore_resume(void) {}
+#endif
+`
+
+// TestExtractC_IfdefVariantsDeduped pins the regression gate for #79
+// part 2: when the same function is defined in both `#ifdef` and `#else`
+// branches, the extractor MUST emit exactly one symbol (first wins).
+//
+// The user-visible failure pre-fix: BulkUpsertSymbols' last-write-wins
+// would silently pick whichever branch happened to be parsed last,
+// hiding the other variant entirely. Post-fix the user gets the FIRST
+// variant — still a heuristic, but now a documented and stable one.
+func TestExtractC_IfdefVariantsDeduped(t *testing.T) {
+	result := Extract([]byte(cIfdefSrc), "C", "drivers/y.c")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+
+	// Exactly one symbol named gpio_keys_syscore_resume.
+	count := 0
+	for _, s := range result.Symbols {
+		if s.Name == "gpio_keys_syscore_resume" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("got %d gpio_keys_syscore_resume symbols, want 1 (#ifdef dedup failed)", count)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // C# extractor
 // ─────────────────────────────────────────────────────────────────────────────
 
