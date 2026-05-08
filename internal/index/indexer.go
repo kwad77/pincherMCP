@@ -221,11 +221,26 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 				slog.Warn("pincher.index.delete_stale.err", "err", delErr, "file", relPath)
 			}
 
-			// Three-layer extraction in one pass
-			result := ast.ExtractWithModule(content, lang, relPath, modulePath)
+			// Three-layer extraction in one pass.
+			//
+			// Wrapped in recover() (#42 part 1): if an extractor panics on
+			// pathological input, we catch it, persist the failure, and skip
+			// the file rather than crashing the whole indexer goroutine.
+			// Without this, one malformed file kills the entire index run.
+			result := safeExtractWithModule(idx, projectID, lang, relPath, content, modulePath)
 			if result == nil || len(result.Symbols) == 0 {
 				return
 			}
+
+			// Sanity heuristics — flag suspicious extractor output before it
+			// reaches the DB. These are cheap (O(n) per file, n = symbols
+			// per file) and catch real bug classes:
+			//   - byte_range_negative: end_byte <= start_byte. Always wrong.
+			//   - qualified_name_collision: same QN twice in one file. Means
+			//     the dotted-path builder produced a duplicate (PR #39's
+			//     YAML-byte-range bug used to do this when sequences were
+			//     re-indexed).
+			recordExtractionHeuristics(idx, projectID, lang, relPath, result.Symbols)
 
 			// Convert to DB types
 			syms := make([]db.Symbol, 0, len(result.Symbols))
@@ -681,6 +696,81 @@ var skippedDirs = map[string]bool{
 
 func isSkippedDir(name string) bool {
 	return skippedDirs[name] || strings.HasPrefix(name, ".")
+}
+
+// safeExtractWithModule wraps ast.ExtractWithModule in a recover() that
+// persists an "extractor_panicked" failure row instead of crashing the
+// per-file goroutine. Returns nil on panic so the caller skips the file.
+//
+// Without this, a single malformed file (e.g. a YAML stream that triggers
+// a yaml.v3 panic, a Cypher-shape that breaks the parser, etc.) kills the
+// entire Index() run via the goroutine crash. Now the panic is captured,
+// the file is skipped, and the user sees it in `extraction_failures`.
+//
+// #42 part 1 — diagnostic surface.
+func safeExtractWithModule(idx *Indexer, projectID, lang, relPath string, content []byte, modulePath string) (result *ast.FileResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			details := fmt.Sprintf("panic: %v", r)
+			if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "extractor_panicked", details); err != nil {
+				slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+			}
+			slog.Warn("pincher.extractor.panic", "file", relPath, "lang", lang, "panic", r)
+			result = nil
+		}
+	}()
+	return ast.ExtractWithModule(content, lang, relPath, modulePath)
+}
+
+// recordExtractionHeuristics scans extractor output for shapes that are
+// always-wrong, and records each as an extraction_failures row. The bug
+// classes it catches:
+//
+//   - byte_range_negative: end_byte <= start_byte for any symbol. Means
+//     the extractor produced an inverted range; the symbol can't be sliced
+//     from the source file. This is a hard correctness bug — every fetch
+//     of that symbol returns either zero bytes or the wrong content.
+//
+//   - qualified_name_collision: the same qualified_name appears more than
+//     once in a single file's extraction output. Pre-fix, PR #39's YAML
+//     scalar byte-range bug occasionally produced two `services.web.image`
+//     entries when the byte-range walker drifted into the next sibling.
+//
+// Heuristics are O(n) in symbols per file. They run after extraction
+// succeeded, so a parse-error path doesn't double-record (parse_error +
+// these heuristics).
+//
+// #42 part 1 — diagnostic surface.
+func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, syms []ast.ExtractedSymbol) {
+	seen := make(map[string]int, len(syms))
+	for _, s := range syms {
+		// byte_range_negative
+		if s.EndByte <= s.StartByte {
+			details := fmt.Sprintf("symbol %q (%s): end_byte=%d <= start_byte=%d",
+				s.QualifiedName, s.Kind, s.EndByte, s.StartByte)
+			if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "byte_range_negative", details); err != nil {
+				slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+			}
+		}
+		seen[s.QualifiedName]++
+	}
+	// qualified_name_collision — record once per file even if multiple QNs
+	// collide; details lists the worst offender plus the count.
+	var worst string
+	worstCount := 1
+	for qn, n := range seen {
+		if n > worstCount {
+			worst = qn
+			worstCount = n
+		}
+	}
+	if worstCount > 1 {
+		details := fmt.Sprintf("qualified_name %q appears %d times (extractor produced duplicates)",
+			worst, worstCount)
+		if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "qualified_name_collision", details); err != nil {
+			slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+		}
+	}
 }
 
 // skippedDirSlice returns the skippedDirs map keys as a slice for gocodewalker.ExcludeDirectory.

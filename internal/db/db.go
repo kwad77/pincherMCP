@@ -287,6 +287,39 @@ var schemaMigrations = []string{
 	// triggers a content lookup, which is why the bug stayed latent.
 	// VIRTUAL = computed at read time, zero storage, no FTS rebuild required.
 	`ALTER TABLE symbols ADD COLUMN symbol_id TEXT GENERATED ALWAYS AS (id) VIRTUAL`,
+
+	// v6 → v7: extraction_failures table — first piece of #42's diagnostic
+	// surface. Captures parse failures, panics, and sanity-heuristic flags
+	// from the indexer so users can see what pincher couldn't index without
+	// dropping into the SQLite file.
+	//
+	// UNIQUE(project_id, file_path, reason) means re-indexing a file with
+	// a persistent error doesn't multiply rows; instead INSERT OR REPLACE
+	// updates last_seen_at to the current time. Old rows for files whose
+	// errors have been fixed will get cleaned up by a future "ageing"
+	// pass; for now they remain visible in the failure report and the
+	// user can manually clear them via `pincher index --force`.
+	//
+	// reason is machine-readable (e.g. "parse_error", "extractor_panicked",
+	// "byte_range_negative"); details is human-readable (the first line of
+	// the error message, or the suspicious value). Both are bounded —
+	// the indexer truncates details to 1024 chars before INSERT.
+	//
+	// Table + index combined into one migration entry (semicolon-separated)
+	// so the schema-version bump is coherent: v6 → v7 in one logical step.
+	`CREATE TABLE IF NOT EXISTS extraction_failures (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id    TEXT    NOT NULL REFERENCES projects(id),
+		file_path     TEXT    NOT NULL,
+		language      TEXT    NOT NULL,
+		reason        TEXT    NOT NULL,
+		details       TEXT,
+		first_seen_at INTEGER NOT NULL,
+		last_seen_at  INTEGER NOT NULL,
+		UNIQUE(project_id, file_path, reason)
+	);
+	CREATE INDEX IF NOT EXISTS idx_extraction_failures_recent
+	   ON extraction_failures(project_id, last_seen_at DESC);`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -1219,6 +1252,102 @@ func (s *Store) AvgConfidenceByKind(projectID string) (map[string]float64, error
 		out[k] = avg
 	}
 	return out, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extraction failures (#42 part 1) — diagnostic surface
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ExtractionFailure is one row from the extraction_failures table — a file
+// the indexer couldn't fully process, plus a reason and human-readable details.
+//
+// Reasons are stable, machine-readable strings:
+//   - "parse_error"           — the language extractor returned an error
+//   - "extractor_panicked"    — the extractor panicked; recover() caught it
+//   - "byte_range_negative"   — sanity heuristic: a symbol's end_byte <= start_byte
+//   - "qualified_name_collision" — sanity heuristic: same QN twice in a file
+//
+// New reasons can be added by future PRs (e.g. "byte_range_oversized" once
+// parent-tracking lands, "confidence_outlier" once #34 ships).
+type ExtractionFailure struct {
+	ID          int64
+	ProjectID   string
+	FilePath    string
+	Language    string
+	Reason      string
+	Details     string
+	FirstSeenAt time.Time
+	LastSeenAt  time.Time
+}
+
+// extractionFailureDetailsCap caps the persisted details field. The first
+// line of an error message is plenty of context; bigger payloads waste DB
+// space and clutter the failure report.
+const extractionFailureDetailsCap = 1024
+
+// RecordExtractionFailure persists a failure row. Idempotent on
+// (project_id, file_path, reason): re-recording the same failure updates
+// last_seen_at instead of inserting a duplicate.
+//
+// details is truncated to extractionFailureDetailsCap characters before
+// insert. Pass "" if there's no useful detail (the reason alone is the
+// signal).
+func (s *Store) RecordExtractionFailure(projectID, filePath, language, reason, details string) error {
+	if len(details) > extractionFailureDetailsCap {
+		details = details[:extractionFailureDetailsCap] + "…[truncated]"
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`
+		INSERT INTO extraction_failures (project_id, file_path, language, reason, details, first_seen_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(project_id, file_path, reason) DO UPDATE SET
+			details      = excluded.details,
+			last_seen_at = excluded.last_seen_at`,
+		projectID, filePath, language, reason, details, now, now)
+	return err
+}
+
+// ListExtractionFailures returns the most-recent extraction failures for a
+// project, ordered by last_seen_at DESC. limit <= 0 returns all rows.
+//
+// Reads via the reader pool (#51) — pure SELECT.
+func (s *Store) ListExtractionFailures(projectID string, limit int) ([]ExtractionFailure, error) {
+	q := `SELECT id, project_id, file_path, language, reason, details, first_seen_at, last_seen_at
+	      FROM extraction_failures
+	      WHERE project_id = ?
+	      ORDER BY last_seen_at DESC`
+	args := []any{projectID}
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.ro.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ExtractionFailure
+	for rows.Next() {
+		var f ExtractionFailure
+		var first, last int64
+		var details sql.NullString
+		if err := rows.Scan(&f.ID, &f.ProjectID, &f.FilePath, &f.Language, &f.Reason, &details, &first, &last); err != nil {
+			return nil, err
+		}
+		f.Details = details.String
+		f.FirstSeenAt = time.Unix(first, 0)
+		f.LastSeenAt = time.Unix(last, 0)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ClearExtractionFailures removes all failure rows for a project. Used by
+// `pincher index --force` (when the user wants a clean slate after fixing
+// the underlying issues) and by integration tests.
+func (s *Store) ClearExtractionFailures(projectID string) error {
+	_, err := s.db.Exec(`DELETE FROM extraction_failures WHERE project_id = ?`, projectID)
+	return err
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -306,6 +306,114 @@ func TestStore_ROFallsBackToWriter(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// extraction_failures (#42 part 1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExtractionFailure_RecordAndList(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertProject(testProject("p1")); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	// Record three failures spanning all four reason kinds (one is duplicated
+	// to verify the UNIQUE constraint upserts rather than inserting).
+	cases := []struct{ file, lang, reason, details string }{
+		{"src/foo.go", "Go", "extractor_panicked", "panic: runtime error"},
+		{"compose.yaml", "YAML", "byte_range_negative", "end_byte=10 <= start_byte=10"},
+		{"src/bar.py", "Python", "parse_error", "expected ':' at line 5"},
+	}
+	for _, c := range cases {
+		if err := s.RecordExtractionFailure("p1", c.file, c.lang, c.reason, c.details); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	got, err := s.ListExtractionFailures("p1", 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != len(cases) {
+		t.Fatalf("got %d rows, want %d", len(got), len(cases))
+	}
+	for _, f := range got {
+		if f.FirstSeenAt.IsZero() || f.LastSeenAt.IsZero() {
+			t.Errorf("zero timestamps on row %+v", f)
+		}
+	}
+}
+
+// TestExtractionFailure_RepeatedRecordUpdatesLastSeen pins the UNIQUE-conflict
+// upsert behaviour. A file that fails repeatedly across re-indexes MUST NOT
+// multiply rows; instead last_seen_at advances. Without this, every Watch
+// tick on a broken file would add a new row.
+func TestExtractionFailure_RepeatedRecordUpdatesLastSeen(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertProject(testProject("p1")); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := s.RecordExtractionFailure("p1", "broken.yaml", "YAML", "parse_error", "yaml: mapping values are not allowed"); err != nil {
+			t.Fatalf("Record (call %d): %v", i, err)
+		}
+	}
+	got, err := s.ListExtractionFailures("p1", 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected exactly 1 row after 5 records of the same (file, reason); got %d", len(got))
+	}
+}
+
+func TestExtractionFailure_DetailsTruncated(t *testing.T) {
+	// Pathological details strings (a 50KB error message) MUST NOT bloat
+	// the table; the implementation truncates at extractionFailureDetailsCap.
+	s := newTestStore(t)
+	if err := s.UpsertProject(testProject("p1")); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	huge := strings.Repeat("x", 50*1024)
+	if err := s.RecordExtractionFailure("p1", "huge.go", "Go", "parse_error", huge); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	got, err := s.ListExtractionFailures("p1", 0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("List: err=%v len=%d", err, len(got))
+	}
+	if len(got[0].Details) > extractionFailureDetailsCap+50 {
+		t.Errorf("details persisted at %d chars, want capped near %d", len(got[0].Details), extractionFailureDetailsCap)
+	}
+	if !strings.HasSuffix(got[0].Details, "[truncated]") {
+		t.Errorf("expected truncation marker, got: %q", got[0].Details[len(got[0].Details)-30:])
+	}
+}
+
+// TestExtractionFailure_ProjectScopeIsolated guards against cross-project leak.
+// A failure recorded under project A MUST NOT appear in project B's listing.
+// SearchSymbols / Cypher scoping bugs in #41 set the precedent for this gate.
+func TestExtractionFailure_ProjectScopeIsolated(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertProject(testProject("a")); err != nil {
+		t.Fatalf("UpsertProject a: %v", err)
+	}
+	if err := s.UpsertProject(testProject("b")); err != nil {
+		t.Fatalf("UpsertProject b: %v", err)
+	}
+	if err := s.RecordExtractionFailure("a", "x.go", "Go", "parse_error", "in A only"); err != nil {
+		t.Fatalf("Record A: %v", err)
+	}
+
+	bRows, err := s.ListExtractionFailures("b", 0)
+	if err != nil {
+		t.Fatalf("List b: %v", err)
+	}
+	if len(bRows) != 0 {
+		t.Errorf("project B sees %d rows from project A — scope leak", len(bRows))
+	}
+}
+
 func TestMigrate_UpgradeFromV1(t *testing.T) {
 	// Simulate a pre-versioning database that is at schema v1 (baseline only,
 	// no extraction_confidence column, no symbol_moves table).
