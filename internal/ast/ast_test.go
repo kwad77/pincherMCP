@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -604,6 +605,98 @@ func TestExtractC(t *testing.T) {
 	if _, ok := byName["main"]; !ok {
 		t.Error("expected function 'main'")
 	}
+}
+
+// cMacroSrc reproduces the Linux-kernel-style declaration macro pattern
+// from issue #69: each DEVICE_ATTR(...) emits a symbol where the real
+// identity is the first arg inside the parens, not the macro name itself.
+// Before the fix, all six emitted with name="DEVICE_ATTR" and produced
+// qualified_name_collision rows in extraction_failures.
+//
+// Note: bare-prefix macros (e.g. `EXPORT_SYMBOL(foo);` at column 0) are
+// not addressed here — the C funcRE requires at least one preceding word
+// or `static`/`inline` keyword, so those lines are never matched in the
+// first place. That's a separate gap, tracked outside #69.
+const cMacroSrc = `#include <linux/device.h>
+
+static ssize_t gpio_keys_show_keys(struct device *d) { return 0; }
+static ssize_t gpio_keys_show_switches(struct device *d) { return 0; }
+static ssize_t gpio_keys_show_camera_switches(struct device *d) { return 0; }
+
+static DEVICE_ATTR(keys, S_IRUGO, gpio_keys_show_keys, NULL);
+static DEVICE_ATTR(switches, S_IRUGO, gpio_keys_show_switches, NULL);
+static DEVICE_ATTR(camera_switches, S_IRUGO, gpio_keys_show_camera_switches, NULL);
+`
+
+// TestExtractC_MacroDecls is the regression gate for issue #69. Each
+// `static MACRO(name, ...)` must emit a symbol whose Name + QualifiedName
+// carry the FIRST ARG, not the macro name. Without this, three
+// DEVICE_ATTR declarations in one file all collide on
+// `<mod>::DEVICE_ATTR` and only the last write survives BulkUpsertSymbols.
+func TestExtractC_MacroDecls(t *testing.T) {
+	result := Extract([]byte(cMacroSrc), "C", "drivers/gpio_keys.c")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+
+	// Every symbol must have a unique qualified_name. The bug manifested
+	// as duplicates; this asserts the absence of duplicates directly.
+	seen := make(map[string]int)
+	for _, s := range result.Symbols {
+		seen[s.QualifiedName]++
+	}
+	for qn, n := range seen {
+		if n > 1 {
+			t.Errorf("qualified_name %q appears %d times — collision not fixed", qn, n)
+		}
+	}
+
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	for _, want := range []string{"keys", "switches", "camera_switches", "gpio_keys_show_keys"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("expected symbol with name %q, got names: %v", want, sortedNames(byName))
+		}
+	}
+
+	// The bug-output sentinel: we should NOT see `DEVICE_ATTR` as a
+	// symbol name. If this slips back in, every macro in the file
+	// collides again.
+	if _, ok := byName["DEVICE_ATTR"]; ok {
+		t.Errorf("symbol named 'DEVICE_ATTR' present — fix regressed (expected first-arg name)")
+	}
+}
+
+// TestExtractC_MacroDecls_PreservesNormalFunctions guards against an
+// over-zealous fix: a normal C function whose name happens to look like
+// a SCREAM_CASE identifier on a misformatted line must not be misclassified.
+// (We require at least one underscore in the macro name regex to avoid
+// matching short ALL_CAPS identifiers.)
+func TestExtractC_MacroDecls_PreservesNormalFunctions(t *testing.T) {
+	result := Extract([]byte(cSrc), "C", "src/main.c")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	for _, want := range []string{"add", "helper", "main"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("normal function %q lost in macro post-process", want)
+		}
+	}
+}
+
+func sortedNames(byName map[string]ExtractedSymbol) []string {
+	out := make([]string, 0, len(byName))
+	for k := range byName {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

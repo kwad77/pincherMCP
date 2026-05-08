@@ -860,8 +860,86 @@ var cRE = &regexExtractor{
 	funcRE: regexp.MustCompile(`(?m)^(?:static\s+)?(?:inline\s+)?(?:\w+\s+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
 }
 
+// cMacroRE matches Linux-kernel-style declaration macros where the real
+// symbol identity is the first argument inside the parens, not the macro
+// name itself. Examples: `static DEVICE_ATTR(keys, ...)`, `MODULE_PARM(p)`,
+// `EXPORT_SYMBOL(foo)`. Without this, every DEVICE_ATTR in a file collides
+// because the regex captures `DEVICE_ATTR` for all of them — issue #69.
+//
+// Constraint: the macro name must be all-uppercase + digits + underscores
+// AND at least one underscore (single-word ALL CAPS like `MAIN` are real
+// function names in some embedded codebases). Two-letter all-caps like
+// `IO` would also be ambiguous; the underscore requirement filters those.
+var cMacroRE = regexp.MustCompile(
+	`(?m)^[ \t]*(?:static\s+)?(?P<macro>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\s*\(\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)`)
+
 func extractC(source []byte, relPath string) *FileResult {
-	return cRE.extract(source, relPath, "C", simpleOpts("::", '{'))
+	result := cRE.extract(source, relPath, "C", simpleOpts("::", '{'))
+	rewriteCMacroSymbols(result, source, relPath)
+	return result
+}
+
+// rewriteCMacroSymbols post-processes regex output to replace macro-style
+// symbol names with their first-argument identifiers. Touches Name and
+// QualifiedName; byte ranges, kind, line numbers stay untouched.
+//
+// Why post-process rather than fix the funcRE: the regex pipeline assumes
+// one capture group per match drives the symbol name, and shoehorning the
+// macro alternative into the same regex produces unreadable patterns and
+// risks regressing the common case. A second pass is cheap (we already
+// hold all matched symbols in memory) and the logic stays auditable.
+func rewriteCMacroSymbols(result *FileResult, source []byte, relPath string) {
+	if result == nil || len(result.Symbols) == 0 {
+		return
+	}
+	mod := moduleQN(relPath, "::")
+	for i := range result.Symbols {
+		sym := &result.Symbols[i]
+		// Only consider Function symbols — Class/Interface aren't emitted
+		// by the C extractor today, but be defensive.
+		if sym.Kind != "Function" {
+			continue
+		}
+		line := sourceLineAt(source, sym.StartByte)
+		m := cMacroRE.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		// extractGroup() in this file is a "first-non-empty-subgroup"
+		// helper that pre-dates this fix; it does NOT honour the name
+		// argument. cMacroRE has TWO named groups (macro + arg) so we
+		// must look up arg by its real index.
+		argIdx := cMacroRE.SubexpIndex("arg")
+		if argIdx < 0 || argIdx >= len(m) {
+			continue
+		}
+		arg := m[argIdx]
+		if arg == "" {
+			continue
+		}
+		// Rewrite name + QN. Old QN was `<mod>::DEVICE_ATTR`; new is
+		// `<mod>::keys`. Signature stays as the original line so users
+		// still see the macro shape in search results.
+		sym.Name = arg
+		sym.QualifiedName = mod + "::" + arg
+	}
+}
+
+// sourceLineAt returns the line containing byte offset off. Returns "" if
+// off is out of range.
+func sourceLineAt(source []byte, off int) string {
+	if off < 0 || off >= len(source) {
+		return ""
+	}
+	start := off
+	for start > 0 && source[start-1] != '\n' {
+		start--
+	}
+	end := off
+	for end < len(source) && source[end] != '\n' {
+		end++
+	}
+	return string(source[start:end])
 }
 
 var csRE = &regexExtractor{
