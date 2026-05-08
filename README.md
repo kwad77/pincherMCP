@@ -200,22 +200,24 @@ All three layers are populated in **one AST parse pass** from one `symbols` row.
                       │          │
           ┌───────────┘          └──────────────┐
           ▼                                     ▼
-  ┌───────────────┐    ┌──────────────┐   ┌────────────────┐
-  │  Layer 1      │    │  Layer 2     │   │  Layer 3       │
-  │  Byte-Offset  │    │  Knowledge   │   │  FTS5 BM25     │
-  │  Symbol Store │    │  Graph       │   │  Full-Text     │
-  │               │    │              │   │                │
-  │  start_byte   │    │  symbols +   │   │  symbols_fts   │
-  │  end_byte     │    │  edges table │   │  virtual table │
-  │               │    │              │   │  (3 triggers   │
-  │  Retrieval:   │    │  Queries:    │   │   auto-sync)   │
-  │  1 SQL +      │    │  node scan   │   │                │
-  │  1 os.Seek +  │    │  JOIN (1-hop)│   │  BM25 ranking  │
-  │  1 os.Read    │    │  BFS (n-hop) │   │  across name + │
-  │               │    │  via CTE     │   │  signature +   │
-  │  O(1), <1ms   │    │  <2ms        │   │  docstring     │
-  └───────────────┘    └──────────────┘   └────────────────┘
+  ┌───────────────┐    ┌──────────────┐   ┌────────────────────┐
+  │  Layer 1      │    │  Layer 2     │   │  Layer 3 — FTS5    │
+  │  Byte-Offset  │    │  Knowledge   │   │  BM25 full-text    │
+  │  Symbol Store │    │  Graph       │   │                    │
+  │               │    │              │   │  symbols_fts       │
+  │  start_byte   │    │  symbols +   │   │   (legacy/all)     │
+  │  end_byte     │    │  edges table │   │  symbols_code_fts  │
+  │               │    │              │   │  symbols_config_fts│
+  │  Retrieval:   │    │  Queries:    │   │  symbols_docs_fts  │
+  │  1 SQL +      │    │  node scan   │   │                    │
+  │  1 os.Seek +  │    │  JOIN (1-hop)│   │  BM25 across name +│
+  │  1 os.Read    │    │  BFS (n-hop) │   │  signature +       │
+  │               │    │  via CTE     │   │  docstring; corpus=│
+  │  O(1), <1ms   │    │  <2ms        │   │  routes per index  │
+  └───────────────┘    └──────────────┘   └────────────────────┘
 ```
+
+**Per-corpus FTS5 (#32 parts 1+2)**: One symbol → one corpus. The `corpus` parameter on the `search` tool routes to a specific BM25 index so identifier searches aren't diluted by config keys or doc prose. Routing is `language`-driven (`YAML`/`JSON`/`HCL` → config, `Markdown` → docs, everything else → code; `Document` kind always → docs). The legacy mixed `symbols_fts` stays populated and remains the default — part 3 will flip that.
 
 ---
 
@@ -663,7 +665,7 @@ The `--hook` flag outputs a JSON envelope that Claude Code's SessionStart hook s
 
 ### `pincher rebuild-fts` subcommand
 
-`pincher rebuild-fts` is the escape hatch for FTS5 corruption. It drops the `symbols_fts` virtual table and its sync triggers, then bulk-loads them back from the canonical `symbols` table:
+`pincher rebuild-fts` is the escape hatch for FTS5 corruption. It drops every FTS5 virtual table (legacy `symbols_fts` plus the per-corpus `symbols_{code,config,docs}_fts` indexes added in schema v9) and their sync triggers, then bulk-loads them back from the canonical `symbols` table:
 
 ```bash
 pincher rebuild-fts                  # rebuild and print row count
@@ -708,9 +710,11 @@ Each release tier names a theme and the issues that close it. Issue numbers link
 
 The story: more languages and bigger projects without silent degradation.
 
-- **Pinned-corpus snapshot tests** — committed corpora (`testdata/corpus/*`) with expected JSON snapshots; CI gate catches extraction drift on every PR. ([#33](https://github.com/kwad77/pincherMCP/issues/33))
-- **Markdown + Bash extractors** — pure-Go AST extraction (goldmark, mvdan.cc/sh/v3); replaces tree-sitter as the path to confidence 1.0 for non-Go languages. ([#38](https://github.com/kwad77/pincherMCP/pull/38))
-- **Per-corpus FTS5 split** — separate inverted indexes for code / config / docs so prose tokens can't dilute BM25 ranking on code identifiers. ([#32](https://github.com/kwad77/pincherMCP/issues/32))
+- ✅ **Pinned-corpus snapshot tests** — three corpora (`testdata/corpus/{go-project,k8s-ops,node-monorepo}`) with committed JSON snapshots; CI gate catches extraction drift on every PR. Search-relevance fields (#68) pin top BM25 hits per corpus. ([#33](https://github.com/kwad77/pincherMCP/issues/33) — substrate landed; fourth corpus + comprehensive negative assertions remain)
+- ✅ **Bash extractor** — `mvdan.cc/sh/v3/syntax` (the shfmt parser) at confidence 1.0. ([#38](https://github.com/kwad77/pincherMCP/pull/38))
+- ✅ **HCL/Terraform extractor** — `hashicorp/hcl/v2/hclsyntax` at confidence 1.0; covers `.tf` and `.tfvars`, recurses into nested blocks. ([#67](https://github.com/kwad77/pincherMCP/pull/67))
+- 🟡 **Per-corpus FTS5 split** — three new vtabs (`symbols_{code,config,docs}_fts`) populate alongside legacy via v9 triggers; `corpus=` parameter on the `search` tool routes queries to the right index. **Parts 1+2 landed; part 3** flips the default and deprecates legacy. ([#32](https://github.com/kwad77/pincherMCP/issues/32))
+- **Markdown extractor** — pure-Go AST extraction via `goldmark`; deferred from #38 pending the per-corpus FTS5 split (avoids BM25 dilution).
 - **Per-symbol confidence scoring** — replaces the per-language constant with composable signals (path patterns, content shape, identifier quality). Subsumes the static blocklist into a tunable score. ([#34](https://github.com/kwad77/pincherMCP/issues/34))
 
 ### v0.3 — Trust + observability
@@ -718,15 +722,16 @@ The story: more languages and bigger projects without silent degradation.
 The story: pincher's behaviour should be predictable, audit-tested, and self-debuggable.
 
 - ✅ **Security audit** — every documented security claim has a regression test. Six items: timing-safe auth, fetch SSRF block-list, dashboard XSS escaping + CSP, Cypher project-scope gate, X-Forwarded-For parsing robustness, walker symlink-non-recursion. ([#41](https://github.com/kwad77/pincherMCP/issues/41) — closed)
-- **Diagnostic surface** — `pincher doctor` subcommand, `extraction_failures` table with sanity heuristics, slow-query log. Makes drift visible without dropping into SQLite. ([#42](https://github.com/kwad77/pincherMCP/issues/42))
-- **Dashboard CSP tightening** — externalize inline JS to `/v1/dashboard.js`, drop `'unsafe-inline'` from `script-src`. Follow-up to PR #46.
+- ✅ **Diagnostic surface** — `pincher doctor` subcommand (Markdown + JSON output), `extraction_failures` table with byte-range and qualified-name-collision sanity heuristics, slow-query log with secret redaction. ([#42](https://github.com/kwad77/pincherMCP/issues/42))
+- ✅ **Dashboard CSP tightening** — externalized inline JS/CSS to `/v1/dashboard.js` + `/v1/dashboard.css`; dropped `'unsafe-inline'` from `script-src`. ([#65](https://github.com/kwad77/pincherMCP/pull/65))
+- ✅ **FTS5 escape hatch** — `pincher rebuild-fts` subcommand; drops + recreates all four FTS5 vtabs from canonical DDL when the trigger-driven index drifts. ([#72](https://github.com/kwad77/pincherMCP/pull/72))
 
 ### v0.4 — Performance under load
 
 The story: the documented latency claims should hold under multi-tool concurrent use, on million-symbol corpora.
 
-- **Pinned-corpus benchmarks** — per-corpus baseline `bench.txt`; CI gates `>20%` latency or `>30%` allocation regressions. ([#50](https://github.com/kwad77/pincherMCP/issues/50))
-- **Reader pool** — split read connections from the single-writer to use SQLite WAL's concurrent-read capability. ~3× expected throughput on read-heavy workloads. ([#51](https://github.com/kwad77/pincherMCP/issues/51))
+- ✅ **Pinned-corpus benchmarks** — `make bench` runs per-corpus benchmarks; CI smoke-job gates against accidental order-of-magnitude regressions. Stable-baseline gates land alongside #50's first measurement run. ([#50](https://github.com/kwad77/pincherMCP/issues/50))
+- ✅ **Reader pool** — split read connections from the single-writer using SQLite WAL's concurrent-read capability via a `mode=ro` URL parameter. Tunable size with reflection-based classification gate. ([#51](https://github.com/kwad77/pincherMCP/issues/51))
 - **Incremental edge resolution** — `resolveCalls` / `resolveImports` only re-process files touched in the current `Index()` run. Filed when bench data justifies it.
 
 ### v0.5 — Polish + extension surface
@@ -734,7 +739,7 @@ The story: the documented latency claims should hold under multi-tool concurrent
 The story: things that require pincher to be production-ready first.
 
 - **Struct field extraction** — index fields/properties as symbols (currently only types/classes); blocked on per-corpus FTS so the field count doesn't dilute code search.
-- **Cross-project `query`** — explicit opt-in via `corpus=all` parameter. PR #47 made empty `ProjectID` an error; cross-project becomes the explicit non-default.
+- **Cross-project `query`** — explicit opt-in via a `cross_project=true` parameter (avoids overloading the existing `corpus=` argument, which now means FTS5 corpus). PR #47 made empty `ProjectID` an error; cross-project becomes the explicit non-default.
 - **Webhook-triggered re-index** — `POST /v1/reindex` for git post-receive hooks; replaces 2s polling for server deployments.
 - **VS Code extension** — auto-configures MCP, hover-to-inspect command.
 - **`.pincher.yml` per-project config** — per-project blocklist additions, confidence threshold defaults, primary-language hint.
@@ -781,9 +786,12 @@ pincherMCP/
 │   └── bloat_trap.go            # isBloatTrap: refuse filesystem root + $HOME;
 │                                # hook mode also requires a project marker
 ├── internal/
-│   ├── db/db.go                 # SQLite store: schema v6, migrations, all CRUD,
-│   │                            # FTS5 ops, graph ops, BPE token counting,
-│   │                            # WAL guardrails (Optimize, CheckpointTruncate)
+│   ├── db/db.go                 # SQLite store: schema v9, migrations, all CRUD,
+│   │                            # FTS5 ops (legacy + per-corpus), graph ops,
+│   │                            # BPE token counting, WAL guardrails (Optimize,
+│   │                            # CheckpointTruncate, RebuildFTS)
+│   ├── db/corpus.go             # ClassifyCorpus(language, kind) → code/config/docs;
+│   │                            # parity-tested against the v9 SQL trigger routing
 │   ├── ast/
 │   │   ├── extractor.go         # Multi-language extraction, byte offsets, confidence
 │   │   ├── yaml.go              # YAML/JSON Setting extractor (yaml.v3 Node tree, conf 1.0)
@@ -801,7 +809,7 @@ pincherMCP/
 
 ### Schema
 
-Schema is versioned via `schema_version` table. Current version: **v6**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`.
+Schema is versioned via `schema_version` table. Current version: **v9**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`.
 
 ### Key invariants
 
