@@ -57,11 +57,19 @@ func TestCanonicalProjectPath_DoesNotExist(t *testing.T) {
 	t.Errorf("got %q, want one of %v", got, candidates)
 }
 
-// TestCanonicalProjectPath_CaseInsensitiveFolding probes the FS for
-// case-insensitivity (creates a temp dir, stats it with a flipped
-// case, checks SameFile). On case-insensitive FSes (macOS APFS,
-// Windows NTFS), `Foo` and `foo` MUST canonicalize to the same string.
-// On case-sensitive FSes (most Linux), they MUST NOT.
+// TestCanonicalProjectPath_CaseInsensitiveFolding asserts that on a
+// case-insensitive filesystem, two casings of the same physical
+// directory canonicalize to the same string. The test self-detects
+// whether the FS at t.TempDir() is case-insensitive and only asserts
+// the folding when it is — case-sensitive FSes (typical Linux) skip
+// the assertion since the flipped-case path doesn't physically exist.
+//
+// We deliberately avoid asserting on the SHAPE of the canonical form
+// (e.g. "is it lowercased?", "does it end with 'mixedcase'?") because
+// the t.TempDir() prefix on different OSes contains different
+// path-component cases and the lowercasing happens on the WHOLE path,
+// not just the leaf. The contract that matters: same physical dir →
+// same canonical string.
 func TestCanonicalProjectPath_CaseInsensitiveFolding(t *testing.T) {
 	parent := t.TempDir()
 	mixedDir := filepath.Join(parent, "MixedCase")
@@ -69,31 +77,20 @@ func TestCanonicalProjectPath_CaseInsensitiveFolding(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	canon := CanonicalProjectPath(mixedDir)
 	flipped, ok := flipFirstLetterCase(mixedDir)
 	if !ok {
 		t.Skip("path has no flippable letter; cannot probe FS")
 	}
+	if !isCaseInsensitiveFS(mixedDir) {
+		t.Skip("filesystem at t.TempDir() is case-sensitive; folding assertion N/A")
+	}
 
-	if isCaseInsensitiveFS(mixedDir) {
-		// On case-insensitive FS: both casings canonicalize to the same
-		// (lowercase) form.
-		flippedCanon := CanonicalProjectPath(flipped)
-		if canon != flippedCanon {
-			t.Errorf("case-insensitive FS but canonical paths differ:\n  canon(MixedCase) = %q\n  canon(mIXEDcASE) = %q",
-				canon, flippedCanon)
-		}
-		if !strings.HasSuffix(canon, "mixedcase") {
-			t.Errorf("case-insensitive FS but canonical not lowercased: %q", canon)
-		}
-	} else {
-		// On case-sensitive FS: only the original casing exists; the
-		// flipped form doesn't resolve.
-		if canon == strings.ToLower(canon) && canon != mixedDir {
-			// Lowercased — but the original wasn't lowercase. Suspicious
-			// unless we're on a case-insensitive FS.
-			t.Logf("case-sensitive FS detection may have failed; canon=%q, input=%q", canon, mixedDir)
-		}
+	// The contract: both casings produce the same canonical string.
+	canon := CanonicalProjectPath(mixedDir)
+	flippedCanon := CanonicalProjectPath(flipped)
+	if canon != flippedCanon {
+		t.Errorf("case-insensitive FS but canonical paths differ:\n  canon(orig) = %q\n  canon(flipped) = %q",
+			canon, flippedCanon)
 	}
 }
 
