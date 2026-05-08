@@ -395,6 +395,76 @@ func TestHandleSearch_AllProjects(t *testing.T) {
 	}
 }
 
+// TestHandleSearch_CorpusParameter exercises the corpus= argument
+// end-to-end through the MCP handler. Pins routing for code/config/docs
+// and the cross-corpus isolation guarantee at the handler layer.
+func TestHandleSearch_CorpusParameter(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "pcorp"
+	store.UpsertProject(db.Project{ID: "pcorp", Path: "/tmp/pcorp", Name: "pcorp", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "go1", ProjectID: "pcorp", FilePath: "x.go", Name: "ZZSrvFoo",
+			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go"},
+		{ID: "yml1", ProjectID: "pcorp", FilePath: "y.yaml", Name: "ZZSrvImage",
+			QualifiedName: "services.web.image", Kind: "Setting", Language: "YAML"},
+	})
+
+	// corpus=code finds Go, hides YAML.
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "ZZSrv*", "corpus": "code",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("corpus=code: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	if int(m["count"].(float64)) != 1 {
+		t.Errorf("corpus=code count = %v, want 1 (Go only)", m["count"])
+	}
+
+	// corpus=config finds YAML, hides Go.
+	result, err = srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "ZZSrv*", "corpus": "config",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("corpus=config: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m = decode(t, result)
+	if int(m["count"].(float64)) != 1 {
+		t.Errorf("corpus=config count = %v, want 1 (YAML only)", m["count"])
+	}
+
+	// Empty corpus = legacy = both hits.
+	result, err = srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "ZZSrv*",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("corpus=empty: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m = decode(t, result)
+	if int(m["count"].(float64)) != 2 {
+		t.Errorf("corpus=empty (legacy) count = %v, want 2", m["count"])
+	}
+}
+
+// TestHandleSearch_CorpusInvalidErrors guards against typos silently
+// falling through to legacy. The handler must surface the underlying
+// store error rather than swallow it.
+func TestHandleSearch_CorpusInvalidErrors(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "pcorp2"
+	store.UpsertProject(db.Project{ID: "pcorp2", Path: "/tmp/pcorp2", Name: "pcorp2", IndexedAt: time.Now()})
+
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "anything", "corpus": "Code",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch transport err: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected isError=true for typo'd corpus, got %v", decode(t, result))
+	}
+}
+
 func TestHandleSearch_VariableKindSkipsSnippet(t *testing.T) {
 	srv, store, dir := newTestServer(t)
 	srv.sessionID = "proj3"

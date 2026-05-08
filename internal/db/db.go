@@ -1272,9 +1272,40 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 
 // SearchSymbols performs BM25-ranked full-text search.
 // query uses FTS5 match syntax (e.g. "auth*", "login authenticate").
+//
+// Backward-compatible shim that delegates to SearchSymbolsByCorpus with
+// an empty corpus (= legacy `symbols_fts` index). Existing callers
+// continue to behave identically.
 func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int) ([]SearchResult, error) {
+	return s.SearchSymbolsByCorpus(projectID, query, kind, language, "", limit)
+}
+
+// SearchSymbolsByCorpus performs BM25-ranked full-text search against a
+// specific corpus index (#32 part 2).
+//
+// corpus parameter:
+//   - ""        → legacy `symbols_fts` (mixed corpus; current default)
+//   - "code"    → `symbols_code_fts`   (Function/Method/Class/etc)
+//   - "config"  → `symbols_config_fts` (YAML/JSON/HCL Settings, Resources, etc)
+//   - "docs"    → `symbols_docs_fts`   (Markdown sections, Documents)
+//   - "all"     → alias for "" (explicit form for callers who want the
+//                 mixed-corpus behavior to be obvious in their code)
+//
+// Anything else returns an error so a typo doesn't silently fall back to
+// legacy. The corpus → vtab mapping mirrors ClassifyCorpus + the v9
+// trigger routing.
+//
+// **Why the legacy default**: this PR changes no caller's behavior. Tools
+// passing the empty string still get the legacy mixed index. Part 3 of
+// the per-corpus split flips the default to "code" and deprecates the
+// legacy path.
+func (s *Store) SearchSymbolsByCorpus(projectID, query, kind, language, corpus string, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	vtab, err := corpusVtab(corpus)
+	if err != nil {
+		return nil, err
 	}
 	q := `
 		SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
@@ -1282,10 +1313,10 @@ func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int
 		       s.signature, s.return_type, s.docstring, s.parent,
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
 		       s.extraction_confidence,
-		       bm25(symbols_fts) AS score
-		FROM symbols_fts
-		JOIN symbols s ON s.rowid = symbols_fts.rowid
-		WHERE symbols_fts MATCH ?`
+		       bm25(` + vtab + `) AS score
+		FROM ` + vtab + `
+		JOIN symbols s ON s.rowid = ` + vtab + `.rowid
+		WHERE ` + vtab + ` MATCH ?`
 	args := []any{query}
 	if projectID != "" {
 		q += " AND s.project_id = ?"

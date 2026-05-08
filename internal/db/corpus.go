@@ -1,5 +1,7 @@
 package db
 
+import "fmt"
+
 // Corpus is the FTS5-routing label assigned to every symbol. The per-corpus
 // FTS5 split (#32) keeps the same search UX but routes BM25 ranking through
 // three independent indexes so identifier-shaped queries don't get diluted
@@ -44,5 +46,27 @@ func ClassifyCorpus(language, kind string) string {
 		return CorpusConfig
 	default:
 		return CorpusCode
+	}
+}
+
+// corpusVtab maps a corpus parameter (the user-facing label) to the SQL
+// vtab name used in queries. The empty string and "all" both route to
+// the legacy `symbols_fts` index.
+//
+// Returns an error on unknown corpus names — a typo from a caller should
+// fail loudly, not silently fall through to legacy.
+func corpusVtab(corpus string) (string, error) {
+	switch corpus {
+	case "", "all":
+		return "symbols_fts", nil
+	case CorpusCode:
+		return "symbols_code_fts", nil
+	case CorpusConfig:
+		return "symbols_config_fts", nil
+	case CorpusDocs:
+		return "symbols_docs_fts", nil
+	default:
+		return "", fmt.Errorf("unknown corpus %q (valid: %q, %q, %q, %q, %q)",
+			corpus, "", "all", CorpusCode, CorpusConfig, CorpusDocs)
 	}
 }

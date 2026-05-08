@@ -293,7 +293,7 @@ All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). To
 
 | Tool | Capability | Tested latency |
 |---|---|---|
-| `search` | FTS5 BM25 full-text across names, signatures, and docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR, `kind`/`language` filters. `fields` param projects columns to reduce token usage. `project=*` searches all indexed repos. | 1ms |
+| `search` | FTS5 BM25 full-text across names, signatures, and docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR, `kind`/`language`/`corpus` filters. `corpus` (`code`/`config`/`docs`) routes the query to a per-corpus index so identifier searches aren't diluted by config or doc rows. `fields` param projects columns to reduce token usage. `project=*` searches all indexed repos. | 1ms |
 | `query` | Cypher-like graph queries. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. `max_rows` param (default 200, max 10000). | 2ms (single-hop) |
 | `trace` | BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). | <5ms (depth 3) |
 

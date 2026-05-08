@@ -382,6 +382,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"GetSymbolsForFile":       true,
 	"GetHotspots":             true,
 	"SearchSymbols":           true,
+	"SearchSymbolsByCorpus":   true,
 	"EdgesFrom":               true,
 	"EdgesTo":                 true,
 	"GraphStats":              true,

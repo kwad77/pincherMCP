@@ -257,6 +257,128 @@ func TestFTSCorpusSplit_DeleteTriggerCleansAllVtabs(t *testing.T) {
 	}
 }
 
+// TestSearchSymbolsByCorpus_RoutingTable pins corpus → vtab routing.
+// Empty + "all" both go to legacy. Each named corpus goes to its index.
+// An unknown corpus name errors loudly.
+func TestSearchSymbolsByCorpus_RoutingTable(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		{ID: "s-go", ProjectID: "p1", FilePath: "x.go", Name: "ZZRtFoo",
+			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go"},
+		{ID: "s-yaml", ProjectID: "p1", FilePath: "y.yaml", Name: "ZZRtImage",
+			QualifiedName: "services.web.image", Kind: "Setting", Language: "YAML"},
+		{ID: "s-md", ProjectID: "p1", FilePath: "z.md", Name: "ZZRtIntro",
+			QualifiedName: "doc.intro", Kind: "Section", Language: "Markdown"},
+	})
+
+	// Each corpus query should return ONLY its own slice.
+	for _, c := range []struct {
+		name      string
+		corpus    string
+		matchTok  string
+		wantHitID string
+	}{
+		{"code finds Go", CorpusCode, "ZZRtFoo", "s-go"},
+		{"config finds YAML", CorpusConfig, "ZZRtImage", "s-yaml"},
+		{"docs finds Markdown", CorpusDocs, "ZZRtIntro", "s-md"},
+		{"empty = legacy finds Go", "", "ZZRtFoo", "s-go"},
+		{"all = legacy finds YAML", "all", "ZZRtImage", "s-yaml"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			results, err := s.SearchSymbolsByCorpus("p1", c.matchTok, "", "", c.corpus, 10)
+			if err != nil {
+				t.Fatalf("SearchSymbolsByCorpus: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("got %d results, want 1", len(results))
+			}
+			if results[0].Symbol.ID != c.wantHitID {
+				t.Errorf("got %s, want %s", results[0].Symbol.ID, c.wantHitID)
+			}
+		})
+	}
+
+	// Cross-corpus isolation: code corpus must NOT find YAML or Markdown tokens.
+	for _, c := range []struct{ corpus, matchTok string }{
+		{CorpusCode, "ZZRtImage"},   // YAML hidden from code
+		{CorpusCode, "ZZRtIntro"},   // Markdown hidden from code
+		{CorpusConfig, "ZZRtFoo"},   // Go hidden from config
+		{CorpusConfig, "ZZRtIntro"}, // Markdown hidden from config
+		{CorpusDocs, "ZZRtFoo"},     // Go hidden from docs
+		{CorpusDocs, "ZZRtImage"},   // YAML hidden from docs
+	} {
+		t.Run("isolation_"+c.corpus+"_"+c.matchTok, func(t *testing.T) {
+			results, err := s.SearchSymbolsByCorpus("p1", c.matchTok, "", "", c.corpus, 10)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			if len(results) != 0 {
+				t.Errorf("corpus=%s leaked %q (got %d results)", c.corpus, c.matchTok, len(results))
+			}
+		})
+	}
+}
+
+// TestSearchSymbolsByCorpus_UnknownCorpusErrors asserts a typo in the
+// corpus parameter doesn't silently fall through to legacy. The error
+// is the only signal a caller has that they got the wrong shape.
+func TestSearchSymbolsByCorpus_UnknownCorpusErrors(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+
+	for _, bad := range []string{"COde", "src", "yaml", "Code", "doc"} {
+		_, err := s.SearchSymbolsByCorpus("p1", "anything", "", "", bad, 10)
+		if err == nil {
+			t.Errorf("corpus=%q: expected error, got nil", bad)
+			continue
+		}
+		// Error must mention the bad corpus name so the caller can debug.
+		if !contains(err.Error(), bad) {
+			t.Errorf("corpus=%q: error %q doesn't mention the bad value", bad, err.Error())
+		}
+	}
+}
+
+// TestSearchSymbols_BackwardCompat asserts the SearchSymbols shim
+// produces identical results to SearchSymbolsByCorpus("") — the
+// "no behavior change for existing callers" invariant for #32 part 2.
+func TestSearchSymbols_BackwardCompat(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		{ID: "s1", ProjectID: "p1", FilePath: "a.go", Name: "ZZBcFoo",
+			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go"},
+		{ID: "s2", ProjectID: "p1", FilePath: "b.go", Name: "ZZBcBar",
+			QualifiedName: "pkg.Bar", Kind: "Function", Language: "Go"},
+	})
+	legacy, err := s.SearchSymbols("p1", "ZZBc*", "", "", 10)
+	if err != nil {
+		t.Fatalf("legacy: %v", err)
+	}
+	corpus, err := s.SearchSymbolsByCorpus("p1", "ZZBc*", "", "", "", 10)
+	if err != nil {
+		t.Fatalf("corpus(empty): %v", err)
+	}
+	if len(legacy) != len(corpus) {
+		t.Fatalf("len mismatch: legacy=%d corpus(empty)=%d", len(legacy), len(corpus))
+	}
+	for i := range legacy {
+		if legacy[i].Symbol.ID != corpus[i].Symbol.ID {
+			t.Errorf("row %d: legacy=%s corpus(empty)=%s", i, legacy[i].Symbol.ID, corpus[i].Symbol.ID)
+		}
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRebuildFTS_RebuildsAllFourVtabs extends the existing rebuild-fts
 // coverage: after a rebuild, every vtab (legacy + 3 per-corpus) must
 // contain the right slice of `symbols` again.
