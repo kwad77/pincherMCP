@@ -1158,6 +1158,87 @@ func main() { fmt.Println("hi") }
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Blocklist (lockfiles, minified bundles, source maps)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestIndex_LockfileBlocked(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	// One real source file + several blocklisted files that would otherwise
+	// be parsed by JSON / YAML extractors and produce massive Setting noise.
+	writeFile(t, dir, "main.go", goSrc)
+	writeFile(t, dir, "package-lock.json", `{"name":"bloat","version":"1.0.0","dependencies":{}}`)
+	writeFile(t, dir, "frontend/package-lock.json", `{"name":"bloat-fe"}`)
+	writeFile(t, dir, "yarn.lock", "# yarn lockfile v1\n")
+	writeFile(t, dir, "Cargo.lock", "[[package]]\nname = \"foo\"\n")
+	writeFile(t, dir, "go.sum", "github.com/foo/bar v1.0.0 h1:abc=\n")
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	if result.Blocked != 5 {
+		t.Errorf("Blocked = %d, want 5 (5 lockfiles)", result.Blocked)
+	}
+	if result.Files != 1 {
+		t.Errorf("Files = %d, want 1 (only main.go)", result.Files)
+	}
+
+	// Confirm no JSON Setting symbols leaked into the store from the lockfiles.
+	projectID := db.ProjectIDFromPath(dir)
+	results, err := store.GetSymbolsByName(projectID, "name", 10)
+	if err != nil {
+		t.Fatalf("GetSymbolsByName: %v", err)
+	}
+	for _, r := range results {
+		if strings.Contains(r.FilePath, "package-lock") || strings.Contains(r.FilePath, ".lock") {
+			t.Errorf("symbol leaked from blocklisted file: %+v", r)
+		}
+	}
+}
+
+func TestIndex_MinifiedBlocked(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	// Use plain subdirs (not "dist" — that's in skippedDirs and the walker
+	// won't even descend into it).
+	writeFile(t, dir, "main.go", goSrc)
+	writeFile(t, dir, "static/app.min.js", "function a(){}function b(){}")
+	writeFile(t, dir, "static/vendor.bundle.min.js", "function c(){}")
+	writeFile(t, dir, "static/app.js.map", `{"version":3}`)
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	// 2 minified (.min.js suffix) + 1 source map (.map suffix) = 3 blocked.
+	if result.Blocked != 3 {
+		t.Errorf("Blocked = %d, want 3 (2 minified bundles + 1 source map)", result.Blocked)
+	}
+	if result.Files != 1 {
+		t.Errorf("Files = %d, want 1 (only main.go)", result.Files)
+	}
+}
+
+func TestIndex_NoBlockedWhenAllClean(t *testing.T) {
+	idx, _ := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", goSrc)
+	writeFile(t, dir, "config.json", `{"key":"value"}`)
+	writeFile(t, dir, "app.js", "function hello() {}")
+
+	result, err := idx.Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if result.Blocked != 0 {
+		t.Errorf("Blocked = %d, want 0 (no lockfiles or minified)", result.Blocked)
+	}
+}
+
 func TestReadGoModulePath(t *testing.T) {
 	dir := t.TempDir()
 

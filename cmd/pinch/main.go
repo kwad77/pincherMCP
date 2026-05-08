@@ -233,9 +233,13 @@ func runIndexCLI(args []string) {
 		}
 		json.NewEncoder(os.Stdout).Encode(out)
 	} else {
-		fmt.Printf("indexed %s: %d total symbols, %d total edges, %d files (%d unchanged, %dms)\n",
+		blockedFrag := ""
+		if result.Blocked > 0 {
+			blockedFrag = fmt.Sprintf(", %d blocked", result.Blocked)
+		}
+		fmt.Printf("indexed %s: %d total symbols, %d total edges, %d files (%d unchanged%s, %dms)\n",
 			result.Project, totalSyms, totalEdges, result.Skipped+result.Files,
-			result.Skipped, result.DurationMS)
+			result.Skipped, blockedFrag, result.DurationMS)
 		if changedFiles > 0 {
 			fmt.Printf("  %d file(s) with uncommitted changes\n", changedFiles)
 		}

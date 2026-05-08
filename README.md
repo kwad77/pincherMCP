@@ -411,6 +411,16 @@ Go and YAML/JSON have full parser-based extraction (confidence 1.0). All other l
 
 YAML/JSON files emit one `Setting` symbol per key with a dotted-path qualified name (e.g., `services.web.image`, `tasks.0.name`). Multi-document YAML uses a `docN` prefix. Each Setting's byte range covers the key plus its full nested value, so retrieving `services.web` returns the entire `web` block — the same shape as retrieving a function body.
 
+### Skip rules
+
+The indexer refuses to extract from files that are guaranteed to produce noise rather than signal, regardless of extension:
+
+- **Lockfiles** by exact basename: `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock(b)`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `pdm.lock`, `mix.lock`, `pubspec.lock`, `Podfile.lock`, `Cartfile.resolved`, `Package.resolved`, `flake.lock`, `go.sum`. Without this rule a 700 KB `package-lock.json` would emit thousands of low-signal `Setting` symbols.
+- **Minified bundles** by suffix: `*.min.js`, `*.min.mjs`, `*.min.cjs`, `*.min.jsx`, `*.min.ts`, `*.min.tsx`, `*.min.css`.
+- **Source maps** by suffix: `*.map`.
+
+The skip count is reported in the indexer's structured log line as `blocked=N` and on `IndexResult.Blocked` for programmatic callers.
+
 ---
 
 ## <img src="docs/assets/crab.png" width="22" alt=""/> HTTP REST API
