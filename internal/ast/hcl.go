@@ -3,6 +3,7 @@ package ast
 import (
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -179,22 +180,68 @@ func hclTopLevelBlockSymbols(blk *hclsyntax.Block, source []byte) []ExtractedSym
 // hclNestedBlockSymbols walks a body's nested blocks and emits one Block
 // symbol per nested block, recursively. parentQN is the dotted-path prefix
 // each nested block extends.
+//
+// **Multi-instance disambiguation (#80)**: HCL syntax allows multiple
+// nested blocks of the same type under one parent — `multiple usb { }`
+// passthroughs on a Proxmox VM, multiple `provisioner "local-exec" { }`
+// on a Terraform resource, multiple `network_interface { }` on an AWS
+// instance, etc. Each instance is semantically a separate symbol with
+// its own byte range, but they'd all collide on the same dotted-path
+// QN if we naively concatenated type+labels.
+//
+// First pass counts blocks per (type, sanitized-labels) key. Second
+// pass appends a source-order positional suffix (`.0`, `.1`, ...) ONLY
+// to the QN of blocks whose key has count > 1. Single-instance blocks
+// keep their readable QN — the common case stays clean.
+//
+// Why source-order positional suffix and not a label-derived one:
+// (a) the issue's "labelled-attribute-derived suffix" option requires
+// per-block-type schema knowledge (Terraform-version-specific) that
+// we don't have, and (b) source order is stable for a given file, so
+// the QN survives re-indexing as long as block ordering is preserved.
 func hclNestedBlockSymbols(body *hclsyntax.Body, parentQN string) []ExtractedSymbol {
 	if body == nil {
 		return nil
 	}
+
+	// Pass 1: count blocks per (type, sanitized-labels) key.
+	count := make(map[string]int)
+	for _, blk := range body.Blocks {
+		count[hclBlockKey(blk)]++
+	}
+
+	// Pass 2: emit, suffixing only when count > 1.
+	idx := make(map[string]int)
 	var out []ExtractedSymbol
 	for _, blk := range hclSortedBlocks(body) {
+		key := hclBlockKey(blk)
 		qn := parentQN + "." + blk.Type
 		name := blk.Type
 		if len(blk.Labels) > 0 {
 			qn = qn + "." + strings.Join(hclSanitizeLabels(blk.Labels), ".")
 			name = blk.Type + " " + strings.Join(blk.Labels, " ")
 		}
+		if count[key] > 1 {
+			suffix := strconv.Itoa(idx[key])
+			qn = qn + "." + suffix
+			name = name + "[" + suffix + "]"
+		}
+		idx[key]++
 		out = append(out, hclSymbol(name, qn, "Block", blk.Range(), hclBlockSignature(blk)))
 		out = append(out, hclNestedBlockSymbols(blk.Body, qn)...)
 	}
 	return out
+}
+
+// hclBlockKey produces the dedup key used by hclNestedBlockSymbols's
+// counting pass. Two blocks share a key iff their (type, sanitized
+// labels) tuples are equal — which is exactly when their naive QN
+// (without a positional suffix) would collide.
+func hclBlockKey(blk *hclsyntax.Block) string {
+	if len(blk.Labels) == 0 {
+		return blk.Type
+	}
+	return blk.Type + "." + strings.Join(hclSanitizeLabels(blk.Labels), ".")
 }
 
 // hclLocalsSymbols emits one Local symbol per assignment inside a locals { } block.

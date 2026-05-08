@@ -830,3 +830,206 @@ func mapKeys(m map[string]ExtractedSymbol) []string {
 	}
 	return out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #80 — multiple nested same-type blocks (multi-instance disambiguation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// tfMultiNestedSrc reproduces the Proxmox VM pattern from issue #80:
+// multiple same-type unlabeled nested blocks (e.g. four `usb { }`
+// passthroughs on a single VM resource). Pre-fix all four collided on
+// the same dotted-path qualified_name; post-fix each gets a positional
+// suffix.
+//
+// Also exercises the labeled-block case (multiple `provisioner
+// "local-exec"`) which has the same collision shape but with labels.
+const tfMultiNestedSrc = `resource "proxmox_virtual_environment_vm" "homeassistant" {
+  name = "home-assistant"
+
+  usb {
+    host = "3-2.1"
+    usb3 = false
+  }
+  usb {
+    host = "3-2.3"
+    usb3 = false
+  }
+  usb {
+    host = "3-2.4"
+    usb3 = false
+  }
+  usb {
+    host = "3-1"
+    usb3 = false
+  }
+
+  provisioner "local-exec" {
+    command = "echo first"
+  }
+  provisioner "local-exec" {
+    command = "echo second"
+  }
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-123"
+  instance_type = "t3.micro"
+
+  network_interface {
+    device_index = 0
+  }
+  network_interface {
+    device_index = 1
+  }
+}
+`
+
+// TestExtractHCL_MultipleNestedSameTypeBlocks pins the regression gate
+// for #80: when a parent contains multiple nested blocks with the same
+// (type, labels) tuple, each instance MUST get a unique QN via a
+// source-order positional suffix. Pre-fix all four `usb { }` blocks
+// collided on `resource.proxmox_virtual_environment_vm.homeassistant.usb`.
+func TestExtractHCL_MultipleNestedSameTypeBlocks(t *testing.T) {
+	result := Extract([]byte(tfMultiNestedSrc), "HCL", "main.tf")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+
+	// Every QN in the result MUST be unique. The bug manifested as
+	// duplicates; this is the most direct gate.
+	seen := make(map[string]int)
+	for _, s := range result.Symbols {
+		seen[s.QualifiedName]++
+	}
+	for qn, n := range seen {
+		if n > 1 {
+			t.Errorf("qualified_name %q appears %d times — multi-instance collision not fixed", qn, n)
+		}
+	}
+
+	// All four USB blocks present with their positional suffix.
+	for _, want := range []string{
+		"resource.proxmox_virtual_environment_vm.homeassistant.usb.0",
+		"resource.proxmox_virtual_environment_vm.homeassistant.usb.1",
+		"resource.proxmox_virtual_environment_vm.homeassistant.usb.2",
+		"resource.proxmox_virtual_environment_vm.homeassistant.usb.3",
+	} {
+		var found bool
+		for _, s := range result.Symbols {
+			if s.QualifiedName == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing usb block %q (got QNs: %v)", want, keysOfHCL(result.Symbols))
+		}
+	}
+
+	// Two labeled provisioners with positional suffixes.
+	for _, want := range []string{
+		"resource.proxmox_virtual_environment_vm.homeassistant.provisioner.local-exec.0",
+		"resource.proxmox_virtual_environment_vm.homeassistant.provisioner.local-exec.1",
+	} {
+		var found bool
+		for _, s := range result.Symbols {
+			if s.QualifiedName == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing provisioner block %q", want)
+		}
+	}
+
+	// Two network_interface blocks on the AWS resource.
+	for _, want := range []string{
+		"resource.aws_instance.web.network_interface.0",
+		"resource.aws_instance.web.network_interface.1",
+	} {
+		var found bool
+		for _, s := range result.Symbols {
+			if s.QualifiedName == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing network_interface %q", want)
+		}
+	}
+}
+
+// TestExtractHCL_SingleNestedBlockNoSuffix is the negative-of-fix gate:
+// when a parent has exactly ONE nested block of a given type, the QN
+// MUST stay clean (no positional suffix). The fix is supposed to be
+// invisible in the common case.
+func TestExtractHCL_SingleNestedBlockNoSuffix(t *testing.T) {
+	const src = `resource "aws_instance" "web" {
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+`
+	result := Extract([]byte(src), "HCL", "main.tf")
+	by := indexHCL(result.Symbols)
+	if _, ok := by["resource.aws_instance.web.lifecycle"]; !ok {
+		t.Errorf("single lifecycle block should keep clean QN; got: %v", keysOfHCL(result.Symbols))
+	}
+	// And NOT have a `.0` suffix.
+	if _, ok := by["resource.aws_instance.web.lifecycle.0"]; ok {
+		t.Errorf("single lifecycle block got an unwanted .0 suffix")
+	}
+}
+
+// TestExtractHCL_MultiInstanceDeepNesting exercises the recursive case:
+// nested-blocks-inside-multi-instance-nested-blocks must each get
+// unique QNs that compose correctly through the suffix.
+func TestExtractHCL_MultiInstanceDeepNesting(t *testing.T) {
+	const src = `resource "aws_instance" "web" {
+  network_interface {
+    security_groups {
+      id = "sg-1"
+    }
+    security_groups {
+      id = "sg-2"
+    }
+  }
+  network_interface {
+    security_groups {
+      id = "sg-3"
+    }
+  }
+}
+`
+	result := Extract([]byte(src), "HCL", "main.tf")
+	by := indexHCL(result.Symbols)
+
+	// Both top-level network_interface blocks have suffixes.
+	for _, qn := range []string{
+		"resource.aws_instance.web.network_interface.0",
+		"resource.aws_instance.web.network_interface.1",
+	} {
+		if _, ok := by[qn]; !ok {
+			t.Errorf("missing %q (deep nesting); got: %v", qn, keysOfHCL(result.Symbols))
+		}
+	}
+
+	// Inside the first network_interface (suffix .0), two
+	// security_groups blocks → each gets its own positional suffix.
+	for _, qn := range []string{
+		"resource.aws_instance.web.network_interface.0.security_groups.0",
+		"resource.aws_instance.web.network_interface.0.security_groups.1",
+	} {
+		if _, ok := by[qn]; !ok {
+			t.Errorf("missing nested %q", qn)
+		}
+	}
+
+	// Inside the second network_interface (suffix .1), only one
+	// security_groups block → no suffix on it.
+	if _, ok := by["resource.aws_instance.web.network_interface.1.security_groups"]; !ok {
+		t.Errorf("singleton inside multi-instance parent should keep clean QN")
+	}
+}
