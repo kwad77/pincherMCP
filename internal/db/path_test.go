@@ -31,14 +31,30 @@ func TestCanonicalProjectPath_DoesNotExist(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-dir")
 	got := CanonicalProjectPath(missing)
 	if got == "" {
-		t.Errorf("missing path returned empty string")
+		t.Fatalf("missing path returned empty string")
 	}
-	// Should at least equal the absolute form (or its lowercase on
-	// case-insensitive FS).
-	wantAbs, _ := filepath.Abs(missing)
-	if got != wantAbs && got != strings.ToLower(wantAbs) {
-		t.Errorf("got %q, want %q or its lowercase", got, wantAbs)
+
+	// The canonical form may differ from the literal abs path because
+	// the parent's symlinks resolve (e.g. /var/folders/... → /private/
+	// var/folders/... on macOS) even though the leaf doesn't exist.
+	// Build acceptable forms by combining literal/resolved parent with
+	// the missing leaf, then accept any of them, optionally lowercased.
+	literal, _ := filepath.Abs(missing)
+	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(missing))
+	if err != nil {
+		// Couldn't resolve parent either; the literal form is the only
+		// option.
+		resolvedParent = filepath.Dir(literal)
 	}
+	resolved := filepath.Join(resolvedParent, filepath.Base(missing))
+
+	candidates := []string{literal, resolved, strings.ToLower(literal), strings.ToLower(resolved)}
+	for _, c := range candidates {
+		if got == c {
+			return
+		}
+	}
+	t.Errorf("got %q, want one of %v", got, candidates)
 }
 
 // TestCanonicalProjectPath_CaseInsensitiveFolding probes the FS for
