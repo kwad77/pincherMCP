@@ -107,6 +107,27 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+
+	// WAL guardrail — silent no-op when journal_mode is not WAL.
+	//
+	// journal_size_limit caps the WAL at 256 MB. After any checkpoint that
+	// finds the WAL exceeding this size, SQLite truncates it. Combined with
+	// the explicit CheckpointTruncate() call at the tail of Index(), this
+	// keeps the WAL bounded under normal operation without paying the
+	// per-write checkpoint cost an aggressive wal_autocheckpoint would
+	// impose.
+	//
+	// History note: an earlier version of this branch also set
+	// wal_autocheckpoint = 100 to defend against the 70 GB WAL observed
+	// under the 2026-04-29 multi-writer storm. That setting cost an
+	// empirical 14.5× slowdown on heavy single-writer indexing (the
+	// 484K-symbol thinksmart corpus went from 78s to 1124s), so we
+	// reverted to the SQLite default of 1000 pages. The real defense
+	// against that storm is the cross-process lockfile + the --hook
+	// bloat-trap guard, which together prevent the multi-writer scenario
+	// that starved checkpoints in the first place.
+	_, _ = db.Exec("PRAGMA journal_size_limit = 268435456")
+
 	return s, nil
 }
 
@@ -115,6 +136,30 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Optimize runs SQLite's PRAGMA optimize — a lightweight stats refresh that
+// returns in milliseconds when nothing's changed and only does real work when
+// query-planner stats have gone stale (e.g. after a large index batch). Call
+// this at the tail of a large Index() run; cheap insurance for Cypher query
+// planning as the symbol table grows.
+func (s *Store) Optimize() error {
+	_, err := s.db.Exec("PRAGMA optimize")
+	return err
+}
+
+// CheckpointTruncate runs PRAGMA wal_checkpoint(TRUNCATE), folding the WAL
+// back into the main DB and physically truncating the WAL file. Cheap when
+// the WAL is already small. Call at the tail of a large Index() to force
+// the WAL back toward zero before queries resume — the natural quiet point
+// for a checkpoint with no readers waiting on the older snapshot.
+//
+// Returns an error only if the SQL itself fails; a checkpoint that can't
+// truncate (e.g. a reader is still on the old snapshot) succeeds quietly
+// and the caller can ignore that case.
+func (s *Store) CheckpointTruncate() error {
+	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
 
 // schemaMigrations is an ordered list of incremental SQL migrations applied
 // after the baseline schema. migrations[i] upgrades version (i+1) → (i+2).
@@ -190,10 +235,17 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("create schema_version: %w", err)
 	}
 	// Insert v1 only if the table is empty (fresh DB or pre-versioning DB).
-	if _, err := s.db.Exec(
+	// RowsAffected tells us whether this was a brand-new DB so we can seed
+	// sqlite_stat1 once at the end of migrate.
+	res, err := s.db.Exec(
 		`INSERT INTO schema_version(version) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version)`,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("init schema_version: %w", err)
+	}
+	freshDB := false
+	if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
+		freshDB = true
 	}
 
 	// Step 3: read current version.
@@ -223,6 +275,16 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(`UPDATE schema_version SET version = ?`, next); err != nil {
 			return fmt.Errorf("bump schema version to %d: %w", next, err)
 		}
+	}
+
+	// Step 5: on a brand-new DB, seed sqlite_stat1 with one ANALYZE pass.
+	// PRAGMA optimize (Store.Optimize, run after each Index) is a no-op when
+	// sqlite_stat1 doesn't exist, so without this seed the planner has no
+	// stats for the first few index runs and Cypher queries pick suboptimal
+	// plans. Sub-ms on empty tables; non-fatal on error because optimize
+	// will eventually populate stats once enough writes accumulate.
+	if freshDB {
+		_, _ = s.db.Exec(`ANALYZE`)
 	}
 	return nil
 }

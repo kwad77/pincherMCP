@@ -2073,6 +2073,63 @@ func TestMigrate_SchemaVersionAfterReopen(t *testing.T) {
 	}
 }
 
+func TestMigrate_AnalyzeOnFreshDB(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// migrate() seeds sqlite_stat1 with one ANALYZE on a brand-new DB so
+	// PRAGMA optimize has somewhere to write stats from the first index
+	// onwards. The table must exist after Open even though the DB is empty.
+	var name string
+	err = s.db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'`,
+	).Scan(&name)
+	if err != nil {
+		t.Errorf("sqlite_stat1 not created on fresh DB: %v", err)
+	}
+}
+
+func TestOpen_WALGuardrailApplied(t *testing.T) {
+	s := newTestStore(t)
+
+	// journal_size_limit is session-local in SQLite. With pool=1, this
+	// connection's setting is what subsequent queries observe.
+	var sizeLimit int64
+	if err := s.db.QueryRow("PRAGMA journal_size_limit").Scan(&sizeLimit); err != nil {
+		t.Fatalf("read journal_size_limit: %v", err)
+	}
+	if sizeLimit != 268435456 {
+		t.Errorf("journal_size_limit = %d, want 268435456", sizeLimit)
+	}
+
+	// wal_autocheckpoint is left at the SQLite default (1000 pages). An
+	// earlier version of this branch lowered it to 100; that change cost
+	// 14.5× on heavy single-writer indexing and was reverted.
+	var checkpoint int
+	if err := s.db.QueryRow("PRAGMA wal_autocheckpoint").Scan(&checkpoint); err != nil {
+		t.Fatalf("read wal_autocheckpoint: %v", err)
+	}
+	if checkpoint != 1000 {
+		t.Errorf("wal_autocheckpoint = %d, want default 1000", checkpoint)
+	}
+}
+
+func TestCheckpointTruncate_DoesNotError(t *testing.T) {
+	s := newTestStore(t)
+
+	// CheckpointTruncate must succeed on an empty DB. It may also succeed
+	// when WAL is not engaged (running an older binary against a delete-
+	// mode DB) — in that case PRAGMA wal_checkpoint(TRUNCATE) is a quiet
+	// no-op and we still want no error.
+	if err := s.CheckpointTruncate(); err != nil {
+		t.Errorf("CheckpointTruncate on empty DB: %v", err)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DataDir — idempotency
 // ─────────────────────────────────────────────────────────────────────────────
