@@ -56,6 +56,10 @@ func DetectLanguage(filename string) string {
 		return "Bash"
 	case ".r":
 		return "R"
+	case ".yml", ".yaml":
+		return "YAML"
+	case ".json":
+		return "JSON"
 	default:
 		return ""
 	}
@@ -72,5 +76,6 @@ func SupportedLanguages() []string {
 		"Go", "Python", "JavaScript", "JSX", "TypeScript", "TSX",
 		"Rust", "Java", "Ruby", "PHP", "C", "C++", "C#",
 		"Kotlin", "Swift", "Scala", "Dart", "Bash", "Elixir",
+		"YAML", "JSON",
 	}
 }

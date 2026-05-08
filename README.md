@@ -341,7 +341,7 @@ Every symbol carries an `extraction_confidence` score surfaced in search results
 
 | Score | Parser | Languages |
 |---|---|---|
-| `1.0` | `go/ast` full AST, exact byte offsets | Go |
+| `1.0` | `go/ast` full AST / `gopkg.in/yaml.v3` Node tree | Go, YAML, JSON |
 | `0.85` | Stable regex | Python, JavaScript, JSX, TypeScript, TSX, Rust, Java |
 | `0.70` | Approximate regex | Ruby, PHP, C, C++, C#, Kotlin, Swift |
 
@@ -383,7 +383,7 @@ RETURN f.name, f.file_path LIMIT 50
 
 **Edge kinds indexed:** `CALLS`, `IMPORTS` (Go only — resolved across files against `Module` symbols using the `module` line of `go.mod` to rewrite intra-module paths; external imports stay unresolved)
 
-**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`), `Module` (one per Go file, qualified by within-module import path, e.g. `internal/db`), plus `Document` (URLs stored by the `fetch` tool)
+**Node kinds indexed:** `Function`, `Method`, `Class` (and subtypes per language: `Interface`, `Struct`, `Trait`, `Type`), `Module` (one per Go file, qualified by within-module import path, e.g. `internal/db`), `Setting` (one per YAML/JSON key, qualified by dotted path, e.g. `services.web.image`), plus `Document` (URLs stored by the `fetch` tool)
 
 ---
 
@@ -392,6 +392,7 @@ RETURN f.name, f.file_path LIMIT 50
 | Language | Extraction | Confidence | Symbol kinds extracted |
 |---|---|---|---|
 | Go | `go/ast` full AST | 1.0 | Functions, Methods, Types, Interfaces, Structs, Constants, Variables |
+| YAML / JSON | `gopkg.in/yaml.v3` Node tree | 1.0 | Settings (dotted-path keys, sequence elements, multi-doc-aware) |
 | Python | Regex | 0.85 | Functions, Classes, Methods |
 | TypeScript / TSX | Regex | 0.85 | Functions, Classes, Interfaces, Methods |
 | JavaScript / JSX | Regex | 0.85 | Functions, Classes, Methods |
@@ -406,7 +407,9 @@ RETURN f.name, f.file_path LIMIT 50
 
 Files in Scala, Lua, Zig, Elixir, Haskell, Dart, Bash, and R are detected as source files but skipped — no extraction yet.
 
-Go is the only language with full AST parsing. All other languages use regex patterns. The interface is stable: replace any language's extractor with tree-sitter bindings and confidence jumps to 1.0 with no other changes.
+Go and YAML/JSON have full parser-based extraction (confidence 1.0). All other languages use regex patterns. The interface is stable: replace any language's extractor with tree-sitter bindings and confidence jumps to 1.0 with no other changes.
+
+YAML/JSON files emit one `Setting` symbol per key with a dotted-path qualified name (e.g., `services.web.image`, `tasks.0.name`). Multi-document YAML uses a `docN` prefix. Each Setting's byte range covers the key plus its full nested value, so retrieving `services.web` returns the entire `web` block — the same shape as retrieving a function body.
 
 ---
 

@@ -33,6 +33,9 @@ func TestDetectLanguage(t *testing.T) {
 		{"unknown.xyz", ""},
 		{"noext", ""},
 		{"README.md", ""},
+		{"site.yml", "YAML"},
+		{"values.yaml", "YAML"},
+		{"data.json", "JSON"},
 	}
 	for _, c := range cases {
 		got := DetectLanguage(c.file)
@@ -49,8 +52,11 @@ func TestIsSourceFile(t *testing.T) {
 	if IsSourceFile("README.md") {
 		t.Error("README.md should not be a source file")
 	}
-	if IsSourceFile("data.json") {
-		t.Error("data.json should not be a source file")
+	if !IsSourceFile("data.json") {
+		t.Error("data.json should be a source file (JSON support)")
+	}
+	if !IsSourceFile("site.yml") {
+		t.Error("site.yml should be a source file (YAML support)")
 	}
 }
 

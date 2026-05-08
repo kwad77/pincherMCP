@@ -6,6 +6,7 @@
 //
 // Language support:
 //   - Go:         go/ast + go/parser (precise byte offsets via token.Pos)
+//   - YAML/JSON:  gopkg.in/yaml.v3 Node tree (Setting symbols with dotted paths)
 //   - Python:     regex patterns (function/class/method definitions)
 //   - JavaScript: regex patterns (function/class/method/arrow definitions)
 //   - TypeScript: regex patterns (extends JavaScript, adds interface/type)
@@ -75,6 +76,8 @@ type FileResult struct {
 //   - 0.70: approximate regex — heuristic patterns for Ruby, PHP, C/C++, C#, Kotlin, Swift
 var extractionConfidence = map[string]float64{
 	"Go":         1.00,
+	"YAML":       1.00,
+	"JSON":       1.00,
 	"Python":     0.85,
 	"JavaScript": 0.85,
 	"JSX":        0.85,
@@ -131,6 +134,8 @@ func ExtractWithModule(source []byte, language, relPath, modulePath string) *Fil
 		result = extractKotlin(source, relPath)
 	case "Swift":
 		result = extractSwift(source, relPath)
+	case "YAML", "JSON":
+		result = extractYAML(source, relPath)
 	default:
 		return &FileResult{}
 	}
