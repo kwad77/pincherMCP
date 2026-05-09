@@ -33,13 +33,23 @@ import (
 // suite can't do post-build.
 func runSelfTestCLI(args []string) {
 	log.SetOutput(io.Discard)
+	if exitCode := runSelfTest(args, os.Stderr); exitCode != 0 {
+		os.Exit(exitCode)
+	}
+}
 
+// runSelfTest is the testable entrypoint: parses args, runs the steps,
+// writes output to `out`, returns the exit code (0 = OK, 1 = failure).
+// Pulled out of runSelfTestCLI so tests don't need to fork a process or
+// override os.Exit. The CLI wrapper is a one-liner that os.Exits on
+// non-zero return.
+func runSelfTest(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("self-test", flag.ExitOnError)
 	dataDirFlag := fs.String("data-dir", "", "Override data directory (default: platform tmp)")
 	verbose := fs.Bool("verbose", false, "Print step timings + intermediate state")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher self-test [--data-dir DIR] [--verbose]")
-		fmt.Fprintln(os.Stderr, "  Smoke-tests the install: index a synthetic project, search, retrieve.")
+		fmt.Fprintln(out, "usage: pincher self-test [--data-dir DIR] [--verbose]")
+		fmt.Fprintln(out, "  Smoke-tests the install: index a synthetic project, search, retrieve.")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -53,15 +63,21 @@ func runSelfTestCLI(args []string) {
 	}
 
 	rt := &selfTestRuntime{dataDir: *dataDirFlag, verbose: *verbose}
+	var cleanup func()
 	if rt.dataDir == "" {
 		tmp, err := os.MkdirTemp("", "pincher-selftest-*")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL: setup tmp dir: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(out, "FAIL: setup tmp dir: %v\n", err)
+			return 1
 		}
-		defer os.RemoveAll(tmp)
+		cleanup = func() { _ = os.RemoveAll(tmp) }
 		rt.dataDir = filepath.Join(tmp, "data")
 	}
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
 
 	allOK := true
 	for _, step := range steps {
@@ -69,14 +85,14 @@ func runSelfTestCLI(args []string) {
 		err := step.fn(rt)
 		dur := time.Since(t0)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s  FAIL  (%dms)  %v\n", step.label, dur.Milliseconds(), err)
+			fmt.Fprintf(out, "%s  FAIL  (%dms)  %v\n", step.label, dur.Milliseconds(), err)
 			allOK = false
 			break // bail on first failure — later steps depend on earlier ones
 		}
 		if rt.verbose {
-			fmt.Fprintf(os.Stderr, "%s  OK    (%dms)\n", step.label, dur.Milliseconds())
+			fmt.Fprintf(out, "%s  OK    (%dms)\n", step.label, dur.Milliseconds())
 		} else {
-			fmt.Fprintf(os.Stderr, "%s  OK\n", step.label)
+			fmt.Fprintf(out, "%s  OK\n", step.label)
 		}
 	}
 
@@ -85,10 +101,11 @@ func runSelfTestCLI(args []string) {
 	}
 
 	if !allOK {
-		fmt.Fprintln(os.Stderr, "\nself-test: FAIL")
-		os.Exit(1)
+		fmt.Fprintln(out, "\nself-test: FAIL")
+		return 1
 	}
-	fmt.Fprintln(os.Stderr, "\nself-test: OK — pincher is healthy on this install")
+	fmt.Fprintln(out, "\nself-test: OK — pincher is healthy on this install")
+	return 0
 }
 
 // selfTestRuntime carries state across steps so each step is a pure fn
