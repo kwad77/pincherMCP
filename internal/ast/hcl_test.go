@@ -265,6 +265,67 @@ func TestExtractHCL_TfExtension(t *testing.T) {
 	}
 }
 
+// TestExtractHCL_HclExtension covers `.hcl` files used by Nomad job specs,
+// Packer templates, Vault policies, and Consul configs — same hclsyntax
+// grammar as Terraform, just different block taxonomy. The MVP treats
+// every top-level block as a generic Block symbol; Terraform-specific
+// kinds (Resource/DataSource/Module/Variable/Output/Provider/Local) only
+// fire when the source uses those exact block types.
+func TestExtractHCL_HclExtension(t *testing.T) {
+	if got := DetectLanguage("nomad.hcl"); got != "HCL" {
+		t.Errorf("DetectLanguage(nomad.hcl) = %q, want HCL", got)
+	}
+	if !IsSourceFile("packer.hcl") {
+		t.Error("IsSourceFile(packer.hcl) = false, want true")
+	}
+
+	// Real-world Nomad job spec — top-level `job "name" { ... }`. Nomad
+	// doesn't have Terraform's resource/data/module/etc. keywords, so the
+	// extractor's per-kind path falls through to the unknown-block-type
+	// fallback (Block symbol with the labelled name).
+	src := `job "web-server" {
+  datacenters = ["dc1"]
+
+  group "web" {
+    count = 3
+
+    task "nginx" {
+      driver = "docker"
+
+      config {
+        image = "nginx:latest"
+        ports = ["http"]
+      }
+    }
+  }
+}
+`
+	result := Extract([]byte(src), "HCL", "jobs/web.hcl")
+	if result == nil {
+		t.Fatal("Extract returned nil")
+	}
+	if len(result.Symbols) == 0 {
+		t.Fatal("expected symbols from Nomad job spec, got 0")
+	}
+	// Verify the top-level `job "web-server"` produces a Block (or any
+	// symbol with the name "web-server" in its qualified path). The exact
+	// QN depends on the unknown-block-type fallback's labelling rule.
+	found := false
+	for _, s := range result.Symbols {
+		if strings.Contains(s.QualifiedName, "web-server") || strings.Contains(s.QualifiedName, "web_server") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		var qns []string
+		for _, s := range result.Symbols {
+			qns = append(qns, s.QualifiedName)
+		}
+		t.Errorf("expected a symbol referencing the job name 'web-server', got QNs: %v", qns)
+	}
+}
+
 func TestExtractHCL_SignatureFormat(t *testing.T) {
 	result := Extract([]byte(tfMixedSrc), "HCL", "main.tf")
 	by := indexHCL(result.Symbols)
