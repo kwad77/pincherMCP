@@ -109,6 +109,14 @@ Continue, Windsurf, and any MCP-compatible client follow the same pattern. For e
 
 For managed installs (Homebrew, systemd, launchd, Windows service, Docker), see [`packaging/README.md`](packaging/README.md).
 
+### Tutorials
+
+End-to-end walkthroughs (~10 min each):
+
+- **[Claude Code](docs/tutorials/claude-code.md)** — install → index → `pincher init` → wire MCP → first query.
+- **[Cursor](docs/tutorials/cursor.md)** — same flow with `pincher init --target=cursor` and Cursor's `.mdc` rules format.
+- **[HTTP dashboard](docs/tutorials/http-dashboard.md)** — `pincher --http`, dashboard panels, REST API with `curl`, reverse-proxy notes.
+
 ---
 
 ## Why it's fast

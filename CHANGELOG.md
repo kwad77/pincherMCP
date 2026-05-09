@@ -8,6 +8,11 @@ minors.
 ## [Unreleased]
 
 ### Added
+- Three end-to-end tutorials under `docs/tutorials/` (#201) —
+  `claude-code.md`, `cursor.md`, `http-dashboard.md`. Each is ~10
+  minutes of cold reading: install, index, wire your client, send a
+  first query, watch the savings accumulate. Linked from README and
+  REFERENCE.md.
 - `pincher init --target` (#191) — multi-IDE rules-file writer. The
   init subcommand now seeds policy files for six editors and agents,
   not just Claude Code:
