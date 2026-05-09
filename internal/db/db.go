@@ -703,6 +703,15 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("symbol_id column repair: %w", err)
 	}
 
+	// Step 4.6: dedupe project rows that resolved to the same canonical
+	// path. Pre-#84 `ProjectIDFromPath` returned the literal abs path,
+	// so case-insensitive filesystems (macOS APFS, Windows NTFS)
+	// accumulated duplicates when the user invoked pincher with
+	// different casings. Self-skips when no duplicates exist.
+	if err := s.dedupProjectsByCanonicalPath(); err != nil {
+		return fmt.Errorf("project dedup: %w", err)
+	}
+
 	// Step 5: on a brand-new DB, seed sqlite_stat1 with one ANALYZE pass.
 	// PRAGMA optimize (Store.Optimize, run after each Index) is a no-op when
 	// sqlite_stat1 doesn't exist, so without this seed the planner has no
@@ -765,6 +774,245 @@ func (s *Store) ensureSymbolIDColumn() error {
 		return fmt.Errorf("add symbol_id column: %w", err)
 	}
 	return nil
+}
+
+// dedupProjectsByCanonicalPath finds project rows that resolve to the
+// same canonical path (per ProjectIDFromPath / CanonicalProjectPath)
+// and merges duplicates. Closes the post-fix half of #84: prevention
+// (canonical project_id at write time) handles new projects, this
+// migration cleans up DBs that already accumulated duplicates from
+// pre-fix invocations.
+//
+// Algorithm:
+//
+//  1. Read every (id, path) from `projects`.
+//  2. Group by canonical(path). The grouping key is what
+//     ProjectIDFromPath would produce today; rows whose stored `id`
+//     differs from that key are non-canonical.
+//  3. For each group with len > 1: pick the row whose stored `id`
+//     matches the canonical form as the winner. If none match (both
+//     non-canonical), pick the row with the highest sym_count, ties
+//     broken by most recent indexed_at.
+//  4. Re-key each non-winner's symbols/edges/file_hashes/extraction_failures/
+//     adrs/symbol_moves to point at the winner's id, dropping rows
+//     that would conflict on the winner's existing data.
+//  5. Delete the loser project row.
+//
+// Conflict resolution at re-key time: SQLite primary keys / unique
+// indexes prevent UPDATE from creating duplicates. We use
+// `INSERT OR IGNORE ... SELECT` then `DELETE FROM <tbl> WHERE
+// project_id = loser` to avoid raising errors. This loses some symbols
+// from the loser if they collide with winner — those are recoverable
+// by re-indexing, which the user will trigger naturally on next call.
+//
+// Idempotent: running twice is a no-op (no duplicates exist after
+// the first run). Self-skips if no duplicates exist (the first SELECT
+// returns no groups with cardinality > 1).
+//
+// Migration runs every Open() — the dedup logic is sub-ms when there
+// are no duplicates, since the only work is the initial SELECT and a
+// map-build that finds zero collisions.
+func (s *Store) dedupProjectsByCanonicalPath() error {
+	rows, err := s.db.Query(`SELECT id, path, sym_count, indexed_at FROM projects`)
+	if err != nil {
+		return fmt.Errorf("scan projects: %w", err)
+	}
+	type projRow struct {
+		id        string
+		path      string
+		symCount  int
+		indexedAt int64
+	}
+	var all []projRow
+	for rows.Next() {
+		var p projRow
+		if err := rows.Scan(&p.id, &p.path, &p.symCount, &p.indexedAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan: %w", err)
+		}
+		all = append(all, p)
+	}
+	rows.Close()
+
+	// Group by canonical(path). The canonical form may not equal any
+	// row's stored id (nbarari's reproducer: both /Users/nick/Projects
+	// and /Users/nick/projects canonicalize to the lowercased form).
+	groups := make(map[string][]projRow)
+	for _, p := range all {
+		canon := CanonicalProjectPath(p.path)
+		groups[canon] = append(groups[canon], p)
+	}
+
+	for canon, members := range groups {
+		if len(members) <= 1 {
+			continue
+		}
+		// Pick winner: prefer the row whose stored id == canonical form.
+		// If none match, pick highest sym_count; ties → most recent.
+		winnerIdx := 0
+		for i, m := range members {
+			if m.id == canon {
+				winnerIdx = i
+				break
+			}
+		}
+		if members[winnerIdx].id != canon {
+			// No row already at canonical form — pick by sym_count + age.
+			for i, m := range members {
+				w := members[winnerIdx]
+				if m.symCount > w.symCount ||
+					(m.symCount == w.symCount && m.indexedAt > w.indexedAt) {
+					winnerIdx = i
+				}
+			}
+		}
+		winner := members[winnerIdx]
+
+		// Re-key losers' data to the winner's id.
+		for i, loser := range members {
+			if i == winnerIdx {
+				continue
+			}
+			if err := s.mergeProjectInto(loser.id, winner.id); err != nil {
+				return fmt.Errorf("merge %s → %s: %w", loser.id, winner.id, err)
+			}
+		}
+
+		// If the winner's stored id differs from the canonical form
+		// (e.g. all rows used non-canonical casing), rename the winner
+		// row to the canonical id so future invocations match.
+		if winner.id != canon {
+			if err := s.renameProjectID(winner.id, canon); err != nil {
+				return fmt.Errorf("rename winner %s → %s: %w", winner.id, canon, err)
+			}
+		}
+
+		// Recompute denormalised counts on the survivor. mergeProjectInto
+		// re-keys the loser's rows onto the winner but leaves
+		// projects.sym_count / file_count / edge_count at the winner's
+		// pre-merge values, so `pincher list` would display stale numbers
+		// until the next full re-index. Source of truth: the symbols /
+		// files / edges tables themselves.
+		if err := s.recomputeProjectCounts(canon); err != nil {
+			return fmt.Errorf("recompute counts for %s: %w", canon, err)
+		}
+	}
+	return nil
+}
+
+// recomputeProjectCounts refreshes projects.sym_count / file_count /
+// edge_count from the canonical row tables for `projectID`. Used by
+// dedupProjectsByCanonicalPath after merging; the merge re-keys rows
+// but doesn't touch the denormalised counts. Cheap (3 indexed
+// COUNT(*)s + 1 UPDATE) and only fires when a duplicate group existed.
+func (s *Store) recomputeProjectCounts(projectID string) error {
+	_, err := s.db.Exec(`
+		UPDATE projects SET
+		  sym_count  = (SELECT COUNT(*) FROM symbols WHERE project_id = ?),
+		  file_count = (SELECT COUNT(*) FROM files   WHERE project_id = ?),
+		  edge_count = (SELECT COUNT(*) FROM edges   WHERE project_id = ?)
+		WHERE id = ?`,
+		projectID, projectID, projectID, projectID)
+	return err
+}
+
+// mergeProjectInto re-points every project_id-keyed row from `loser`
+// onto `winner`, dropping any row that would collide with existing
+// winner data. After this, the loser project has zero rows pointing
+// at it; the caller deletes the project row itself.
+//
+// Order matters because of foreign keys: tables that REFERENCE
+// projects(id) (symbols, edges, extraction_failures) must be re-keyed
+// before the loser project row can be deleted. Tables without FK
+// constraints (files, adrs, symbol_moves, slow_queries) follow.
+func (s *Store) mergeProjectInto(loser, winner string) error {
+	// Each statement uses the same conflict-tolerant pattern: try to
+	// move every row, then delete the rows whose ID already existed on
+	// the winner (UPDATE would have failed for those due to PK/UNIQUE).
+	//
+	// The `WHERE id NOT IN (SELECT id FROM <tbl> WHERE project_id =
+	// winner)` guard prevents UPDATE from raising; the subsequent
+	// DELETE cleans up the rows we couldn't move.
+
+	for _, op := range []struct {
+		table string
+		// columns that constitute a uniqueness boundary on (project_id, ...)
+		// — UPDATE only when no row on the winner already covers this key.
+		uniqueKeyCols string
+	}{
+		{"symbols", "id"},
+		{"edges", "from_id, to_id, kind"},
+		{"extraction_failures", "file_path, reason"},
+		{"files", "path"},
+		{"adrs", "key"},
+		{"symbol_moves", "old_id"},
+	} {
+		// Move rows that don't conflict.
+		moveSQL := `UPDATE ` + op.table + ` SET project_id = ? WHERE project_id = ? AND NOT EXISTS (` +
+			`SELECT 1 FROM ` + op.table + ` w WHERE w.project_id = ? AND ` +
+			joinEqClauses(op.uniqueKeyCols, op.table) + `)`
+		if _, err := s.db.Exec(moveSQL, winner, loser, winner); err != nil {
+			return fmt.Errorf("move %s: %w", op.table, err)
+		}
+		// Drop the remainder (the conflicts).
+		if _, err := s.db.Exec(`DELETE FROM `+op.table+` WHERE project_id = ?`, loser); err != nil {
+			return fmt.Errorf("drop loser %s: %w", op.table, err)
+		}
+	}
+
+	// slow_queries: project_id is nullable + no FK; just re-key.
+	if _, err := s.db.Exec(`UPDATE slow_queries SET project_id = ? WHERE project_id = ?`, winner, loser); err != nil {
+		return fmt.Errorf("re-key slow_queries: %w", err)
+	}
+
+	// Finally drop the loser project row.
+	if _, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, loser); err != nil {
+		return fmt.Errorf("delete loser projects: %w", err)
+	}
+	return nil
+}
+
+// renameProjectID rewrites every project_id reference from `from` to
+// `to`. Used when no existing project row was already at the canonical
+// form — we rename the winner to bring it to canonical without going
+// through the merge path.
+//
+// This is a write-amplification operation (every row touching project_id
+// gets updated) but only fires when a duplicate group existed in the
+// first place, which is rare and one-shot.
+func (s *Store) renameProjectID(from, to string) error {
+	// Foreign keys would block UPDATE on the projects.id column;
+	// disable temporarily for this batch.
+	if _, err := s.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable fk: %w", err)
+	}
+	defer func() { _, _ = s.db.Exec(`PRAGMA foreign_keys = ON`) }()
+
+	for _, table := range []string{
+		"projects", "symbols", "edges", "extraction_failures",
+		"files", "adrs", "symbol_moves", "slow_queries",
+	} {
+		col := "project_id"
+		if table == "projects" {
+			col = "id"
+		}
+		if _, err := s.db.Exec(`UPDATE `+table+` SET `+col+` = ? WHERE `+col+` = ?`, to, from); err != nil {
+			return fmt.Errorf("rename in %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// joinEqClauses turns "a, b, c" into "w.a = <table>.a AND w.b =
+// <table>.b AND w.c = <table>.c" for use in the conflict-detection
+// subquery in mergeProjectInto.
+func joinEqClauses(cols, table string) string {
+	parts := make([]string, 0, 3)
+	for _, c := range strings.Split(cols, ",") {
+		c = strings.TrimSpace(c)
+		parts = append(parts, "w."+c+" = "+table+"."+c)
+	}
+	return strings.Join(parts, " AND ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2574,13 +2822,21 @@ func ProjectNameFromPath(path string) string {
 }
 
 // ProjectIDFromPath derives a stable project ID from a directory path.
+//
+// Returns the canonical form of `path`: symlinks resolved, casing
+// normalised on case-insensitive filesystems (macOS APFS default,
+// Windows NTFS default). Two invocations against the same physical
+// directory MUST return the same project_id, regardless of the caller's
+// path-string casing or symlink usage. See CanonicalProjectPath for
+// the full canonicalisation rules; closes #84.
 func ProjectIDFromPath(path string) string {
-	// Use the absolute path itself as the ID — simple and stable.
 	abs, err := filepath.Abs(path)
 	if err != nil {
+		// filepath.Abs only fails if os.Getwd does — extremely rare, but
+		// fall back to the input path so we don't silently invent IDs.
 		return path
 	}
-	return abs
+	return CanonicalProjectPath(abs)
 }
 
 // ApproxTokens returns the BPE token count of s using the cl100k_base

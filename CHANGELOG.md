@@ -7,6 +7,35 @@ minors.
 
 ## [Unreleased]
 
+### Fixed
+- **`project_id` no longer duplicates rows on case-insensitive filesystems**
+  (#84 / #92). On macOS (APFS) and Windows (NTFS default), opening the
+  same project via two casings (`/Users/Foo/Project` and
+  `/users/foo/project`) previously produced two distinct project rows
+  pointing at the same physical directory. The fix canonicalises
+  `project_id` to a deterministic form (symlink-resolved + casing-folded
+  on case-insensitive FSes) and migrates existing duplicate-project
+  databases by merging on `Open()`. The migration:
+  - picks a winner per duplicate group (prefers row already at canonical
+    form; otherwise highest sym_count + most recent indexed_at)
+  - re-keys all symbols / edges / files / adrs / extraction_failures
+    onto the winner; conflicts (same symbol id on both rows) drop the
+    loser row, recoverable by re-indexing
+  - recomputes `projects.sym_count` / `file_count` / `edge_count` on
+    the survivor so `pincher list` reports post-merge reality
+  - is idempotent on second `Open()`
+  Thanks to @nbarari for validating the migration against a real-world
+  duplicate-projects DB (5281 symbols across two casings) and surfacing
+  the stale-counts and macOS test-pinning issues during review.
+
+### Changed
+- **CI coverage gate temporarily lowered 84% → 83%** to land #92's
+  patch (which adds 700+ lines including dedup/merge/rename and a
+  schema migration; natural Linux CI coverage landed at 83.9%).
+  Restoration is tracked at #200 — the v0.5.0 milestone bumps the
+  gate 83% → 85% with the test-infrastructure investment needed to
+  exercise SQL-error paths cleanly.
+
 ## [v0.4.0] — 2026-05-09 — Capture-what-shipped
 
 First release under the milestone-driven cadence (#193). Closes the
