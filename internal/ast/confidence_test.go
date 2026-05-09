@@ -35,13 +35,11 @@ func TestCompose_OrderIndependence(t *testing.T) {
 	for trial := 0; trial < 50; trial++ {
 		// Build a random Signals state.
 		canonical := Signals{
-			BaseExtractor:  rng.Float64(),
-			KindBaseline:   rng.Float64(),
-			PathPenalty:    -rng.Float64() * 0.5,
-			BreadthPenalty: -rng.Float64() * 0.2,
-			LeafPenalty:    -rng.Float64() * 0.1,
-			IdentBonus:     rng.Float64()*0.2 - 0.1,
-			GeneratedPen:   -rng.Float64() * 0.4,
+			BaseExtractor: rng.Float64(),
+			KindBaseline:  rng.Float64(),
+			PathPenalty:   -rng.Float64() * 0.5,
+			IdentBonus:    rng.Float64()*0.2 - 0.1,
+			GeneratedPen:  -rng.Float64() * 0.4,
 		}
 		canonicalScore := canonical.Compose()
 
@@ -49,21 +47,18 @@ func TestCompose_OrderIndependence(t *testing.T) {
 		// final state, so Compose must produce the same number.
 		fields := []float64{
 			canonical.BaseExtractor, canonical.KindBaseline,
-			canonical.PathPenalty, canonical.BreadthPenalty,
-			canonical.LeafPenalty, canonical.IdentBonus,
+			canonical.PathPenalty, canonical.IdentBonus,
 			canonical.GeneratedPen,
 		}
 		rng.Shuffle(len(fields), func(i, j int) {
 			fields[i], fields[j] = fields[j], fields[i]
 		})
 		reordered := Signals{
-			BaseExtractor:  fields[0],
-			KindBaseline:   fields[1],
-			PathPenalty:    fields[2],
-			BreadthPenalty: fields[3],
-			LeafPenalty:    fields[4],
-			IdentBonus:     fields[5],
-			GeneratedPen:   fields[6],
+			BaseExtractor: fields[0],
+			KindBaseline:  fields[1],
+			PathPenalty:   fields[2],
+			IdentBonus:    fields[3],
+			GeneratedPen:  fields[4],
 		}
 		reorderedScore := reordered.Compose()
 
@@ -74,8 +69,7 @@ func TestCompose_OrderIndependence(t *testing.T) {
 		_ = canonicalScore
 		_ = reorderedScore
 		// Sum of all fields should equal the un-clamped score.
-		sumDeltas := canonical.PathPenalty + canonical.BreadthPenalty +
-			canonical.LeafPenalty + canonical.IdentBonus + canonical.GeneratedPen
+		sumDeltas := canonical.PathPenalty + canonical.IdentBonus + canonical.GeneratedPen
 		baseAvg := (canonical.BaseExtractor + canonical.KindBaseline) / 2.0
 		want := clampForTest(baseAvg + sumDeltas)
 		if math.Abs(canonicalScore-want) > 1e-9 {
@@ -92,15 +86,12 @@ func TestCompose_Boundedness(t *testing.T) {
 	cases := []Signals{
 		// All max-negative
 		{BaseExtractor: 0, KindBaseline: 0,
-			PathPenalty: -1, BreadthPenalty: -1, LeafPenalty: -1,
-			IdentBonus: -1, GeneratedPen: -1},
+			PathPenalty: -1, IdentBonus: -1, GeneratedPen: -1},
 		// All max-positive
 		{BaseExtractor: 1, KindBaseline: 1,
-			PathPenalty: 1, BreadthPenalty: 1, LeafPenalty: 1,
-			IdentBonus: 1, GeneratedPen: 1},
+			PathPenalty: 1, IdentBonus: 1, GeneratedPen: 1},
 		// Mixed extremes
-		{BaseExtractor: 1, KindBaseline: 1,
-			PathPenalty: -10, BreadthPenalty: 10},
+		{BaseExtractor: 1, KindBaseline: 1, PathPenalty: -10, IdentBonus: 10},
 		// Empty
 		{},
 	}

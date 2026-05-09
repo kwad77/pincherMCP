@@ -36,23 +36,11 @@ type Signals struct {
 	KindBaseline float64
 
 	// PathPenalty is a negative contribution from the file path (lockfile,
-	// vendor/, generated dist/, README, etc.). Phase 1 leaves this 0; Phase 2
-	// populates pathPatterns. Always non-positive.
+	// vendor/, generated dist/, README, etc.). Always non-positive.
 	PathPenalty float64
 
-	// BreadthPenalty fires when a symbol's parent has unusually high fan-out
-	// (lockfile-shape detection: hundreds of sibling Settings under one key).
-	// Phase 1 leaves this 0; needs structural info wired through extractors.
-	// Always non-positive.
-	BreadthPenalty float64
-
-	// LeafPenalty is a small negative for scalar-leaf settings (less
-	// structurally informative than a parent mapping). Phase 1 leaves this 0;
-	// needs structural info wired through extractors. Always non-positive.
-	LeafPenalty float64
-
 	// IdentBonus is +0.05 for clean identifiers, -0.10 for empty/whitespace
-	// names. Phase 1 leaves this 0.
+	// names.
 	IdentBonus float64
 
 	// GeneratedPen fires on `// Code generated` markers in the file head.
@@ -72,8 +60,7 @@ type Signals struct {
 // any platform. These properties are pinned by tests in confidence_test.go.
 func (s Signals) Compose() float64 {
 	base := (s.BaseExtractor + s.KindBaseline) / 2.0
-	score := base + s.PathPenalty + s.BreadthPenalty + s.LeafPenalty +
-		s.IdentBonus + s.GeneratedPen
+	score := base + s.PathPenalty + s.IdentBonus + s.GeneratedPen
 	if score < 0 {
 		return 0
 	}
@@ -176,12 +163,13 @@ type pathPattern struct {
 
 // computeSignals builds the Signals struct for one symbol.
 //
-// Phase 2: populates kindBaseline lookup, pathPatterns iteration, identifier
-// shape bonus, and generated-marker penalty. BreadthPenalty and LeafPenalty
-// remain stubbed — they need parent fan-out / leaf-vs-mapping info from the
-// extractor, which would require a per-extractor wiring pass. Phase 2 keeps
-// the signal set to those that are computable from (sym, relPath, source)
-// alone, so the diff is bounded.
+// Signals computable from (sym, relPath, source) alone: kindBaseline lookup,
+// pathPatterns iteration, identifier-shape bonus, and generated-marker
+// penalty. The earlier-design BreadthPenalty / LeafPenalty signals were
+// removed in #119 — they would have needed structural info (parent fan-out,
+// scalar-vs-mapping) wired through every extractor for marginal benefit
+// given the current calibration; the existing four signals carry the
+// quality gradient on real corpora.
 //
 // Pure function: same inputs always produce the same Signals. The caller
 // chains Compose() to get the final score. Identifier-bonus and generated-
