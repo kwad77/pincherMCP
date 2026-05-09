@@ -7,6 +7,34 @@ minors.
 
 ## [Unreleased]
 
+## [v0.6.0] — 2026-05-09 — Multi-client adoption
+
+The "any agent, any editor" milestone. Closes the gap between
+"pincher works great in Claude Code" and "pincher works great
+wherever an LLM agent talks to a codebase."
+
+Highlights:
+
+- **Multi-IDE init writers** — `pincher init --target=...` now seeds
+  policy files for six editors and agents (Claude Code, Cursor modern
+  + legacy, Windsurf, Aider, Continue), not just Claude. The cursor
+  modern target writes `.cursor/rules/pincher.mdc` with YAML
+  frontmatter and preserves user customisations on re-runs. The
+  continue target merges into `~/.continue/config.json` without
+  touching unknown keys. `--target=detect` writes only to detected
+  editors; `--target=all` writes every project-scoped target.
+- **Three end-to-end tutorials** under `docs/tutorials/` — Claude
+  Code, Cursor, and the HTTP dashboard, each a ~10 minute cold-read
+  walkthrough from install to first query.
+- **`pincher project list` / `pincher project rm`** — surface the
+  existing `DELETE /v1/projects` HTTP route and the `list` MCP tool
+  as CLI verbs. Ambiguous `rm` substrings error with a disambiguation
+  list; `--json` mode requires `--force`.
+- **Coverage gate restored 83% → 84%** — pre-#92 floor recovered via
+  subprocess-binary tests for the runXxxCLI dispatch wrappers. The
+  path-to-85% (main() bootstrap + network-bound update paths) is
+  tracked at #221 against v0.7.0.
+
 ### Changed
 - Coverage gate restored 83% → 84% (#200). Subprocess-coverage tests
   added across `runInitCLI` / `runStatsCLI` / `runWebCLI` / `runDoctorCLI`
