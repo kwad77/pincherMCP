@@ -4086,3 +4086,131 @@ func TestSlowQuery_SecretRedaction(t *testing.T) {
 		t.Errorf("non-sensitive 'url' value should be preserved, got: %s", args)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleSymbol: fields projection (#9)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleSymbol_FieldsProjection_OnlyRequestedKeys(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "pf", Path: "/pf", Name: "pf", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "fp1", ProjectID: "pf", FilePath: "a.go", Name: "Foo",
+			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go",
+			Signature: "func Foo()", StartByte: 0, EndByte: 10},
+	})
+
+	result, err := srv.handleSymbol(context.Background(), makeReq(map[string]any{
+		"id":     "fp1",
+		"fields": "id,signature",
+	}))
+	if err != nil {
+		t.Fatalf("handleSymbol: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	if m["id"] != "fp1" {
+		t.Errorf("id missing/wrong: %v", m["id"])
+	}
+	if m["signature"] != "func Foo()" {
+		t.Errorf("signature missing/wrong: %v", m["signature"])
+	}
+	// Fields not requested must be absent (not just zero).
+	for _, absent := range []string{"name", "kind", "language", "file_path", "source", "extraction_confidence"} {
+		if _, present := m[absent]; present {
+			t.Errorf("field %q should be projected out, got %v", absent, m[absent])
+		}
+	}
+}
+
+func TestHandleSymbol_FieldsProjection_DefaultReturnsAll(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{ID: "pf2", Path: "/pf2", Name: "pf2", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "fp2", ProjectID: "pf2", FilePath: "a.go", Name: "Bar",
+			QualifiedName: "pkg.Bar", Kind: "Function", Language: "Go"},
+	})
+	result, err := srv.handleSymbol(context.Background(), makeReq(map[string]any{"id": "fp2"}))
+	if err != nil {
+		t.Fatalf("handleSymbol: %v", err)
+	}
+	m := decode(t, result)
+	// Without fields=, every documented key should be present (even if "").
+	for _, want := range []string{"id", "name", "kind", "language", "file_path", "signature", "source"} {
+		if _, present := m[want]; !present {
+			t.Errorf("expected field %q in default response, got %v", want, m)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleHealth: parser identity from registered confidence (#8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleHealth_ParserIdentityFromRegistry(t *testing.T) {
+	srv, store, dir := newTestServer(t)
+	pid := db.ProjectIDFromPath(dir)
+	store.UpsertProject(db.Project{ID: pid, Path: dir, Name: "parsertest", IndexedAt: time.Now()})
+	srv.sessionID = pid
+
+	// Index a Go file. Even if path penalties drag avg confidence below 0.99,
+	// Parser must still be "AST" because Go's registered Confidence() is 1.0.
+	goFile := filepath.Join(dir, "main.go")
+	os.WriteFile(goFile, []byte("package main\nfunc Main() {}\n"), 0o644)
+	if _, err := srv.indexer.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	result, err := srv.handleHealth(context.Background(), makeReq(nil))
+	if err != nil {
+		t.Fatalf("handleHealth: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	cov, ok := m["extraction_coverage"].([]any)
+	if !ok || len(cov) == 0 {
+		t.Fatalf("expected extraction_coverage, got %v", m["extraction_coverage"])
+	}
+	foundGo := false
+	for _, raw := range cov {
+		entry, _ := raw.(map[string]any)
+		if entry["language"] == "Go" {
+			foundGo = true
+			if entry["parser"] != "AST" {
+				t.Errorf("Go parser = %v, want AST (registered confidence is 1.0 even when avg dips)", entry["parser"])
+			}
+		}
+	}
+	if !foundGo {
+		t.Errorf("Go entry missing from extraction_coverage: %v", cov)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP unknown-tool error (#12): list comes from the live handler registry,
+// not a hand-maintained string. Adding a new handler must surface in the error.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestServeHTTP_UnknownToolListsRegisteredHandlers(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/no-such-tool", strings.NewReader("{}"))
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rr.Code)
+	}
+	body := rr.Body.String()
+	// Must mention the offending tool, plus `fetch` (the 15th tool that the
+	// old hardcoded message was missing).
+	if !strings.Contains(body, "no-such-tool") {
+		t.Errorf("error body does not mention requested tool: %s", body)
+	}
+	if !strings.Contains(body, "fetch") {
+		t.Errorf("error body should list fetch among available tools: %s", body)
+	}
+}

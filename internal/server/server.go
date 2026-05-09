@@ -1,4 +1,4 @@
-// Package server implements the pincherMCP MCP server with all 14 tools.
+// Package server implements the pincherMCP MCP server with all 15 tools.
 //
 // Every tool response includes a "_meta" envelope:
 //
@@ -30,12 +30,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/pincherMCP/pincher/internal/ast"
 	"github.com/pincherMCP/pincher/internal/cypher"
 	"github.com/pincherMCP/pincher/internal/db"
 	"github.com/pincherMCP/pincher/internal/index"
@@ -490,9 +492,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handler, ok := s.handlers[path]
 	if !ok {
+		// Build the available-tools list from the live registry so a new
+		// tool added in registerTools() shows up here automatically — keeps
+		// this error from drifting (it claimed 14 tools after `fetch` was
+		// added to make 15).
+		available := make([]string, 0, len(s.handlers))
+		for name := range s.handlers {
+			available = append(available, name)
+		}
+		sort.Strings(available)
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]any{
-			"error": fmt.Sprintf("unknown tool %q — available: index, symbol, symbols, context, search, query, trace, changes, architecture, schema, list, adr, health, stats", path),
+			"error": fmt.Sprintf("unknown tool %q — available: %s", path, strings.Join(available, ", ")),
 		})
 		return
 	}
@@ -1008,11 +1019,12 @@ func (s *Server) registerTools() {
 	// 2. symbol
 	s.addTool(&mcp.Tool{
 		Name:        "symbol",
-		Description: "Retrieve full source code for one symbol by stable ID using O(1) byte-offset seeking — never re-parses the file. Use `search` first to find the ID. Format: '{file_path}::{qualified_name}#{kind}'. Prefer `context` when you also need the symbol's dependencies, or `symbols` for batching multiple lookups.",
+		Description: "Retrieve full source code for one symbol by stable ID using O(1) byte-offset seeking — never re-parses the file. Use `search` first to find the ID. Format: '{file_path}::{qualified_name}#{kind}'. Prefer `context` when you also need the symbol's dependencies, or `symbols` for batching multiple lookups. Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Stable symbol ID. Format: '{file_path}::{qualified_name}#{kind}'"},
-				"project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"fields":{"type":"string","description":"Comma-separated allow-list of response keys (e.g. 'id,signature'). Omit for all fields. Skipping 'source' avoids the byte-offset disk read."}
 			}
 		}`),
 	}, s.handleSymbol)
@@ -1222,6 +1234,7 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return errResult("id is required"), nil
 	}
 	projectArg := str(args, "project")
+	fieldsArg := str(args, "fields")
 
 	sym, err := s.store.GetSymbol(id)
 	if err != nil {
@@ -1252,14 +1265,31 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		root = s.sessionRoot
 	}
 
-	// O(1) byte-offset retrieval — the pincherMCP core innovation
-	source := ""
-	if root != "" {
-		source, _ = index.ReadSymbolSource(root, *sym)
+	// Build field allow-set for projection (nil = all fields). Mirrors the
+	// pattern in handleSearch so callers can ask for {id,signature} only and
+	// skip the byte-offset disk read entirely on bulk lookups.
+	var fieldSet map[string]bool
+	if fieldsArg != "" {
+		fieldSet = make(map[string]bool)
+		for _, f := range strings.Split(fieldsArg, ",") {
+			fieldSet[strings.TrimSpace(f)] = true
+		}
 	}
-	// Document symbols (fetched URLs) store their content in Docstring — no local file to seek.
-	if source == "" && sym.Kind == "Document" {
-		source = sym.Docstring
+	includeSource := fieldSet == nil || fieldSet["source"]
+
+	// O(1) byte-offset retrieval — the pincherMCP core innovation. Skip the
+	// disk read when the projection excludes source (Document fallback also
+	// pulls from sym.Docstring, which is already in memory).
+	source := ""
+	if includeSource {
+		if root != "" {
+			source, _ = index.ReadSymbolSource(root, *sym)
+		}
+		// Document symbols (fetched URLs) store their content in Docstring —
+		// no local file to seek.
+		if source == "" && sym.Kind == "Document" {
+			source = sym.Docstring
+		}
 	}
 
 	// Estimate token savings vs. reading the whole file.
@@ -1273,24 +1303,34 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	symbolBytes := sym.EndByte - sym.StartByte
 	tokensSaved := max(0, fileSizeBytes-symbolBytes) / charsPerToken
 
-	data := map[string]any{
-		"id":            sym.ID,
-		"name":          sym.Name,
-		"qualified_name": sym.QualifiedName,
-		"kind":          sym.Kind,
-		"language":      sym.Language,
-		"file_path":     sym.FilePath,
-		"start_line":    sym.StartLine,
-		"end_line":      sym.EndLine,
-		"start_byte":    sym.StartByte,
-		"end_byte":      sym.EndByte,
-		"signature":     sym.Signature,
-		"return_type":   sym.ReturnType,
-		"docstring":     sym.Docstring,
-		"complexity":             sym.Complexity,
-		"is_exported":            sym.IsExported,
-		"extraction_confidence":  sym.ExtractionConfidence,
-		"source":                 source,
+	allFields := map[string]any{
+		"id":                    sym.ID,
+		"name":                  sym.Name,
+		"qualified_name":        sym.QualifiedName,
+		"kind":                  sym.Kind,
+		"language":              sym.Language,
+		"file_path":             sym.FilePath,
+		"start_line":            sym.StartLine,
+		"end_line":              sym.EndLine,
+		"start_byte":            sym.StartByte,
+		"end_byte":              sym.EndByte,
+		"signature":             sym.Signature,
+		"return_type":           sym.ReturnType,
+		"docstring":             sym.Docstring,
+		"complexity":            sym.Complexity,
+		"is_exported":           sym.IsExported,
+		"extraction_confidence": sym.ExtractionConfidence,
+		"source":                source,
+	}
+
+	var data map[string]any
+	if fieldSet == nil {
+		data = allFields
+	} else {
+		data = make(map[string]any, len(fieldSet))
+		for f := range fieldSet {
+			data[f] = allFields[f]
+		}
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
 }
@@ -1330,6 +1370,13 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		source := ""
 		if root != "" {
 			source, _ = index.ReadSymbolSource(root, *sym)
+		}
+		// Document symbols (fetched URLs) store their content in Docstring —
+		// no local file to seek. Mirrors the fallback in handleSymbol so a
+		// batch lookup of mixed source-file + Document symbols returns the
+		// same shape as N single-symbol calls.
+		if source == "" && sym.Kind == "Document" {
+			source = sym.Docstring
 		}
 		results = append(results, map[string]any{
 			"id":         sym.ID,
@@ -2040,6 +2087,24 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 	report, err := s.store.HealthCheck(projectID)
 	if err != nil {
 		return errResult(fmt.Sprintf("health check error: %v", err)), nil
+	}
+
+	// Override parser identity using the extractor's registered confidence
+	// (its self-declared parser quality at registration time) rather than the
+	// avg per-symbol confidence we get from the symbols table. Path penalties
+	// drag per-symbol scores below 0.99 even for AST extractors, which made
+	// HealthCheck mis-label Go as "Regex" on lockfile-heavy corpora. The
+	// registered value never moves. Fall back to the heuristic if the language
+	// has no registered extractor (shouldn't happen, but defends against
+	// renamed extractors after a re-index).
+	for i := range report.Coverage {
+		if rc := ast.RegisteredConfidence(report.Coverage[i].Language); rc >= 0 {
+			if rc >= 0.99 {
+				report.Coverage[i].Parser = "AST"
+			} else {
+				report.Coverage[i].Parser = "Regex"
+			}
+		}
 	}
 
 	data := map[string]any{

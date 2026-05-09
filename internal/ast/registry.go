@@ -99,6 +99,23 @@ func IsSourceFile(filename string) bool {
 	return DetectLanguage(filename) != ""
 }
 
+// RegisteredConfidence returns the registered Extractor.Confidence() for a
+// language, or -1 if no extractor handles that language. Use this when you
+// need parser identity (AST vs Regex) rather than per-symbol average
+// confidence — symbol-level scores get reduced by path penalties and other
+// signals, so averaging them blurs the line between AST and stable-regex
+// extractors. The registered value is the extractor's self-declared parser
+// quality and never moves.
+func RegisteredConfidence(language string) float64 {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	e, ok := byLanguage[language]
+	if !ok {
+		return -1
+	}
+	return e.Confidence()
+}
+
 // SupportedLanguages returns every language name registered, sorted for
 // stable output.
 func SupportedLanguages() []string {
