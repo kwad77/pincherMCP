@@ -99,21 +99,29 @@ jobs:
           go test ./internal/server/ -run=^$ -bench=. -benchtime=100ms -benchmem
 
   # bench-regression gates ns/op + allocs/op against the committed
-  # baselines under testdata/bench/ (#50). Thresholds: +20% ns, +30% allocs.
+  # baselines under testdata/bench/ (#50).
   #
-  # `continue-on-error: true` is intentional during phase 1: baselines were
-  # captured on a developer machine and may differ from GitHub-hosted
-  # runner hardware by more than the 20% noise floor for some benchmarks.
-  # The job surfaces deltas in the action log; an advisory failure here is
-  # NOT a hard merge gate yet. To tighten:
-  #   1. Observe several CI runs to characterise runner variance
-  #   2. Either re-baseline via `make corpus-bench-update` on a CI run, OR
-  #      widen thresholds in cmd/benchcmp/main.go
-  #   3. Remove `continue-on-error: true` here.
+  # CI uses wider thresholds (40% ns / 50% allocs) than local dev (20%/30%)
+  # because the committed baselines are captured on developer hardware and
+  # GitHub-hosted runners differ by more than the local noise floor on some
+  # benchmarks. Cold-walk benchmarks like Index_Cold_K8sOps consistently
+  # land +20% on CI vs the dev baseline; that's hardware mismatch, not a
+  # regression. The wider CI threshold catches genuine regressions
+  # (>+40% ns is well outside any documented runner variance) without
+  # flapping on no-op PRs.
+  #
+  # `continue-on-error: true` is still set during phase 1 — promotion to
+  # required gate waits on:
+  #   1. Several CI runs at the wider thresholds without false positives
+  #   2. Re-baselining via `make corpus-bench-update` on a CI run (so the
+  #      thresholds can be tightened back to the local-dev numbers).
   bench-regression:
     name: Benchmark regression (advisory)
     runs-on: ubuntu-latest
     continue-on-error: true
+    env:
+      BENCH_NS_THRESHOLD: "0.40"
+      BENCH_ALLOCS_THRESHOLD: "0.50"
     steps:
       - uses: actions/checkout@v4
 

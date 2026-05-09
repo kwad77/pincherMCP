@@ -103,20 +103,29 @@ bench-server:
 # corpus-bench: run benchmarks and gate on regression vs the committed
 # baseline under testdata/bench/. Mirrors corpus-test's diff-or-fail shape.
 #
-# Thresholds (cmd/benchcmp/main.go):
+# Thresholds (cmd/benchcmp/main.go) — overridable via env so CI can widen
+# them to absorb dev-vs-CI hardware mismatch. The committed baselines are
+# dev-machine numbers; GitHub-hosted runners differ from the dev machine
+# by more than the local-dev noise floor on some benchmarks (Cold_K8sOps
+# +21% on CI is a typical example, well within hardware-mismatch range).
+# Defaults are tight (local-dev-friendly); CI passes wider values.
+#
+# Defaults:
 #   - ns/op increase > 20%   → fail
 #   - allocs/op increase > 30% → fail
 #   - new benchmarks without baseline → fail (forces baseline update)
+BENCH_NS_THRESHOLD     ?= 0.20
+BENCH_ALLOCS_THRESHOLD ?= 0.30
 corpus-bench:
 	@set -e; \
 	tmpdir=$$(mktemp -d); \
-	echo "==> internal/index (baseline gate)"; \
+	echo "==> internal/index (baseline gate, ns=$(BENCH_NS_THRESHOLD) allocs=$(BENCH_ALLOCS_THRESHOLD))"; \
 	$(GO) test ./internal/index/ -run=^$$ -bench=. -benchtime=$(CORPUS_BENCHTIME) -benchmem > $$tmpdir/index.txt; \
-	$(GO) run ./cmd/benchcmp $(BENCH_DIR)/index.bench.txt $$tmpdir/index.txt; \
+	$(GO) run ./cmd/benchcmp -ns-threshold=$(BENCH_NS_THRESHOLD) -allocs-threshold=$(BENCH_ALLOCS_THRESHOLD) $(BENCH_DIR)/index.bench.txt $$tmpdir/index.txt; \
 	echo ""; \
-	echo "==> internal/server (baseline gate)"; \
+	echo "==> internal/server (baseline gate, ns=$(BENCH_NS_THRESHOLD) allocs=$(BENCH_ALLOCS_THRESHOLD))"; \
 	$(GO) test ./internal/server/ -run=^$$ -bench=. -benchtime=$(CORPUS_BENCHTIME) -benchmem > $$tmpdir/server.txt; \
-	$(GO) run ./cmd/benchcmp $(BENCH_DIR)/server.bench.txt $$tmpdir/server.txt; \
+	$(GO) run ./cmd/benchcmp -ns-threshold=$(BENCH_NS_THRESHOLD) -allocs-threshold=$(BENCH_ALLOCS_THRESHOLD) $(BENCH_DIR)/server.bench.txt $$tmpdir/server.txt; \
 	rm -rf $$tmpdir; \
 	echo ""; \
 	echo "Bench regression gate passed."

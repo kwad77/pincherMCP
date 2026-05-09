@@ -72,18 +72,18 @@ func TestPercentDelta(t *testing.T) {
 // CI behaviour is provable without invoking os.Exit.
 func TestRegression_NsOver20Percent(t *testing.T) {
 	got := percentDelta(1000, 1500) // +50%
-	if got <= nsRegressionThreshold {
-		t.Errorf("delta %v should exceed nsRegressionThreshold %v "+
-			"— a 50%% regression must fail CI", got, nsRegressionThreshold)
+	if got <= defaultNsThreshold {
+		t.Errorf("delta %v should exceed defaultNsThreshold %v "+
+			"— a 50%% regression must fail CI", got, defaultNsThreshold)
 	}
 }
 
 // TestRegression_AllocsOver30Percent — the alloc-count gate.
 func TestRegression_AllocsOver30Percent(t *testing.T) {
 	got := percentDelta(10, 14) // +40%
-	if got <= allocsRegressionThreshold {
-		t.Errorf("delta %v should exceed allocsRegressionThreshold %v "+
-			"— a 40%% alloc regression must fail CI", got, allocsRegressionThreshold)
+	if got <= defaultAllocsThreshold {
+		t.Errorf("delta %v should exceed defaultAllocsThreshold %v "+
+			"— a 40%% alloc regression must fail CI", got, defaultAllocsThreshold)
 	}
 }
 
@@ -93,9 +93,9 @@ func TestRegression_AllocsOver30Percent(t *testing.T) {
 // noise floor of ~20% on wall-clock to absorb runner variation."
 func TestNoiseFloor_15PercentDoesNotFail(t *testing.T) {
 	got := percentDelta(1000, 1150) // +15%
-	if got > nsRegressionThreshold {
-		t.Errorf("delta %v should NOT exceed nsRegressionThreshold %v "+
-			"— 15%% must be within noise floor", got, nsRegressionThreshold)
+	if got > defaultNsThreshold {
+		t.Errorf("delta %v should NOT exceed defaultNsThreshold %v "+
+			"— 15%% must be within noise floor", got, defaultNsThreshold)
 	}
 }
 
@@ -107,7 +107,7 @@ func TestCompare_NoRegression(t *testing.T) {
 		"BenchmarkB": {NsPerOp: 2000, AllocsPerOp: 20},
 	}
 	var buf bytes.Buffer
-	regressions, missingActual, missingBaseline := compare(set, set, &buf)
+	regressions, missingActual, missingBaseline := compare(set, set, &buf, defaultNsThreshold, defaultAllocsThreshold)
 	if regressions != 0 || missingActual != 0 || missingBaseline != 0 {
 		t.Errorf("identical sets: regressions=%d, missingActual=%d, missingBaseline=%d, want all 0",
 			regressions, missingActual, missingBaseline)
@@ -127,7 +127,7 @@ func TestCompare_NsRegressionFlagged(t *testing.T) {
 		"BenchmarkSlow": {NsPerOp: 1500, AllocsPerOp: 10}, // +50%
 	}
 	var buf bytes.Buffer
-	regressions, _, _ := compare(baseline, actual, &buf)
+	regressions, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
 	if regressions != 1 {
 		t.Errorf("expected 1 ns regression, got %d", regressions)
 	}
@@ -146,7 +146,7 @@ func TestCompare_AllocsRegressionFlagged(t *testing.T) {
 		"BenchmarkAlloc": {NsPerOp: 1000, AllocsPerOp: 14}, // +40%
 	}
 	var buf bytes.Buffer
-	regressions, _, _ := compare(baseline, actual, &buf)
+	regressions, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
 	if regressions != 1 {
 		t.Errorf("expected 1 allocs regression, got %d", regressions)
 	}
@@ -163,7 +163,7 @@ func TestCompare_MissingInActual(t *testing.T) {
 	}
 	actual := map[string]benchResult{}
 	var buf bytes.Buffer
-	_, missingActual, _ := compare(baseline, actual, &buf)
+	_, missingActual, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
 	if missingActual != 1 {
 		t.Errorf("expected 1 missing-in-actual, got %d", missingActual)
 	}
@@ -180,12 +180,44 @@ func TestCompare_NewWithoutBaseline(t *testing.T) {
 		"BenchmarkNew": {NsPerOp: 1000, AllocsPerOp: 10},
 	}
 	var buf bytes.Buffer
-	_, _, missingBaseline := compare(baseline, actual, &buf)
+	_, _, missingBaseline := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
 	if missingBaseline != 1 {
 		t.Errorf("expected 1 new-without-baseline, got %d", missingBaseline)
 	}
 	if !strings.Contains(buf.String(), "NEW IN ACTUAL") {
 		t.Errorf("expected NEW IN ACTUAL line, got:\n%s", buf.String())
+	}
+}
+
+// TestCompare_CustomThresholds pins that the gate respects caller-supplied
+// thresholds rather than always using the 20%/30% defaults. This is the
+// path CI takes — the wider thresholds absorb dev-vs-CI hardware mismatch
+// (the committed baselines are dev-machine numbers; runner cores differ).
+func TestCompare_CustomThresholds(t *testing.T) {
+	baseline := map[string]benchResult{
+		"BenchmarkA": {NsPerOp: 1000, AllocsPerOp: 10},
+	}
+	// +25% ns, +25% allocs — would fail at default 20%/30% for ns, but
+	// pass under the wider 0.40/0.40 thresholds CI uses.
+	actual := map[string]benchResult{
+		"BenchmarkA": {NsPerOp: 1250, AllocsPerOp: 12},
+	}
+
+	// Default thresholds: ns flagged.
+	var bufDefault bytes.Buffer
+	regsDefault, _, _ := compare(baseline, actual, &bufDefault, defaultNsThreshold, defaultAllocsThreshold)
+	if regsDefault != 1 {
+		t.Errorf("default thresholds: regressions=%d, want 1", regsDefault)
+	}
+
+	// Wider thresholds: nothing flagged.
+	var bufWide bytes.Buffer
+	regsWide, _, _ := compare(baseline, actual, &bufWide, 0.40, 0.40)
+	if regsWide != 0 {
+		t.Errorf("wider thresholds: regressions=%d, want 0", regsWide)
+	}
+	if strings.Contains(bufWide.String(), "[NS-REGRESSION]") {
+		t.Errorf("wider thresholds: should not flag NS-REGRESSION, got:\n%s", bufWide.String())
 	}
 }
 

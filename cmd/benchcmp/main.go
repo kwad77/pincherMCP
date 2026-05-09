@@ -30,9 +30,15 @@ import (
 	"strings"
 )
 
+// Default thresholds — tuned for local runs where the baseline was captured
+// on the same hardware. CI passes wider values via --ns-threshold /
+// --allocs-threshold to accommodate dev-vs-CI hardware mismatch (the
+// committed baselines are dev-machine numbers; GitHub-hosted runners are
+// slower on cold-walk benchmarks like Index_Cold_K8sOps and faster on
+// hash-bound ones like Index_Incremental_NoChange).
 const (
-	nsRegressionThreshold     = 0.20
-	allocsRegressionThreshold = 0.30
+	defaultNsThreshold     = 0.20
+	defaultAllocsThreshold = 0.30
 )
 
 type benchResult struct {
@@ -109,7 +115,7 @@ func percentDelta(baseline, actual float64) float64 {
 // Extracted from main() so the orchestration is testable directly without
 // shelling out — covers the iteration, regression-flag formatting, and
 // missing-benchmark paths that flag.Parse + os.Exit hide.
-func compare(baseline, actual map[string]benchResult, w io.Writer) (regressions, missingActual, missingBaseline int) {
+func compare(baseline, actual map[string]benchResult, w io.Writer, nsThreshold, allocsThreshold float64) (regressions, missingActual, missingBaseline int) {
 	fmt.Fprintf(w, "%-60s  %12s  %12s  %8s  %8s\n",
 		"benchmark", "baseline ns", "actual ns", "Δns", "Δallocs")
 	fmt.Fprintln(w, strings.Repeat("-", 110))
@@ -125,11 +131,11 @@ func compare(baseline, actual map[string]benchResult, w io.Writer) (regressions,
 		allocsDelta := percentDelta(base.AllocsPerOp, act.AllocsPerOp)
 
 		flagStr := ""
-		if nsDelta > nsRegressionThreshold {
+		if nsDelta > nsThreshold {
 			flagStr += " [NS-REGRESSION]"
 			regressions++
 		}
-		if allocsDelta > allocsRegressionThreshold {
+		if allocsDelta > allocsThreshold {
 			flagStr += " [ALLOCS-REGRESSION]"
 			regressions++
 		}
@@ -148,10 +154,14 @@ func compare(baseline, actual map[string]benchResult, w io.Writer) (regressions,
 }
 
 func main() {
+	nsThreshold := flag.Float64("ns-threshold", defaultNsThreshold,
+		"fail if ns/op increases by more than this fraction (e.g. 0.20 = 20%)")
+	allocsThreshold := flag.Float64("allocs-threshold", defaultAllocsThreshold,
+		"fail if allocs/op increases by more than this fraction (e.g. 0.30 = 30%)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: benchcmp <baseline.txt> <actual.txt>")
+		fmt.Fprintln(os.Stderr, "usage: benchcmp [--ns-threshold=0.20] [--allocs-threshold=0.30] <baseline.txt> <actual.txt>")
 		fmt.Fprintln(os.Stderr, "Compares two `go test -bench` outputs and exits 1 on regression.")
-		fmt.Fprintln(os.Stderr, "Thresholds: ns/op +20%, allocs/op +30%, missing benchmarks fail.")
+		fmt.Fprintln(os.Stderr, "Defaults: ns/op +20%, allocs/op +30%, missing benchmarks fail.")
 	}
 	flag.Parse()
 	if flag.NArg() != 2 {
@@ -176,7 +186,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	regressions, missingActual, missingBaseline := compare(baseline, actual, os.Stdout)
+	regressions, missingActual, missingBaseline := compare(baseline, actual, os.Stdout, *nsThreshold, *allocsThreshold)
 
 	fmt.Println()
 	if regressions == 0 && missingActual == 0 && missingBaseline == 0 {
