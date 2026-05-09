@@ -4435,6 +4435,88 @@ func TestIsLoopbackBind_Cases(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// trace + changes _meta.next_steps (iter 10 — dead simple)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSuggestChangesNextSteps_PrioritizesCritical(t *testing.T) {
+	impacted := []map[string]any{
+		{"id": "a.go::pkg.Mid#Function", "name": "Mid", "risk": "MEDIUM"},
+		{"id": "b.go::pkg.Top#Function", "name": "Top", "risk": "CRITICAL"},
+		{"id": "c.go::pkg.High#Function", "name": "High", "risk": "HIGH"},
+	}
+	changed := []map[string]any{{"id": "x.go::pkg.X#Function", "name": "X"}}
+	risks := map[string]int{"CRITICAL": 1, "HIGH": 1, "MEDIUM": 1, "LOW": 0}
+	got := suggestChangesNextSteps(impacted, changed, risks)
+	if len(got) < 1 {
+		t.Fatal("expected at least 1 suggestion when impacted is non-empty")
+	}
+	if !strings.Contains(got[0]["args"], "Top") {
+		t.Errorf("expected first suggestion to target Top (CRITICAL), got %v", got[0])
+	}
+	// CRITICAL also adds a trace recommendation.
+	if len(got) != 2 {
+		t.Fatalf("expected 2 suggestions when CRITICAL present, got %d", len(got))
+	}
+	if got[1]["tool"] != "trace" {
+		t.Errorf("second suggestion should be trace, got %v", got[1])
+	}
+}
+
+func TestSuggestChangesNextSteps_NoImpactSuggestsTests(t *testing.T) {
+	changed := []map[string]any{{"id": "x.go::pkg.X#Function", "name": "X"}}
+	got := suggestChangesNextSteps(nil, changed, map[string]int{})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 suggestion when no impact, got %d", len(got))
+	}
+	if got[0]["tool"] != "search" {
+		t.Errorf("zero-impact suggestion should be search (for tests), got %v", got[0])
+	}
+}
+
+func TestSuggestChangesNextSteps_NoChangedSymsReturnsNil(t *testing.T) {
+	got := suggestChangesNextSteps(nil, nil, map[string]int{})
+	if got != nil {
+		t.Errorf("zero changed symbols should return nil (nothing actionable), got %v", got)
+	}
+}
+
+func TestHandleTrace_NextStepsAfterTrace(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "tr-ns"
+	store.UpsertProject(db.Project{ID: "tr-ns", Path: "/tmp/tr-ns", Name: "tr-ns", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "tr-ns/a.go::pkg.Target#Function", ProjectID: "tr-ns",
+			FilePath: "a.go", Name: "Target", QualifiedName: "pkg.Target",
+			Kind: "Function", Language: "Go"},
+		{ID: "tr-ns/b.go::pkg.Caller#Function", ProjectID: "tr-ns",
+			FilePath: "b.go", Name: "Caller", QualifiedName: "pkg.Caller",
+			Kind: "Function", Language: "Go"},
+	})
+	store.BulkUpsertEdges([]db.Edge{
+		{FromID: "tr-ns/b.go::pkg.Caller#Function", ToID: "tr-ns/a.go::pkg.Target#Function",
+			Kind: "CALLS", ProjectID: "tr-ns"},
+	})
+
+	result, err := srv.handleTrace(context.Background(), makeReq(map[string]any{
+		"name":      "Target",
+		"project":   "tr-ns",
+		"direction": "inbound",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleTrace: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing")
+	}
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) == 0 {
+		t.Fatalf("expected _meta.next_steps after trace, got %v", meta)
+	}
+}
+
 func TestHandleArchitecture_NextStepsFromHotspot(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "arch-ns"

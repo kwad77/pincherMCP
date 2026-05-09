@@ -2000,6 +2000,32 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			"hint":         fmt.Sprintf("name %q matched %d symbols; trace used the first (%s). Pass an exact ID via TraceByID, or call `search` with kind/language filters to narrow.", name, len(starts), starts[0].ID),
 		}
 	}
+	// Suggest the obvious next move after a trace. The agent has the
+	// blast radius; the next step is reading the highest-risk hop's
+	// source. Pick the first CRITICAL hop if there is one, otherwise
+	// the first HIGH, etc. For empty traces (zero callers/callees),
+	// suggest reading the start symbol itself.
+	if len(hops) > 0 {
+		topHop := hops[0]
+		for _, h := range hops {
+			if h.Risk == "CRITICAL" {
+				topHop = h
+				break
+			}
+		}
+		meta["next_steps"] = []map[string]string{
+			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, topHop.Symbol.ID),
+				"why": fmt.Sprintf("read the %s-risk hop's full source + imports before deciding to edit", topHop.Risk)},
+		}
+	} else {
+		// Empty trace = no inbound/outbound CALLS edges. Likely a leaf
+		// (no callers) or an entry point (no callees). Direct the agent
+		// to the source itself.
+		meta["next_steps"] = []map[string]string{
+			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, starts[0].ID),
+				"why": "no call edges found at this depth — read the symbol's own source instead"},
+		}
+	}
 	data := map[string]any{
 		"root":      name,
 		"direction": direction,
@@ -2110,7 +2136,59 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 			"low":             riskCounts["LOW"],
 		},
 	}
+	// Suggest the next move based on what changes found. CRITICAL impact
+	// → trace the affected callers to inspect the chain. Non-zero impact
+	// without CRITICAL → read context on the most-impacted symbol.
+	// No impact → the change is local; suggest writing tests.
+	if nextSteps := suggestChangesNextSteps(impacted, changedSymNames, riskCounts); len(nextSteps) > 0 {
+		data["_meta"] = map[string]any{"next_steps": nextSteps}
+	}
 	return s.jsonResultWithMeta(data, start, tool, args, savedVsFullRead(totalTracedSyms, responseJSON)), nil
+}
+
+// suggestChangesNextSteps picks 1-2 follow-up actions for handleChanges
+// based on the diff's blast radius. Mirrors the dead-simple decision
+// rules an experienced reviewer would apply: high impact = inspect, zero
+// impact = the change is contained.
+func suggestChangesNextSteps(impacted []map[string]any, changedSyms []map[string]any, riskCounts map[string]int) []map[string]string {
+	if len(changedSyms) == 0 {
+		return nil // No changed symbols — nothing actionable.
+	}
+	// Pick the first CRITICAL impact if any; else first HIGH; else first item.
+	var topImpact map[string]any
+	for _, label := range []string{"CRITICAL", "HIGH", "MEDIUM", "LOW"} {
+		for _, im := range impacted {
+			if r, _ := im["risk"].(string); r == label {
+				topImpact = im
+				break
+			}
+		}
+		if topImpact != nil {
+			break
+		}
+	}
+	if topImpact != nil {
+		impactedID, _ := topImpact["id"].(string)
+		impactedName, _ := topImpact["name"].(string)
+		risk, _ := topImpact["risk"].(string)
+		out := []map[string]string{
+			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, impactedID),
+				"why": fmt.Sprintf("read %s — the %s-risk caller most likely to be affected", impactedName, risk)},
+		}
+		if riskCounts["CRITICAL"] > 0 {
+			out = append(out, map[string]string{
+				"tool": "trace", "args": fmt.Sprintf(`{"name":"%s"}`, impactedName),
+				"why": "follow the call chain further — CRITICAL-risk impact often has cascading callers worth inspecting",
+			})
+		}
+		return out
+	}
+	// No callers found — the change is contained to the changed symbols.
+	first, _ := changedSyms[0]["name"].(string)
+	return []map[string]string{
+		{"tool": "search", "args": fmt.Sprintf(`{"query":"%s","kind":"Function","corpus":"code"}`, first),
+			"why": "no callers found — change is contained. Consider searching for related tests or writing one for the new behaviour."},
+	}
 }
 
 func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
