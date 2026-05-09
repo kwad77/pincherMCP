@@ -205,6 +205,46 @@ func TestTruncMid_Cases(t *testing.T) {
 	}
 }
 
+// TestDoctorReport_BinaryVersionPopulated pins that buildDoctorReport
+// captures the binary version into the JSON-shaped report and that the
+// Markdown formatter surfaces it. Useful when users paste doctor output
+// for support — version is right there alongside schema_version.
+func TestDoctorReport_BinaryVersionPopulated(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	r, err := buildDoctorReport(store, dir, 168, 10)
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if r.BinaryVersion == "" {
+		t.Errorf("BinaryVersion should be populated; got empty string")
+	}
+	md := formatDoctorMarkdown(r)
+	if !strings.Contains(md, "Binary:") {
+		t.Errorf("Markdown should include 'Binary:' line, got:\n%s", md)
+	}
+	if !strings.Contains(md, "v"+r.BinaryVersion) {
+		t.Errorf("Markdown should include the version after 'v', got:\n%s", md)
+	}
+}
+
+// TestFormatDoctorMarkdown_BlankBinaryVersionSuppressed pins the
+// graceful-empty branch — a directly-built binary with no -ldflags
+// override would set BinaryVersion="" via the test fixture below;
+// formatter must skip the line rather than print "Binary:           v".
+func TestFormatDoctorMarkdown_BlankBinaryVersionSuppressed(t *testing.T) {
+	r := &DoctorReport{BinaryVersion: ""}
+	md := formatDoctorMarkdown(r)
+	if strings.Contains(md, "Binary:") {
+		t.Errorf("blank BinaryVersion should suppress the line, got:\n%s", md)
+	}
+}
+
 // TestSummarizeByReason_DescCountAlphaTie pins the rollup ordering: the
 // most common reason wins, ties break alphabetically so output is stable
 // across runs (map iteration order would otherwise jitter).
