@@ -2688,12 +2688,21 @@ func TestDataDir_CalledTwice_Idempotent(t *testing.T) {
 // ProjectIDFromPath
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestProjectIDFromPath_AbsolutePassthrough(t *testing.T) {
-	// An already-absolute path should come back as-is (after filepath.Abs no-op)
+func TestProjectIDFromPath_AbsoluteCanonical(t *testing.T) {
+	// Closes #84: ProjectIDFromPath now canonicalises (symlinks resolved,
+	// casing folded on case-insensitive FSes) rather than returning the
+	// input path verbatim. The contract: result is absolute, equal to
+	// CanonicalProjectPath(filepath.Abs(input)). Idempotence on
+	// equivalent input forms is covered by TestProjectIDFromPath_Idempotent.
 	dir := t.TempDir()
 	id := ProjectIDFromPath(dir)
-	if id != dir {
-		t.Errorf("ProjectIDFromPath(%q) = %q, want same", dir, id)
+	if !filepath.IsAbs(id) {
+		t.Errorf("ProjectIDFromPath(%q) = %q, want absolute", dir, id)
+	}
+	abs, _ := filepath.Abs(dir)
+	want := CanonicalProjectPath(abs)
+	if id != want {
+		t.Errorf("ProjectIDFromPath(%q) = %q, want canonical %q", dir, id, want)
 	}
 }
 

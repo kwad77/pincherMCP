@@ -886,10 +886,35 @@ func (s *Store) dedupProjectsByCanonicalPath() error {
 				return fmt.Errorf("rename winner %s → %s: %w", winner.id, canon, err)
 			}
 		}
+
+		// Recompute denormalised counts on the survivor. mergeProjectInto
+		// re-keys the loser's rows onto the winner but leaves
+		// projects.sym_count / file_count / edge_count at the winner's
+		// pre-merge values, so `pincher list` would display stale numbers
+		// until the next full re-index. Source of truth: the symbols /
+		// files / edges tables themselves.
+		if err := s.recomputeProjectCounts(canon); err != nil {
+			return fmt.Errorf("recompute counts for %s: %w", canon, err)
+		}
 	}
 	return nil
 }
 
+// recomputeProjectCounts refreshes projects.sym_count / file_count /
+// edge_count from the canonical row tables for `projectID`. Used by
+// dedupProjectsByCanonicalPath after merging; the merge re-keys rows
+// but doesn't touch the denormalised counts. Cheap (3 indexed
+// COUNT(*)s + 1 UPDATE) and only fires when a duplicate group existed.
+func (s *Store) recomputeProjectCounts(projectID string) error {
+	_, err := s.db.Exec(`
+		UPDATE projects SET
+		  sym_count  = (SELECT COUNT(*) FROM symbols WHERE project_id = ?),
+		  file_count = (SELECT COUNT(*) FROM files   WHERE project_id = ?),
+		  edge_count = (SELECT COUNT(*) FROM edges   WHERE project_id = ?)
+		WHERE id = ?`,
+		projectID, projectID, projectID, projectID)
+	return err
+}
 
 // mergeProjectInto re-points every project_id-keyed row from `loser`
 // onto `winner`, dropping any row that would collide with existing

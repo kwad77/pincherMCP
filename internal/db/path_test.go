@@ -269,6 +269,18 @@ func TestDedupProjectsByCanonicalPath_MergesDuplicates(t *testing.T) {
 	if orphans != 0 {
 		t.Errorf("orphan symbols not re-keyed onto survivor: %d", orphans)
 	}
+
+	// projects.sym_count MUST reflect post-merge reality, not the
+	// winner's pre-merge value. Without recomputeProjectCounts() this
+	// stays at the winner's stored sym_count and `pincher list`
+	// displays the wrong number until the next full re-index.
+	var storedSymCount, actualSymCount int
+	s.db.QueryRow(`SELECT sym_count FROM projects WHERE id = ?`, survivorID).Scan(&storedSymCount)
+	s.db.QueryRow(`SELECT COUNT(*) FROM symbols WHERE project_id = ?`, survivorID).Scan(&actualSymCount)
+	if storedSymCount != actualSymCount {
+		t.Errorf("projects.sym_count = %d, want %d (post-merge actual count); denormalised counts not refreshed by dedup",
+			storedSymCount, actualSymCount)
+	}
 }
 
 // TestDedupProjectsByCanonicalPath_RunsViaMigrate is the wiring gate:
