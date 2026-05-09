@@ -2425,6 +2425,19 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		})
 	}
 	data := map[string]any{"projects": rows, "count": len(rows)}
+	// Empty-state guidance — first-contact agents (fresh install,
+	// no projects yet) need to know the next step is `index`. A bare
+	// `count: 0` is silent failure: the index is real and queryable,
+	// just empty.
+	if len(rows) == 0 {
+		data["_meta"] = map[string]any{
+			"diagnosis": "no projects indexed yet — pincher's symbol store is empty",
+			"next_steps": []map[string]string{
+				{"tool": "index", "args": `{"path":"/path/to/your/project"}`,
+					"why": "index a repo to populate the symbol store; subsequent `search`/`context`/`trace` calls require at least one indexed project"},
+			},
+		}
+	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
 
