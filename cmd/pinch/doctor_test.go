@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -315,5 +317,100 @@ func TestTruncEnd_Cases(t *testing.T) {
 		if got := truncEnd(c.s, c.max); got != c.want {
 			t.Errorf("truncEnd(%q, %d) = %q, want %q", c.s, c.max, got, c.want)
 		}
+	}
+}
+
+// TestDoctorCLI_Binary_Markdown exercises the runDoctorCLI dispatch
+// wrapper end-to-end — build the binary, run it against a fresh
+// data dir, assert the human-readable Markdown output renders the
+// expected sections. Together with TestDoctorCLI_Binary_JSON below
+// these two tests cover the CLI flag-parsing + output-format paths
+// that buildDoctorReport / formatDoctorMarkdown unit tests can't
+// reach.
+//
+// With GOCOVERDIR set in the parent process (CI Coverage job), the
+// binary is built with -cover and runDoctorCLI's coverage is folded
+// into the merged coverprofile via Go's automatic test runner merge.
+func TestDoctorCLI_Binary_Markdown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	dataDir := t.TempDir()
+
+	cmd := exec.Command(bin, "doctor", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher doctor: %v\n%s", err, out)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"pincherMCP doctor",
+		"Binary:",
+		"Schema:",
+		"Database size:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing field %q in doctor output:\n%s", want, got)
+		}
+	}
+}
+
+func TestDoctorCLI_Binary_JSON(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	dataDir := t.TempDir()
+
+	cmd := exec.Command(bin, "doctor", "--data-dir", dataDir, "--json")
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher doctor --json: %v\n%s", err, out)
+	}
+
+	// Just assert it's valid JSON with at least one top-level key — a
+	// stricter shape gate would tie this test to internal report fields
+	// that change as the diagnostic surface evolves.
+	var report map[string]any
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("doctor --json output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(report) == 0 {
+		t.Fatalf("doctor --json output is empty object\n%s", out)
+	}
+	for _, key := range []string{"schema_version"} {
+		if _, ok := report[key]; !ok {
+			t.Errorf("doctor --json missing top-level key %q\nfull report:\n%s", key, out)
+		}
+	}
+}
+
+func TestDoctorCLI_Binary_LookbackFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	dataDir := t.TempDir()
+
+	cmd := exec.Command(bin, "doctor", "--data-dir", dataDir, "--lookback", "24")
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher doctor --lookback 24: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "pincherMCP doctor") {
+		t.Errorf("expected doctor banner in --lookback output:\n%s", got)
+	}
+	// Lookback window should be reflected somewhere in the output. Default
+	// is "last 168 hours"; with --lookback 24 we expect "last 24 hours".
+	if !strings.Contains(got, "last 24 hours") {
+		t.Errorf("expected '24 hours' lookback window in output:\n%s", got)
 	}
 }
