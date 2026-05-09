@@ -1,7 +1,7 @@
 [
   {
     "name": "adr",
-    "description": "Persistent project knowledge store — survives across sessions. Store architectural decisions, team conventions, known gotchas. Actions: set (store), get (retrieve), list (all entries), delete. Examples: adr set PURPOSE 'payment processing service'; adr set STACK 'Go+SQLite+Redis'; adr list to recall everything stored.",
+    "description": "**Use to record decisions/conventions/gotchas** that should survive across sessions. Persistent project knowledge store. Actions: `set` (store), `get` (retrieve), `list` (all entries), `delete`. Examples: `adr set PURPOSE 'payment processing service'`; `adr set STACK 'Go+SQLite+Redis'`; `adr list` to recall everything stored. Call `adr list` early in unfamiliar work — prior agents' notes often save a `search` chain.",
     "input_schema": {
       "properties": {
         "action": {
@@ -89,7 +89,7 @@
   },
   {
     "name": "fetch",
-    "description": "Fetch a URL, extract its text content, and store it in the project knowledge base as a searchable Document. Use for API docs, library READMEs, specs, or any reference material you want to query later. After fetching, use `search` with kind=Document to find it, or `symbol` with the returned ID to retrieve the full text.",
+    "description": "**Use to pull external reference material into the project knowledge base** — API docs, library READMEs, specs, RFCs. Fetches a URL, extracts its text, stores it as a searchable `Document` symbol. After fetching, use `search kind:Document` to find it, or `symbol` with the returned ID to retrieve the full text. The Document kind lives in the `docs` corpus, so `corpus=docs` searches surface it alongside Markdown sections.",
     "input_schema": {
       "properties": {
         "project": {
@@ -113,7 +113,7 @@
   },
   {
     "name": "health",
-    "description": "Diagnostic report: schema version, index staleness (time since last index), and per-language extraction coverage (parser type + confidence score). Use to detect stale indexes or verify extraction quality before trusting graph results.",
+    "description": "**Use to verify extraction quality before trusting graph results**, or to detect a stale index. Returns schema version, index staleness, and per-language coverage with parser identity (AST vs Regex) and avg/p10/p50 confidence per (language, kind). A low p10 on a corpus you care about means `search` results in that area need a higher `min_confidence` to be reliable.",
     "input_schema": {
       "properties": {
         "project": {
@@ -126,7 +126,7 @@
   },
   {
     "name": "index",
-    "description": "Index a repository. Extracts symbols with byte offsets, builds a knowledge graph, and populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files). Set force=true to re-parse everything. Call this once per project before using any other tool.",
+    "description": "**Call once per project before using any other tool.** Indexes a repository: extracts symbols with byte offsets, builds the knowledge graph, populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files; the watcher keeps it fresh during a session). Pass `force=true` to re-parse every file (rare; only after schema/extractor changes).",
     "input_schema": {
       "properties": {
         "force": {
@@ -143,7 +143,7 @@
   },
   {
     "name": "list",
-    "description": "List all indexed projects with stats: name, path, file count, symbol count, edge count, last indexed timestamp.",
+    "description": "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every project pincher knows about.",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -151,7 +151,7 @@
   },
   {
     "name": "query",
-    "description": "Graph query using Cypher syntax — use when you need structural relationships, not text matches. Examples: find all callers 'MATCH (a)-[:CALLS]-\u003e(b) WHERE b.name=\"Open\" RETURN a.name'; find classes in a file 'MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name'; multi-hop 'MATCH (a)-[:CALLS*1..3]-\u003e(b) WHERE a.name=\"main\" RETURN b.name'. Use `search` instead for name/text lookups.",
+    "description": "**Use when you need structural relationships, not text matches** — Cypher graph queries over the symbol graph. Examples: callers `MATCH (a)-[:CALLS]-\u003e(b) WHERE b.name=\"Open\" RETURN a.name`; classes in a file `MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name`; multi-hop `MATCH (a)-[:CALLS*1..3]-\u003e(b) WHERE a.name=\"main\" RETURN b.name`. Prefer `search` for name/text lookups, `trace` for fixed-shape callgraph BFS — both are cheaper.",
     "input_schema": {
       "properties": {
         "cypher": {
@@ -178,7 +178,7 @@
   },
   {
     "name": "schema",
-    "description": "Graph schema overview: node kind counts (Function, Class, Method…), edge kind counts (CALLS, IMPORTS…), totals. Use before writing a `query` to see what node/edge kinds exist in this project.",
+    "description": "**Use before writing a `query`** to see what node/edge kinds exist in this project. Returns node-kind counts (Function, Class, Method, …), edge-kind counts (CALLS, IMPORTS, …), and totals.",
     "input_schema": {
       "properties": {
         "project": {
@@ -239,7 +239,7 @@
   },
   {
     "name": "stats",
-    "description": "Session savings summary: cumulative tokens used, tokens saved, cost avoided, and call count since the server started. Also shows per-project index size (files, symbols, edges). Useful for tracking how much context budget pincherMCP has saved.",
+    "description": "**Use to track context-budget savings** for the current session and all-time. Returns tokens used, tokens saved (vs reading whole files), cost avoided, call count, plus per-project index size (files, symbols, edges). Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `tokens_saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
     "input_schema": {
       "properties": {
         "project": {

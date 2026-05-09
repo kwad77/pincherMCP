@@ -1013,7 +1013,7 @@ func (s *Server) registerTools() {
 	// 1. index
 	s.addTool(&mcp.Tool{
 		Name:        "index",
-		Description: "Index a repository. Extracts symbols with byte offsets, builds a knowledge graph, and populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files). Set force=true to re-parse everything. Call this once per project before using any other tool.",
+		Description: "**Call once per project before using any other tool.** Indexes a repository: extracts symbols with byte offsets, builds the knowledge graph, populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files; the watcher keeps it fresh during a session). Pass `force=true` to re-parse every file (rare; only after schema/extractor changes).",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"path":{"type":"string","description":"Absolute path to the repository root. Defaults to session project root."},
@@ -1080,7 +1080,7 @@ func (s *Server) registerTools() {
 	// 6. query
 	s.addTool(&mcp.Tool{
 		Name:        "query",
-		Description: "Graph query using Cypher syntax — use when you need structural relationships, not text matches. Examples: find all callers 'MATCH (a)-[:CALLS]->(b) WHERE b.name=\"Open\" RETURN a.name'; find classes in a file 'MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name'; multi-hop 'MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name=\"main\" RETURN b.name'. Use `search` instead for name/text lookups.",
+		Description: "**Use when you need structural relationships, not text matches** — Cypher graph queries over the symbol graph. Examples: callers `MATCH (a)-[:CALLS]->(b) WHERE b.name=\"Open\" RETURN a.name`; classes in a file `MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name`; multi-hop `MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name=\"main\" RETURN b.name`. Prefer `search` for name/text lookups, `trace` for fixed-shape callgraph BFS — both are cheaper.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["cypher"],"properties":{
 				"cypher":{"type":"string","description":"Cypher query. Example: MATCH (f:Function)-[:CALLS]->(g) WHERE f.name='main' RETURN g.name LIMIT 20"},
@@ -1134,7 +1134,7 @@ func (s *Server) registerTools() {
 	// 10. schema
 	s.addTool(&mcp.Tool{
 		Name:        "schema",
-		Description: "Graph schema overview: node kind counts (Function, Class, Method…), edge kind counts (CALLS, IMPORTS…), totals. Use before writing a `query` to see what node/edge kinds exist in this project.",
+		Description: "**Use before writing a `query`** to see what node/edge kinds exist in this project. Returns node-kind counts (Function, Class, Method, …), edge-kind counts (CALLS, IMPORTS, …), and totals.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"}
@@ -1145,14 +1145,14 @@ func (s *Server) registerTools() {
 	// 11. list
 	s.addTool(&mcp.Tool{
 		Name:        "list",
-		Description: "List all indexed projects with stats: name, path, file count, symbol count, edge count, last indexed timestamp.",
+		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every project pincher knows about.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, s.handleList)
 
 	// 12. adr
 	s.addTool(&mcp.Tool{
 		Name:        "adr",
-		Description: "Persistent project knowledge store — survives across sessions. Store architectural decisions, team conventions, known gotchas. Actions: set (store), get (retrieve), list (all entries), delete. Examples: adr set PURPOSE 'payment processing service'; adr set STACK 'Go+SQLite+Redis'; adr list to recall everything stored.",
+		Description: "**Use to record decisions/conventions/gotchas** that should survive across sessions. Persistent project knowledge store. Actions: `set` (store), `get` (retrieve), `list` (all entries), `delete`. Examples: `adr set PURPOSE 'payment processing service'`; `adr set STACK 'Go+SQLite+Redis'`; `adr list` to recall everything stored. Call `adr list` early in unfamiliar work — prior agents' notes often save a `search` chain.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["action"],"properties":{
 				"action":{"type":"string","enum":["get","set","list","delete"]},
@@ -1166,7 +1166,7 @@ func (s *Server) registerTools() {
 	// 13. health
 	s.addTool(&mcp.Tool{
 		Name:        "health",
-		Description: "Diagnostic report: schema version, index staleness (time since last index), and per-language extraction coverage (parser type + confidence score). Use to detect stale indexes or verify extraction quality before trusting graph results.",
+		Description: "**Use to verify extraction quality before trusting graph results**, or to detect a stale index. Returns schema version, index staleness, and per-language coverage with parser identity (AST vs Regex) and avg/p10/p50 confidence per (language, kind). A low p10 on a corpus you care about means `search` results in that area need a higher `min_confidence` to be reliable.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project to report on. Defaults to session project."}
@@ -1177,7 +1177,7 @@ func (s *Server) registerTools() {
 	// 14. stats
 	s.addTool(&mcp.Tool{
 		Name:        "stats",
-		Description: "Session savings summary: cumulative tokens used, tokens saved, cost avoided, and call count since the server started. Also shows per-project index size (files, symbols, edges). Useful for tracking how much context budget pincherMCP has saved.",
+		Description: "**Use to track context-budget savings** for the current session and all-time. Returns tokens used, tokens saved (vs reading whole files), cost avoided, call count, plus per-project index size (files, symbols, edges). Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `tokens_saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project to include in index size breakdown. Defaults to session project."}
@@ -1188,7 +1188,7 @@ func (s *Server) registerTools() {
 	// 15. fetch
 	s.addTool(&mcp.Tool{
 		Name:        "fetch",
-		Description: "Fetch a URL, extract its text content, and store it in the project knowledge base as a searchable Document. Use for API docs, library READMEs, specs, or any reference material you want to query later. After fetching, use `search` with kind=Document to find it, or `symbol` with the returned ID to retrieve the full text.",
+		Description: "**Use to pull external reference material into the project knowledge base** — API docs, library READMEs, specs, RFCs. Fetches a URL, extracts its text, stores it as a searchable `Document` symbol. After fetching, use `search kind:Document` to find it, or `symbol` with the returned ID to retrieve the full text. The Document kind lives in the `docs` corpus, so `corpus=docs` searches surface it alongside Markdown sections.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["url"],"properties":{
 				"url":{"type":"string","description":"HTTP or HTTPS URL to fetch"},
