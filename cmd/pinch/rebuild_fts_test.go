@@ -32,11 +32,7 @@ func TestRebuildFTSCLI_Binary(t *testing.T) {
 		t.Skip("skipping CLI binary build in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	// Seed a DB with some symbols so the rebuild has something to count.
 	dataDir := t.TempDir()
@@ -53,6 +49,7 @@ func TestRebuildFTSCLI_Binary(t *testing.T) {
 
 	// Default output: human-readable banner with row count.
 	cmd := exec.Command(bin, "rebuild-fts", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("rebuild-fts: %v\n%s", err, out)
@@ -63,6 +60,7 @@ func TestRebuildFTSCLI_Binary(t *testing.T) {
 
 	// --quiet: row count only, no banner.
 	cmd = exec.Command(bin, "rebuild-fts", "--data-dir", dataDir, "--quiet")
+	cmd.Env = pincherCoverEnv()
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("rebuild-fts --quiet: %v\n%s", err, out)
@@ -84,11 +82,7 @@ func TestRebuildFTSCLI_BadDataDir(t *testing.T) {
 		t.Skip("skipping CLI binary build in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	// Create a regular file and use it as --data-dir — Open will try to
 	// join it with "pincher.db" and the resulting path is not a valid
@@ -99,6 +93,7 @@ func TestRebuildFTSCLI_BadDataDir(t *testing.T) {
 	}
 
 	cmd := exec.Command(bin, "rebuild-fts", "--data-dir", notADir)
+	cmd.Env = pincherCoverEnv()
 	out, _ := cmd.CombinedOutput()
 	// We don't assert exit code (subprocess behavior varies); just that
 	// we got a recognisable failure message, not a panic.

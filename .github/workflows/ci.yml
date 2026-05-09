@@ -49,8 +49,25 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Subprocess-coverage instrumentation (#185): tests in cmd/pinch
+      # build pincher binaries on the fly and exec them via exec.Cmd to
+      # exercise runXxxCLI dispatch wrappers. The `buildPincherBinary`
+      # helper checks `os.Getenv("GOCOVERDIR")` — when set, it builds
+      # the binary with `-cover -coverpkg=./...` so subprocesses emit
+      # raw counter files. Go's test runner internally reassigns
+      # GOCOVERDIR per-test and folds those subprocess counters into
+      # the textfmt coverprofile automatically — no explicit
+      # `covdata textfmt` step needed.
+      #
+      # Without this env var the helper skips `-cover` (avoids ~3x
+      # build-time penalty during local `go test` runs) and the
+      # dispatch wrappers stay at 0% — hence the prior 82% gate.
       - name: Test with coverage
-        run: go test ./... -coverprofile=cover.out -timeout 120s
+        env:
+          GOCOVERDIR: covdata
+        run: |
+          mkdir -p covdata
+          go test ./... -coverprofile=cover.out -timeout 180s
 
       - name: Check coverage threshold (84%)
         run: |
