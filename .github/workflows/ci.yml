@@ -102,25 +102,30 @@ jobs:
   # baselines under testdata/bench/ (#50).
   #
   # Baselines captured on ubuntu-latest (AMD EPYC 7763, 4-core runner)
-  # via the bench-ci-actual artifact from a green run, so deltas now
-  # reflect run-to-run CI variance rather than dev-vs-CI hardware
-  # mismatch. Thresholds set slightly above local-dev defaults
-  # (0.30 ns / 0.45 allocs) to absorb CI runner-to-runner variance.
+  # via the bench-ci-actual artifact from a green run.
   #
-  # The job ALSO uploads the CI-actual bench output as a separate
-  # artifact (`bench-ci-actual-*`) so a future PR can pull a green
-  # run's numbers and update the baseline as the workload evolves.
+  # Reverted to advisory after #160's promotion immediately blocked a
+  # docs-only PR (#161): Index_Cold_NodeMonorepo +109% and
+  # Incremental_NoChange_K8sOps +276% in a single outlier run that no
+  # source change could plausibly explain. CI runner variance is wider
+  # than three green runs let us measure. Re-promotion waits on a real
+  # multi-run variance characterisation on CI hardware (open issue
+  # tracking — see commit message of this revert), not just observation.
   #
-  # Promoted to required gate after three consecutive green runs at
-  # these thresholds (#157, #158, #159). Future tightening: pull the
-  # latest bench-ci-actual artifact, characterise CI variance over
-  # several runs, then drop thresholds toward local-dev defaults.
+  # The job uploads the CI-actual bench output as a separate artifact
+  # (`bench-ci-actual-*`) so any green run's numbers can become the
+  # next baseline; that's the substrate for both re-baselining and
+  # variance characterisation.
   bench-regression:
-    name: Benchmark regression
+    name: Benchmark regression (advisory)
     runs-on: ubuntu-latest
+    continue-on-error: true
     env:
       # CI-baseline thresholds. Slightly above local-dev defaults
-      # (0.20/0.30) to absorb runner-to-runner variance.
+      # (0.20/0.30) to absorb runner-to-runner variance — but as #161
+      # showed, even this is too tight on outlier runs. Widening
+      # without variance data would just push the gate toward
+      # meaninglessness.
       BENCH_NS_THRESHOLD: "0.30"
       BENCH_ALLOCS_THRESHOLD: "0.45"
     steps:
