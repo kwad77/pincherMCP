@@ -170,10 +170,12 @@ jobs:
           go run ./cmd/benchcmp \
             -ns-threshold=$BENCH_NS_THRESHOLD \
             -allocs-threshold=$BENCH_ALLOCS_THRESHOLD \
+            -exclude="$BENCH_EXCLUDE" \
             testdata/bench/index.bench.txt ci-bench-actual/index.bench.txt
           go run ./cmd/benchcmp \
             -ns-threshold=$BENCH_NS_THRESHOLD \
             -allocs-threshold=$BENCH_ALLOCS_THRESHOLD \
+            -exclude="$BENCH_EXCLUDE" \
             testdata/bench/server.bench.txt ci-bench-actual/server.bench.txt
 
       - name: Upload CI-actual bench output (for re-baselining)
