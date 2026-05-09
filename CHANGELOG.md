@@ -7,12 +7,50 @@ minors.
 
 ## [Unreleased]
 
+## [v0.5.0] — 2026-05-09 — Trustworthy single-binary release
+
+The "you can install this anywhere and run it confidently" milestone.
+Closes the install-correctness, deployment-safety, and data-integrity
+gaps that blocked pre-1.0 adoption.
+
+Highlights:
+
+- **`go install` works** — the longstanding module-path / URL mismatch
+  is fixed. `go install github.com/kwad77/pincher/cmd/pinch@latest`
+  now resolves cleanly.
+- **Default-deny remote HTTP** — `pincher --http :PORT` without
+  `--http-key` refuses to bind a non-loopback interface (escalates the
+  prior #149 warning to a hard refuse). Three escape hatches:
+  `--http-key`, loopback bind, or explicit `--http-allow-open`.
+- **`project_id` correctness on macOS / Windows** — duplicate project
+  rows on case-insensitive filesystems are gone. Existing databases
+  with the duplication get merged automatically on `Open()`.
+- **Legacy FTS5 footprint removed** — the v9-introduced per-corpus
+  split is now the only FTS5 path; the legacy `symbols_fts` table
+  drops on first `Open()` after upgrade, reclaiming approximately half
+  the FTS5 disk footprint on long-running daily DBs.
+- **Release artifact pipeline live** — every `git push origin v*` now
+  produces 6 platform binaries + multi-arch Docker image + Homebrew
+  formula auto-bump (this kicked in for v0.4.1; v0.5.0 carries the
+  workflow forward unchanged).
+
+### Added
+- `--http-allow-open` / `$PINCHER_HTTP_ALLOW_OPEN=1` (#199) — explicit
+  opt-in to bind HTTP on a non-loopback interface without `--http-key`.
+  For deployments where out-of-band auth is in place (reverse proxy,
+  trusted Docker network, firewall-restricted environment). The #149
+  open-bind warning still fires on this path so operators see the
+  state in logs.
+- `recomputeProjectCounts(projectID)` helper on `*db.Store` (#84) —
+  refreshes denormalised counts after a dedup merge so `pincher list`
+  reports post-merge reality.
+
 ### Changed
-- **Repository renamed `kwad77/pincherMCP` → `kwad77/pincher`**, and the
-  Go module path bumped `github.com/pincherMCP/pincher` →
-  `github.com/kwad77/pincher` (#198). Closes the long-standing module-vs-URL
-  mismatch that broke `go install` for the entire pre-v0.5 era. After
-  this lands:
+- **Repository renamed `kwad77/pincherMCP` → `kwad77/pincher`**, and
+  the Go module path bumped `github.com/pincherMCP/pincher` →
+  `github.com/kwad77/pincher` (#198 / #212). Closes the long-standing
+  module-vs-URL mismatch that broke `go install` for the entire
+  pre-v0.5 era. After this release:
   - `go install github.com/kwad77/pincher/cmd/pinch@latest` works.
   - The old GitHub URL redirects to the new one, so existing checkouts
     keep pulling/pushing without intervention; `git remote set-url
@@ -21,55 +59,63 @@ minors.
   - The Homebrew formula, plugin manifests, dashboard URL refs, and
     workflow files were updated alongside the import paths.
   - **Old import path is dead** — code that imports
-    `github.com/pincherMCP/pincher/...` will fail to resolve at v0.5.0+.
-
-### Removed
-- **Legacy `symbols_fts` virtual table dropped** (#106). The per-corpus
-  FTS5 split (#32, landed at v9) has carried every search query for two
-  minor-version cycles via `symbols_code_fts` / `symbols_config_fts` /
-  `symbols_docs_fts`. The legacy mixed-corpus index has been
-  double-populated alongside since then, paying a 4× write-amplification
-  tax for callers nobody actually has — the MCP search handler
-  soft-redirects `corpus=all` (the only caller-facing path to the legacy
-  index) to `corpus=code` since #78. Schema v12 migration drops the
-  legacy table and its three sync triggers (`sym_fts_insert` /
-  `sym_fts_delete` / `sym_fts_update`); the baseline schema no longer
-  creates them on fresh installs. Long-running daily DBs reclaim
-  approximately half the FTS5 disk footprint immediately on first
-  `Open()` after upgrade.
-- `corpus="all"` removed from the `corpusVtab()` routing table. The MCP
-  search handler still soft-redirects `corpus=all` → `corpus=code` with
-  a deprecation log line; direct callers of `SearchSymbolsByCorpus`
-  passing `"all"` now get an `unknown corpus` error.
-
-### Fixed
-- **`project_id` no longer duplicates rows on case-insensitive filesystems**
-  (#84 / #92). On macOS (APFS) and Windows (NTFS default), opening the
-  same project via two casings (`/Users/Foo/Project` and
-  `/users/foo/project`) previously produced two distinct project rows
-  pointing at the same physical directory. The fix canonicalises
-  `project_id` to a deterministic form (symlink-resolved + casing-folded
-  on case-insensitive FSes) and migrates existing duplicate-project
-  databases by merging on `Open()`. The migration:
-  - picks a winner per duplicate group (prefers row already at canonical
-    form; otherwise highest sym_count + most recent indexed_at)
-  - re-keys all symbols / edges / files / adrs / extraction_failures
-    onto the winner; conflicts (same symbol id on both rows) drop the
-    loser row, recoverable by re-indexing
-  - recomputes `projects.sym_count` / `file_count` / `edge_count` on
-    the survivor so `pincher list` reports post-merge reality
-  - is idempotent on second `Open()`
-  Thanks to @nbarari for validating the migration against a real-world
-  duplicate-projects DB (5281 symbols across two casings) and surfacing
-  the stale-counts and macOS test-pinning issues during review.
-
-### Changed
+    `github.com/pincherMCP/pincher/...` will fail to resolve at
+    v0.5.0+.
+- **HTTP server refuses non-loopback bind without auth** (#199). See
+  the highlights above. Pre-bind check means the port never even
+  briefly comes up for an unsafe configuration.
 - **CI coverage gate temporarily lowered 84% → 83%** to land #92's
   patch (which adds 700+ lines including dedup/merge/rename and a
   schema migration; natural Linux CI coverage landed at 83.9%).
-  Restoration is tracked at #200 — the v0.5.0 milestone bumps the
-  gate 83% → 85% with the test-infrastructure investment needed to
-  exercise SQL-error paths cleanly.
+  Restoration tracked at #200 — bump to 85% will land in v0.6.0
+  alongside the test-infrastructure investment needed to exercise
+  SQL-error paths cleanly.
+
+### Removed
+- **Legacy `symbols_fts` virtual table dropped** (#106 / #211). The
+  per-corpus FTS5 split (#32, landed at v9) has carried every search
+  query for two minor-version cycles via `symbols_code_fts` /
+  `symbols_config_fts` / `symbols_docs_fts`. The legacy mixed-corpus
+  index has been double-populated alongside since then, paying a 4×
+  write-amplification tax for callers nobody actually has — the MCP
+  search handler soft-redirects `corpus=all` (the only caller-facing
+  path to the legacy index) to `corpus=code` since #78. Schema v12
+  migration drops the legacy table and its three sync triggers
+  (`sym_fts_insert` / `sym_fts_delete` / `sym_fts_update`); the
+  baseline schema no longer creates them on fresh installs.
+  Long-running daily DBs reclaim approximately half the FTS5 disk
+  footprint immediately on first `Open()` after upgrade.
+- `corpus="all"` removed from the `corpusVtab()` routing table. The
+  MCP search handler still soft-redirects `corpus=all` →
+  `corpus=code` with a deprecation log line, so older callers keep
+  working at the API layer; direct callers of
+  `SearchSymbolsByCorpus` passing `"all"` now get an
+  `unknown corpus` error.
+
+### Fixed
+- **`project_id` no longer duplicates rows on case-insensitive
+  filesystems** (#84 / #92). On macOS (APFS) and Windows (NTFS
+  default), opening the same project via two casings
+  (`/Users/Foo/Project` and `/users/foo/project`) previously produced
+  two distinct project rows pointing at the same physical directory.
+  The fix canonicalises `project_id` to a deterministic form
+  (symlink-resolved + casing-folded on case-insensitive FSes) and
+  migrates existing duplicate-project databases by merging on
+  `Open()`. The migration:
+  - picks a winner per duplicate group (prefers row already at
+    canonical form; otherwise highest sym_count + most recent
+    indexed_at)
+  - re-keys all symbols / edges / files / adrs / extraction_failures
+    onto the winner; conflicts (same symbol id on both rows) drop
+    the loser row, recoverable by re-indexing
+  - recomputes `projects.sym_count` / `file_count` / `edge_count` on
+    the survivor so `pincher list` reports post-merge reality
+  - is idempotent on second `Open()`
+
+  Thanks to @nbarari for validating the migration against a
+  real-world duplicate-projects DB (5281 symbols across two casings)
+  and surfacing the stale-counts and macOS test-pinning issues
+  during review.
 
 ## [v0.4.1] — 2026-05-09 — Dockerfile go-version fix
 
@@ -403,7 +449,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.5.0...HEAD
+[v0.5.0]: https://github.com/kwad77/pincher/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/kwad77/pincher/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/kwad77/pincher/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/kwad77/pincher/compare/v0.2.1...v0.3.0
