@@ -4388,6 +4388,97 @@ func TestHandleTrace_UniqueNameNoAmbiguityField(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// _meta.next_steps suggestions for search results (iter 6 — dead simple)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSuggestNextSteps_FunctionRecommendsContextAndTrace(t *testing.T) {
+	suggestions := suggestNextSteps(db.Symbol{
+		ID: "a.go::pkg.F#Function", Name: "F", Kind: "Function",
+	})
+	if len(suggestions) != 2 {
+		t.Fatalf("Function should get 2 suggestions, got %d", len(suggestions))
+	}
+	if suggestions[0]["tool"] != "context" {
+		t.Errorf("first tool = %q, want context", suggestions[0]["tool"])
+	}
+	if suggestions[1]["tool"] != "trace" {
+		t.Errorf("second tool = %q, want trace", suggestions[1]["tool"])
+	}
+	// args must contain the actual ID so the agent can paste-and-run.
+	if !strings.Contains(suggestions[0]["args"], "a.go::pkg.F#Function") {
+		t.Errorf("args missing concrete ID: %v", suggestions[0])
+	}
+}
+
+func TestSuggestNextSteps_SettingRecommendsSymbol(t *testing.T) {
+	suggestions := suggestNextSteps(db.Symbol{
+		ID: "k.yaml::services.web.image#Setting", Name: "image", Kind: "Setting",
+	})
+	if len(suggestions) != 1 {
+		t.Fatalf("Setting should get 1 suggestion, got %d", len(suggestions))
+	}
+	if suggestions[0]["tool"] != "symbol" {
+		t.Errorf("tool = %q, want symbol", suggestions[0]["tool"])
+	}
+}
+
+func TestSuggestNextSteps_DocumentRecommendsSymbolWithFieldsProjection(t *testing.T) {
+	suggestions := suggestNextSteps(db.Symbol{
+		ID: "url::https://example.com#Document", Name: "example", Kind: "Document",
+	})
+	if len(suggestions) != 1 {
+		t.Fatalf("Document should get 1 suggestion, got %d", len(suggestions))
+	}
+	// Document fetches via symbol with fields=source — no callgraph for docs.
+	if !strings.Contains(suggestions[0]["args"], "fields") {
+		t.Errorf("Document args should include fields= projection: %v", suggestions[0])
+	}
+}
+
+func TestHandleSearch_NextStepsInMeta(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "ns"
+	store.UpsertProject(db.Project{ID: "ns", Path: "/tmp/ns", Name: "ns", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "ns/a.go::pkg.MyFn#Function", ProjectID: "ns",
+			FilePath: "a.go", Name: "MyFn", QualifiedName: "pkg.MyFn",
+			Kind: "Function", Language: "Go", ExtractionConfidence: 1.0},
+	})
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "MyFn", "project": "ns",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleSearch: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing")
+	}
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) == 0 {
+		t.Fatalf("expected _meta.next_steps for non-empty results, got %v", meta)
+	}
+}
+
+func TestHandleSearch_NextStepsAbsentOnZeroResults(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "nsz"
+	store.UpsertProject(db.Project{ID: "nsz", Path: "/tmp/nsz", Name: "nsz", IndexedAt: time.Now()})
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "ZZZNoSuchSymbol", "project": "nsz",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleSearch: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if _, present := meta["next_steps"]; present {
+		t.Error("next_steps must be ABSENT when no results found")
+	}
+}
+
 func TestHumanInt_FormatsThousandsSeparators(t *testing.T) {
 	cases := []struct {
 		n    int

@@ -1673,6 +1673,14 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if fellthroughTo != "" {
 		meta["fellthrough_to"] = fellthroughTo
 	}
+	// Suggest the obvious next tool call per top result kind. Reduces
+	// decision friction — agents see the next move spelled out instead of
+	// having to choose between symbol/context/trace from scratch. The
+	// suggestions are the workflow rules from CLAUDE.md, applied to the
+	// concrete top-1 result.
+	if len(results) > 0 {
+		meta["next_steps"] = suggestNextSteps(results[0].Symbol)
+	}
 	data := map[string]any{
 		"results": rows,
 		"count":   len(rows),
@@ -1680,6 +1688,43 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"_meta":   meta,
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
+}
+
+// suggestNextSteps returns 1-2 follow-up tool suggestions tailored to the
+// top search result's kind. Mirrors the workflow advice in CLAUDE.md but
+// concretised against the actual ID, so the agent doesn't have to translate
+// "use context on a Function result" into "context(id=...)".
+func suggestNextSteps(top db.Symbol) []map[string]string {
+	id := top.ID
+	switch top.Kind {
+	case "Function", "Method":
+		return []map[string]string{
+			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, id),
+				"why": "read the function plus everything it directly imports/calls (one shot, ~90% token reduction)"},
+			{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s"}`, top.Name),
+				"why": "find callers if you're about to change behaviour other code depends on"},
+		}
+	case "Class", "Interface", "Type", "Enum":
+		return []map[string]string{
+			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, id),
+				"why": "read the type plus its imports"},
+		}
+	case "Setting", "Variable", "Resource", "Output", "Provider":
+		return []map[string]string{
+			{"tool": "symbol", "args": fmt.Sprintf(`{"id":"%s"}`, id),
+				"why": "fetch the value's full context (signature already shown in this result)"},
+		}
+	case "Section", "Heading", "Document":
+		return []map[string]string{
+			{"tool": "symbol", "args": fmt.Sprintf(`{"id":"%s","fields":"source"}`, id),
+				"why": "fetch the section body (no need for context — docs don't have callgraphs)"},
+		}
+	default:
+		return []map[string]string{
+			{"tool": "symbol", "args": fmt.Sprintf(`{"id":"%s"}`, id),
+				"why": "fetch the full source for this kind"},
+		}
+	}
 }
 
 func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
