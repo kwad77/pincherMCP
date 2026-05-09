@@ -130,14 +130,19 @@ minors.
   snapshot gate (#108).
 - HTTP `unknown-tool` test asserts `fetch` appears in the available list
   (caught the pre-existing drift) (#124).
-- Bench-regression CI gate **promoted from advisory to required**
-  (#160). Path: characterised dev-machine variance (#134) →
-  re-baselined on CI hardware (#158) → tightened thresholds to
-  0.30 ns / 0.45 allocs after three consecutive green runs at the
-  CI-calibrated baselines (#157, #158, #159). Previously the gate
-  was dragged below trust by dev-vs-CI hardware mismatch
-  (HandleQuery_NodeScan landed +192% on CI vs the dev baseline);
-  re-baselining absorbed all of that.
+- Bench-regression CI gate **re-baselined and tightened**
+  (still advisory). Path: characterised dev-machine variance
+  (#134) → re-baselined on CI hardware (#158) → tightened
+  thresholds to 0.30 ns / 0.45 allocs against the CI-calibrated
+  baselines (#157, #158, #159). Previously the gate was dragged
+  below trust by dev-vs-CI hardware mismatch (HandleQuery_NodeScan
+  landed +192% on CI vs the dev baseline); re-baselining absorbed
+  all of that. A short-lived promotion to required (#160) was
+  reverted in #162 after a single outlier run hit
+  Index_Cold_NodeMonorepo +109% / Incremental_K8sOps +276% —
+  three green-run samples weren't enough to characterise CI
+  variance; promotion is gated on a real multi-run characterisation
+  on CI hardware, not just observation.
 - Bench warmup pass on the noisy server-package benchmarks dropped
   per-bench coefficient of variation from 36% → ~3% (#141).
 
