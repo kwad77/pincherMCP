@@ -380,3 +380,139 @@ func TestRecomputeProjectCounts(t *testing.T) {
 		t.Errorf("edge_count = %d, want 0 (no edges)", edgeCount)
 	}
 }
+
+// TestJoinEqClauses_BuildsCorrectSQL pins the helper that builds
+// the conflict-detection subquery's equality joins. Pure-string
+// helper, runs on every platform.
+func TestJoinEqClauses_BuildsCorrectSQL(t *testing.T) {
+	cases := []struct {
+		cols, table, want string
+	}{
+		{"id", "symbols", "w.id = symbols.id"},
+		{"from_id, to_id, kind", "edges",
+			"w.from_id = edges.from_id AND w.to_id = edges.to_id AND w.kind = edges.kind"},
+		{"path", "files", "w.path = files.path"},
+	}
+	for _, c := range cases {
+		got := joinEqClauses(c.cols, c.table)
+		if got != c.want {
+			t.Errorf("joinEqClauses(%q, %q) = %q, want %q", c.cols, c.table, got, c.want)
+		}
+	}
+}
+
+// TestMergeProjectInto_DirectMerge is a platform-independent direct test
+// for the merge primitive. Inserts symbols on a "loser" project that don't
+// conflict with the winner, then asserts they're re-keyed onto the winner
+// after merge. Distinct from the symlink-driven dedup integration test:
+// that one is the wiring test, this one is the unit test.
+func TestMergeProjectInto_DirectMerge(t *testing.T) {
+	s := newTestStore(t)
+	const winner, loser = "/winner", "/loser"
+
+	for _, id := range []string{winner, loser} {
+		if err := s.UpsertProject(Project{ID: id, Path: id, Name: "x"}); err != nil {
+			t.Fatalf("UpsertProject %s: %v", id, err)
+		}
+	}
+	// One symbol per project, distinct IDs (no conflict).
+	if err := s.BulkUpsertSymbols([]Symbol{
+		{ID: "w-sym", ProjectID: winner, FilePath: "w.go", Name: "W", QualifiedName: "p.W", Kind: "Function", Language: "Go"},
+		{ID: "l-sym", ProjectID: loser, FilePath: "l.go", Name: "L", QualifiedName: "p.L", Kind: "Function", Language: "Go"},
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	if err := s.mergeProjectInto(loser, winner); err != nil {
+		t.Fatalf("mergeProjectInto: %v", err)
+	}
+
+	// Loser project row gone.
+	var loserRows int
+	s.db.QueryRow(`SELECT COUNT(*) FROM projects WHERE id = ?`, loser).Scan(&loserRows)
+	if loserRows != 0 {
+		t.Errorf("loser project row not deleted: %d remain", loserRows)
+	}
+	// Both symbols now keyed to winner.
+	var winnerSyms int
+	s.db.QueryRow(`SELECT COUNT(*) FROM symbols WHERE project_id = ?`, winner).Scan(&winnerSyms)
+	if winnerSyms != 2 {
+		t.Errorf("winner symbols = %d, want 2 (both moved)", winnerSyms)
+	}
+}
+
+// TestMergeProjectInto_ConflictPath exercises the lossy path: when a
+// loser symbol shares an ID with a winner symbol, the loser row gets
+// dropped (not duplicated). Documents the recoverable-by-re-indexing
+// trade-off.
+func TestMergeProjectInto_ConflictPath(t *testing.T) {
+	s := newTestStore(t)
+	const winner, loser = "/winner", "/loser"
+
+	for _, id := range []string{winner, loser} {
+		if err := s.UpsertProject(Project{ID: id, Path: id, Name: "x"}); err != nil {
+			t.Fatalf("UpsertProject %s: %v", id, err)
+		}
+	}
+	// Both projects own a symbol with ID "shared" — winner wins, loser drops.
+	// Plus a unique symbol on the loser that should successfully move.
+	if err := s.BulkUpsertSymbols([]Symbol{
+		{ID: "shared", ProjectID: winner, FilePath: "w.go", Name: "Shared", QualifiedName: "p.Shared", Kind: "Function", Language: "Go"},
+		{ID: "shared", ProjectID: loser, FilePath: "w.go", Name: "Shared", QualifiedName: "p.Shared", Kind: "Function", Language: "Go"},
+		{ID: "uniq", ProjectID: loser, FilePath: "u.go", Name: "Uniq", QualifiedName: "p.Uniq", Kind: "Function", Language: "Go"},
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	if err := s.mergeProjectInto(loser, winner); err != nil {
+		t.Fatalf("mergeProjectInto: %v", err)
+	}
+
+	// Winner now has 2 symbols: original "shared" + moved "uniq".
+	var winnerSyms int
+	s.db.QueryRow(`SELECT COUNT(*) FROM symbols WHERE project_id = ?`, winner).Scan(&winnerSyms)
+	if winnerSyms != 2 {
+		t.Errorf("winner symbols = %d, want 2 (shared kept, uniq moved)", winnerSyms)
+	}
+	// No symbols left on loser.
+	var loserSyms int
+	s.db.QueryRow(`SELECT COUNT(*) FROM symbols WHERE project_id = ?`, loser).Scan(&loserSyms)
+	if loserSyms != 0 {
+		t.Errorf("loser symbols = %d, want 0", loserSyms)
+	}
+}
+
+// TestRenameProjectID exercises the rename primitive directly.
+func TestRenameProjectID(t *testing.T) {
+	s := newTestStore(t)
+	const oldID, newID = "/old/path", "/new/path"
+
+	if err := s.UpsertProject(Project{ID: oldID, Path: oldID, Name: "x"}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := s.BulkUpsertSymbols([]Symbol{
+		{ID: "s1", ProjectID: oldID, FilePath: "f.go", Name: "F", QualifiedName: "p.F", Kind: "Function", Language: "Go"},
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	if err := s.renameProjectID(oldID, newID); err != nil {
+		t.Fatalf("renameProjectID: %v", err)
+	}
+
+	// Project row keyed to newID.
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM projects WHERE id = ?`, newID).Scan(&n)
+	if n != 1 {
+		t.Errorf("project at newID = %d, want 1", n)
+	}
+	s.db.QueryRow(`SELECT COUNT(*) FROM projects WHERE id = ?`, oldID).Scan(&n)
+	if n != 0 {
+		t.Errorf("project at oldID = %d, want 0", n)
+	}
+	// Symbol re-keyed.
+	s.db.QueryRow(`SELECT COUNT(*) FROM symbols WHERE project_id = ?`, newID).Scan(&n)
+	if n != 1 {
+		t.Errorf("symbols at newID = %d, want 1", n)
+	}
+}
