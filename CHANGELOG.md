@@ -37,6 +37,32 @@ minors.
 - `pincher --help` now lists subcommands (`index`, `doctor`,
   `self-test`, `rebuild-fts`) instead of dumping flag.PrintDefaults
   alone (#152).
+- `_meta.savings` — human-readable one-liner on every tool response
+  ("saved ~14k tokens vs reading files…"). Trains agents and humans
+  alike that pincher is cheaper than reading whole files (#144).
+- `_meta.next_steps` on `search`/`architecture`/`trace`/`changes`/
+  `index`/`context` — concrete next-tool suggestions tailored to the
+  result shape (e.g. search Function result → `context(id=…)` and
+  `trace name=…`). Removes one decision the agent would otherwise
+  make from scratch every call (#146/#148/#150/#156).
+- `_meta.ambiguous_match` on `trace` — when the symbol name resolves
+  to multiple symbols in the project, surface the alternates so
+  agents can refine instead of silently picking one (#145).
+- `_meta.diagnosis` on `index` zero-symbol runs — explains why no
+  symbols were extracted (only blocked files, only unsupported
+  languages, all files unchanged, etc.) instead of returning an
+  unannotated `symbols=0` (#147).
+- `pincher doctor` rolls up extraction failures by reason once the
+  per-file list crosses 5 entries — surfaces the dominant failure
+  mode at a glance ("→ by reason: 12 file_too_large, 8 byte_range_negative")
+  (#159).
+- HTTP server logs a loud warning when started without `--http-key`
+  bound to a non-loopback address — the API is open by default and
+  this catches accidental exposure (#149).
+- `cmd/benchcmp` gains `--ns-threshold` and `--allocs-threshold`
+  flags. Defaults unchanged so local `make corpus-bench` keeps the
+  tight gate; CI sets wider values to absorb runner-to-runner
+  variance (#157).
 - `SECURITY.md`, `CHANGELOG.md`, `RELEASING.md` (this PR).
 
 ### Changed
@@ -104,6 +130,16 @@ minors.
   snapshot gate (#108).
 - HTTP `unknown-tool` test asserts `fetch` appears in the available list
   (caught the pre-existing drift) (#124).
+- Bench-regression CI gate **promoted from advisory to required**
+  (#160). Path: characterised dev-machine variance (#134) →
+  re-baselined on CI hardware (#158) → tightened thresholds to
+  0.30 ns / 0.45 allocs after three consecutive green runs at the
+  CI-calibrated baselines (#157, #158, #159). Previously the gate
+  was dragged below trust by dev-vs-CI hardware mismatch
+  (HandleQuery_NodeScan landed +192% on CI vs the dev baseline);
+  re-baselining absorbed all of that.
+- Bench warmup pass on the noisy server-package benchmarks dropped
+  per-bench coefficient of variation from 36% → ~3% (#141).
 
 ## [v0.3.0] — 2026-05-08 — Trust + observability
 
