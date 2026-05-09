@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/danwakefield/fnmatch v0.0.0-20160403171240-cbb64ac3d964 // indirect

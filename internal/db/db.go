@@ -520,14 +520,102 @@ var schemaMigrations = []string{
 	//
 	// Routing rules (mirror internal/db/corpus.go's ClassifyCorpus):
 	//   docs:   kind = 'Document'  OR  language = 'Markdown'
-	//   config: language IN ('YAML', 'JSON', 'HCL')
-	//   code:   everything else (default — adding a new language doesn't
-	//           require a migration update)
+	//   config: language IN ('YAML', 'JSON', 'HCL', 'TOML')
+	//   code:   everything else (default — adding a new code language doesn't
+	//           require a migration update; adding a new config/docs
+	//           language requires updating both this trigger DDL and the
+	//           ClassifyCorpus parity gate)
 	//
 	// Backfill at the tail copies all existing rows into the appropriate
 	// new vtab so freshly-upgraded DBs aren't missing data. Cost: ~5s on
 	// a 1M-symbol repo, one-time only.
 	ftsCorpusSplitDDL,
+
+	// v9 → v10: add TOML to the config-corpus language list. Fresh v10+
+	// DBs get TOML routing for free via the (now-updated) ftsCorpusSplitDDL
+	// they ran at v9. Existing v9 DBs already executed the pre-TOML
+	// trigger SQL, so we DROP-and-RECREATE the three corpus triggers here
+	// with TOML in the WHERE clauses.
+	//
+	// No backfill needed: pre-v10 builds had no .toml extractor registered,
+	// so existing v9 DBs cannot have any TOML symbols to re-route.
+	`DROP TRIGGER IF EXISTS sym_fts_corpus_insert;
+DROP TRIGGER IF EXISTS sym_fts_corpus_delete;
+DROP TRIGGER IF EXISTS sym_fts_corpus_update;
+
+CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_insert AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_code_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT new.rowid, new.id, new.name, new.qualified_name,
+           COALESCE(new.signature,''), COALESCE(new.docstring,'')
+    WHERE new.kind != 'Document'
+      AND new.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_config_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT new.rowid, new.id, new.name, new.qualified_name,
+           COALESCE(new.signature,''), COALESCE(new.docstring,'')
+    WHERE new.kind != 'Document'
+      AND new.language IN ('YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_docs_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT new.rowid, new.id, new.name, new.qualified_name,
+           COALESCE(new.signature,''), COALESCE(new.docstring,'')
+    WHERE new.kind = 'Document' OR new.language = 'Markdown';
+END;
+
+CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_delete AFTER DELETE ON symbols BEGIN
+    INSERT INTO symbols_code_fts(symbols_code_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
+           COALESCE(old.signature,''), COALESCE(old.docstring,'')
+    WHERE old.kind != 'Document'
+      AND old.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_config_fts(symbols_config_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
+           COALESCE(old.signature,''), COALESCE(old.docstring,'')
+    WHERE old.kind != 'Document'
+      AND old.language IN ('YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_docs_fts(symbols_docs_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
+           COALESCE(old.signature,''), COALESCE(old.docstring,'')
+    WHERE old.kind = 'Document' OR old.language = 'Markdown';
+END;
+
+CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_update AFTER UPDATE ON symbols BEGIN
+    INSERT INTO symbols_code_fts(symbols_code_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
+           COALESCE(old.signature,''), COALESCE(old.docstring,'')
+    WHERE old.kind != 'Document'
+      AND old.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_config_fts(symbols_config_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
+           COALESCE(old.signature,''), COALESCE(old.docstring,'')
+    WHERE old.kind != 'Document'
+      AND old.language IN ('YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_docs_fts(symbols_docs_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
+           COALESCE(old.signature,''), COALESCE(old.docstring,'')
+    WHERE old.kind = 'Document' OR old.language = 'Markdown';
+
+    INSERT INTO symbols_code_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT new.rowid, new.id, new.name, new.qualified_name,
+           COALESCE(new.signature,''), COALESCE(new.docstring,'')
+    WHERE new.kind != 'Document'
+      AND new.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_config_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT new.rowid, new.id, new.name, new.qualified_name,
+           COALESCE(new.signature,''), COALESCE(new.docstring,'')
+    WHERE new.kind != 'Document'
+      AND new.language IN ('YAML', 'JSON', 'HCL', 'TOML');
+
+    INSERT INTO symbols_docs_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
+    SELECT new.rowid, new.id, new.name, new.qualified_name,
+           COALESCE(new.signature,''), COALESCE(new.docstring,'')
+    WHERE new.kind = 'Document' OR new.language = 'Markdown';
+END;`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -781,13 +869,13 @@ CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_insert AFTER INSERT ON symbols BEGIN
     SELECT new.rowid, new.id, new.name, new.qualified_name,
            COALESCE(new.signature,''), COALESCE(new.docstring,'')
     WHERE new.kind != 'Document'
-      AND new.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL');
+      AND new.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_config_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT new.rowid, new.id, new.name, new.qualified_name,
            COALESCE(new.signature,''), COALESCE(new.docstring,'')
     WHERE new.kind != 'Document'
-      AND new.language IN ('YAML', 'JSON', 'HCL');
+      AND new.language IN ('YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_docs_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT new.rowid, new.id, new.name, new.qualified_name,
@@ -801,13 +889,13 @@ CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_delete AFTER DELETE ON symbols BEGIN
     SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
            COALESCE(old.signature,''), COALESCE(old.docstring,'')
     WHERE old.kind != 'Document'
-      AND old.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL');
+      AND old.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_config_fts(symbols_config_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
            COALESCE(old.signature,''), COALESCE(old.docstring,'')
     WHERE old.kind != 'Document'
-      AND old.language IN ('YAML', 'JSON', 'HCL');
+      AND old.language IN ('YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_docs_fts(symbols_docs_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
@@ -824,13 +912,13 @@ CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_update AFTER UPDATE ON symbols BEGIN
     SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
            COALESCE(old.signature,''), COALESCE(old.docstring,'')
     WHERE old.kind != 'Document'
-      AND old.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL');
+      AND old.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_config_fts(symbols_config_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
            COALESCE(old.signature,''), COALESCE(old.docstring,'')
     WHERE old.kind != 'Document'
-      AND old.language IN ('YAML', 'JSON', 'HCL');
+      AND old.language IN ('YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_docs_fts(symbols_docs_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT 'delete', old.rowid, old.id, old.name, old.qualified_name,
@@ -841,13 +929,13 @@ CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_update AFTER UPDATE ON symbols BEGIN
     SELECT new.rowid, new.id, new.name, new.qualified_name,
            COALESCE(new.signature,''), COALESCE(new.docstring,'')
     WHERE new.kind != 'Document'
-      AND new.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL');
+      AND new.language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_config_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT new.rowid, new.id, new.name, new.qualified_name,
            COALESCE(new.signature,''), COALESCE(new.docstring,'')
     WHERE new.kind != 'Document'
-      AND new.language IN ('YAML', 'JSON', 'HCL');
+      AND new.language IN ('YAML', 'JSON', 'HCL', 'TOML');
 
     INSERT INTO symbols_docs_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
     SELECT new.rowid, new.id, new.name, new.qualified_name,
@@ -861,13 +949,13 @@ INSERT INTO symbols_code_fts(rowid, symbol_id, name, qualified_name, signature, 
 SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
 FROM symbols
 WHERE kind != 'Document'
-  AND language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL');
+  AND language NOT IN ('Markdown', 'YAML', 'JSON', 'HCL', 'TOML');
 
 INSERT INTO symbols_config_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
 SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
 FROM symbols
 WHERE kind != 'Document'
-  AND language IN ('YAML', 'JSON', 'HCL');
+  AND language IN ('YAML', 'JSON', 'HCL', 'TOML');
 
 INSERT INTO symbols_docs_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
 SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
