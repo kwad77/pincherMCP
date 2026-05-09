@@ -105,6 +105,17 @@ minors.
   `Extractor` for filename-based detection (`Makefile`, future
   `Dockerfile`). The registry stores both basenames and extensions;
   filename matches take precedence. Existing extractors unaffected.
+- **HCL `var.NAME` reference edges** (#178, minimum-viable for #86).
+  Resource / data / output / module / provider / variable blocks
+  emit `REFERENCES` edges to `Variable` symbols when their attributes
+  reference `var.NAME`. Nested-block refs (e.g. `provisioner` inside
+  a resource) are attributed to the outermost symbol-emitting block,
+  so agents reasoning about a resource see all its var dependencies
+  in one place. Per-source-block dedup. `local.X` / `data.X` /
+  `module.X` / cross-resource refs deferred to follow-ups.
+- SQL extractor (#176): `IF NOT EXISTS` recognised on `CREATE
+  FUNCTION` / `PROCEDURE` / `TRIGGER` (was already on `TABLE`/`VIEW`).
+  MariaDB and SQLite dialect support.
 - `SECURITY.md`, `CHANGELOG.md`, `RELEASING.md` (this PR).
 
 ### Changed
