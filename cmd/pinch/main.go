@@ -59,6 +59,28 @@ func main() {
 		dbReaders   = flag.Int("db-readers", db.DefaultReaderPoolSize, "Maximum concurrent SQLite read connections. Higher = more parallel tool calls behind a busy server; capped at 32. Falls back to $PINCHER_DB_READERS.")
 		maxFileMB   = flag.Int("max-file-size-mb", int(index.DefaultMaxFileSize/(1024*1024)), "Per-file size cap during indexing (MB). Files larger than this are recorded as `file_too_large` failures and skipped without being read into memory (#111). 0 disables the cap. Falls back to $PINCHER_MAX_FILE_SIZE_MB.")
 	)
+	// Custom usage banner: subcommand summary + the standard flag list.
+	// Without this, `pincher --help` only shows flags — and a new user has
+	// no way to discover that `pincher doctor`, `pincher index`, etc. exist
+	// without reading the README or source.
+	flag.Usage = func() {
+		out := flag.CommandLine.Output()
+		fmt.Fprintln(out, "pincherMCP — local code intelligence MCP server")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  pincher                        Run as MCP stdio server (Claude Code, etc.)")
+		fmt.Fprintln(out, "  pincher --http :PORT           Run as MCP stdio + HTTP REST server")
+		fmt.Fprintln(out, "  pincher index PATH             Index a repository from the CLI")
+		fmt.Fprintln(out, "  pincher doctor                 Diagnostic report (schema, staleness, failures)")
+		fmt.Fprintln(out, "  pincher self-test              Smoke-test the install end-to-end")
+		fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
+		fmt.Fprintln(out, "  pincher --version              Print version and exit")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Flags (apply to the no-subcommand form — running as MCP server):")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	// Env fallbacks for the HTTP knobs so install-time configuration
