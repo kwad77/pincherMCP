@@ -178,6 +178,23 @@ func TestHandleList_Empty(t *testing.T) {
 	if m["count"].(float64) != 0 {
 		t.Errorf("expected 0 projects, got %v", m["count"])
 	}
+	// Empty-state guidance: agents on first contact must see what to
+	// do next. Bare `count: 0` is silent failure.
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("expected _meta on empty-list response")
+	}
+	if _, hasDiag := meta["diagnosis"]; !hasDiag {
+		t.Errorf("empty list should carry _meta.diagnosis, got: %v", meta)
+	}
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) == 0 {
+		t.Fatalf("empty list should suggest `index`, got no next_steps")
+	}
+	first, _ := steps[0].(map[string]any)
+	if first["tool"] != "index" {
+		t.Errorf("first next_step should be `index`, got %v", first)
+	}
 }
 
 func TestHandleList_WithProjects(t *testing.T) {
@@ -192,6 +209,13 @@ func TestHandleList_WithProjects(t *testing.T) {
 	m := decode(t, result)
 	if m["count"].(float64) != 2 {
 		t.Errorf("expected 2 projects, got %v", m["count"])
+	}
+	// Inverse: empty-state guidance must NOT appear when projects exist —
+	// it would just be noise on a healthy install.
+	if meta, _ := m["_meta"].(map[string]any); meta != nil {
+		if _, hasDiag := meta["diagnosis"]; hasDiag {
+			t.Errorf("non-empty list must not carry empty-state diagnosis, got: %v", meta["diagnosis"])
+		}
 	}
 }
 
