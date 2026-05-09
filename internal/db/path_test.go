@@ -330,3 +330,53 @@ func TestDedupProjectsByCanonicalPath_RunsViaMigrate(t *testing.T) {
 		t.Errorf("post-Open() projects = %d, want 1 (migrate() didn't call dedup)", n)
 	}
 }
+
+// TestRecomputeProjectCounts is a direct unit test for the helper used
+// by dedupProjectsByCanonicalPath. We exercise it independently of the
+// dedup wrapper so the function gets coverage even on platforms where
+// the dedup test itself skips (Windows — symlink creation requires
+// admin). Catches regressions in the SQL or the column wiring.
+func TestRecomputeProjectCounts(t *testing.T) {
+	s := newTestStore(t)
+	const projectID = "/test/proj"
+
+	if err := s.UpsertProject(Project{
+		ID: projectID, Path: projectID, Name: "x",
+		// Stale/wrong values — recompute should overwrite.
+		FileCount: 999, SymCount: 999,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	// 3 symbols across 2 files. Sym count should land at 3, file count at 2.
+	if err := s.BulkUpsertSymbols([]Symbol{
+		{ID: "a", ProjectID: projectID, FilePath: "a.go", Name: "A", QualifiedName: "p.A", Kind: "Function", Language: "Go"},
+		{ID: "b", ProjectID: projectID, FilePath: "a.go", Name: "B", QualifiedName: "p.B", Kind: "Function", Language: "Go"},
+		{ID: "c", ProjectID: projectID, FilePath: "b.go", Name: "C", QualifiedName: "p.C", Kind: "Function", Language: "Go"},
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	if err := s.recomputeProjectCounts(projectID); err != nil {
+		t.Fatalf("recomputeProjectCounts: %v", err)
+	}
+
+	var symCount, fileCount, edgeCount int
+	if err := s.db.QueryRow(
+		`SELECT sym_count, file_count, edge_count FROM projects WHERE id = ?`,
+		projectID,
+	).Scan(&symCount, &fileCount, &edgeCount); err != nil {
+		t.Fatalf("scan post-recompute: %v", err)
+	}
+	if symCount != 3 {
+		t.Errorf("sym_count = %d, want 3", symCount)
+	}
+	// file_count is computed from the files table (not symbols.file_path),
+	// which BulkUpsertSymbols doesn't populate. So files-table count is 0.
+	if fileCount != 0 {
+		t.Errorf("file_count = %d, want 0 (no rows in files table)", fileCount)
+	}
+	if edgeCount != 0 {
+		t.Errorf("edge_count = %d, want 0 (no edges)", edgeCount)
+	}
+}
