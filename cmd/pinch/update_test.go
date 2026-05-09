@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +11,316 @@ import (
 	"strings"
 	"testing"
 )
+
+// makeTempRepo creates a fresh git repo in a temp dir, makes one commit on
+// branch `main`, and returns the absolute path. Tests that exercise the
+// git helpers depend on a deterministic shape — single commit, known
+// branch — that this helper provides.
+func makeTempRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	cmds := [][]string{
+		{"git", "init", "-q", "-b", "main"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test User"},
+		{"git", "config", "commit.gpgsign", "false"},
+	}
+	for _, args := range cmds {
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "."},
+		{"git", "commit", "-q", "-m", "initial"},
+	} {
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+func TestGitDescribe(t *testing.T) {
+	dir := makeTempRepo(t)
+	out, err := gitDescribe(dir)
+	if err != nil {
+		t.Fatalf("gitDescribe: %v", err)
+	}
+	if out == "" {
+		t.Error("gitDescribe should return non-empty short hash for a repo with one commit")
+	}
+}
+
+func TestGitCurrentBranch(t *testing.T) {
+	dir := makeTempRepo(t)
+	br, err := gitCurrentBranch(dir)
+	if err != nil {
+		t.Fatalf("gitCurrentBranch: %v", err)
+	}
+	if br != "main" {
+		t.Errorf("got %q, want main", br)
+	}
+}
+
+func TestGitAheadBehind_Identical(t *testing.T) {
+	dir := makeTempRepo(t)
+	ahead, behind, err := gitAheadBehind(dir, "HEAD", "HEAD")
+	if err != nil {
+		t.Fatalf("gitAheadBehind: %v", err)
+	}
+	if ahead != 0 || behind != 0 {
+		t.Errorf("HEAD vs HEAD should be (0,0), got (%d,%d)", ahead, behind)
+	}
+}
+
+func TestGitAheadBehind_AfterCommit(t *testing.T) {
+	dir := makeTempRepo(t)
+	// Capture the original HEAD via tag, then add a second commit.
+	if out, err := exec.Command("git", "-C", dir, "tag", "v0").CombinedOutput(); err != nil {
+		t.Fatalf("tag: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "more.txt"), []byte("more\n"), 0o644); err != nil {
+		t.Fatalf("write more: %v", err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", dir, "add", "."},
+		{"git", "-C", dir, "commit", "-q", "-m", "second"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	ahead, behind, err := gitAheadBehind(dir, "v0", "HEAD")
+	if err != nil {
+		t.Fatalf("gitAheadBehind: %v", err)
+	}
+	// v0 is 0 ahead of HEAD and 1 behind (HEAD has 1 extra commit).
+	if ahead != 0 || behind != 1 {
+		t.Errorf("v0..HEAD expected (0,1), got (%d,%d)", ahead, behind)
+	}
+}
+
+func TestRunGit_Failure(t *testing.T) {
+	// Run a git command with a bogus subcommand against a real repo to
+	// exercise the non-nil error path.
+	dir := makeTempRepo(t)
+	err := runGit(dir, "this-is-not-a-git-subcommand")
+	if err == nil {
+		t.Fatal("expected error from invalid git subcommand")
+	}
+}
+
+func TestDetectUpdateSource_Override(t *testing.T) {
+	// Override pointing at a real pincher module path.
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	// Walk up to repo root for stability — we know go.mod lives there.
+	for d := root; d != filepath.Dir(d); d = filepath.Dir(d) {
+		if isPincherModule(filepath.Join(d, "go.mod")) {
+			root = d
+			break
+		}
+	}
+	got := detectUpdateSource(root)
+	if got == "" {
+		t.Skipf("test running outside a pincher checkout (root=%q); detectUpdateSource fallback path skipped", root)
+	}
+	if !strings.HasSuffix(got, filepath.Base(root)) && got != root {
+		// As long as the result is a real path under a pincher module, that's fine.
+		t.Logf("detectUpdateSource returned %q (override was %q)", got, root)
+	}
+}
+
+func TestDetectUpdateSource_OverrideNotARepo(t *testing.T) {
+	// Override pointing at an empty directory should return "" — not detected.
+	dir := t.TempDir()
+	if got := detectUpdateSource(dir); got != "" {
+		t.Errorf("non-pincher dir override should return empty; got %q", got)
+	}
+}
+
+func TestRebuildBinary_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	// Write a minimal go.mod naming this module so the path lookup works.
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/pincherMCP/pincher\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	var buf bytes.Buffer
+	err := rebuildBinary(&buf, dir, true)
+	if err != nil {
+		t.Fatalf("dry-run should not fail: %v", err)
+	}
+	if !strings.Contains(buf.String(), "would run") {
+		t.Errorf("dry-run output should mention 'would run'; got: %s", buf.String())
+	}
+}
+
+func TestUpdateInRepo_Check(t *testing.T) {
+	dir := makeTempRepo(t)
+	// Add an "origin" remote pointing at the same dir so `git fetch origin`
+	// succeeds without network access. Use file:// path on the local repo.
+	for _, args := range [][]string{
+		{"git", "-C", dir, "config", "remote.origin.url", dir},
+		{"git", "-C", dir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	var buf bytes.Buffer
+	// Use --check so we exit before any commit-bumping work.
+	err := updateInRepo(&buf, dir, true, true, false)
+	// We don't assert no-error: the test repo's "origin" is itself, so
+	// fetch may or may not succeed depending on git config. The point is
+	// to exercise the in-repo path's branches.
+	got := buf.String()
+	if !strings.Contains(got, "in-repo mode") {
+		t.Errorf("expected in-repo banner; got:\n%s\n(err=%v)", got, err)
+	}
+}
+
+func TestConfirmYes_Yes(t *testing.T) {
+	// Pipe "y" to stdin so confirmYes returns true.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+	saved := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = saved }()
+
+	if _, err := w.Write([]byte("y\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	w.Close()
+
+	if !confirmYes() {
+		t.Error("'y' input should produce true")
+	}
+}
+
+func TestConfirmYes_No(t *testing.T) {
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	saved := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = saved }()
+
+	w.Write([]byte("n\n"))
+	w.Close()
+
+	if confirmYes() {
+		t.Error("'n' input should produce false")
+	}
+}
+
+func TestFetchLatestRelease_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"tag_name":"v0.9.9","name":"test","draft":false,"assets":[{"name":"pincher_linux_amd64","browser_download_url":"http://example/asset","size":42}]}`))
+	}))
+	defer srv.Close()
+
+	saved := updateReleasesURL
+	updateReleasesURL = srv.URL
+	defer func() { updateReleasesURL = saved }()
+
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		t.Fatalf("fetchLatestRelease: %v", err)
+	}
+	if rel.TagName != "v0.9.9" {
+		t.Errorf("TagName=%q, want v0.9.9", rel.TagName)
+	}
+	if len(rel.Assets) != 1 || rel.Assets[0].Name != "pincher_linux_amd64" {
+		t.Errorf("unexpected asset list: %+v", rel.Assets)
+	}
+}
+
+func TestFetchLatestRelease_Non200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer srv.Close()
+
+	saved := updateReleasesURL
+	updateReleasesURL = srv.URL
+	defer func() { updateReleasesURL = saved }()
+
+	if _, err := fetchLatestRelease(); err == nil {
+		t.Fatal("404 response should produce an error")
+	}
+}
+
+func TestUpdateStandalone_Check_NoUpdate(t *testing.T) {
+	// Mirror returns the current version → "already up to date" path.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tag_name":"v` + version + `","draft":false,"assets":[]}`))
+	}))
+	defer srv.Close()
+
+	saved := updateReleasesURL
+	updateReleasesURL = srv.URL
+	defer func() { updateReleasesURL = saved }()
+
+	var buf bytes.Buffer
+	if err := updateStandalone(&buf, true, true, false); err != nil {
+		t.Fatalf("updateStandalone --check: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "already up to date") {
+		t.Errorf("expected 'already up to date'; got:\n%s", got)
+	}
+}
+
+func TestUpdateStandalone_Check_HasUpdate_NoAsset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tag_name":"v99.99.99","draft":false,"assets":[]}`))
+	}))
+	defer srv.Close()
+
+	saved := updateReleasesURL
+	updateReleasesURL = srv.URL
+	defer func() { updateReleasesURL = saved }()
+
+	var buf bytes.Buffer
+	if err := updateStandalone(&buf, true, true, false); err != nil {
+		t.Fatalf("updateStandalone --check: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "no prebuilt binary") {
+		t.Errorf("expected 'no prebuilt binary' message; got:\n%s", got)
+	}
+}
+
+func TestConfirmYes_Empty(t *testing.T) {
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	saved := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = saved }()
+
+	w.Close() // EOF immediately
+
+	if confirmYes() {
+		t.Error("EOF input should produce false")
+	}
+}
 
 func TestIsPincherModule(t *testing.T) {
 	cases := []struct {

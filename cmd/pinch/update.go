@@ -290,9 +290,13 @@ func updateStandalone(out io.Writer, check, yes, dryRun bool) error {
 	return downloadAndSwap(out, asset.BrowserDownloadURL)
 }
 
+// updateReleasesURL is the GitHub releases-latest endpoint used by
+// fetchLatestRelease. Overridable so tests can point at an httptest
+// mirror without going to the real network.
+var updateReleasesURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", updateGitHubOwner, updateGitHubRepo)
+
 func fetchLatestRelease() (gitRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", updateGitHubOwner, updateGitHubRepo)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", updateReleasesURL, nil)
 	if err != nil {
 		return gitRelease{}, err
 	}
