@@ -445,7 +445,9 @@ func TestHandleSearch_CorpusParameter(t *testing.T) {
 		t.Errorf("corpus=empty (now code) count = %v, want 1 (Go only)", m["count"])
 	}
 
-	// corpus=all = legacy mixed = both Go + YAML.
+	// corpus=all is deprecated (#106) and soft-redirected to code. The
+	// handler logs a warning and returns the same shape as corpus=code —
+	// no schema-level removal yet, just public-surface deprecation.
 	result, err = srv.handleSearch(context.Background(), makeReq(map[string]any{
 		"query": "ZZSrv*", "corpus": "all",
 	}))
@@ -453,8 +455,8 @@ func TestHandleSearch_CorpusParameter(t *testing.T) {
 		t.Fatalf("corpus=all: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
 	}
 	m = decode(t, result)
-	if int(m["count"].(float64)) != 2 {
-		t.Errorf("corpus=all (legacy) count = %v, want 2 (Go + YAML)", m["count"])
+	if int(m["count"].(float64)) != 1 {
+		t.Errorf("corpus=all (deprecated → code) count = %v, want 1 (Go only)", m["count"])
 	}
 }
 
@@ -546,6 +548,39 @@ func TestHandleSearch_CorpusFallthrough(t *testing.T) {
 	meta, _ = m["_meta"].(map[string]any)
 	if _, has := meta["fellthrough_to"]; has {
 		t.Errorf("code-corpus hit MUST NOT include fellthrough_to; got %v", meta)
+	}
+}
+
+// TestHandleSearch_CorpusAllSoftRedirects pins the #106 deprecation:
+// the legacy "all" value is no longer in the public InputSchema enum,
+// but the handler soft-redirects to "code" and warns rather than failing
+// outright. This keeps existing scripts working through the deprecation
+// window while the schema-level removal lands behind human review.
+func TestHandleSearch_CorpusAllSoftRedirects(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "pdep"
+	store.UpsertProject(db.Project{ID: "pdep", Path: "/tmp/pdep", Name: "pdep", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "g1", ProjectID: "pdep", FilePath: "a.go", Name: "ZZDepFn",
+			QualifiedName: "pkg.ZZDepFn", Kind: "Function", Language: "Go"},
+		// A YAML symbol that the legacy "all" search WOULD have surfaced;
+		// the soft-redirect to "code" must NOT surface it (proves the
+		// redirect actually narrows scope, not just renames the input).
+		{ID: "y1", ProjectID: "pdep", FilePath: "k.yaml", Name: "ZZDepFn",
+			QualifiedName: "service.ZZDepFn", Kind: "Setting", Language: "YAML"},
+	})
+
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query": "ZZDepFn*", "corpus": "all",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("corpus=all should not error after soft-redirect: err=%v isErr=%v body=%v",
+			err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	count, ok := m["count"].(float64)
+	if !ok || int(count) != 1 {
+		t.Errorf("count = %v, want 1 (only Go symbol after redirect to code corpus)", m["count"])
 	}
 }
 
