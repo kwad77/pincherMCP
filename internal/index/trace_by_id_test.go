@@ -47,7 +47,7 @@ func TestTraceByID_PicksExactSymbol(t *testing.T) {
 	}
 
 	// TraceByID(a.ID, "inbound") MUST return CallsA only (not CallsB).
-	hopsA, err := idx.TraceByID(context.Background(), a.ID, "inbound", 3, false)
+	hopsA, err := idx.TraceByID(context.Background(), pid, a.ID, "inbound", 3, false)
 	if err != nil {
 		t.Fatalf("TraceByID(a): %v", err)
 	}
@@ -68,7 +68,7 @@ func TestTraceByID_PicksExactSymbol(t *testing.T) {
 	}
 
 	// And TraceByID(b.ID) returns the symmetric result.
-	hopsB, err := idx.TraceByID(context.Background(), b.ID, "inbound", 3, false)
+	hopsB, err := idx.TraceByID(context.Background(), pid, b.ID, "inbound", 3, false)
 	if err != nil {
 		t.Fatalf("TraceByID(b): %v", err)
 	}

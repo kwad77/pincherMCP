@@ -1223,14 +1223,38 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	projectArg := str(args, "project")
 
-	sym, err := s.store.GetSymbol(id)
+	// Resolve the requested project up front so the symbol lookup can be
+	// scoped (#2). Without scoping, two indexed projects with a colliding
+	// ID like `cmd/main.go::main.main#Function` would shadow each other,
+	// and a request authenticated for project A could return project B's
+	// row. When `project` is omitted, fall back to the unscoped lookup
+	// so no caller breaks — that path remains the documented behaviour
+	// for callers that hold an ID but don't track which project owns it.
+	var resolvedProjectID string
+	if projectArg != "" {
+		if pid, err := s.resolveProjectID(projectArg); err == nil {
+			resolvedProjectID = pid
+		}
+	}
+
+	var sym *db.Symbol
+	var err error
+	if resolvedProjectID != "" {
+		sym, err = s.store.GetSymbolScoped(resolvedProjectID, id)
+	} else {
+		sym, err = s.store.GetSymbol(id)
+	}
 	if err != nil {
 		return errResult(fmt.Sprintf("db error: %v", err)), nil
 	}
 	if sym == nil {
 		// Stale ID? Check symbol_moves for a redirect (handles file renames/moves).
 		if newID, ok := s.store.ResolveStaleID(s.sessionID, id); ok {
-			sym, err = s.store.GetSymbol(newID)
+			if resolvedProjectID != "" {
+				sym, err = s.store.GetSymbolScoped(resolvedProjectID, newID)
+			} else {
+				sym, err = s.store.GetSymbol(newID)
+			}
 			if err != nil {
 				return errResult(fmt.Sprintf("db error resolving stale id: %v", err)), nil
 			}
@@ -1240,12 +1264,13 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return errResult(fmt.Sprintf("symbol %q not found", id)), nil
 	}
 
-	// Resolve project root for byte-offset seek
+	// projectID drives byte-offset root resolution. When the caller
+	// passed an explicit project, prefer it; otherwise use the symbol's
+	// own project_id (already verified by the scoped lookup above when
+	// applicable).
 	projectID := sym.ProjectID
-	if projectArg != "" {
-		if pid, err := s.resolveProjectID(projectArg); err == nil {
-			projectID = pid
-		}
+	if resolvedProjectID != "" {
+		projectID = resolvedProjectID
 	}
 	root, err := s.resolveProjectRoot(projectID)
 	if err != nil {
@@ -1312,8 +1337,10 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 
 	projectArg := str(args, "project")
 	root := s.sessionRoot
+	var resolvedProjectID string
 	if projectArg != "" {
 		if pid, err := s.resolveProjectID(projectArg); err == nil {
+			resolvedProjectID = pid
 			if r, err := s.resolveProjectRoot(pid); err == nil {
 				root = r
 			}
@@ -1322,7 +1349,15 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 
 	var results []map[string]any
 	for _, id := range ids {
-		sym, err := s.store.GetSymbol(id)
+		// Project-scoped lookup (#2) when the caller passed `project`,
+		// so a colliding ID can't surface a row from a different repo.
+		var sym *db.Symbol
+		var err error
+		if resolvedProjectID != "" {
+			sym, err = s.store.GetSymbolScoped(resolvedProjectID, id)
+		} else {
+			sym, err = s.store.GetSymbol(id)
+		}
 		if err != nil || sym == nil {
 			results = append(results, map[string]any{"id": id, "error": "not found"})
 			continue
@@ -1803,7 +1838,7 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 	var impacted []map[string]any
 	seen := make(map[string]bool)
 	for _, sym := range changedSymbols {
-		hops, err := s.indexer.TraceByID(ctx, sym.ID, "inbound", depth, true)
+		hops, err := s.indexer.TraceByID(ctx, projectID, sym.ID, "inbound", depth, true)
 		if err != nil {
 			continue
 		}
