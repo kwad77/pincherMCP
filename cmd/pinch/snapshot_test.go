@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
-	"github.com/pincherMCP/pincher/internal/index"
+	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // corpora lists every pinned corpus the snapshot test should drive.

@@ -20,7 +20,7 @@ func writeBench(t *testing.T, dir, name, body string) string {
 
 const fakeBaseline = `goos: linux
 goarch: amd64
-pkg: github.com/pincherMCP/pincher/internal/index
+pkg: github.com/kwad77/pincher/internal/index
 cpu: Intel(R) Xeon(R) CPU
 BenchmarkA-4   100   1000 ns/op   200 B/op   10 allocs/op
 BenchmarkB-4   200   2000 ns/op   400 B/op   20 allocs/op

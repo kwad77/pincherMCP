@@ -108,7 +108,7 @@ Setup (one-time):
 3. Permissions: `Contents: Read and write`. Nothing else.
 4. Add it to the main repo:
    ```
-   gh secret set HOMEBREW_TAP_TOKEN --repo kwad77/pincherMCP
+   gh secret set HOMEBREW_TAP_TOKEN --repo kwad77/pincher
    ```
 
 If the secret is missing, the mirror step emits a warning and exits

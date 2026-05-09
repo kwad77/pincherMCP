@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/db"
-	"github.com/pincherMCP/pincher/internal/index"
+	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // runSelfTestCLI implements `pincher self-test [--data-dir DIR] [--verbose]`.

@@ -7,6 +7,22 @@ minors.
 
 ## [Unreleased]
 
+### Changed
+- **Repository renamed `kwad77/pincherMCP` → `kwad77/pincher`**, and the
+  Go module path bumped `github.com/pincherMCP/pincher` →
+  `github.com/kwad77/pincher` (#198). Closes the long-standing module-vs-URL
+  mismatch that broke `go install` for the entire pre-v0.5 era. After
+  this lands:
+  - `go install github.com/kwad77/pincher/cmd/pinch@latest` works.
+  - The old GitHub URL redirects to the new one, so existing checkouts
+    keep pulling/pushing without intervention; `git remote set-url
+    origin https://github.com/kwad77/pincher.git` is recommended for
+    clean clones going forward.
+  - The Homebrew formula, plugin manifests, dashboard URL refs, and
+    workflow files were updated alongside the import paths.
+  - **Old import path is dead** — code that imports
+    `github.com/pincherMCP/pincher/...` will fail to resolve at v0.5.0+.
+
 ### Removed
 - **Legacy `symbols_fts` virtual table dropped** (#106). The per-corpus
   FTS5 split (#32, landed at v9) has carried every search query for two
@@ -387,7 +403,9 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincherMCP/compare/v0.3.0...HEAD
-[v0.3.0]: https://github.com/kwad77/pincherMCP/compare/v0.2.1...v0.3.0
-[v0.2.1]: https://github.com/kwad77/pincherMCP/compare/v0.2.0...v0.2.1
-[v0.2.0]: https://github.com/kwad77/pincherMCP/releases/tag/v0.2.0
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.4.1...HEAD
+[v0.4.1]: https://github.com/kwad77/pincher/compare/v0.4.0...v0.4.1
+[v0.4.0]: https://github.com/kwad77/pincher/compare/v0.3.0...v0.4.0
+[v0.3.0]: https://github.com/kwad77/pincher/compare/v0.2.1...v0.3.0
+[v0.2.1]: https://github.com/kwad77/pincher/compare/v0.2.0...v0.2.1
+[v0.2.0]: https://github.com/kwad77/pincher/releases/tag/v0.2.0

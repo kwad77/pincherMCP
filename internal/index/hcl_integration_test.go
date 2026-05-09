@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/cypher"
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/cypher"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // hcl_integration_test exercises the full ast → indexer → db → FTS5 pipeline

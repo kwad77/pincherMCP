@@ -1,6 +1,6 @@
 ## Pincher Usage Policy
 
-This project uses [pincherMCP](https://github.com/kwad77/pincherMCP) for code intelligence. AI agents should prefer pincher tools over `Read`/`Grep`/`Glob` for any code-navigation task. Use the workflow below; fall back to direct file ops only when pincher returns no useful result or you specifically need to read a non-code file.
+This project uses [pincherMCP](https://github.com/kwad77/pincher) for code intelligence. AI agents should prefer pincher tools over `Read`/`Grep`/`Glob` for any code-navigation task. Use the workflow below; fall back to direct file ops only when pincher returns no useful result or you specifically need to read a non-code file.
 
 | Goal | Pincher tool | Notes |
 |---|---|---|

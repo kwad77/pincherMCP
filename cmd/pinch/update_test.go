@@ -155,7 +155,7 @@ func TestDetectUpdateSource_OverrideNotARepo(t *testing.T) {
 func TestRebuildBinary_DryRun(t *testing.T) {
 	dir := t.TempDir()
 	// Write a minimal go.mod naming this module so the path lookup works.
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/pincherMCP/pincher\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/kwad77/pincher\n"), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	var buf bytes.Buffer
@@ -328,8 +328,8 @@ func TestIsPincherModule(t *testing.T) {
 		body string
 		want bool
 	}{
-		{"matches pincher", "module github.com/pincherMCP/pincher\n\ngo 1.25.0\n", true},
-		{"submodule path also matches", "// note\nmodule github.com/pincherMCP/pincher/cmd/foo\n", true},
+		{"matches pincher", "module github.com/kwad77/pincher\n\ngo 1.25.0\n", true},
+		{"submodule path also matches", "// note\nmodule github.com/kwad77/pincher/cmd/foo\n", true},
 		{"different module", "module github.com/other/pkg\n", false},
 		{"empty file", "", false},
 		{"no module directive", "go 1.25.0\nrequire foo v1.0.0\n", false},
@@ -355,7 +355,7 @@ func TestIsPincherModule_MissingFile(t *testing.T) {
 
 func TestFindRepoRoot_FindsAncestor(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/pincherMCP/pincher\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/kwad77/pincher\n"), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	deep := filepath.Join(root, "internal", "db", "nested")

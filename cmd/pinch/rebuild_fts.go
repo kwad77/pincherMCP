@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // runRebuildFTSCLI implements `pincher rebuild-fts [--data-dir DIR] [--yes]`.

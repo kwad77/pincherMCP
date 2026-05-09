@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // blocklist_integration_test pins the cross-feature contract between the

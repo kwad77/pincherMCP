@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // TestStatsCLI_BuildReport_Empty exercises the report builder against a

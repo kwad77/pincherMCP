@@ -1,4 +1,4 @@
-module github.com/pincherMCP/pincher
+module github.com/kwad77/pincher
 
 go 1.25.0
 

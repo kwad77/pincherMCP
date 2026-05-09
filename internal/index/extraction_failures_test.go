@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // extraction_failures end-to-end tests (#42 part 1).

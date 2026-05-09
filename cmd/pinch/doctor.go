@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // runDoctorCLI implements `pincher doctor [--json] [--data-dir DIR]

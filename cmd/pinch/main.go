@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/pincherMCP/pincher/internal/db"
-	"github.com/pincherMCP/pincher/internal/index"
-	"github.com/pincherMCP/pincher/internal/server"
+	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
+	"github.com/kwad77/pincher/internal/server"
 )
 
 // version is overridden at build time via -ldflags="-X main.version=...".

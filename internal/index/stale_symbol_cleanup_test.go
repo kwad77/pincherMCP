@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // stale_symbol_cleanup_test pins the LATENT #15 fix: when a file is re-parsed

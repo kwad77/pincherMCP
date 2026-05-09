@@ -4,7 +4,7 @@
 
 <div align="center">
 
-[![CI](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/kwad77/pincherMCP/actions/workflows/ci.yml)
+[![CI](https://github.com/kwad77/pincher/actions/workflows/ci.yml/badge.svg)](https://github.com/kwad77/pincher/actions/workflows/ci.yml)
 [![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-84.3%25-22c55e.svg)](docs/REFERENCE.md#test-coverage)
@@ -45,7 +45,7 @@ Token savings accumulate in SQLite across sessions — every reconnect adds to a
 
 ```bash
 # 1. Build (Go 1.25+, pure Go — no CGO, no C compiler)
-git clone https://github.com/kwad77/pincherMCP && cd pincherMCP
+git clone https://github.com/kwad77/pincher && cd pincherMCP
 go build -o pincher ./cmd/pinch/         # or pincher.exe on Windows
 
 # 2. Drop the policy block into your project's CLAUDE.md (one-time)
@@ -186,13 +186,13 @@ Other CLI subcommands ([`pincher index`](docs/REFERENCE.md#pincher-index), [`pin
 | **v0.5** | Polish + extension surface (struct field extraction, cross-project query, webhook re-index, VS Code extension, `.pincher.yml` config) | planned |
 | **v1.0** | Stable API (tool schemas frozen, symbol-ID format frozen, HTTP REST surface frozen, SECURITY.md) | planned |
 
-Issues + PR tracker: <https://github.com/kwad77/pincherMCP/issues>. Per-tier detail in [REFERENCE.md → Roadmap](docs/REFERENCE.md#roadmap).
+Issues + PR tracker: <https://github.com/kwad77/pincher/issues>. Per-tier detail in [REFERENCE.md → Roadmap](docs/REFERENCE.md#roadmap).
 
 ---
 
 ## Known limitations
 
-- **`go install` is not yet supported.** The `go.mod` module path (`github.com/pincherMCP/pincher`) doesn't match the GitHub URL (`kwad77/pincherMCP`); `go install github.com/...@latest` fails until that's reconciled. Clone + `go build` works today; `pincher update` from a checkout pulls + rebuilds in place.
+- **`go install` is not yet supported.** The `go.mod` module path (`github.com/kwad77/pincher`) doesn't match the GitHub URL (`kwad77/pincher`); `go install github.com/...@latest` fails until that's reconciled. Clone + `go build` works today; `pincher update` from a checkout pulls + rebuilds in place.
 - **Pre-built release binaries** are not yet attached to GitHub release tags. The asset-fetching path in `pincher update` is ready for them and will activate once the release workflow uploads artifacts.
 - **Sequence-rename ID instability in YAML.** Inserting an item at index 0 of a YAML sequence renames every downstream symbol's qualified name (`tasks.0` → `tasks.1`). Move detection catches some cases but not deterministically.
 - **Single-user SQLite.** Cross-process indexing is safe (filesystem lockfile). Team/enterprise shared indexes need a server mode that's not built yet.

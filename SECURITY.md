@@ -25,7 +25,7 @@ window will be defined for prior majors.
 **Do not open a public issue for security reports.** Instead, use one of:
 
 - **GitHub Security Advisory** (preferred): open a private advisory at
-  <https://github.com/kwad77/pincherMCP/security/advisories/new>. This routes
+  <https://github.com/kwad77/pincher/security/advisories/new>. This routes
   directly to the maintainer and lets us collaborate on a fix before disclosure.
 - **Email**: `kevinwaddell@gmail.com` with `[pincher security]` in the subject.
 

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
-	"github.com/pincherMCP/pincher/internal/index"
+	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // Benchmarks for the MCP tool handlers against pre-indexed pinned corpora
