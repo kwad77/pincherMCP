@@ -4396,6 +4396,48 @@ func TestHandleTrace_UniqueNameNoAmbiguityField(t *testing.T) {
 // handleIndex zero-symbol diagnosis (iter 7 — trustworthy + explainable)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// architecture _meta.next_steps (iter 8 — dead simple)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestHandleArchitecture_NextStepsFromHotspot(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "arch-ns"
+	store.UpsertProject(db.Project{ID: "arch-ns", Path: "/tmp/arch-ns", Name: "arch-ns", IndexedAt: time.Now(), SymCount: 3})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "arch-ns/a.go::pkg.Hot#Function", ProjectID: "arch-ns",
+			FilePath: "a.go", Name: "Hot", QualifiedName: "pkg.Hot",
+			Kind: "Function", Language: "Go"},
+		{ID: "arch-ns/b.go::pkg.Caller1#Function", ProjectID: "arch-ns",
+			FilePath: "b.go", Name: "Caller1", QualifiedName: "pkg.Caller1",
+			Kind: "Function", Language: "Go"},
+		{ID: "arch-ns/c.go::pkg.Caller2#Function", ProjectID: "arch-ns",
+			FilePath: "c.go", Name: "Caller2", QualifiedName: "pkg.Caller2",
+			Kind: "Function", Language: "Go"},
+	})
+	// Two CALLS edges into Hot make it the hotspot.
+	store.BulkUpsertEdges([]db.Edge{
+		{FromID: "arch-ns/b.go::pkg.Caller1#Function", ToID: "arch-ns/a.go::pkg.Hot#Function", Kind: "CALLS", ProjectID: "arch-ns"},
+		{FromID: "arch-ns/c.go::pkg.Caller2#Function", ToID: "arch-ns/a.go::pkg.Hot#Function", Kind: "CALLS", ProjectID: "arch-ns"},
+	})
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{
+		"project": "arch-ns",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleArchitecture: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing")
+	}
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) == 0 {
+		t.Fatalf("expected _meta.next_steps when hotspots exist, got %v", meta)
+	}
+}
+
 func TestHandleIndex_ZeroSymbolsSurfacesDiagnosis(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	emptyDir := t.TempDir() // no source files at all

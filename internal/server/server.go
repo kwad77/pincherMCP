@@ -2133,6 +2133,25 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 		"node_kinds":      kindCounts,
 		"edge_kinds":      edgeKindCounts,
 	}
+	// Suggest the obvious next moves after orientation. The agent has the
+	// hotspots + entry points; the next step is reading the top hotspot's
+	// source. Mirrors the pattern in handleSearch's _meta.next_steps.
+	if len(hotspots) > 0 {
+		data["_meta"] = map[string]any{
+			"next_steps": suggestNextSteps(hotspots[0]),
+		}
+	} else if len(entryPoints) > 0 {
+		// No hotspots (project has no CALLS edges yet — common for
+		// regex-extracted languages where cross-file resolution is
+		// limited). Direct the agent to the first entry point instead.
+		first, _ := entryPoints[0]["name"].(string)
+		data["_meta"] = map[string]any{
+			"next_steps": []map[string]string{
+				{"tool": "search", "args": fmt.Sprintf(`{"query":"%s","kind":"Function"}`, first),
+					"why": "no hotspot graph available; start from the entry point and explore from there"},
+			},
+		}
+	}
 	// Architecture replaces reading every file to orient in the codebase.
 	// Savings = all symbols in project × avgSymbolContext − this payload.
 	symCount := 0
