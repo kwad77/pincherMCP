@@ -143,6 +143,7 @@ type langAdapter struct {
 	primary    string                                                                          // primary language name (e.g. "JavaScript")
 	aliases    []string                                                                        // additional language names this extractor handles ("JSX")
 	exts       map[string]string                                                               // extension → language name (e.g. {".jsx": "JSX"})
+	filenames  map[string]string                                                               // exact basename → language (e.g. {"Makefile": "Makefile"})
 	confidence float64                                                                         // 0.0–1.0
 	fn         func(source []byte, language, relPath string, opts ExtractOptions) *FileResult // delegate
 }
@@ -154,7 +155,12 @@ func (a *langAdapter) Languages() []string {
 	return out
 }
 func (a *langAdapter) Extensions() map[string]string { return a.exts }
-func (a *langAdapter) Confidence() float64           { return a.confidence }
+
+// Filenames satisfies the optional FilenameExtractor interface. Adapters
+// without filename-based detection set the field to nil; the registry
+// gracefully treats nil as "no filename claims".
+func (a *langAdapter) Filenames() map[string]string { return a.filenames }
+func (a *langAdapter) Confidence() float64          { return a.confidence }
 func (a *langAdapter) Extract(source []byte, language, relPath string, opts ExtractOptions) *FileResult {
 	return a.fn(source, language, relPath, opts)
 }
@@ -294,6 +300,26 @@ func init() {
 		confidence: 0.70,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
 			return extractSwift(s, p)
+		},
+	})
+
+	// Makefile — regex-tier (#103). Detected by both extension (.mk/.mak)
+	// and filename (Makefile / GNUmakefile / makefile). Filename detection
+	// is the dominant case in real projects; extensions are a long tail.
+	Register(&langAdapter{
+		primary: "Makefile",
+		exts: map[string]string{
+			".mk":  "Makefile",
+			".mak": "Makefile",
+		},
+		filenames: map[string]string{
+			"Makefile":    "Makefile",
+			"GNUmakefile": "Makefile",
+			"makefile":    "Makefile", // common-on-case-insensitive-FS variant
+		},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractMakefile(s, p)
 		},
 	})
 
