@@ -196,3 +196,26 @@ func keys(m map[string]benchResult) []string {
 	}
 	return out
 }
+
+func TestStripGomaxprocs_Cases(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// Standard go-test bench output suffix.
+		{"BenchmarkFoo-32", "BenchmarkFoo"},
+		{"BenchmarkSearch_BM25-8", "BenchmarkSearch_BM25"},
+		// No suffix — return as-is.
+		{"BenchmarkFoo", "BenchmarkFoo"},
+		// Trailing dash but non-numeric — keep, this isn't a GOMAXPROCS suffix.
+		{"BenchmarkFoo-bar", "BenchmarkFoo-bar"},
+		// Empty.
+		{"", ""},
+		// Just the suffix.
+		{"-32", ""},
+	}
+	for _, c := range cases {
+		if got := stripGomaxprocs(c.in); got != c.want {
+			t.Errorf("stripGomaxprocs(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

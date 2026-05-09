@@ -179,3 +179,47 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestTruncMid_Cases(t *testing.T) {
+	cases := []struct {
+		s    string
+		max  int
+		want string
+	}{
+		// Below the threshold — pass through unchanged.
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		// Tiny max — fall through to s[:max] without truncation marker.
+		{"abcdefghij", 3, "abc"},
+		{"abcdefghij", 7, "abcdefg"},
+		// Long string — half-and-half with ellipsis in the middle.
+		// max=10, half=4 → s[:4] + "…" + s[len-4:].
+		{"abcdefghijklmnopqrst", 10, "abcd…qrst"},
+		// Edge: max == len(s) → no truncation.
+		{"abcdef", 6, "abcdef"},
+	}
+	for _, c := range cases {
+		if got := truncMid(c.s, c.max); got != c.want {
+			t.Errorf("truncMid(%q, %d) = %q, want %q", c.s, c.max, got, c.want)
+		}
+	}
+}
+
+func TestTruncEnd_Cases(t *testing.T) {
+	cases := []struct {
+		s    string
+		max  int
+		want string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		// Long string — keep first max-1 chars and tack on ellipsis.
+		{"abcdefghijklmnopqrst", 10, "abcdefghi…"},
+		{"abcdef", 6, "abcdef"},
+	}
+	for _, c := range cases {
+		if got := truncEnd(c.s, c.max); got != c.want {
+			t.Errorf("truncEnd(%q, %d) = %q, want %q", c.s, c.max, got, c.want)
+		}
+	}
+}
