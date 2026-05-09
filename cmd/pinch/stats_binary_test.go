@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -87,6 +88,29 @@ func TestStatsCLI_Binary_Reset(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "Wiped") {
 		t.Errorf("expected 'Wiped' in reset output, got: %s", out)
+	}
+}
+
+// TestStatsCLI_Binary_BadDataDir covers the dispatch wrapper's
+// db.Open error branch (data-dir points at something that can't host
+// pincher.db).
+func TestStatsCLI_Binary_BadDataDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	// Use a path that's a regular file — db.Open will try to open
+	// <file>/pincher.db which fails identically on every platform.
+	notADir := t.TempDir() + "/not_a_dir"
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write notADir: %v", err)
+	}
+	cmd := exec.Command(bin, "stats", "--data-dir", notADir)
+	cmd.Env = pincherCoverEnv()
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "open database") && !strings.Contains(string(out), "stats failed") {
+		t.Errorf("expected db error; got: %s", out)
 	}
 }
 
