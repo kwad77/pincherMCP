@@ -8,6 +8,12 @@ minors.
 ## [Unreleased]
 
 ### Added
+- New `guide` MCP tool (#139). Takes a free-form task description
+  ("fix login retry bug", "refactor auth middleware", "understand
+  indexing"), returns 2-3 recommended pincher tool calls with reasoning.
+  Removes decision friction at session start — agents call `guide`
+  first instead of choosing between search/context/trace from scratch.
+  Keyword-based classifier; pure heuristic, no model.
 - Schema v10: TOML routing for the config corpus (#108). The TOML
   extractor is parser-backed via `github.com/BurntSushi/toml` and emits
   `Setting` symbols mirroring the YAML/JSON shape.

@@ -112,6 +112,26 @@
     }
   },
   {
+    "name": "guide",
+    "description": "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
+    "input_schema": {
+      "properties": {
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        },
+        "task": {
+          "description": "Free-form description of what you're trying to do (e.g. 'fix the login timeout bug', 'add caching to the API gateway', 'understand how the indexer handles symlinks').",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "health",
     "description": "**Use to verify extraction quality before trusting graph results**, or to detect a stale index. Returns schema version, index staleness, and per-language coverage with parser identity (AST vs Regex) and avg/p10/p50 confidence per (language, kind). A low p10 on a corpus you care about means `search` results in that area need a higher `min_confidence` to be reliable.",
     "input_schema": {

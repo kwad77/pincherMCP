@@ -4397,6 +4397,111 @@ func TestHandleTrace_UniqueNameNoAmbiguityField(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// guide tool (iter 14 — closes #139, dead simple)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestClassifyTaskShape_KeywordMatching(t *testing.T) {
+	cases := []struct {
+		task string
+		want guideShape
+	}{
+		// Test takes priority over fix because "fix tests" is a test task.
+		{"fix the failing tests", shapeTest},
+		{"add coverage for handleSearch", shapeTest},
+		{"review the diff before pushing", shapeReview},
+		{"check blast radius of this change", shapeReview},
+		{"fix the login timeout bug", shapeFix},
+		{"crash on startup", shapeFix},
+		{"refactor the auth middleware", shapeRefactor},
+		{"rename Open to Connect", shapeRefactor},
+		{"add caching to the gateway", shapeAdd},
+		{"implement OAuth", shapeAdd},
+		{"understand how indexing works", shapeUnderstand},
+		{"explain the FTS5 split", shapeUnderstand},
+		// Default fallback.
+		{"something completely vague", shapeUnknown},
+		{"", shapeUnknown},
+	}
+	for _, c := range cases {
+		got := classifyTaskShape(c.task)
+		if got != c.want {
+			t.Errorf("classifyTaskShape(%q) = %v, want %v", c.task, got, c.want)
+		}
+	}
+}
+
+func TestTaskHintFromString_PicksLongestNonStopWord(t *testing.T) {
+	cases := []struct {
+		task string
+		want string
+	}{
+		{"fix the login timeout bug", "timeout"},
+		{"refactor handleSearch", "handleSearch"},
+		{"understand how indexing works", "indexing"},
+		// All stop words → empty.
+		{"fix bug", ""},
+		{"", ""},
+		// Symbol-name shaped wins over short words.
+		{"add a snake_case_helper here", "snake_case_helper"},
+	}
+	for _, c := range cases {
+		if got := taskHintFromString(c.task); got != c.want {
+			t.Errorf("taskHintFromString(%q) = %q, want %q", c.task, got, c.want)
+		}
+	}
+}
+
+func TestGuideRecommendations_AllShapesNonEmpty(t *testing.T) {
+	for _, shape := range []guideShape{shapeFix, shapeAdd, shapeRefactor, shapeUnderstand, shapeTest, shapeReview, shapeUnknown} {
+		recs := guideRecommendations(shape, "Foo")
+		if len(recs) == 0 {
+			t.Errorf("guideRecommendations(%v) returned empty — every shape must have at least 1 suggestion", shape)
+		}
+		for i, r := range recs {
+			if r["tool"] == "" {
+				t.Errorf("shape %v rec %d missing tool field: %v", shape, i, r)
+			}
+			if r["why"] == "" {
+				t.Errorf("shape %v rec %d missing why field: %v", shape, i, r)
+			}
+		}
+	}
+}
+
+func TestHandleGuide_FixTaskReturnsSearchAsFirstStep(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	result, err := srv.handleGuide(context.Background(), makeReq(map[string]any{
+		"task": "fix the auth bug",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleGuide: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	if m["shape"] != "fix" {
+		t.Errorf("shape = %v, want fix", m["shape"])
+	}
+	recs, _ := m["recommended_next_tools"].([]any)
+	if len(recs) == 0 {
+		t.Fatal("expected recommendations")
+	}
+	first, _ := recs[0].(map[string]any)
+	if first["tool"] != "search" {
+		t.Errorf("first tool = %v, want search for fix shape", first["tool"])
+	}
+}
+
+func TestHandleGuide_EmptyTaskErrors(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	result, err := srv.handleGuide(context.Background(), makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("handleGuide: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("empty task should error, got %v", decode(t, result))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // architecture _meta.next_steps (iter 8 — dead simple)
 // ─────────────────────────────────────────────────────────────────────────────
 

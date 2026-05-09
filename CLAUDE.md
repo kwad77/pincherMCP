@@ -8,6 +8,7 @@ This project ships pincherMCP — its own product — and dogfoods it. AI agents
 
 | Goal | Pincher tool | Notes |
 |---|---|---|
+| **Don't know which tool to call?** | `guide` | Pass a free-form task ("fix login retry bug"); returns 2-3 recommended next calls. |
 | Orient in an unfamiliar area | `architecture` | Once at the start of unfamiliar work; entry points + hotspots + language breakdown. |
 | Find code by symbol or keyword | `search` | Use **before** `Grep`. Supports kind/language/corpus filters and BM25 ranking. |
 | Read one symbol's source | `symbol` | O(1) byte-offset seek, never re-parses. Use when you have the ID from `search`. |
@@ -164,7 +165,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 
 - **`internal/server/server.go`** — MCP server + HTTP REST gateway. All 14 tools registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats. `StartSessionFlusher()` flushes those stats to the `sessions` table every 10s. Token savings are estimated via `savedVsFileSizes()` (uses real `os.Stat` file sizes for search/trace) and `savedVsFullRead()` (uses `avgFileSize=20000` for other tools) — baseline is "agent reads whole file", not just the symbol. The HTTP stats endpoint falls back to DB totals when no live MCP session exists (e.g. HTTP-only dashboard process). `ServeHTTP` / `ListenAndServeHTTP` expose all tools as `POST /v1/{tool}` plus `DELETE /v1/projects` for project removal. `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list. The `cypher.Executor` is initialised with `ProjectID` so all three query paths (node scan, JOIN, BFS) are scoped to the resolved project.
 
-### The 14 MCP tools
+### The 16 MCP tools
 
 | # | Tool | Purpose |
 |---|---|---|
@@ -183,6 +184,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 | 13 | `health` | Schema version, index staleness, per-language extraction coverage |
 | 14 | `stats` | Session savings summary: tokens used/saved, cost avoided, call count |
 | 15 | `fetch` | Fetch a URL, extract text, store as a searchable `Document` symbol in the knowledge base (512 KB body cap, 32 KB stored). Retrieve later via `search kind:Document` or `symbol`. |
+| 16 | `guide` | Free-form task → 2-3 recommended next pincher tool calls. Starter tool to remove decision friction at session start. |
 
 ### Symbol ID format
 
