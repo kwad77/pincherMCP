@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"os"
@@ -96,6 +97,12 @@ func TestToolContract_GoldenFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden %s: %v\n  Run `go test ./internal/server/ -update-tool-contract` to create it.", goldenPath, err)
 	}
+	// Normalize CRLF → LF: git on Windows checks files out with CRLF by
+	// default (autocrlf=true), but we emit LF. The contract is logical
+	// equality, not byte-identical; line-ending differences would create
+	// false-positive failures on Windows runners.
+	got = bytes.ReplaceAll(got, []byte("\r\n"), []byte("\n"))
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	if string(got) != string(want) {
 		t.Errorf("tool contract diverged from %s.\n"+
 			"If the change is intentional and matches the SemVer policy in RELEASING.md, run:\n"+
