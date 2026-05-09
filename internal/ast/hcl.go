@@ -45,6 +45,7 @@ func (h *hclExtractor) Extensions() map[string]string {
 	return map[string]string{
 		".tf":     "HCL",
 		".tfvars": "HCL",
+		".hcl":    "HCL",
 	}
 }
 func (h *hclExtractor) Confidence() float64 { return 1.0 }
