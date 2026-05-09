@@ -13,6 +13,16 @@ minors.
   minutes of cold reading: install, index, wire your client, send a
   first query, watch the savings accumulate. Linked from README and
   REFERENCE.md.
+- `pincher project list` / `pincher project rm` (#202) — CLI surface
+  for the existing HTTP `DELETE /v1/projects` and the `list` MCP tool,
+  so stdio-binary users can inspect and prune their index without a
+  SQL or curl one-liner.
+  - `list` (alias `ls`) prints a table or `--json`.
+  - `rm` (aliases `remove`, `delete`) accepts a project id, exact name,
+    or substring of name/path. Ambiguous substrings error with a
+    disambiguation list rather than guessing.
+  - `rm` confirms via Y/n unless `--force`. `--json` mode requires
+    `--force` (no interactive prompt fits a scripted workflow).
 - `pincher init --target` (#191) — multi-IDE rules-file writer. The
   init subcommand now seeds policy files for six editors and agents,
   not just Claude Code:
