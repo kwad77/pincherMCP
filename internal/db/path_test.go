@@ -516,3 +516,58 @@ func TestRenameProjectID(t *testing.T) {
 		t.Errorf("symbols at newID = %d, want 1", n)
 	}
 }
+
+// TestDedupProjectsByCanonicalPath_FallbackWinnerPick exercises the
+// "no row already at canonical form, pick by sym_count + age" branch.
+// Both projects use the SAME real path string but distinct IDs (the
+// pre-fix pattern where path-based ProjectIDFromPath produced two
+// stored IDs neither equal to the canonical form). Works on every
+// platform — no symlink needed.
+func TestDedupProjectsByCanonicalPath_FallbackWinnerPick(t *testing.T) {
+	s := newTestStore(t)
+
+	// One real existing dir; both project rows reference it.
+	dir := t.TempDir()
+	canon := CanonicalProjectPath(dir)
+
+	// Insert two distinct IDs that BOTH canonicalize to `canon` but
+	// neither equals `canon` (we synthesise non-canonical IDs by
+	// appending a tag so they group on canonical(path) but neither
+	// trips the "winner.id == canon" fast-path).
+	idA := dir + "#a"
+	idB := dir + "#b"
+
+	for i, id := range []string{idA, idB} {
+		if err := s.UpsertProject(Project{
+			ID: id, Path: dir, Name: "x",
+			SymCount: 10 * (i + 1), // idB is winner by sym_count
+		}); err != nil {
+			t.Fatalf("UpsertProject %s: %v", id, err)
+		}
+		if err := s.BulkUpsertSymbols([]Symbol{{
+			ID:        id + "::pkg.S#Function",
+			ProjectID: id, FilePath: "f.go",
+			Name: "S", QualifiedName: "pkg.S",
+			Kind: "Function", Language: "Go",
+		}}); err != nil {
+			t.Fatalf("BulkUpsertSymbols %s: %v", id, err)
+		}
+	}
+
+	if err := s.dedupProjectsByCanonicalPath(); err != nil {
+		t.Fatalf("dedup: %v", err)
+	}
+
+	// One project row remains, keyed at the canonical form (rename path
+	// fired because neither stored ID matched canonical).
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&n)
+	if n != 1 {
+		t.Errorf("post-dedup projects = %d, want 1", n)
+	}
+	var survivorID string
+	s.db.QueryRow(`SELECT id FROM projects`).Scan(&survivorID)
+	if survivorID != canon {
+		t.Errorf("survivor id = %q, want %q (canonical, after rename path)", survivorID, canon)
+	}
+}
