@@ -1,7 +1,7 @@
 # Design: Per-symbol confidence scoring
 
 **Status:** draft for review
-**Issue:** [#34](https://github.com/kwad77/pincherMCP/issues/34)
+**Issue:** [#34](https://github.com/kwad77/pincher/issues/34)
 **Companions:** #24 (blocklist), #25 (bloat-trap), #32 (per-corpus FTS5, ✅ merged), #33 (snapshot tests, ✅ merged)
 
 ## TL;DR

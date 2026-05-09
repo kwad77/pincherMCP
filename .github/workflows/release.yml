@@ -259,6 +259,6 @@ jobs:
           git add Formula/pincher.rb
           git commit -m "Bump to ${GITHUB_REF_NAME}
 
-          Mirrored from kwad77/pincherMCP@master packaging/homebrew/pincher.rb
+          Mirrored from kwad77/pincher@master packaging/homebrew/pincher.rb
           after the ${GITHUB_REF_NAME} release automation ran."
           git push origin master

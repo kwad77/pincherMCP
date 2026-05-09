@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/boyter/gocodewalker"
-	"github.com/pincherMCP/pincher/internal/ast"
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/ast"
+	"github.com/kwad77/pincher/internal/db"
 	"github.com/zeebo/xxh3"
 )
 

@@ -37,10 +37,10 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/pincherMCP/pincher/internal/ast"
-	"github.com/pincherMCP/pincher/internal/cypher"
-	"github.com/pincherMCP/pincher/internal/db"
-	"github.com/pincherMCP/pincher/internal/index"
+	"github.com/kwad77/pincher/internal/ast"
+	"github.com/kwad77/pincher/internal/cypher"
+	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // sessionFlushInterval controls how often in-memory session stats are persisted to SQLite.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // pincherBinaryName returns the platform-appropriate name for a pincher

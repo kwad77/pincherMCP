@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // TestConfidenceDistribution_SumsToCount is the critical no-leakage gate

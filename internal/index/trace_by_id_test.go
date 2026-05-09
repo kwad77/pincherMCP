@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // TestTraceByID_PicksExactSymbol pins the #5 fix: when multiple symbols

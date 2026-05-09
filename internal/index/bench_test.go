@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // Benchmarks for the index pipeline against pinned corpora (#50 substrate).

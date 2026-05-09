@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // runStatsCLI implements `pincher stats [--json] [--reset] [--data-dir DIR]`.

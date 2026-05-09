@@ -18,8 +18,8 @@ import (
 const (
 	updateGitHubOwner = "kwad77"
 	updateGitHubRepo  = "pincherMCP"
-	updateModulePath  = "github.com/pincherMCP/pincher"
-	updateGoInstall   = "github.com/pincherMCP/pincher/cmd/pinch@latest"
+	updateModulePath  = "github.com/kwad77/pincher"
+	updateGoInstall   = "github.com/kwad77/pincher/cmd/pinch@latest"
 )
 
 // runUpdateCLI implements `pincher update [--check] [--source DIR] [--yes]`.
@@ -254,7 +254,7 @@ func updateStandalone(out io.Writer, check, yes, dryRun bool) error {
 		fmt.Fprintf(out, "  no prebuilt binary published for %s/%s\n", runtime.GOOS, runtime.GOARCH)
 		fmt.Fprintln(out, "  fallback: `go install` (requires Go on PATH)")
 		fmt.Fprintln(out, "  note: go.mod module path is "+updateModulePath+",")
-		fmt.Fprintln(out, "        which differs from the GitHub URL kwad77/pincherMCP.")
+		fmt.Fprintln(out, "        which differs from the GitHub URL kwad77/pincher.")
 		fmt.Fprintln(out, "        `go install` will fail until go.mod is renamed; clone + build manually.")
 		if check {
 			return nil

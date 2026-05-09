@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // TestHandleSymbol_ProjectScopedLookup pins #2: when the caller passes

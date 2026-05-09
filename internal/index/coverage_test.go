@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pincherMCP/pincher/internal/ast"
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/ast"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // Targeted coverage tests for index-package paths that lacked direct

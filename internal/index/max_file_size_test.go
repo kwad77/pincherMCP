@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pincherMCP/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // Per-file size cap (#111) — bounds memory during indexing so a single

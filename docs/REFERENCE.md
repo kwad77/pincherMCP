@@ -546,8 +546,8 @@ Used when the matching flag is empty — convenient for Docker, systemd, launchd
 | Platform | Default location |
 |---|---|
 | Windows | `%APPDATA%\pincherMCP\pincher.db` |
-| macOS | `~/Library/Application Support/pincherMCP/pincher.db` |
-| Linux | `~/.local/share/pincherMCP/pincher.db` |
+| macOS | `~/Library/Application Support/kwad77/pincher.db` |
+| Linux | `~/.local/share/kwad77/pincher.db` |
 
 Override with `--data-dir /custom/path`. Back up with any file copy tool.
 
@@ -699,29 +699,29 @@ Current coverage by package:
 
 ## Roadmap
 
-Each release tier names a theme and the issues that close it. Issue numbers link the roadmap to actionable work — track progress at <https://github.com/kwad77/pincherMCP/issues>.
+Each release tier names a theme and the issues that close it. Issue numbers link the roadmap to actionable work — track progress at <https://github.com/kwad77/pincher/issues>.
 
 ### v0.2 — Index quality at scale ✅
 
-- Pinned-corpus snapshot tests (`testdata/corpus/{go-project,k8s-ops,node-monorepo,docs-site}`); CI gate catches extraction drift on every PR. ([#33](https://github.com/kwad77/pincherMCP/issues/33))
-- Bash extractor — `mvdan.cc/sh/v3/syntax` at confidence 1.0. ([#38](https://github.com/kwad77/pincherMCP/pull/38))
-- HCL/Terraform extractor — `hashicorp/hcl/v2/hclsyntax` at confidence 1.0. ([#67](https://github.com/kwad77/pincherMCP/pull/67))
-- Per-corpus FTS5 split — three new vtabs route queries per language/kind. ([#32](https://github.com/kwad77/pincherMCP/issues/32))
+- Pinned-corpus snapshot tests (`testdata/corpus/{go-project,k8s-ops,node-monorepo,docs-site}`); CI gate catches extraction drift on every PR. ([#33](https://github.com/kwad77/pincher/issues/33))
+- Bash extractor — `mvdan.cc/sh/v3/syntax` at confidence 1.0. ([#38](https://github.com/kwad77/pincher/pull/38))
+- HCL/Terraform extractor — `hashicorp/hcl/v2/hclsyntax` at confidence 1.0. ([#67](https://github.com/kwad77/pincher/pull/67))
+- Per-corpus FTS5 split — three new vtabs route queries per language/kind. ([#32](https://github.com/kwad77/pincher/issues/32))
 - Markdown extractor — `yuin/goldmark`, one Section per heading.
-- Jinja2 extractor — `nikolalohinski/gonja`, macro/block/set + IMPORTS edges. ([#70](https://github.com/kwad77/pincherMCP/issues/70))
+- Jinja2 extractor — `nikolalohinski/gonja`, macro/block/set + IMPORTS edges. ([#70](https://github.com/kwad77/pincher/issues/70))
 
 ### v0.3 — Trust + observability ✅
 
-- Security audit — every documented security claim has a regression test. ([#41](https://github.com/kwad77/pincherMCP/issues/41))
-- `pincher doctor` subcommand + `extraction_failures` table + slow-query log. ([#42](https://github.com/kwad77/pincherMCP/issues/42))
-- Dashboard CSP tightening — externalized inline JS/CSS. ([#65](https://github.com/kwad77/pincherMCP/pull/65))
-- `pincher rebuild-fts` escape hatch. ([#72](https://github.com/kwad77/pincherMCP/pull/72))
-- Per-symbol confidence scoring — replaces per-language constant with composable signals. ([#34](https://github.com/kwad77/pincherMCP/issues/34))
+- Security audit — every documented security claim has a regression test. ([#41](https://github.com/kwad77/pincher/issues/41))
+- `pincher doctor` subcommand + `extraction_failures` table + slow-query log. ([#42](https://github.com/kwad77/pincher/issues/42))
+- Dashboard CSP tightening — externalized inline JS/CSS. ([#65](https://github.com/kwad77/pincher/pull/65))
+- `pincher rebuild-fts` escape hatch. ([#72](https://github.com/kwad77/pincher/pull/72))
+- Per-symbol confidence scoring — replaces per-language constant with composable signals. ([#34](https://github.com/kwad77/pincher/issues/34))
 
 ### v0.4 — Performance under load 🚧
 
-- Pinned-corpus benchmarks — `make bench` per-corpus; CI smoke-job gates against accidental order-of-magnitude regressions. ([#50](https://github.com/kwad77/pincherMCP/issues/50)) ✅
-- Reader pool — split read connections from the single-writer using SQLite WAL's concurrent-read capability. ([#51](https://github.com/kwad77/pincherMCP/issues/51)) ✅
+- Pinned-corpus benchmarks — `make bench` per-corpus; CI smoke-job gates against accidental order-of-magnitude regressions. ([#50](https://github.com/kwad77/pincher/issues/50)) ✅
+- Reader pool — split read connections from the single-writer using SQLite WAL's concurrent-read capability. ([#51](https://github.com/kwad77/pincher/issues/51)) ✅
 - HTTP discovery via sessions table — `pincher web` resolves the dashboard URL without scanning ports.
 - Self-update — `pincher update` for in-repo and (planned) release-asset paths.
 - `pincher init` for one-step CLAUDE.md policy injection.
@@ -754,7 +754,7 @@ Each release tier names a theme and the issues that close it. Issue numbers link
 
 ## Known limitations
 
-- **`go install` doesn't work yet.** `go.mod`'s module path (`github.com/pincherMCP/pincher`) doesn't match the GitHub URL (`kwad77/pincherMCP`). `go install github.com/...@latest` fails. Tracked: rename module-path or switch the GitHub repo to a matching org. Until then: `git clone` + `go build` is the install path.
+- **`go install` doesn't work yet.** `go.mod`'s module path (`github.com/kwad77/pincher`) doesn't match the GitHub URL (`kwad77/pincher`). `go install github.com/...@latest` fails. Tracked: rename module-path or switch the GitHub repo to a matching org. Until then: `git clone` + `go build` is the install path.
 - **No release binaries yet.** The `pincher update` standalone path is ready to download asset-named `pincher_<os>_<arch>[.exe]` from each release tag, but the release workflow doesn't upload artifacts. Until that ships, in-repo `pincher update` (git pull + build) is the supported path.
 - **Sequence-rename ID instability in YAML.** Inserting an item at index 0 of a YAML sequence renames every downstream symbol's qualified name (`tasks.0.name` → `tasks.1.name`). Move detection via `(qualified_name, kind)` matching catches some of this but not deterministically.
 - **Single-user SQLite.** Concurrent processes are safely serialized via `internal/index/lockfile.go`, but the `sessions` table and symbol store are local-only. Team/enterprise shared indexes need a server mode that's not built yet.
