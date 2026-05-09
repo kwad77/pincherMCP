@@ -323,6 +323,22 @@ func init() {
 		},
 	})
 
+	// SQL — regex-tier (#102). Captures CREATE TABLE/VIEW (Class),
+	// CREATE FUNCTION/PROCEDURE/TRIGGER (Function) across all dialects
+	// (MySQL / Postgres / SQLite / MSSQL / Oracle). DML, ALTER, and
+	// CREATE INDEX are deliberately out of scope.
+	Register(&langAdapter{
+		primary: "SQL",
+		exts: map[string]string{
+			".sql":  "SQL",
+			".ddl":  "SQL",
+		},
+		confidence: 0.85,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractSQL(s, p)
+		},
+	})
+
 	// Detected-but-no-extractor languages (confidence 0; FileResult always empty).
 	// Preserves prior IsSourceFile behaviour while making the gap visible via
 	// the registry's Confidence() == 0.
