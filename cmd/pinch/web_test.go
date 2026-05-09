@@ -202,6 +202,116 @@ func TestWebCLI_Binary_NoStart(t *testing.T) {
 	}
 }
 
+func TestEmitWebResult_Existing(t *testing.T) {
+	var buf strings.Builder
+	emitWebResult(&buf, "http://localhost:7777", "http://localhost:7777/v1/dashboard", 1234, "existing", false)
+	got := buf.String()
+	if !strings.Contains(got, "running") || !strings.Contains(got, "1234") || !strings.Contains(got, "/v1/dashboard") {
+		t.Fatalf("expected running/PID/dashboard in output; got:\n%s", got)
+	}
+}
+
+func TestEmitWebResult_Started(t *testing.T) {
+	var buf strings.Builder
+	emitWebResult(&buf, "http://localhost:8080", "http://localhost:8080/v1/dashboard", 4321, "started", false)
+	got := buf.String()
+	if !strings.Contains(got, "started") || !strings.Contains(got, "4321") {
+		t.Fatalf("expected started/PID in output; got:\n%s", got)
+	}
+}
+
+func TestEmitWebResult_JSON(t *testing.T) {
+	var buf strings.Builder
+	emitWebResult(&buf, "http://localhost:7777", "http://localhost:7777/v1/dashboard", 5555, "existing", true)
+	got := buf.String()
+	if !strings.Contains(got, `"url":"http://localhost:7777/v1/dashboard"`) {
+		t.Errorf("missing url in JSON: %s", got)
+	}
+	if !strings.Contains(got, `"base":"http://localhost:7777"`) {
+		t.Errorf("missing base in JSON: %s", got)
+	}
+	if !strings.Contains(got, `"pid":5555`) {
+		t.Errorf("missing pid in JSON: %s", got)
+	}
+	if !strings.Contains(got, `"started_by":"existing"`) {
+		t.Errorf("missing started_by in JSON: %s", got)
+	}
+}
+
+func TestEmitWebResult_Default(t *testing.T) {
+	var buf strings.Builder
+	emitWebResult(&buf, "http://x", "http://x/v1/dashboard", 0, "unknown-source", false)
+	got := strings.TrimSpace(buf.String())
+	if got != "http://x/v1/dashboard" {
+		t.Fatalf("unknown source should print bare dashboard URL; got %q", got)
+	}
+}
+
+func TestWaitForReady_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			w.WriteHeader(200)
+		}
+	}))
+	defer srv.Close()
+
+	if !waitForReady(srv.URL, 1*time.Second) {
+		t.Fatal("waitForReady should succeed against healthy server")
+	}
+}
+
+func TestWaitForReady_Timeout(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+
+	start := time.Now()
+	if waitForReady("http://"+addr, 200*time.Millisecond) {
+		t.Fatal("waitForReady should fail against closed port")
+	}
+	elapsed := time.Since(start)
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("waitForReady returned too fast (%v) — should respect timeout", elapsed)
+	}
+	if elapsed > 800*time.Millisecond {
+		t.Errorf("waitForReady took too long (%v) — should respect timeout", elapsed)
+	}
+}
+
+func TestPidIsAliveTestable_OverrideAlive(t *testing.T) {
+	t.Setenv(pidEnvOverride, "12345:1,99999:0")
+	if !pidIsAliveTestable(12345) {
+		t.Error("12345 should be marked alive via env override")
+	}
+	if pidIsAliveTestable(99999) {
+		t.Error("99999 should be marked dead via env override")
+	}
+	if pidIsAliveTestable(77777) {
+		t.Error("77777 not in env override should fall through and be dead")
+	}
+}
+
+func TestPidIsAliveTestable_NoOverride(t *testing.T) {
+	t.Setenv(pidEnvOverride, "")
+	if !pidIsAliveTestable(os.Getpid()) {
+		t.Error("self should be alive without env override")
+	}
+}
+
+func TestFindLiveHTTPServer_StaleRowProbeFails(t *testing.T) {
+	store := newWebTestStore(t)
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+
+	if err := store.RecordSession("sess-stale", time.Now().Add(-2*time.Hour), 1, 100, 200, 0.001, "http://"+addr, os.Getpid()); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if _, _, ok := findLiveHTTPServer(store); ok {
+		t.Fatal("expected stale row with unreachable URL to not be recognised as live")
+	}
+}
+
 func newWebTestStore(t *testing.T) *db.Store {
 	t.Helper()
 	dir := t.TempDir()
