@@ -70,7 +70,8 @@ func main() {
 		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
 		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080, or :0 to let the OS pick a free port). Falls back to $PINCHER_HTTP_ADDR. Enables any HTTP client to call all tools via POST /v1/{tool}.")
 		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments). Falls back to $PINCHER_HTTP_KEY.")
-		httpRate    = flag.Int("http-rate", 0, "Max HTTP requests per IP per minute. 0 = unlimited.")
+		httpRate      = flag.Int("http-rate", 0, "Max HTTP requests per IP per minute. 0 = unlimited.")
+		httpAllowOpen = flag.Bool("http-allow-open", false, "Permit a non-loopback HTTP bind without --http-key. Default: refuse (default-deny remote HTTP, #199). Only set when out-of-band auth is in place — reverse proxy, trusted Docker network. Falls back to $PINCHER_HTTP_ALLOW_OPEN=1.")
 		basePath    = flag.String("basepath", "", "External URL prefix when behind a reverse proxy (e.g. /pincher). Both /pincher/v1/* and /v1/* will route. Falls back to $PINCHER_BASEPATH.")
 		trustProxy  = flag.Bool("trust-proxy", false, "Honor X-Forwarded-Prefix / X-Forwarded-Proto / X-Forwarded-Host headers. Only enable when behind a trusted proxy. Falls back to $PINCHER_TRUST_PROXY=1.")
 		slowQueryMS = flag.Int64("slow-query-ms", 0, "Persist tool calls slower than N ms to the slow_queries table for `pincher doctor` to surface (#42). 0 = disabled (zero overhead).")
@@ -102,6 +103,9 @@ func main() {
 	}
 	if !*trustProxy && os.Getenv("PINCHER_TRUST_PROXY") == "1" {
 		*trustProxy = true
+	}
+	if !*httpAllowOpen && os.Getenv("PINCHER_HTTP_ALLOW_OPEN") == "1" {
+		*httpAllowOpen = true
 	}
 
 	if *showVersion {
@@ -182,6 +186,9 @@ func main() {
 		}
 		if *trustProxy {
 			srv.SetTrustProxy(true)
+		}
+		if *httpAllowOpen {
+			srv.SetHTTPAllowOpen(true)
 		}
 		go func() {
 			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {

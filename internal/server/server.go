@@ -59,6 +59,14 @@ type Server struct {
 	version string
 	httpKey  string // optional bearer token; empty = no auth required
 
+	// httpAllowOpen is the explicit opt-in to bind HTTP on a non-loopback
+	// interface without --http-key. Default false → refuse the bind (the
+	// "default-deny remote HTTP" rule, v0.5.0 milestone, #199). Set true
+	// only when the operator has out-of-band authentication (e.g. a
+	// reverse proxy doing its own auth, a firewall restricting the
+	// network, a trusted Docker network).
+	httpAllowOpen bool
+
 	// basePath is the externally-visible URL prefix when pincher is served
 	// behind a reverse proxy (e.g. "/pincher"). Always normalized: empty,
 	// or starts with "/" and has no trailing "/". Affects request routing
@@ -616,6 +624,13 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 // If key is empty, authentication is disabled (suitable for localhost-only deployments).
 func (s *Server) SetHTTPKey(key string) { s.httpKey = key }
 
+// SetHTTPAllowOpen is the explicit opt-in to bind HTTP on a non-loopback
+// interface WITHOUT --http-key. By default ListenAndServeHTTP refuses
+// such a configuration (#199 default-deny remote HTTP). Set this to true
+// only when out-of-band authentication is in place — typically a reverse
+// proxy that does its own auth, or a trusted Docker network.
+func (s *Server) SetHTTPAllowOpen(allow bool) { s.httpAllowOpen = allow }
+
 // SetBasePath sets the externally-visible URL prefix (e.g. "/pincher") for
 // reverse-proxy deployments. Input is normalized: leading "/" is added if
 // missing, trailing "/" is stripped, and "" or "/" both clear the prefix.
@@ -867,6 +882,24 @@ func (s *Server) allowRequest(ip string) bool {
 }
 
 func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
+	// Default-deny gate (#199): refuse to bind a non-loopback interface
+	// without --http-key unless the operator has explicitly opted in via
+	// SetHTTPAllowOpen. Catches the "user accidentally publishes an open
+	// API on their LAN" footgun. The pre-bind check means we never even
+	// briefly advertise the port for an unsafe configuration.
+	//
+	// We honor `--http-allow-open` (s.httpAllowOpen) for legitimate cases
+	// — reverse-proxy fronting, trusted Docker network, etc. The earlier
+	// #149 warning still fires in that path so the operator sees the
+	// state in logs.
+	if s.httpKey == "" && !s.httpAllowOpen && !isLoopbackBind(addr) {
+		return fmt.Errorf(
+			"refusing to bind HTTP on %s without --http-key (set --http-key/$PINCHER_HTTP_KEY for Bearer auth, "+
+				"or pass --http 127.0.0.1:<port> for loopback-only, "+
+				"or pass --http-allow-open if a reverse proxy / trusted network handles auth)",
+			addr)
+	}
+
 	// Retry port binding for up to 10 seconds. When the MCP client reconnects
 	// (e.g. /mcp in Claude Code) the previous process may briefly hold the port
 	// while it shuts down. Retrying here makes the dashboard resilient.

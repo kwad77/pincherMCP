@@ -3081,6 +3081,101 @@ func TestListenAndServeHTTP_AutoPort(t *testing.T) {
 	}
 }
 
+// TestListenAndServeHTTP_DefaultDeny_NonLoopbackNoKey covers the v0.5.0
+// default-deny remote HTTP rule (#199): a non-loopback bind without
+// --http-key MUST refuse to start, so a user can't accidentally publish
+// an open API on their LAN. The check happens before any net.Listen
+// call, so the port never even briefly comes up.
+func TestListenAndServeHTTP_DefaultDeny_NonLoopbackNoKey(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	err := srv.ListenAndServeHTTP(context.Background(), ":0")
+	if err == nil {
+		t.Fatal("expected refusal on non-loopback bind without --http-key, got nil")
+	}
+	if !strings.Contains(err.Error(), "--http-key") {
+		t.Errorf("error should mention --http-key remediation; got %q", err.Error())
+	}
+}
+
+// TestListenAndServeHTTP_DefaultDeny_LoopbackNoKey: 127.0.0.1: bind
+// without --http-key is permitted — local-only access is the safe
+// default for dev workflows.
+func TestListenAndServeHTTP_DefaultDeny_LoopbackNoKey(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServeHTTP(ctx, "127.0.0.1:0") }()
+
+	// Wait for bind.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.HTTPAddr() != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.HTTPAddr() == "" {
+		t.Fatal("loopback bind without --http-key should be permitted; never bound")
+	}
+	cancel()
+	<-done
+}
+
+// TestListenAndServeHTTP_DefaultDeny_NonLoopbackWithKey: non-loopback
+// bind WITH --http-key is permitted — auth is the right escape hatch
+// from the default-deny rule.
+func TestListenAndServeHTTP_DefaultDeny_NonLoopbackWithKey(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetHTTPKey("test-secret-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServeHTTP(ctx, ":0") }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.HTTPAddr() != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.HTTPAddr() == "" {
+		t.Fatal("non-loopback bind with --http-key should be permitted; never bound")
+	}
+	cancel()
+	<-done
+}
+
+// TestListenAndServeHTTP_DefaultDeny_AllowOpen: non-loopback bind
+// without --http-key is permitted when SetHTTPAllowOpen(true) is the
+// explicit opt-in. For reverse-proxy / trusted-network deployments.
+func TestListenAndServeHTTP_DefaultDeny_AllowOpen(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetHTTPAllowOpen(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServeHTTP(ctx, ":0") }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.HTTPAddr() != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.HTTPAddr() == "" {
+		t.Fatal("non-loopback bind with SetHTTPAllowOpen(true) should be permitted; never bound")
+	}
+	cancel()
+	<-done
+}
+
 func TestDisplayAddr(t *testing.T) {
 	cases := []struct {
 		in, want string
