@@ -7,6 +7,29 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- `pincher init --target` (#191) — multi-IDE rules-file writer. The
+  init subcommand now seeds policy files for six editors and agents,
+  not just Claude Code:
+  - `--target=claude` — `./CLAUDE.md` or `~/.claude/CLAUDE.md` (with
+    `--global`); unchanged from prior behaviour and still the default.
+  - `--target=cursor` — `./.cursor/rules/pincher.mdc` with YAML
+    frontmatter (`description`/`globs`/`alwaysApply`); preserves any
+    user edits to the frontmatter on re-runs.
+  - `--target=cursor-legacy` — `./.cursorrules` plain text, for
+    pre-rules-directory Cursor.
+  - `--target=windsurf` — `./.windsurfrules` plain markdown.
+  - `--target=aider` — `./CONVENTIONS.md` (Aider's documented
+    convention).
+  - `--target=continue` — `~/.continue/config.json`, merged into the
+    `systemMessage` field with line-prefixed `// pincher:start` /
+    `// pincher:end` markers; preserves all unknown JSON keys.
+  - `--target=detect` — write to every editor whose marker file
+    (`.cursor/`, `.windsurfrules`, etc.) already exists under cwd.
+  - `--target=all` — write every project-scoped target.
+  All targets share the same idempotent marker-block pattern; re-runs
+  replace in place rather than duplicating. Closes #191.
+
 ## [v0.5.0] — 2026-05-09 — Trustworthy single-binary release
 
 The "you can install this anywhere and run it confidently" milestone.

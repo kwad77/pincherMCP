@@ -46,42 +46,101 @@ const (
 // terminal, without needing to remember a separate `pincher web` call.
 func runInitCLI(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	global := fs.Bool("global", false, "Write to ~/.claude/CLAUDE.md instead of ./CLAUDE.md")
+	global := fs.Bool("global", false, "Write the global rules file (target-dependent; e.g. ~/.claude/CLAUDE.md for claude)")
 	dryRun := fs.Bool("dry-run", false, "Print what would be written; do not modify any file")
 	force := fs.Bool("force", false, "Overwrite the marker block without prompting (default behavior anyway, kept for explicit scripted use)")
 	dataDir := fs.String("data-dir", "", "Override data directory (used to discover the running HTTP dashboard URL)")
+	targetFlag := fs.String("target", "claude", "Editor target: "+strings.Join(initTargetNames(), ", "))
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher init [--global] [--dry-run] [--force]")
-		fmt.Fprintln(os.Stderr, "  Inserts a pincher usage policy block into CLAUDE.md (idempotent; replace-in-place via marker comments).")
+		fmt.Fprintln(os.Stderr, "usage: pincher init [--target=NAME] [--global] [--dry-run] [--force]")
+		fmt.Fprintln(os.Stderr, "  Seed a pincher usage policy file for an editor or agent (idempotent; replace-in-place via marker comments).")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  Targets:")
+		for _, t := range allInitTargets {
+			fmt.Fprintf(os.Stderr, "    %-14s %s\n", t.name, t.describe)
+		}
+		fmt.Fprintln(os.Stderr, "    detect         Pick every target whose marker file exists under cwd")
+		fmt.Fprintln(os.Stderr, "    all            Write every project-scoped target")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
 	_ = force // kept for future "do nothing if a non-pincher block exists at that path" semantics
 
-	target, err := resolveCLAUDEPath(*global)
+	out := os.Stdout
+	targets, err := resolveTargets(*targetFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 		os.Exit(1)
 	}
 
-	existing := readFileIfExists(target)
-	updated, action := mergePolicyBlock(existing, pincherPolicyMarkdown)
-
-	if *dryRun {
-		fmt.Fprintf(os.Stdout, "pincher init: would %s %s\n\n", action, target)
-		fmt.Fprintln(os.Stdout, "--- new file content ---")
-		fmt.Fprintln(os.Stdout, updated)
-		return
+	for _, t := range targets {
+		if err := runInitTarget(out, t, *global, *dryRun); err != nil {
+			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
-	if err := writeFileEnsuringDir(target, updated); err != nil {
-		fmt.Fprintf(os.Stderr, "pincher init: write %s: %v\n", target, err)
-		os.Exit(1)
+	if !*dryRun {
+		printNextSteps(out, *dataDir)
+	}
+}
+
+// resolveTargets expands the --target value (a single target name,
+// "detect", or "all") into the concrete list of initTargets to write.
+func resolveTargets(name string) ([]initTarget, error) {
+	switch name {
+	case "":
+		return nil, fmt.Errorf("--target is required (one of: %s)", strings.Join(initTargetNames(), ", "))
+	case "detect":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("cwd: %w", err)
+		}
+		return detectInitTargets(cwd), nil
+	case "all":
+		return allInitTargets, nil
+	}
+	t, ok := findInitTarget(name)
+	if !ok {
+		return nil, fmt.Errorf("unknown --target %q (one of: %s)", name, strings.Join(initTargetNames(), ", "))
+	}
+	return []initTarget{t}, nil
+}
+
+// runInitTarget writes (or dry-runs) a single target. global is the user's
+// --global flag; for targets that don't support it, we silently ignore
+// rather than error so that --target=all keeps working with --global set.
+func runInitTarget(out io.Writer, t initTarget, global, dryRun bool) error {
+	useGlobal := global
+	if t.alwaysGlobal {
+		useGlobal = true
+	} else if !t.supportsGlobal {
+		useGlobal = false
 	}
 
-	out := os.Stdout
-	fmt.Fprintf(out, "pincher init: %s %s\n", action, target)
-	printNextSteps(out, *dataDir)
+	path, err := t.pathFn(useGlobal)
+	if err != nil {
+		return fmt.Errorf("[%s] %w", t.name, err)
+	}
+
+	existing := readFileIfExists(path)
+	updated, action := t.writeFn(existing, pincherPolicyMarkdown)
+	if action == "error" {
+		return fmt.Errorf("[%s] cannot merge into %s: file exists but is not valid for this target (malformed JSON?)", t.name, path)
+	}
+
+	if dryRun {
+		fmt.Fprintf(out, "pincher init [%s]: would %s %s\n\n", t.name, action, path)
+		fmt.Fprintln(out, "--- new file content ---")
+		fmt.Fprintln(out, updated)
+		return nil
+	}
+
+	if err := writeFileEnsuringDir(path, updated); err != nil {
+		return fmt.Errorf("[%s] write %s: %w", t.name, path, err)
+	}
+	fmt.Fprintf(out, "pincher init [%s]: %s %s\n", t.name, action, path)
+	return nil
 }
 
 // resolveCLAUDEPath returns the absolute path to the CLAUDE.md that
@@ -127,11 +186,24 @@ func writeFileEnsuringDir(path, content string) error {
 //     fresh block; we don't attempt automatic recovery because the cause
 //     is more often "user edited the markers" than "tool corrupted them"
 func mergePolicyBlock(existing, policy string) (string, string) {
+	if existing == "" {
+		header := "# CLAUDE.md\n\nThis file provides guidance to Claude Code (claude.ai/code) when working with this project.\n\n"
+		bare, _ := mergePolicyBlockBare(existing, policy)
+		return header + bare, "wrote"
+	}
+	return mergePolicyBlockBare(existing, policy)
+}
+
+// mergePolicyBlockBare is the merge primitive used by non-Claude targets
+// (cursor, windsurf, aider, etc.) where the file's purpose is the rules
+// block itself — adding a `# CLAUDE.md` header would be misleading. On
+// fresh writes it emits just the marker block; otherwise it behaves
+// identically to mergePolicyBlock.
+func mergePolicyBlockBare(existing, policy string) (string, string) {
 	block := buildPolicyBlock(policy)
 
 	if existing == "" {
-		header := "# CLAUDE.md\n\nThis file provides guidance to Claude Code (claude.ai/code) when working with this project.\n\n"
-		return header + block + "\n", "wrote"
+		return block + "\n", "wrote"
 	}
 
 	startIdx := strings.Index(existing, pincherInitMarkerStart)
