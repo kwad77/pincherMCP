@@ -116,16 +116,22 @@ bench-server:
 #   - new benchmarks without baseline → fail (forces baseline update)
 BENCH_NS_THRESHOLD     ?= 0.20
 BENCH_ALLOCS_THRESHOLD ?= 0.30
+# Comma-separated benchmarks to skip from regression flagging. Use for
+# benchmarks with documented high CV that would flap the gate. Per
+# testdata/bench/variance-ci-2026-05-09.md, only Index_Incremental_NoChange_GoProject
+# (21.5% CV on CI, I/O-bound) qualifies; everyone else is <10% CV and
+# safe to gate normally.
+BENCH_EXCLUDE          ?=
 corpus-bench:
 	@set -e; \
 	tmpdir=$$(mktemp -d); \
-	echo "==> internal/index (baseline gate, ns=$(BENCH_NS_THRESHOLD) allocs=$(BENCH_ALLOCS_THRESHOLD))"; \
+	echo "==> internal/index (baseline gate, ns=$(BENCH_NS_THRESHOLD) allocs=$(BENCH_ALLOCS_THRESHOLD) exclude=$(BENCH_EXCLUDE))"; \
 	$(GO) test ./internal/index/ -run=^$$ -bench=. -benchtime=$(CORPUS_BENCHTIME) -benchmem > $$tmpdir/index.txt; \
-	$(GO) run ./cmd/benchcmp -ns-threshold=$(BENCH_NS_THRESHOLD) -allocs-threshold=$(BENCH_ALLOCS_THRESHOLD) $(BENCH_DIR)/index.bench.txt $$tmpdir/index.txt; \
+	$(GO) run ./cmd/benchcmp -ns-threshold=$(BENCH_NS_THRESHOLD) -allocs-threshold=$(BENCH_ALLOCS_THRESHOLD) -exclude="$(BENCH_EXCLUDE)" $(BENCH_DIR)/index.bench.txt $$tmpdir/index.txt; \
 	echo ""; \
-	echo "==> internal/server (baseline gate, ns=$(BENCH_NS_THRESHOLD) allocs=$(BENCH_ALLOCS_THRESHOLD))"; \
+	echo "==> internal/server (baseline gate, ns=$(BENCH_NS_THRESHOLD) allocs=$(BENCH_ALLOCS_THRESHOLD) exclude=$(BENCH_EXCLUDE))"; \
 	$(GO) test ./internal/server/ -run=^$$ -bench=. -benchtime=$(CORPUS_BENCHTIME) -benchmem > $$tmpdir/server.txt; \
-	$(GO) run ./cmd/benchcmp -ns-threshold=$(BENCH_NS_THRESHOLD) -allocs-threshold=$(BENCH_ALLOCS_THRESHOLD) $(BENCH_DIR)/server.bench.txt $$tmpdir/server.txt; \
+	$(GO) run ./cmd/benchcmp -ns-threshold=$(BENCH_NS_THRESHOLD) -allocs-threshold=$(BENCH_ALLOCS_THRESHOLD) -exclude="$(BENCH_EXCLUDE)" $(BENCH_DIR)/server.bench.txt $$tmpdir/server.txt; \
 	rm -rf $$tmpdir; \
 	echo ""; \
 	echo "Bench regression gate passed."

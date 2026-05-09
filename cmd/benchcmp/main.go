@@ -115,7 +115,7 @@ func percentDelta(baseline, actual float64) float64 {
 // Extracted from main() so the orchestration is testable directly without
 // shelling out — covers the iteration, regression-flag formatting, and
 // missing-benchmark paths that flag.Parse + os.Exit hide.
-func compare(baseline, actual map[string]benchResult, w io.Writer, nsThreshold, allocsThreshold float64) (regressions, missingActual, missingBaseline int) {
+func compare(baseline, actual map[string]benchResult, w io.Writer, nsThreshold, allocsThreshold float64, excluded map[string]bool) (regressions, missingActual, missingBaseline int) {
 	fmt.Fprintf(w, "%-60s  %12s  %12s  %8s  %8s\n",
 		"benchmark", "baseline ns", "actual ns", "Δns", "Δallocs")
 	fmt.Fprintln(w, strings.Repeat("-", 110))
@@ -130,14 +130,22 @@ func compare(baseline, actual map[string]benchResult, w io.Writer, nsThreshold, 
 		nsDelta := percentDelta(base.NsPerOp, act.NsPerOp)
 		allocsDelta := percentDelta(base.AllocsPerOp, act.AllocsPerOp)
 
+		// Excluded benchmarks still appear in the output (with an
+		// `[EXCLUDED]` marker and the deltas) but don't count toward
+		// the regression total — visibility without flapping.
+		isExcluded := excluded[name]
 		flagStr := ""
-		if nsDelta > nsThreshold {
-			flagStr += " [NS-REGRESSION]"
-			regressions++
-		}
-		if allocsDelta > allocsThreshold {
-			flagStr += " [ALLOCS-REGRESSION]"
-			regressions++
+		if isExcluded {
+			flagStr = " [EXCLUDED]"
+		} else {
+			if nsDelta > nsThreshold {
+				flagStr += " [NS-REGRESSION]"
+				regressions++
+			}
+			if allocsDelta > allocsThreshold {
+				flagStr += " [ALLOCS-REGRESSION]"
+				regressions++
+			}
 		}
 		fmt.Fprintf(w, "%-60s  %12.0f  %12.0f  %+7.1f%%  %+7.1f%%%s\n",
 			name, base.NsPerOp, act.NsPerOp,
@@ -158,8 +166,10 @@ func main() {
 		"fail if ns/op increases by more than this fraction (e.g. 0.20 = 20%)")
 	allocsThreshold := flag.Float64("allocs-threshold", defaultAllocsThreshold,
 		"fail if allocs/op increases by more than this fraction (e.g. 0.30 = 30%)")
+	excludeRaw := flag.String("exclude", "",
+		"comma-separated list of benchmark names to skip from regression flagging (still printed with [EXCLUDED] marker). Use for benchmarks with documented high CV that would otherwise flap the gate.")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: benchcmp [--ns-threshold=0.20] [--allocs-threshold=0.30] <baseline.txt> <actual.txt>")
+		fmt.Fprintln(os.Stderr, "usage: benchcmp [--ns-threshold=0.20] [--allocs-threshold=0.30] [--exclude=NAME1,NAME2] <baseline.txt> <actual.txt>")
 		fmt.Fprintln(os.Stderr, "Compares two `go test -bench` outputs and exits 1 on regression.")
 		fmt.Fprintln(os.Stderr, "Defaults: ns/op +20%, allocs/op +30%, missing benchmarks fail.")
 	}
@@ -167,6 +177,15 @@ func main() {
 	if flag.NArg() != 2 {
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	excluded := map[string]bool{}
+	if *excludeRaw != "" {
+		for _, name := range strings.Split(*excludeRaw, ",") {
+			if n := strings.TrimSpace(name); n != "" {
+				excluded[n] = true
+			}
+		}
 	}
 
 	baseline, err := parseFile(flag.Arg(0))
@@ -186,7 +205,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	regressions, missingActual, missingBaseline := compare(baseline, actual, os.Stdout, *nsThreshold, *allocsThreshold)
+	regressions, missingActual, missingBaseline := compare(baseline, actual, os.Stdout, *nsThreshold, *allocsThreshold, excluded)
 
 	fmt.Println()
 	if regressions == 0 && missingActual == 0 && missingBaseline == 0 {

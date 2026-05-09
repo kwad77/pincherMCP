@@ -107,7 +107,7 @@ func TestCompare_NoRegression(t *testing.T) {
 		"BenchmarkB": {NsPerOp: 2000, AllocsPerOp: 20},
 	}
 	var buf bytes.Buffer
-	regressions, missingActual, missingBaseline := compare(set, set, &buf, defaultNsThreshold, defaultAllocsThreshold)
+	regressions, missingActual, missingBaseline := compare(set, set, &buf, defaultNsThreshold, defaultAllocsThreshold, nil)
 	if regressions != 0 || missingActual != 0 || missingBaseline != 0 {
 		t.Errorf("identical sets: regressions=%d, missingActual=%d, missingBaseline=%d, want all 0",
 			regressions, missingActual, missingBaseline)
@@ -127,7 +127,7 @@ func TestCompare_NsRegressionFlagged(t *testing.T) {
 		"BenchmarkSlow": {NsPerOp: 1500, AllocsPerOp: 10}, // +50%
 	}
 	var buf bytes.Buffer
-	regressions, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
+	regressions, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold, nil)
 	if regressions != 1 {
 		t.Errorf("expected 1 ns regression, got %d", regressions)
 	}
@@ -146,7 +146,7 @@ func TestCompare_AllocsRegressionFlagged(t *testing.T) {
 		"BenchmarkAlloc": {NsPerOp: 1000, AllocsPerOp: 14}, // +40%
 	}
 	var buf bytes.Buffer
-	regressions, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
+	regressions, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold, nil)
 	if regressions != 1 {
 		t.Errorf("expected 1 allocs regression, got %d", regressions)
 	}
@@ -163,7 +163,7 @@ func TestCompare_MissingInActual(t *testing.T) {
 	}
 	actual := map[string]benchResult{}
 	var buf bytes.Buffer
-	_, missingActual, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
+	_, missingActual, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold, nil)
 	if missingActual != 1 {
 		t.Errorf("expected 1 missing-in-actual, got %d", missingActual)
 	}
@@ -180,7 +180,7 @@ func TestCompare_NewWithoutBaseline(t *testing.T) {
 		"BenchmarkNew": {NsPerOp: 1000, AllocsPerOp: 10},
 	}
 	var buf bytes.Buffer
-	_, _, missingBaseline := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold)
+	_, _, missingBaseline := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold, nil)
 	if missingBaseline != 1 {
 		t.Errorf("expected 1 new-without-baseline, got %d", missingBaseline)
 	}
@@ -205,19 +205,53 @@ func TestCompare_CustomThresholds(t *testing.T) {
 
 	// Default thresholds: ns flagged.
 	var bufDefault bytes.Buffer
-	regsDefault, _, _ := compare(baseline, actual, &bufDefault, defaultNsThreshold, defaultAllocsThreshold)
+	regsDefault, _, _ := compare(baseline, actual, &bufDefault, defaultNsThreshold, defaultAllocsThreshold, nil)
 	if regsDefault != 1 {
 		t.Errorf("default thresholds: regressions=%d, want 1", regsDefault)
 	}
 
 	// Wider thresholds: nothing flagged.
 	var bufWide bytes.Buffer
-	regsWide, _, _ := compare(baseline, actual, &bufWide, 0.40, 0.40)
+	regsWide, _, _ := compare(baseline, actual, &bufWide, 0.40, 0.40, nil)
 	if regsWide != 0 {
 		t.Errorf("wider thresholds: regressions=%d, want 0", regsWide)
 	}
 	if strings.Contains(bufWide.String(), "[NS-REGRESSION]") {
 		t.Errorf("wider thresholds: should not flag NS-REGRESSION, got:\n%s", bufWide.String())
+	}
+}
+
+// TestCompare_ExcludedBenchmarkDoesNotCountAsRegression pins the
+// surgical-skip semantics: a benchmark in the `excluded` set is still
+// printed (with [EXCLUDED] marker) but doesn't increment the
+// regressions counter, even when its delta would normally fail. Used
+// for benchmarks with documented high CV that would flap the gate
+// (per testdata/bench/variance-ci-2026-05-09.md).
+func TestCompare_ExcludedBenchmarkDoesNotCountAsRegression(t *testing.T) {
+	baseline := map[string]benchResult{
+		"BenchmarkA": {NsPerOp: 1000, AllocsPerOp: 10},
+		"BenchmarkB": {NsPerOp: 1000, AllocsPerOp: 10},
+	}
+	actual := map[string]benchResult{
+		"BenchmarkA": {NsPerOp: 1500, AllocsPerOp: 10}, // +50% — would normally fail
+		"BenchmarkB": {NsPerOp: 1500, AllocsPerOp: 10}, // +50% — would normally fail
+	}
+	excluded := map[string]bool{"BenchmarkA": true}
+
+	var buf bytes.Buffer
+	regs, _, _ := compare(baseline, actual, &buf, defaultNsThreshold, defaultAllocsThreshold, excluded)
+	if regs != 1 {
+		t.Errorf("expected 1 regression (BenchmarkB only; BenchmarkA excluded), got %d", regs)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "[EXCLUDED]") {
+		t.Errorf("expected [EXCLUDED] marker in output for BenchmarkA, got:\n%s", out)
+	}
+	if !strings.Contains(out, "BenchmarkA") {
+		t.Errorf("excluded benchmark should still appear in the output table, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[NS-REGRESSION]") {
+		t.Errorf("non-excluded BenchmarkB should still flag NS-REGRESSION, got:\n%s", out)
 	}
 }
 

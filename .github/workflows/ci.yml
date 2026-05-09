@@ -128,12 +128,17 @@ jobs:
     continue-on-error: true
     env:
       # CI-baseline thresholds. Slightly above local-dev defaults
-      # (0.20/0.30) to absorb runner-to-runner variance — but as #161
-      # showed, even this is too tight on outlier runs. Widening
-      # without variance data would just push the gate toward
-      # meaninglessness.
+      # (0.20/0.30) to absorb runner-to-runner variance.
       BENCH_NS_THRESHOLD: "0.30"
       BENCH_ALLOCS_THRESHOLD: "0.45"
+      # Excluded benchmarks — high CV per
+      # testdata/bench/variance-ci-2026-05-09.md. Index_Incremental_NoChange_GoProject
+      # is I/O-bound (FS cache fluctuation across CI runs); 21.5% CV
+      # vs <10% for everyone else. Exclude it from regression flagging
+      # but keep it in the report (with [EXCLUDED] marker) so a real
+      # underlying regression is still visible to humans reading PR
+      # checks.
+      BENCH_EXCLUDE: "BenchmarkIndex_Incremental_NoChange_GoProject"
     steps:
       - uses: actions/checkout@v4
 
