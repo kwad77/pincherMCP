@@ -52,31 +52,31 @@ func ClassifyCorpus(language, kind string) string {
 // corpusVtab maps a corpus parameter (the user-facing label) to the SQL
 // vtab name used in queries.
 //
-// **Default flipped in #32 part 3**: empty string now routes to
-// `symbols_code_fts` (the code-corpus index), not the legacy mixed
-// `symbols_fts`. Pincher is a code-intelligence tool; the most common
-// `search` call is for an identifier and code is the right default. Use
-// "all" to explicitly hit the legacy mixed index when you want config or
-// docs results in the same query.
+// **Default flipped in #32 part 3**: empty string routes to
+// `symbols_code_fts` (the code-corpus index). Pincher is a
+// code-intelligence tool; the most common `search` call is for an
+// identifier and code is the right default. Pass `corpus=config` or
+// `corpus=docs` to query those slices.
 //
-// Returns an error on unknown corpus names — a typo from a caller should
-// fail loudly, not silently fall through to legacy.
+// **Legacy `corpus=all` removed in #106 (v12 schema migration)**. The
+// MCP search handler still soft-redirects `corpus=all` to `corpus=code`
+// (with a deprecation warning) so older callers keep working; this
+// function never sees the literal "all" via that path. A direct caller
+// passing `corpus="all"` here gets the same unknown-corpus error any
+// other typo would produce.
+//
+// Returns an error on unknown corpus names — a typo from a caller
+// should fail loudly, not silently fall through.
 func corpusVtab(corpus string) (string, error) {
 	switch corpus {
 	case "", CorpusCode:
 		return "symbols_code_fts", nil
-	case "all":
-		// Legacy mixed index — kept populated by the v9 triggers for
-		// callers that want all corpora in one query. Slated for
-		// removal in a future release; new code should use `code` /
-		// `config` / `docs` instead, or run separate queries.
-		return "symbols_fts", nil
 	case CorpusConfig:
 		return "symbols_config_fts", nil
 	case CorpusDocs:
 		return "symbols_docs_fts", nil
 	default:
-		return "", fmt.Errorf("unknown corpus %q (valid: %q, %q, %q, %q, %q)",
-			corpus, "", "all", CorpusCode, CorpusConfig, CorpusDocs)
+		return "", fmt.Errorf("unknown corpus %q (valid: %q, %q, %q, %q)",
+			corpus, "", CorpusCode, CorpusConfig, CorpusDocs)
 	}
 }

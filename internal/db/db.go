@@ -310,12 +310,15 @@ func (s *Store) CheckpointTruncate() error {
 	return err
 }
 
-// RebuildFTS drops every FTS5 virtual table (legacy `symbols_fts` plus the
-// per-corpus `symbols_<corpus>_fts` indexes added in v9) and their sync
-// triggers, recreates them from canonical DDL, and bulk-loads them from
-// the symbols table. Returns the number of symbol rows ingested into
-// the legacy index (which contains every symbol; the per-corpus indexes
-// each contain a subset, so a single count would be misleading).
+// RebuildFTS drops every per-corpus FTS5 vtab (`symbols_code_fts` /
+// `symbols_config_fts` / `symbols_docs_fts`) and their sync triggers,
+// recreates them from canonical DDL, and bulk-loads them from the
+// symbols table. Returns the total number of symbol rows ingested
+// (sum across the three corpora — each row lands in exactly one).
+//
+// The legacy `symbols_fts` index (and its three triggers) was removed
+// in #106's v12 migration; this function also drops them defensively
+// in case a stale instance remains on a partially-migrated DB.
 //
 // This is the FTS5 escape hatch — for situations where the trigger-driven
 // index has drifted from `symbols`: an interrupted index that left FTS5
@@ -342,7 +345,8 @@ func (s *Store) RebuildFTS() (rows int64, err error) {
 	// fire against a missing vtab, and so a subsequent insert from
 	// symbols isn't shadow-written by a stale trigger.
 	for _, stmt := range []string{
-		// Legacy single-corpus index (v6 baseline)
+		// Legacy index — removed in v12 (#106). Defensive drop for any
+		// partially-migrated DB.
 		`DROP TRIGGER IF EXISTS sym_fts_insert`,
 		`DROP TRIGGER IF EXISTS sym_fts_delete`,
 		`DROP TRIGGER IF EXISTS sym_fts_update`,
@@ -361,38 +365,25 @@ func (s *Store) RebuildFTS() (rows int64, err error) {
 		}
 	}
 
-	// Recreate from canonical DDL — same strings the schema bootstrap +
-	// v9 migration use. Drop+recreate of the per-corpus DDL in this same
-	// transaction is safe because every shadow table from the dropped
-	// vtabs is also dropped.
-	for label, ddl := range map[string]string{
-		"legacy fts": ftsDDL,
-		"corpus fts": ftsCorpusSplitDDL,
-	} {
-		if _, err = tx.Exec(ddl); err != nil {
-			return 0, fmt.Errorf("recreate %s: %w", label, err)
-		}
+	// Recreate per-corpus DDL — the v9 migration body is the source of
+	// truth (vtab DDL + sync triggers + bulk backfill). Re-exec it here
+	// so a future change to ftsCorpusSplitDDL's backfill rules
+	// propagates to RebuildFTS automatically.
+	if _, err = tx.Exec(ftsCorpusSplitDDL); err != nil {
+		return 0, fmt.Errorf("recreate corpus fts: %w", err)
 	}
 
-	// Backfill is idempotent across all four vtabs — each WHERE clause
-	// matches a disjoint slice of symbols. Total rows inserted across
-	// the per-corpus indexes equals the row count of the legacy index;
-	// we report the legacy count to the caller.
-	res, err := tx.Exec(`
-		INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
-		SELECT rowid, id, name, qualified_name,
-		       COALESCE(signature, ''), COALESCE(docstring, '')
-		FROM symbols`)
-	if err != nil {
-		return 0, fmt.Errorf("bulk insert legacy: %w", err)
+	// Sum rows across the three corpora — each symbol is in exactly one.
+	// The single source of truth is `symbols` itself; counting from there
+	// avoids any FTS5-shadow-table quirk where COUNT(*) on a vtab can
+	// over-report (each row indexed by its tokens, plus internal docsize
+	// rows on some queries — the SQL planner hits a shadow table that
+	// holds N rows per stored symbol). The symbol count also exactly
+	// matches what the backfill inserted (the WHERE clauses partition
+	// `symbols` into three disjoint subsets).
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM symbols`).Scan(&rows); err != nil {
+		return 0, fmt.Errorf("count rebuilt rows: %w", err)
 	}
-	rows, _ = res.RowsAffected()
-
-	// The v9 migration body itself contains backfill statements for the
-	// per-corpus indexes. Re-running them here uses the same source-of-
-	// truth rules, so a future change to ftsCorpusSplitDDL's backfill
-	// rules propagates to RebuildFTS automatically — we just exec the
-	// whole DDL string again above. No separate per-corpus INSERTs needed.
 
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)
@@ -631,6 +622,30 @@ END;`,
 	// migration entry — the version bump remains a coherent v10→v11.
 	`ALTER TABLE sessions ADD COLUMN http_url TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE sessions ADD COLUMN http_pid INTEGER NOT NULL DEFAULT 0;`,
+
+	// v11 → v12: remove the legacy `symbols_fts` virtual table and its
+	// three sync triggers (#106). The per-corpus FTS5 split (#32 part 1,
+	// landed at v9) has been carrying every search query for two
+	// minor-version cycles via the per-corpus vtabs (`symbols_code_fts`
+	// / `symbols_config_fts` / `symbols_docs_fts`). The legacy index
+	// has been double-populated alongside ever since, paying a 4×
+	// write-amp tax for callers nobody actually has — the MCP search
+	// handler soft-redirects `corpus=all` (the only caller-facing path
+	// to the legacy index) to `corpus=code` since #78.
+	//
+	// Drop order matters: triggers first so the next symbol upsert
+	// doesn't try to write to a dropped vtab; then the vtab itself
+	// (which removes its 5 shadow tables: _config, _content, _data,
+	// _docsize, _idx).
+	//
+	// On long-running daily DBs this reclaims roughly half the FTS5
+	// disk footprint immediately (per the estimates in #87 / #106).
+	// Fresh DBs already skip legacy creation in the updated baseline
+	// schema; this migration handles existing v9–v11 DBs.
+	`DROP TRIGGER IF EXISTS sym_fts_insert;
+	 DROP TRIGGER IF EXISTS sym_fts_delete;
+	 DROP TRIGGER IF EXISTS sym_fts_update;
+	 DROP TABLE IF EXISTS symbols_fts;`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -1033,44 +1048,12 @@ func joinEqClauses(cols, table string) string {
 //	  Supports Cypher-like MATCH → SQL translation → sub-ms queries
 //
 //	Layer 3 — FTS5 Full-Text Search
-//	  symbols_fts virtual table with built-in BM25 ranking
+//	  Three per-corpus virtual tables with built-in BM25 ranking:
+//	    symbols_code_fts   — Function/Method/Class/etc.
+//	    symbols_config_fts — YAML/JSON/HCL/TOML Settings/Resources/Outputs
+//	    symbols_docs_fts   — Markdown sections + fetched Documents
 //	  Auto-synced via AFTER INSERT/UPDATE/DELETE triggers
-
-// ftsDDL is the FTS5 vtab + sync triggers, named separately from the
-// rest of the schema so RebuildFTS can drop-and-recreate using the
-// canonical DDL. Both the initial schema and the rebuild path consume
-// this constant — they cannot drift.
-const ftsDDL = `
-CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-    symbol_id UNINDEXED,
-    name,
-    qualified_name,
-    signature,
-    docstring,
-    content='symbols',
-    content_rowid='rowid',
-    tokenize='unicode61 remove_diacritics 1'
-);
-
-CREATE TRIGGER IF NOT EXISTS sym_fts_insert AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES (new.rowid, new.id, new.name, new.qualified_name,
-            COALESCE(new.signature,''), COALESCE(new.docstring,''));
-END;
-CREATE TRIGGER IF NOT EXISTS sym_fts_delete AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
-            COALESCE(old.signature,''), COALESCE(old.docstring,''));
-END;
-CREATE TRIGGER IF NOT EXISTS sym_fts_update AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES ('delete', old.rowid, old.id, old.name, old.qualified_name,
-            COALESCE(old.signature,''), COALESCE(old.docstring,''));
-    INSERT INTO symbols_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
-    VALUES (new.rowid, new.id, new.name, new.qualified_name,
-            COALESCE(new.signature,''), COALESCE(new.docstring,''));
-END;
-`
+//	  (The legacy single-corpus `symbols_fts` was removed in #106.)
 
 // ftsCorpusSplitDDL is the v8→v9 migration that adds three corpus-specific
 // FTS5 vtabs alongside the legacy `symbols_fts`, plus their sync triggers
@@ -1275,9 +1258,13 @@ CREATE INDEX IF NOT EXISTS idx_sym_kind    ON symbols(project_id, kind);
 CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(project_id, name);
 CREATE INDEX IF NOT EXISTS idx_sym_qn      ON symbols(project_id, qualified_name);
 
--- Layer 3: FTS5 full-text search with BM25 ranking.
--- content= avoids storing duplicate text; triggers keep the index in sync.
-` + ftsDDL + `
+-- Layer 3: FTS5 full-text search with BM25 ranking is set up by the v9
+-- migration (ftsCorpusSplitDDL): three per-corpus vtabs
+-- (symbols_code_fts / symbols_config_fts / symbols_docs_fts) plus their
+-- sync triggers. Fresh DBs run all migrations after baseline, so the
+-- corpus-split DDL fires on first Open(). The legacy single-corpus
+-- symbols_fts vtab — which used to live in this baseline schema —
+-- was removed in #106 (v12 migration drops it on existing DBs).
 CREATE TABLE IF NOT EXISTS edges (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT    NOT NULL REFERENCES projects(id),
@@ -1885,9 +1872,9 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 // query uses FTS5 match syntax (e.g. "auth*", "login authenticate").
 //
 // Shim that delegates to SearchSymbolsByCorpus with an empty corpus —
-// which since #32 part 3 means the **code** corpus (not the legacy mixed
-// index). Callers that need cross-corpus results in one query should
-// pass `corpus="all"` explicitly.
+// which means the **code** corpus. Callers that need config/docs
+// results pass an explicit `corpus=config` / `corpus=docs` (the legacy
+// `corpus=all` mixed index was removed in #106).
 func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int) ([]SearchResult, error) {
 	return s.SearchSymbolsByCorpus(projectID, query, kind, language, "", limit)
 }
@@ -1896,17 +1883,18 @@ func (s *Store) SearchSymbols(projectID, query, kind, language string, limit int
 // specific corpus index (#32).
 //
 // corpus parameter:
-//   - ""        → `symbols_code_fts` (DEFAULT since part 3 — was legacy in part 2)
+//   - ""        → `symbols_code_fts` (default — same as "code")
 //   - "code"    → `symbols_code_fts`   (Function/Method/Class/etc)
 //   - "config"  → `symbols_config_fts` (YAML/JSON/HCL Settings, Resources, etc)
 //   - "docs"    → `symbols_docs_fts`   (Markdown sections, Documents)
-//   - "all"     → legacy `symbols_fts` (mixed corpus; deprecated, slated
-//                 for removal — kept for callers that want a single
-//                 cross-corpus query)
 //
 // Anything else returns an error so a typo doesn't silently fall back to
 // the wrong index. The corpus → vtab mapping mirrors ClassifyCorpus +
 // the v9 trigger routing.
+//
+// **Legacy `corpus=all` removed in #106**. The MCP search handler
+// soft-redirects `corpus=all` to `corpus=code` for backwards compat
+// with older callers; this function rejects the literal value.
 func (s *Store) SearchSymbolsByCorpus(projectID, query, kind, language, corpus string, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 20

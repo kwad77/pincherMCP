@@ -214,7 +214,7 @@
     "input_schema": {
       "properties": {
         "corpus": {
-          "description": "FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL/TOML Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents. Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds. (The legacy 'all' value is deprecated — call once per corpus instead; the schema-level removal is tracked at #106.)",
+          "description": "FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL/TOML Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents. Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds. (The legacy 'all' value was removed in v0.5; older callers passing 'all' are soft-redirected to 'code' with a deprecation log line.)",
           "enum": [
             "",
             "code",

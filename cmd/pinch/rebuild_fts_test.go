@@ -54,7 +54,7 @@ func TestRebuildFTSCLI_Binary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild-fts: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "Rebuilt symbols_fts: 2 rows") {
+	if !strings.Contains(string(out), "Rebuilt FTS indexes: 2 rows") {
 		t.Errorf("expected '2 rows' banner, got:\n%s", out)
 	}
 

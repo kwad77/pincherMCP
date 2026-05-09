@@ -737,15 +737,17 @@ func TestFTS_ContentLookup(t *testing.T) {
 	// integrity-check forces FTS5 to read original content from `symbols`
 	// using the FTS column names. Pre-fix this errored with
 	// `no such column: T.symbol_id`. Post-fix it returns 'ok'.
-	if _, err := s.db.Exec(`INSERT INTO symbols_fts(symbols_fts) VALUES('integrity-check')`); err != nil {
+	// (Now run against `symbols_code_fts`; the legacy `symbols_fts` was
+	// removed in #106's v12 migration.)
+	if _, err := s.db.Exec(`INSERT INTO symbols_code_fts(symbols_code_fts) VALUES('integrity-check')`); err != nil {
 		t.Fatalf("FTS integrity-check failed (issue #19 regression): %v", err)
 	}
 
 	// COUNT(*) on the vtab also routes through content lookup on some
 	// FTS5 paths — verify it succeeds.
 	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbols_fts`).Scan(&n); err != nil {
-		t.Fatalf("COUNT(*) FROM symbols_fts: %v", err)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbols_code_fts`).Scan(&n); err != nil {
+		t.Fatalf("COUNT(*) FROM symbols_code_fts: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("symbols_fts row count = %d, want 1", n)
@@ -2952,7 +2954,7 @@ func TestRebuildFTS_RestoresAfterCorruption(t *testing.T) {
 	// Disable triggers and remove a symbol — this leaves the FTS5 index
 	// holding a ghost entry. Real-world corruption is structurally similar:
 	// the FTS shadow table holds rowids that the symbols table no longer has.
-	if _, err := s.DB().Exec(`DROP TRIGGER sym_fts_delete`); err != nil {
+	if _, err := s.DB().Exec(`DROP TRIGGER sym_fts_corpus_delete`); err != nil {
 		t.Fatalf("drop trigger: %v", err)
 	}
 	if _, err := s.DB().Exec(`DELETE FROM symbols WHERE id='s2'`); err != nil {

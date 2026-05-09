@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -134,35 +135,29 @@ func TestClassifyCorpus_MatchesSQLTriggerRouting(t *testing.T) {
 	}
 }
 
-// TestFTSCorpusSplit_LegacyStillPopulated asserts the v9 migration is a
-// pure addition: every symbol is still in `symbols_fts` (the legacy single
-// index). Pins the "zero observable change" invariant for callers that
-// haven't switched to the per-corpus API yet.
+// TestFTSCorpusSplit_LegacyDropped asserts the v12 migration (#106)
+// removed `symbols_fts`. Pins the post-removal contract — querying the
+// legacy vtab errors with "no such table" on every fresh install.
 //
-// Each name is checked via MATCH because COUNT(*) on external-content
-// FTS5 returns the content table's row count, not the index's.
-func TestFTSCorpusSplit_LegacyStillPopulated(t *testing.T) {
+// Replaces the prior TestFTSCorpusSplit_LegacyStillPopulated which
+// pinned the v9 zero-observable-change invariant, now obsolete.
+func TestFTSCorpusSplit_LegacyDropped(t *testing.T) {
 	s := newTestStore(t)
 	s.UpsertProject(testProject("p1"))
 	s.BulkUpsertSymbols([]Symbol{
 		{ID: "s1", ProjectID: "p1", FilePath: "x.go", Name: "ZZLegFoo",
 			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go"},
-		{ID: "s2", ProjectID: "p1", FilePath: "y.yaml", Name: "ZZLegImage",
-			QualifiedName: "services.web.image", Kind: "Setting", Language: "YAML"},
-		{ID: "s3", ProjectID: "p1", FilePath: "z.tf", Name: "ZZLegWeb",
-			QualifiedName: "resource.aws_instance.web", Kind: "Resource", Language: "HCL"},
 	})
 
-	for _, name := range []string{"ZZLegFoo", "ZZLegImage", "ZZLegWeb"} {
-		var present int
-		if err := s.DB().QueryRow(
-			`SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH ?`, name,
-		).Scan(&present); err != nil {
-			t.Fatalf("MATCH %s: %v", name, err)
-		}
-		if present != 1 {
-			t.Errorf("legacy symbols_fts missing %q (zero-observable-change broken; MATCH count=%d)", name, present)
-		}
+	var present int
+	err := s.DB().QueryRow(
+		`SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH ?`, "ZZLegFoo",
+	).Scan(&present)
+	if err == nil {
+		t.Fatalf("legacy symbols_fts should not exist after v12 migration; got count=%d", present)
+	}
+	if !strings.Contains(err.Error(), "no such table") {
+		t.Errorf("expected 'no such table' error, got: %v", err)
 	}
 }
 
@@ -246,8 +241,9 @@ func TestFTSCorpusSplit_DeleteTriggerCleansAllVtabs(t *testing.T) {
 		t.Fatalf("DeleteSymbolsForFile: %v", err)
 	}
 
-	// Both indexes should no longer match the symbol's name token.
-	for _, vtab := range []string{"symbols_fts", "symbols_code_fts"} {
+	// The relevant per-corpus index should no longer match the symbol's
+	// name token. (Legacy `symbols_fts` was removed in #106's v12 migration.)
+	for _, vtab := range []string{"symbols_code_fts"} {
 		var present int
 		if err := s.DB().QueryRow(
 			`SELECT COUNT(*) FROM `+vtab+` WHERE `+vtab+` MATCH ?`,
@@ -262,8 +258,10 @@ func TestFTSCorpusSplit_DeleteTriggerCleansAllVtabs(t *testing.T) {
 }
 
 // TestSearchSymbolsByCorpus_RoutingTable pins corpus → vtab routing.
-// Empty + "all" both go to legacy. Each named corpus goes to its index.
-// An unknown corpus name errors loudly.
+// Empty defaults to code. Each named corpus goes to its index. Unknown
+// corpus names error loudly. (`all` was removed in #106 and now errors
+// the same as any other unknown name; the MCP search handler still
+// soft-redirects `all` → `code` for backwards compat at the API layer.)
 func TestSearchSymbolsByCorpus_RoutingTable(t *testing.T) {
 	s := newTestStore(t)
 	s.UpsertProject(testProject("p1"))
@@ -290,8 +288,6 @@ func TestSearchSymbolsByCorpus_RoutingTable(t *testing.T) {
 		{"docs finds Markdown", CorpusDocs, "ZZRtIntro", "s-md"},
 		// empty defaults to code — finds the Go function.
 		{"empty = code finds Go", "", "ZZRtFoo", "s-go"},
-		// `all` = legacy mixed; finds the YAML setting via the legacy index.
-		{"all = legacy finds YAML", "all", "ZZRtImage", "s-yaml"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			results, err := s.SearchSymbolsByCorpus("p1", c.matchTok, "", "", c.corpus, 10)
@@ -549,9 +545,11 @@ func TestEnsureSymbolIDColumn_OptionAReplica(t *testing.T) {
 func openRaw(dsn string) (*sql.DB, error) {
 	return sql.Open("sqlite", dsn)
 }
-// coverage: after a rebuild, every vtab (legacy + 3 per-corpus) must
-// contain the right slice of `symbols` again.
-func TestRebuildFTS_RebuildsAllFourVtabs(t *testing.T) {
+// coverage: after a rebuild, every per-corpus vtab must contain the
+// right slice of `symbols` again. The legacy `symbols_fts` vtab was
+// removed in #106 (v12 migration) — the rebuild contract now covers
+// only the three corpus-specific indexes.
+func TestRebuildFTS_RebuildsAllCorpusVtabs(t *testing.T) {
 	s := newTestStore(t)
 	s.UpsertProject(testProject("p1"))
 	s.BulkUpsertSymbols([]Symbol{
@@ -563,11 +561,10 @@ func TestRebuildFTS_RebuildsAllFourVtabs(t *testing.T) {
 			QualifiedName: "doc.intro", Kind: "Section", Language: "Markdown"},
 	})
 
-	// Simulate corruption: drop the corpus indexes' delete triggers and
+	// Simulate corruption: drop the corpus indexes' delete trigger and
 	// remove all symbols. Per-corpus indexes are now ghosts.
 	for _, stmt := range []string{
 		`DROP TRIGGER sym_fts_corpus_delete`,
-		`DROP TRIGGER sym_fts_delete`,
 		`DELETE FROM symbols`,
 	} {
 		if _, err := s.DB().Exec(stmt); err != nil {
@@ -590,14 +587,11 @@ func TestRebuildFTS_RebuildsAllFourVtabs(t *testing.T) {
 		t.Fatalf("RebuildFTS: %v", err)
 	}
 
-	// Each vtab should match its slice of the corpus.
+	// Each per-corpus vtab should match its slice of the corpus.
 	expectations := []struct {
 		vtab string
 		name string
 	}{
-		{"symbols_fts", "ZZRebuildFoo"},
-		{"symbols_fts", "ZZRebuildImage"},
-		{"symbols_fts", "ZZRebuildIntro"},
 		{"symbols_code_fts", "ZZRebuildFoo"},
 		{"symbols_config_fts", "ZZRebuildImage"},
 		{"symbols_docs_fts", "ZZRebuildIntro"},

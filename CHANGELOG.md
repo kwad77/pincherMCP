@@ -7,6 +7,25 @@ minors.
 
 ## [Unreleased]
 
+### Removed
+- **Legacy `symbols_fts` virtual table dropped** (#106). The per-corpus
+  FTS5 split (#32, landed at v9) has carried every search query for two
+  minor-version cycles via `symbols_code_fts` / `symbols_config_fts` /
+  `symbols_docs_fts`. The legacy mixed-corpus index has been
+  double-populated alongside since then, paying a 4× write-amplification
+  tax for callers nobody actually has — the MCP search handler
+  soft-redirects `corpus=all` (the only caller-facing path to the legacy
+  index) to `corpus=code` since #78. Schema v12 migration drops the
+  legacy table and its three sync triggers (`sym_fts_insert` /
+  `sym_fts_delete` / `sym_fts_update`); the baseline schema no longer
+  creates them on fresh installs. Long-running daily DBs reclaim
+  approximately half the FTS5 disk footprint immediately on first
+  `Open()` after upgrade.
+- `corpus="all"` removed from the `corpusVtab()` routing table. The MCP
+  search handler still soft-redirects `corpus=all` → `corpus=code` with
+  a deprecation log line; direct callers of `SearchSymbolsByCorpus`
+  passing `"all"` now get an `unknown corpus` error.
+
 ### Fixed
 - **`project_id` no longer duplicates rows on case-insensitive filesystems**
   (#84 / #92). On macOS (APFS) and Windows (NTFS default), opening the

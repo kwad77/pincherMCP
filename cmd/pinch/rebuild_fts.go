@@ -70,5 +70,5 @@ func runRebuildFTSCLI(args []string) {
 		fmt.Println(rows)
 		return
 	}
-	fmt.Printf("Rebuilt symbols_fts: %d rows in %s\n", rows, elapsed.Round(time.Millisecond))
+	fmt.Printf("Rebuilt FTS indexes: %d rows in %s\n", rows, elapsed.Round(time.Millisecond))
 }
