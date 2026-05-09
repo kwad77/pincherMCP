@@ -30,24 +30,7 @@ func renderDashboardCSS() string {
 // Loads CSS from /v1/dashboard.css and JS from /v1/dashboard.js; no inline blocks
 // so the CSP can enforce script-src 'self' / style-src 'self'.
 // __PINCHER_BASEPATH__ tokens are substituted at render time by renderDashboard.
-const dashboardTemplate = `
-package server
-
-import "strings"
-
-// renderDashboard returns the dashboard HTML with the reverse-proxy basepath
-// (e.g. "/pincher") substituted in. Pass "" for direct deployment. The prefix
-// flows into:
-//   - window.PINCHER_BASEPATH (read by the fetch interceptor + auth check)
-//   - footer anchor hrefs (plain HTML — can't use the interceptor)
-func renderDashboard(prefix string) string {
-	return strings.ReplaceAll(dashboardTemplate, "__PINCHER_BASEPATH__", prefix)
-}
-
-// dashboardTemplate is the self-contained stats dashboard served at GET /v1/dashboard.
-// Fetches all data live from /v1/* endpoints; no external dependencies.
-// __PINCHER_BASEPATH__ tokens are substituted at render time by renderDashboard.
-const dashboardTemplate = ` + "`" + `<!DOCTYPE html>
+const dashboardTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -71,16 +54,16 @@ const dashboardTemplate = ` + "`" + `<!DOCTYPE html>
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-blue" id="last-refresh">—</span>
-    <button class="header-btn" id="auth-btn" title="Set HTTP bearer token (required when pincher is started with --http-key)" onclick="promptForKey()">Auth</button>
+    <button class="header-btn" id="auth-btn" title="Set HTTP bearer token (required when pincher is started with --http-key)" data-action="promptForKey">Auth</button>
   </div>
 </header>
 
 <nav class="tab-bar">
-  <button class="tab-btn active" onclick="showTab('overview')">Overview</button>
-  <button class="tab-btn" onclick="showTab('projects')">Projects</button>
-  <button class="tab-btn" onclick="showTab('search')">Search</button>
-  <button class="tab-btn" onclick="showTab('adrs')">ADRs</button>
-  <button class="tab-btn" onclick="showTab('sessions')">Sessions</button>
+  <button class="tab-btn active" data-action="showTab" data-args='["overview"]'>Overview</button>
+  <button class="tab-btn" data-action="showTab" data-args='["projects"]'>Projects</button>
+  <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
+  <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
+  <button class="tab-btn" data-action="showTab" data-args='["sessions"]'>Sessions</button>
 </nav>
 
 <!-- OVERVIEW -->
@@ -110,18 +93,18 @@ const dashboardTemplate = ` + "`" + `<!DOCTYPE html>
 <main>
   <p class="section-title">Indexed Projects</p>
   <div class="proj-toolbar">
-    <input class="search-input" id="proj-filter" type="text" placeholder="Filter by name or path…" oninput="renderProjects()"/>
+    <input class="search-input" id="proj-filter" type="text" placeholder="Filter by name or path…" data-action-input="renderProjects"/>
     <label class="toolbar-check" title="Hide projects with zero symbols and zero edges">
-      <input type="checkbox" id="proj-hide-empty" onchange="renderProjects()"/> Hide empty
+      <input type="checkbox" id="proj-hide-empty" data-action-change="renderProjects"/> Hide empty
     </label>
-    <button class="btn secondary" id="proj-cleanup-btn" onclick="cleanupEmpty()">Remove all empty</button>
+    <button class="btn secondary" id="proj-cleanup-btn" data-action="cleanupEmpty">Remove all empty</button>
     <span class="toolbar-count" id="proj-count">&nbsp;</span>
   </div>
   <div class="grid grid-2" id="projects-grid"><div class="loading">Loading…</div></div>
   <div class="detail-panel" id="proj-detail-panel">
     <div class="detail-panel-title">
       <span id="proj-detail-name">Project Details</span>
-      <button class="detail-close" onclick="closeDetail()" title="Close">&#x2715;</button>
+      <button class="detail-close" data-action="closeDetail" title="Close">&#x2715;</button>
     </div>
     <div id="proj-detail-body"><div class="loading">Loading…</div></div>
   </div>
@@ -133,14 +116,14 @@ const dashboardTemplate = ` + "`" + `<!DOCTYPE html>
 <main>
   <p class="section-title">Symbol Search</p>
   <div class="search-bar">
-    <input class="search-input" id="search-q" type="text" placeholder="Search symbols… (e.g. handleSearch, auth*, &quot;token validation&quot;)" onkeydown="if(event.key==='Enter')doSearch()"/>
+    <input class="search-input" id="search-q" type="text" placeholder="Search symbols… (e.g. handleSearch, auth*, &quot;token validation&quot;)" data-action-enter="doSearch"/>
     <select class="search-select" id="search-kind">
       <option value="">All kinds</option>
       <option>Function</option><option>Method</option><option>Class</option>
       <option>Interface</option><option>Type</option><option>Variable</option>
     </select>
     <select class="search-select" id="search-proj"><option value="">All projects</option></select>
-    <button class="search-btn" onclick="doSearch()">Search</button>
+    <button class="search-btn" data-action="doSearch">Search</button>
   </div>
   <div id="search-results"></div>
 </main>
@@ -151,15 +134,15 @@ const dashboardTemplate = ` + "`" + `<!DOCTYPE html>
 <main>
   <p class="section-title">Architecture Decision Records</p>
   <div class="adr-toolbar">
-    <select class="adr-select" id="adr-proj" onchange="onADRProjectChange()"><option value="">Select a project…</option></select>
-    <button class="btn secondary" onclick="toggleADRForm()">+ Add Entry</button>
+    <select class="adr-select" id="adr-proj" data-action-change="onADRProjectChange"><option value="">Select a project…</option></select>
+    <button class="btn secondary" data-action="toggleADRForm">+ Add Entry</button>
   </div>
   <div class="adr-form" id="adr-form">
     <input id="adr-key" type="text" placeholder="Key (e.g. PURPOSE, STACK, PATTERNS)"/>
     <textarea id="adr-val" placeholder="Value…"></textarea>
     <div class="adr-form-actions">
-      <button class="btn" onclick="saveADR()">Save</button>
-      <button class="btn secondary" onclick="toggleADRForm()">Cancel</button>
+      <button class="btn" data-action="saveADR">Save</button>
+      <button class="btn secondary" data-action="toggleADRForm">Cancel</button>
     </div>
   </div>
   <div id="adr-list"><div class="empty">Select a project to view its ADRs.</div></div>
@@ -179,8 +162,7 @@ const dashboardTemplate = ` + "`" + `<!DOCTYPE html>
 
 <script src="__PINCHER_BASEPATH__/v1/dashboard.js" defer></script>
 </body>
-</html>` + "`" + `
-`
+</html>`
 
 // dashboardCSSContent is the dashboard stylesheet, served from /v1/dashboard.css.
 const dashboardCSSContent = `
@@ -650,14 +632,14 @@ function renderProjects() {
       return '<div class="proj-card'+cardCls+'" id="pcard-'+esc(id)+'">'+
         '<div class="proj-header"><div class="proj-name">'+esc(name)+'</div>'+
         '<div class="proj-actions">'+
-        // SECURITY: JSON.stringify makes the value safe as JS, but the
-        // resulting string lives inside an HTML attribute \u2014 bare " inside
-        // breaks out of the attribute. esc() escapes HTML special chars
-        // so the attribute value stays intact while remaining valid JS
-        // when the browser unescapes it for the onclick handler.
-        '<button class="proj-btn" onclick="openDetail('+esc(JSON.stringify(id))+','+esc(JSON.stringify(name))+')">&#x2699; Details</button>'+
-        '<button class="proj-btn" onclick="reindex('+esc(JSON.stringify(id))+',this)">\u27f3 Re-index</button>'+
-        '<button class="proj-btn danger" onclick="deleteProject('+esc(JSON.stringify(id))+','+esc(JSON.stringify(name))+')">\u2715 Remove</button>'+
+        // SECURITY: data-action attributes + global click delegation in init.
+        // JSON.stringify into an HTML attribute would break on bare ", so we
+        // pass a JSON ARRAY through esc() \u2014 the array is parsed by the
+        // delegation handler at click time. No inline JS, so script-src
+        // 'self' (without 'unsafe-inline') applies.
+        '<button class="proj-btn" data-action="openDetail" data-args="'+esc(JSON.stringify([id, name]))+'">&#x2699; Details</button>'+
+        '<button class="proj-btn" data-action="reindex" data-args="'+esc(JSON.stringify([id]))+'">\u27f3 Re-index</button>'+
+        '<button class="proj-btn danger" data-action="deleteProject" data-args="'+esc(JSON.stringify([id, name]))+'">\u2715 Remove</button>'+
         '</div></div>'+
         '<div class="proj-path'+(isEmpty||isStale?' missing':'')+'" title="'+esc(path)+'">'+esc(path)+esc(statusMsg)+'</div>'+
         '<div class="proj-stats">'+
@@ -772,7 +754,7 @@ async function doSearch() {
       '<div class="result-header">'+
         '<div class="result-name">'+esc(r.name||'')+'</div>'+
         // SECURITY: esc() around JSON.stringify — see project-card buttons.
-        (r.id?'<button class="copy-id-btn" title="Copy symbol ID" onclick="copyID('+esc(JSON.stringify(r.id))+',this)">Copy ID</button>':'')+
+        (r.id?'<button class="copy-id-btn" title="Copy symbol ID" data-action="copyID" data-args="'+esc(JSON.stringify([r.id]))+'">Copy ID</button>':'')+
       '</div>'+
       '<div class="result-meta">'+
         '<span class="pill">'+esc(r.kind||'')+'</span> &nbsp;'+
@@ -847,7 +829,7 @@ async function loadADRs() {
       '<div class="adr-val">'+esc(e.value||'')+'</div>'+
       // SECURITY: see openDetail/reindex/deleteProject — esc() around
       // JSON.stringify keeps the value safe inside an HTML attribute.
-      '<button class="adr-del" title="Delete" onclick="deleteADR('+esc(JSON.stringify(e.key||''))+')">&#x2715;</button>'+
+      '<button class="adr-del" title="Delete" data-action="deleteADR" data-args="'+esc(JSON.stringify([e.key||'']))+'">&#x2715;</button>'+
       '</div>'
     ).join('');
   } catch(e) { list.innerHTML='<div class="error">Failed to load ADRs: '+esc(e.message)+'</div>'; }
@@ -994,6 +976,52 @@ function closeDetail() {
   _detailOpenId=null;
   document.getElementById('proj-detail-panel').classList.remove('open');
 }
+
+// ── Event delegation ───────────────────────────────────────────────────────
+// All interactive elements use data-action* attributes instead of inline
+// onclick=/oninput= handlers. This keeps the CSP claim honest: we ship
+// script-src 'self' (no 'unsafe-inline'), and inline event attributes
+// would be silently blocked. Every handler runs through these four
+// delegated listeners.
+//
+// Args are JSON-encoded in data-args. The clicked/changed element is
+// appended as the LAST argument so functions like reindex(id, btnEl) and
+// copyID(id, btnEl) keep working — they just receive the element via
+// delegation instead of the inline 'this' reference. Functions that
+// don't need the element ignore the trailing arg (JS truncates extras).
+function _dispatchAction(el) {
+  const action = el.getAttribute('data-action');
+  const argsRaw = el.getAttribute('data-args');
+  const args = argsRaw ? JSON.parse(argsRaw) : [];
+  const fn = window[action];
+  if (typeof fn === 'function') {
+    fn.apply(null, args.concat(el));
+  }
+}
+function _dispatchSimple(el, attr) {
+  const fn = window[el.getAttribute(attr)];
+  if (typeof fn === 'function') fn();
+}
+document.body.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (el) {
+    e.preventDefault();
+    _dispatchAction(el);
+  }
+});
+document.body.addEventListener('input', e => {
+  const el = e.target.closest('[data-action-input]');
+  if (el) _dispatchSimple(el, 'data-action-input');
+});
+document.body.addEventListener('change', e => {
+  const el = e.target.closest('[data-action-change]');
+  if (el) _dispatchSimple(el, 'data-action-change');
+});
+document.body.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const el = e.target.closest('[data-action-enter]');
+  if (el) _dispatchSimple(el, 'data-action-enter');
+});
 
 // ── Init ───────────────────────────────────────────────────────────────────
 updateAuthBadge();
