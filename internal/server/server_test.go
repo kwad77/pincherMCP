@@ -4758,6 +4758,68 @@ func TestHandleArchitecture_NextStepsFromHotspot(t *testing.T) {
 	}
 }
 
+// TestHandleArchitecture_TrulyEmptyProjectGetsZeroSymbolsDiagnosis pins
+// the diagnosis branch when an indexed project has zero symbols (e.g.
+// every file was filtered as a lockfile/minified). Agents shouldn't
+// see an empty body — they should see what to do next (`health` for
+// the per-language coverage breakdown, or force-reindex).
+func TestHandleArchitecture_TrulyEmptyProjectGetsZeroSymbolsDiagnosis(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "arch-empty"
+	store.UpsertProject(db.Project{ID: "arch-empty", Path: "/tmp/arch-empty", Name: "arch-empty", IndexedAt: time.Now(), SymCount: 0})
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{
+		"project": "arch-empty",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleArchitecture: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing on empty-project response")
+	}
+	diag, _ := meta["diagnosis"].(string)
+	if !strings.Contains(diag, "zero symbols") {
+		t.Errorf("diagnosis should mention 'zero symbols' for SymCount=0, got: %q", diag)
+	}
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) < 2 {
+		t.Errorf("expected health+index next_steps for empty project, got: %v", steps)
+	}
+}
+
+// TestHandleArchitecture_DocsOnlyProjectGetsCorrectDiagnosis pins the
+// branch for projects that DO have symbols but no callable hotspots
+// or entry points — typical for docs/config-only projects (Markdown
+// Sections, YAML Settings, no Functions).
+func TestHandleArchitecture_DocsOnlyProjectGetsCorrectDiagnosis(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "arch-docs"
+	store.UpsertProject(db.Project{ID: "arch-docs", Path: "/tmp/arch-docs", Name: "arch-docs", IndexedAt: time.Now(), SymCount: 12})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "arch-docs/README.md::intro#Section", ProjectID: "arch-docs",
+			FilePath: "README.md", Name: "intro", QualifiedName: "intro",
+			Kind: "Section", Language: "Markdown"},
+	})
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{
+		"project": "arch-docs",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleArchitecture: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing on docs-only response")
+	}
+	diag, _ := meta["diagnosis"].(string)
+	if !strings.Contains(diag, "config/docs-only") {
+		t.Errorf("diagnosis should mention 'config/docs-only' for symbols-but-no-functions, got: %q", diag)
+	}
+}
+
 func TestHandleIndex_ZeroSymbolsSurfacesDiagnosis(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	emptyDir := t.TempDir() // no source files at all

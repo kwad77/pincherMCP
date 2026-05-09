@@ -2373,6 +2373,40 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 					"why": "no hotspot graph available; start from the entry point and explore from there"},
 			},
 		}
+	} else {
+		// Truly empty — neither hotspots nor entry points. Either the
+		// project isn't indexed, or it is indexed but contains zero
+		// callable symbols (docs-only, config-only, lockfile-only).
+		// Disambiguate via the project's reported sym count.
+		symCount := 0
+		if p != nil {
+			symCount = p.SymCount
+		}
+		var diagnosis string
+		var nextSteps []map[string]string
+		switch {
+		case p == nil:
+			diagnosis = "project not found in the index"
+			nextSteps = []map[string]string{
+				{"tool": "list", "args": `{}`, "why": "see all indexed projects — the right project name might differ from what you passed"},
+				{"tool": "index", "args": `{"path":"/path/to/project"}`, "why": "index the project if it's not yet present"},
+			}
+		case symCount == 0:
+			diagnosis = "project is indexed but contains zero symbols — likely all files were filtered (lockfiles, minified bundles) or none are in supported languages"
+			nextSteps = []map[string]string{
+				{"tool": "health", "args": fmt.Sprintf(`{"project":"%s"}`, projectID), "why": "per-language extraction coverage shows whether files were detected but skipped vs not detected at all"},
+				{"tool": "index", "args": fmt.Sprintf(`{"path":"%s","force":true}`, p.Path), "why": "force a re-index in case the previous run hit a partial-state bug"},
+			}
+		default:
+			diagnosis = fmt.Sprintf("project has %d symbols but no callable hotspots or entry points — likely config/docs-only (Settings, Sections, no Functions)", symCount)
+			nextSteps = []map[string]string{
+				{"tool": "search", "args": fmt.Sprintf(`{"query":"*","corpus":"config","project":"%s"}`, projectID), "why": "list all Settings to confirm this is a config/docs project"},
+			}
+		}
+		data["_meta"] = map[string]any{
+			"diagnosis":  diagnosis,
+			"next_steps": nextSteps,
+		}
 	}
 	// Architecture replaces reading every file to orient in the codebase.
 	// Savings = all symbols in project × avgSymbolContext − this payload.
