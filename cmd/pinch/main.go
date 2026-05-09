@@ -65,20 +65,7 @@ func main() {
 	// without reading the README or source.
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		fmt.Fprintln(out, "pincherMCP — local code intelligence MCP server")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  pincher                        Run as MCP stdio server (Claude Code, etc.)")
-		fmt.Fprintln(out, "  pincher --http :PORT           Run as MCP stdio + HTTP REST server")
-		fmt.Fprintln(out, "  pincher index PATH             Index a repository from the CLI")
-		fmt.Fprintln(out, "  pincher doctor                 Diagnostic report (schema, staleness, failures)")
-		fmt.Fprintln(out, "  pincher self-test              Smoke-test the install end-to-end")
-		fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
-		fmt.Fprintln(out, "  pincher --version              Print version and exit")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "Flags (apply to the no-subcommand form — running as MCP server):")
+		printHelpBanner(out)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -201,6 +188,27 @@ func main() {
 // With --hook the output is a Claude Code hook JSON envelope that injects
 // the index summary as additionalContext so Claude knows the project is ready.
 // Without --hook a human-readable one-line summary is printed instead.
+
+// printHelpBanner writes the subcommand summary that prefixes
+// `pincher --help`. Pulled out of main()'s flag.Usage closure so it's
+// directly testable without invoking the CLI binary.
+func printHelpBanner(out io.Writer) {
+	fmt.Fprintln(out, "pincherMCP — local code intelligence MCP server")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  pincher                        Run as MCP stdio server (Claude Code, etc.)")
+	fmt.Fprintln(out, "  pincher --http :PORT           Run as MCP stdio + HTTP REST server")
+	fmt.Fprintln(out, "  pincher index PATH             Index a repository from the CLI")
+	fmt.Fprintln(out, "  pincher doctor                 Diagnostic report (schema, staleness, failures)")
+	fmt.Fprintln(out, "  pincher self-test              Smoke-test the install end-to-end")
+	fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
+	fmt.Fprintln(out, "  pincher --version              Print version and exit")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Flags (apply to the no-subcommand form — running as MCP server):")
+}
+
 func runIndexCLI(args []string) {
 	// Silence the DB/indexer log output — callers only want the result line.
 	log.SetOutput(io.Discard)
