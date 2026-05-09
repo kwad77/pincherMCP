@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -128,5 +129,37 @@ func TestSelfTestStep_SearchFailsOnEmptyIndex(t *testing.T) {
 
 	if err := searchSynthetic(rt); err == nil {
 		t.Error("search should fail when project has no indexed symbols")
+	}
+}
+
+// TestSelfTestCLI_Binary exercises the runSelfTestCLI dispatch wrapper
+// end-to-end via `pincher self-test`. The in-process tests above cover
+// runSelfTest's logic but not the CLI entrypoint that calls os.Exit.
+//
+// With GOCOVERDIR set in the parent (CI Coverage job), the
+// instrumented binary's coverage is folded into the merged profile.
+func TestSelfTestCLI_Binary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	dataDir := t.TempDir()
+
+	cmd := exec.Command(bin, "self-test", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher self-test: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "self-test: OK") {
+		t.Errorf("expected 'self-test: OK' in output:\n%s", got)
+	}
+	// Each step should report OK individually too.
+	for _, step := range []string{"create synthetic project", "index the project", "search for known symbol", "retrieve symbol source"} {
+		if !strings.Contains(got, step) {
+			t.Errorf("missing step %q in self-test output:\n%s", step, got)
+		}
 	}
 }
