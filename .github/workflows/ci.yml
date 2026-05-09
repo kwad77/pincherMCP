@@ -101,27 +101,34 @@ jobs:
   # bench-regression gates ns/op + allocs/op against the committed
   # baselines under testdata/bench/ (#50).
   #
-  # CI uses wider thresholds (40% ns / 50% allocs) than local dev (20%/30%)
-  # because the committed baselines are captured on developer hardware and
-  # GitHub-hosted runners differ by more than the local noise floor on some
-  # benchmarks. Cold-walk benchmarks like Index_Cold_K8sOps consistently
-  # land +20% on CI vs the dev baseline; that's hardware mismatch, not a
-  # regression. The wider CI threshold catches genuine regressions
-  # (>+40% ns is well outside any documented runner variance) without
-  # flapping on no-op PRs.
+  # Status: the committed baselines were captured on developer hardware
+  # (Windows i9-14900K). GitHub-hosted ubuntu-latest runners are ~2x
+  # slower than the dev box on the server-package benchmarks
+  # (HandleSearch / HandleQuery / HandleArchitecture all land +90-200%
+  # vs the dev baseline; index-package benchmarks fit a 0.40 threshold).
+  # That's hardware mismatch, not regression. Until we re-baseline on
+  # CI hardware, the gate runs in sanity-only mode: thresholds wide
+  # enough that only catastrophic regressions (>3x) trip it.
   #
-  # `continue-on-error: true` is still set during phase 1 — promotion to
-  # required gate waits on:
-  #   1. Several CI runs at the wider thresholds without false positives
-  #   2. Re-baselining via `make corpus-bench-update` on a CI run (so the
-  #      thresholds can be tightened back to the local-dev numbers).
+  # The job ALSO uploads the CI-actual bench output as a separate
+  # artifact (`bench-ci-actual-*`) — distinct from the committed
+  # baseline upload — so a future PR can pull a green run's numbers
+  # down and use them as the new CI-calibrated baseline. That's what
+  # unlocks tightening the gate back toward the local-dev numbers.
+  #
+  # `continue-on-error: true` is still set; phase 1 ends when:
+  #   1. Re-baseline on CI numbers (via the bench-ci-actual artifact)
+  #   2. Tighten thresholds back to local-dev defaults (0.20 / 0.30)
+  #   3. Remove `continue-on-error: true`
   bench-regression:
     name: Benchmark regression (advisory)
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
-      BENCH_NS_THRESHOLD: "0.40"
-      BENCH_ALLOCS_THRESHOLD: "0.50"
+      # Sanity-only thresholds while CI baselines remain dev-machine
+      # numbers. Tighten back to 0.20/0.30 once re-baselined on CI.
+      BENCH_NS_THRESHOLD: "2.50"
+      BENCH_ALLOCS_THRESHOLD: "1.00"
     steps:
       - uses: actions/checkout@v4
 
@@ -130,13 +137,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run regression gate
-        run: make corpus-bench
+      - name: Capture CI bench output for re-baselining
+        run: |
+          mkdir -p ci-bench-actual
+          go test ./internal/index/ -run='^$' -bench=. -benchtime=2s -benchmem \
+            > ci-bench-actual/index.bench.txt
+          go test ./internal/server/ -run='^$' -bench=. -benchtime=2s -benchmem \
+            > ci-bench-actual/server.bench.txt
 
-      - name: Upload actual numbers
+      - name: Compare against committed baseline (sanity gate)
+        run: |
+          go run ./cmd/benchcmp \
+            -ns-threshold=$BENCH_NS_THRESHOLD \
+            -allocs-threshold=$BENCH_ALLOCS_THRESHOLD \
+            testdata/bench/index.bench.txt ci-bench-actual/index.bench.txt
+          go run ./cmd/benchcmp \
+            -ns-threshold=$BENCH_NS_THRESHOLD \
+            -allocs-threshold=$BENCH_ALLOCS_THRESHOLD \
+            testdata/bench/server.bench.txt ci-bench-actual/server.bench.txt
+
+      - name: Upload CI-actual bench output (for re-baselining)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bench-actual-${{ github.run_id }}
-          path: testdata/bench/
-          retention-days: 14
+          name: bench-ci-actual-${{ github.run_id }}
+          path: ci-bench-actual/
+          retention-days: 30
