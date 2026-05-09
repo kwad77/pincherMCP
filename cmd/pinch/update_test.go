@@ -467,11 +467,7 @@ func TestUpdateCLI_CheckBinary(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -480,6 +476,7 @@ func TestUpdateCLI_CheckBinary(t *testing.T) {
 
 	cmd := exec.Command(bin, "update", "--check")
 	cmd.Dir = cwd
+	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("pincher update --check: %v\n%s", err, out)
@@ -500,14 +497,11 @@ func TestUpdateCLI_DryRunStandalone(t *testing.T) {
 		t.Skip("skipping network-dependent test in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	notARepo := t.TempDir()
 	cmd := exec.Command(bin, "update", "--check", "--source", notARepo)
+	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
 	// --source pointing at a non-repo is treated as "no source detected",
 	// which falls through to standalone mode.
