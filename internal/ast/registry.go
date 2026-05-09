@@ -46,11 +46,28 @@ type ExtractOptions struct {
 	ModulePath string
 }
 
+// FilenameExtractor is an optional extension some extractors implement
+// to claim files by exact basename rather than extension — e.g. `Makefile`
+// or `Dockerfile`, which carry no extension at all but have a stable
+// filename convention. Implementing this is purely additive: extractors
+// that don't need filename detection still satisfy the bare Extractor
+// interface and don't have to opt in.
+type FilenameExtractor interface {
+	Extractor
+	// Filenames returns a map from exact basename (case-sensitive on
+	// Unix, case-insensitive in practice on macOS/Windows; the registry
+	// stores both forms verbatim and looks up the literal first, then
+	// the lowercased fallback) to the language name DetectLanguage
+	// should return. e.g. {"Makefile": "Makefile", "GNUmakefile": "Makefile"}.
+	Filenames() map[string]string
+}
+
 var (
 	registryMu  sync.RWMutex
 	extractors  []Extractor
 	byLanguage  = map[string]Extractor{}
 	byExtension = map[string]string{} // extension (".md") → language ("Markdown")
+	byFilename  = map[string]string{} // basename ("Makefile") → language ("Makefile")
 )
 
 // Register adds an extractor to the registry. Called from init() in each
@@ -65,6 +82,11 @@ func Register(e Extractor) {
 	}
 	for ext, lang := range e.Extensions() {
 		byExtension[strings.ToLower(ext)] = lang
+	}
+	if fe, ok := e.(FilenameExtractor); ok {
+		for name, lang := range fe.Filenames() {
+			byFilename[name] = lang
+		}
 	}
 }
 
@@ -83,9 +105,37 @@ func languageForExtension(ext string) string {
 	return byExtension[strings.ToLower(ext)]
 }
 
-// DetectLanguage returns the language name for a filename based on its
-// extension, consulting the registry. Returns "" for unsupported files.
+// languageForFilename returns the language name registered for an exact
+// basename (e.g. "Makefile"), or "" if no FilenameExtractor claims it.
+// Tries the literal first, then the lowercased form so case-insensitive
+// filesystems (macOS, Windows) still match `makefile` to `Makefile`.
+func languageForFilename(base string) string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	if lang := byFilename[base]; lang != "" {
+		return lang
+	}
+	// Case-insensitive fallback. Only walks the (small) filename map
+	// when the literal miss fired — extension matching is unaffected.
+	lower := strings.ToLower(base)
+	for name, lang := range byFilename {
+		if strings.ToLower(name) == lower {
+			return lang
+		}
+	}
+	return ""
+}
+
+// DetectLanguage returns the language name for a filename. Filenames
+// matching a FilenameExtractor (`Makefile`, `Dockerfile`, etc.) take
+// precedence over extension lookups so `Makefile.template` style files
+// don't get mis-claimed by .template handlers in the future. Returns
+// "" for unsupported files.
 func DetectLanguage(filename string) string {
+	base := filepath.Base(filename)
+	if lang := languageForFilename(base); lang != "" {
+		return lang
+	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
 		return ""
