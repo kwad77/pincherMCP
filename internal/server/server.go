@@ -52,7 +52,11 @@ type Server struct {
 	store    *db.Store
 	indexer  *index.Indexer
 	handlers map[string]mcp.ToolHandler
-	version  string
+	// tools holds the same set as handlers but keyed for inspection. Used
+	// by the tool-contract golden-file test (#127) so any rename / removal
+	// of a tool surfaces as a deliberate, reviewable diff.
+	tools   map[string]*mcp.Tool
+	version string
 	httpKey  string // optional bearer token; empty = no auth required
 
 	// basePath is the externally-visible URL prefix when pincher is served
@@ -122,6 +126,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		store:               store,
 		indexer:             indexer,
 		handlers:            make(map[string]mcp.ToolHandler),
+		tools:               make(map[string]*mcp.Tool),
 		version:             version,
 		persistentSessionID: fmt.Sprintf("sess-%d", now.UnixNano()),
 		sessionStartedAt:    now,
@@ -1001,6 +1006,7 @@ func (s *Server) resolveProjectRoot(projectID string) (string, error) {
 func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 	s.mcp.AddTool(tool, handler)
 	s.handlers[tool.Name] = handler
+	s.tools[tool.Name] = tool
 }
 
 func (s *Server) registerTools() {
