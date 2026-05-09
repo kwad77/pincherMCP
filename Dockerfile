@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
-FROM golang:1.24-alpine AS builder
+# Pin matches the toolchain in go.mod (currently 1.25.0). Bump together
+# when go.mod's `go` directive moves; CI's Release workflow Docker job
+# fails noisily if they drift (release.yml runs `go mod download`, which
+# refuses to proceed with an older toolchain).
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 COPY go.mod go.sum ./

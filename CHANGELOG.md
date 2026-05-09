@@ -36,6 +36,29 @@ minors.
   gate 83% → 85% with the test-infrastructure investment needed to
   exercise SQL-error paths cleanly.
 
+## [v0.4.1] — 2026-05-09 — Dockerfile go-version fix
+
+Patch release. v0.4.0 was tagged with the new milestone-driven release
+process but the Release workflow's Docker job failed because the
+Dockerfile pinned `golang:1.24-alpine` while go.mod requires `1.25.0`.
+Result: v0.4.0 didn't produce platform binaries.
+
+This patch:
+
+- Bumps the Dockerfile to `golang:1.25-alpine` with a comment tying
+  the pin to go.mod's `go` directive.
+- Adds a `workflow_dispatch` trigger to `.github/workflows/release.yml`
+  so we can re-run the binary build against an existing tag (selecting
+  the tag as the run's ref) without re-tagging when a transient
+  infrastructure flake takes the run down.
+
+### Fixed
+- Release workflow's Docker image build no longer fails on
+  `go mod download` due to toolchain-mismatch.
+
+### Added
+- `workflow_dispatch` trigger on the Release workflow.
+
 ## [v0.4.0] — 2026-05-09 — Capture-what-shipped
 
 First release under the milestone-driven cadence (#193). Closes the
