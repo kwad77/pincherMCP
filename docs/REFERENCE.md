@@ -1,6 +1,6 @@
 # pincherMCP Reference
 
-The long-form reference. The [README](../README.md) is the pitch + quickstart; this file is the manual.
+The long-form reference. The [README](../README.md) is the pitch + quickstart; this file is the manual. For 10-minute end-to-end walkthroughs, see [`tutorials/`](tutorials/) — [Claude Code](tutorials/claude-code.md), [Cursor](tutorials/cursor.md), [HTTP dashboard](tutorials/http-dashboard.md).
 
 **Schema version:** v11 · **MCP tools:** 16 · **Languages with extractors:** 19 (6 AST, 13 regex)
 

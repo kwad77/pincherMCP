@@ -8,6 +8,11 @@ minors.
 ## [Unreleased]
 
 ### Added
+- Three end-to-end tutorials under `docs/tutorials/` (#201) —
+  `claude-code.md`, `cursor.md`, `http-dashboard.md`. Each is ~10
+  minutes of cold reading: install, index, wire your client, send a
+  first query, watch the savings accumulate. Linked from README and
+  REFERENCE.md.
 - `pincher project list` / `pincher project rm` (#202) — CLI surface
   for the existing HTTP `DELETE /v1/projects` and the `list` MCP tool,
   so stdio-binary users can inspect and prune their index without a
