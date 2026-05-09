@@ -1025,7 +1025,7 @@ func (s *Server) registerTools() {
 	// 2. symbol
 	s.addTool(&mcp.Tool{
 		Name:        "symbol",
-		Description: "Retrieve full source code for one symbol by stable ID using O(1) byte-offset seeking — never re-parses the file. Use `search` first to find the ID. Format: '{file_path}::{qualified_name}#{kind}'. Prefer `context` when you also need the symbol's dependencies, or `symbols` for batching multiple lookups. Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed.",
+		Description: "**Use after `search`** to read one symbol's source by stable ID. O(1) byte-offset seeking — never re-parses the file. ID format: `{file_path}::{qualified_name}#{kind}`. **Prefer `context`** when you also need the symbol's dependencies, or **`symbols`** for batching multiple lookups (one round trip instead of N). Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Stable symbol ID. Format: '{file_path}::{qualified_name}#{kind}'"},
@@ -1038,7 +1038,7 @@ func (s *Server) registerTools() {
 	// 3. symbols (batch)
 	s.addTool(&mcp.Tool{
 		Name:        "symbols",
-		Description: "Batch retrieve source code for multiple symbols in one call. Always prefer this over calling `symbol` in a loop — one round trip instead of N. Max 100 IDs per call. Returns array of {id, source, signature, file_path, start_line}.",
+		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["ids"],"properties":{
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
@@ -1050,7 +1050,7 @@ func (s *Server) registerTools() {
 	// 4. context
 	s.addTool(&mcp.Tool{
 		Name:        "context",
-		Description: "PREFERRED for understanding a function: returns the symbol's full source PLUS all functions it directly imports/calls — in one shot. ~90% token reduction vs reading files. Use this instead of `symbol` whenever you need to understand how a function works in context. Returns {symbol: {source, ...}, imports: [{source, ...}]}.",
+		Description: "**Use before editing a function** to read it together with everything it directly imports/calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}]}`. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Symbol ID to fetch with its imports."},
@@ -1062,7 +1062,7 @@ func (s *Server) registerTools() {
 	// 5. search
 	s.addTool(&mcp.Tool{
 		Name:        "search",
-		Description: "Find symbols by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a 5-line snippet for each result — often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: search 'processOrder' to find a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by kind=Function or language=Go to narrow results. Use `context` on the result ID only if you need the full source + dependencies.",
+		Description: "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a 5-line snippet for each result — often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Use `context` on the result ID only if you need full source + dependencies.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["query"],"properties":{
 				"query":{"type":"string","description":"FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR."},
@@ -1094,7 +1094,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "Trace call relationships from a function — who calls it (inbound) or what it calls (outbound). Use for impact analysis before editing a function, or to understand a call chain. Risk labels show blast radius: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name.",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name; ambiguous names fall back to the first match (use `changes` if you have an exact symbol ID instead).",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["name"],"properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder')"},
@@ -1110,7 +1110,7 @@ func (s *Server) registerTools() {
 	// 8. changes
 	s.addTool(&mcp.Tool{
 		Name:        "changes",
-		Description: "Pre-commit safety check: maps your git diff to affected symbols and computes blast radius. Use before committing to understand what you might have broken. Runs git diff, finds changed symbols, BFS-traces impact. Returns changed_symbols, impacted callers (with CRITICAL/HIGH/MEDIUM/LOW risk), and summary counts.",
+		Description: "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts. Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / a branch name.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
@@ -1123,7 +1123,7 @@ func (s *Server) registerTools() {
 	// 9. architecture
 	s.addTool(&mcp.Tool{
 		Name:        "architecture",
-		Description: "Codebase orientation in one call — call this first on any unfamiliar project. Returns: language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Much cheaper than reading files to understand the structure.",
+		Description: "**Call once at the start of unfamiliar work** to orient. Returns language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Much cheaper than reading files to understand the structure.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"}
