@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -465,8 +466,10 @@ func TestEnsureSymbolIDColumn_OptionAReplica(t *testing.T) {
 		// exercise JUST the repair pass that runs after migrations.
 		// The version must be exactly len(schemaMigrations)+1 (the
 		// current version) — anything higher trips the "newer than
-		// binary" guard before the repair runs.
-		`INSERT INTO schema_version (version) VALUES (9)`,
+		// binary" guard before the repair runs. Using a string-formatted
+		// value keeps the test in lock-step with the migration list as
+		// new migrations land (e.g. the v10→v11 sessions http_url cols).
+		fmt.Sprintf(`INSERT INTO schema_version (version) VALUES (%d)`, len(schemaMigrations)+1),
 	} {
 		if _, err := rawDB.Exec(stmt); err != nil {
 			t.Fatalf("setup stmt %q: %v", stmt, err)

@@ -616,6 +616,21 @@ CREATE TRIGGER IF NOT EXISTS sym_fts_corpus_update AFTER UPDATE ON symbols BEGIN
            COALESCE(new.signature,''), COALESCE(new.docstring,'')
     WHERE new.kind = 'Document' OR new.language = 'Markdown';
 END;`,
+
+	// v10 → v11: HTTP-server discovery columns on `sessions`.
+	//
+	// Adds `http_url` and `http_pid` so a separate `pincher web` invocation
+	// can locate the running HTTP dashboard without scanning ports or
+	// reading a side-channel statefile. The flusher writes both columns
+	// when the server has bound an HTTP listener; PID is used by `web` to
+	// liveness-check stale rows (same pattern as internal/index/lockfile.go).
+	//
+	// Defaults are empty / zero so pre-v11 callers that never bind HTTP
+	// look identical to existing rows. SQLite's ALTER TABLE only adds one
+	// column per statement, so two statements are bundled into a single
+	// migration entry — the version bump remains a coherent v10→v11.
+	`ALTER TABLE sessions ADD COLUMN http_url TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE sessions ADD COLUMN http_pid INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -2308,11 +2323,16 @@ func (s *Store) DeleteADR(projectID, key string) error {
 // RecordSession upserts the current session's cumulative stats. Call this
 // periodically (e.g. every 60 s) and on graceful shutdown. It is idempotent —
 // calling it repeatedly with updated values is safe.
-func (s *Store) RecordSession(sessionID string, startedAt time.Time, calls, tokensUsed, tokensSaved int64, costAvoided float64) error {
+//
+// httpURL and httpPID identify the session's HTTP listener for the
+// `pincher web` discovery flow (#TBD). Pass "" / 0 when no HTTP server
+// is bound for this session — the row will still be queryable as a
+// pure-MCP session with no http_url advertised.
+func (s *Store) RecordSession(sessionID string, startedAt time.Time, calls, tokensUsed, tokensSaved int64, costAvoided float64, httpURL string, httpPID int) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions(session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, startedAt.Unix(), time.Now().Unix(), calls, tokensUsed, tokensSaved, costAvoided,
+		`INSERT OR REPLACE INTO sessions(session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided, http_url, http_pid)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, startedAt.Unix(), time.Now().Unix(), calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID,
 	)
 	return err
 }
@@ -2326,12 +2346,14 @@ type SessionRow struct {
 	TokensUsed  int64
 	TokensSaved int64
 	CostAvoided float64
+	HTTPURL     string
+	HTTPPID     int
 }
 
 // GetSessions returns all recorded sessions ordered by start time descending.
 // Limit ≤ 0 returns all rows.
 func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
-	q := `SELECT session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided
+	q := `SELECT session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided, http_url, http_pid
 	      FROM sessions ORDER BY started_at DESC`
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
@@ -2345,7 +2367,7 @@ func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
 	for rows.Next() {
 		var r SessionRow
 		var startedUnix, lastSeenUnix int64
-		if err := rows.Scan(&r.SessionID, &startedUnix, &lastSeenUnix, &r.Calls, &r.TokensUsed, &r.TokensSaved, &r.CostAvoided); err != nil {
+		if err := rows.Scan(&r.SessionID, &startedUnix, &lastSeenUnix, &r.Calls, &r.TokensUsed, &r.TokensSaved, &r.CostAvoided, &r.HTTPURL, &r.HTTPPID); err != nil {
 			return nil, err
 		}
 		r.StartedAt = time.Unix(startedUnix, 0)
@@ -2353,6 +2375,31 @@ func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// GetLatestHTTPSession returns the most recently-flushed session row that
+// advertised an HTTP listener. Caller is expected to PID-liveness-check the
+// returned PID before trusting the URL — this function does not filter on
+// last_seen, so very stale rows can come back.
+//
+// Returns (zero-value, sql.ErrNoRows) when no session has ever advertised
+// an HTTP URL.
+func (s *Store) GetLatestHTTPSession() (SessionRow, error) {
+	var r SessionRow
+	var startedUnix, lastSeenUnix int64
+	err := s.ro.QueryRow(
+		`SELECT session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided, http_url, http_pid
+		 FROM sessions
+		 WHERE http_url != '' AND http_pid > 0
+		 ORDER BY last_seen DESC
+		 LIMIT 1`,
+	).Scan(&r.SessionID, &startedUnix, &lastSeenUnix, &r.Calls, &r.TokensUsed, &r.TokensSaved, &r.CostAvoided, &r.HTTPURL, &r.HTTPPID)
+	if err != nil {
+		return SessionRow{}, err
+	}
+	r.StartedAt = time.Unix(startedUnix, 0)
+	r.LastSeen = time.Unix(lastSeenUnix, 0)
+	return r, nil
 }
 
 // GetAllTimeSavings returns the cumulative savings across all recorded sessions.

@@ -53,6 +53,10 @@ func main() {
 		runUpdateCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "web" {
+		runWebCLI(os.Args[2:])
+		return
+	}
 
 	var (
 		showVersion = flag.Bool("version", false, "Print version and exit")
@@ -212,6 +216,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
 	fmt.Fprintln(out, "  pincher stats                  Persisted savings + per-project counts (--json, --reset)")
 	fmt.Fprintln(out, "  pincher update                 Update pincher in place (git pull + build, or release asset)")
+	fmt.Fprintln(out, "  pincher web                    Print dashboard URL of running HTTP server (auto-starts one if none)")
 	fmt.Fprintln(out, "  pincher --version              Print version and exit")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")

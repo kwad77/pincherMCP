@@ -161,20 +161,30 @@ func (s *Server) StartSessionFlusher(ctx context.Context) {
 }
 
 // flushSession persists current in-memory session stats to the sessions table.
-// Only runs when an MCP client has connected (mcpConnected=1). This prevents
-// the HTTP-only dashboard process from writing its own tool calls as sessions.
+//
+// Flushes when EITHER an MCP client has connected OR the HTTP listener is
+// bound — the HTTP-bound case lets `pincher web` discover the URL even
+// when no MCP client has registered yet (e.g. dashboard-first launches).
+// Pure stats-less HTTP-only processes still skip the write because calls=0
+// short-circuits below the connection gate.
 func (s *Server) flushSession() {
-	if atomic.LoadInt32(&s.mcpConnected) == 0 {
-		return // no MCP client — HTTP-only process, don't record fake sessions
+	httpURL := s.HTTPAddr()
+	if atomic.LoadInt32(&s.mcpConnected) == 0 && httpURL == "" {
+		return // no MCP client AND no HTTP listener — nothing useful to record
 	}
 	calls := atomic.LoadInt64(&s.statsCalls)
-	if calls == 0 {
+	if calls == 0 && httpURL == "" {
 		return // nothing to record yet
 	}
 	tokensUsed := atomic.LoadInt64(&s.statsTokensUsed)
 	tokensSaved := atomic.LoadInt64(&s.statsTokensSaved)
 	costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
-	if err := s.store.RecordSession(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided); err != nil {
+	httpPID := 0
+	if httpURL != "" {
+		httpURL = "http://" + displayAddr(httpURL) + s.basePath
+		httpPID = os.Getpid()
+	}
+	if err := s.store.RecordSession(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID); err != nil {
 		slog.Warn("pincher.session.flush.err", "err", err)
 	}
 }
@@ -885,6 +895,13 @@ func (s *Server) ListenAndServeHTTP(ctx context.Context, addr string) error {
 	s.mu.Lock()
 	s.httpAddr = actualAddr
 	s.mu.Unlock()
+
+	// Eager-flush so a `pincher web` invocation issued shortly after this
+	// process starts can already see the URL in the sessions table — without
+	// this, it'd have to wait up to sessionFlushInterval (10 s) for the
+	// background ticker. Doing it on a goroutine avoids blocking the HTTP
+	// startup path on a SQLite write.
+	go s.flushSession()
 
 	srv := &http.Server{Addr: actualAddr, Handler: s}
 	go func() {
