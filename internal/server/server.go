@@ -1063,7 +1063,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string"},
 				"kind":{"type":"string","description":"Filter by symbol kind: Function|Method|Class|Interface|Enum|Type|Variable|Module|Setting|Section|Document|Resource|DataSource|Output|Local|Provider|Block"},
 				"language":{"type":"string","description":"Filter by language: Go|Python|TypeScript|HCL|YAML|Markdown|etc"},
-				"corpus":{"type":"string","description":"FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents; 'all' searches the legacy mixed index across every symbol kind (deprecated, kept for cross-corpus queries). Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds."},
+				"corpus":{"type":"string","enum":["","code","config","docs"],"description":"FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL/TOML Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents. Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds. (The legacy 'all' value is deprecated — call once per corpus instead; the schema-level removal is tracked at #106.)"},
 				"limit":{"type":"integer","description":"Max results (default 20)"},
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.7 — filters low-quality symbols (lockfile keys, vendored regex matches, README headings) by default. Set to 0.0 to disable filtering and surface every symbol the index contains. Inclusive: a symbol scored exactly at the threshold IS returned."}
@@ -1492,6 +1492,17 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	kind := str(args, "kind")
 	language := str(args, "language")
 	corpus := str(args, "corpus")
+	// "all" is deprecated and being removed (#106). Soft-redirect to "code"
+	// — that's what new callers should use, and it preserves the dominant
+	// real-world use case (search for an identifier). A hard error would
+	// break existing scripts; a soft redirect with a warning surfaces the
+	// deprecation without breakage. The schema-level drop is tracked at #106.
+	if corpus == "all" {
+		slog.Warn("pincher.search.corpus_all_deprecated",
+			"action", "redirected to 'code'",
+			"recommendation", "call search once per corpus (code/config/docs); see #106")
+		corpus = ""
+	}
 	limit := intArg(args, "limit", 20)
 	fieldsArg := str(args, "fields")
 	// #34 Phase 4: default min_confidence is 0.7. Suppresses low-quality
