@@ -1422,9 +1422,41 @@ func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
 }
 
 // GetSymbol returns a symbol by its stable ID, or nil if not found.
+//
+// **Cross-project caveat**: pre-#1 fix, the symbol_id format
+// (`{file_path}::{qualified_name}#{kind}`) is not project-scoped, so two
+// indexed projects with a `main.go::main.main#Function` collision can
+// shadow each other under SQLite's `INSERT OR REPLACE` PK rule. Callers
+// that have a project context — every server tool except `list` and
+// `health` — should prefer `GetSymbolScoped(projectID, id)` so the
+// returned row is verified to belong to the requested project.
+//
+// This unscoped variant remains for cases where the project is unknown
+// (e.g. ID came from outside the active session) and for legacy
+// internal callers; the scoped variant is the safer default for any
+// MCP tool handler.
 func (s *Store) GetSymbol(id string) (*Symbol, error) {
 	// Reader pool (#51) — pure SELECT.
 	row := s.ro.QueryRow(symSelectFrom+` WHERE id=?`, id)
+	return scanOneSymbol(row)
+}
+
+// GetSymbolScoped returns a symbol by ID, but only if it belongs to the
+// requested project. Returns (nil, nil) if no row matches both filters
+// — same shape as GetSymbol's not-found case so callers don't need
+// parallel error paths.
+//
+// Why both: the global symbol-ID format collides on identically-laid-out
+// repos (two Go projects each with `cmd/main.go::main.main#Function`).
+// Without project scoping, a `symbol` MCP request authenticated against
+// project A could return project B's row whenever its ID happens to
+// match. The scoped lookup is structural defence-in-depth that closes
+// the leak even when the underlying ID is ambiguous (#2).
+func (s *Store) GetSymbolScoped(projectID, id string) (*Symbol, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("GetSymbolScoped: projectID required (use GetSymbol when project is unknown)")
+	}
+	row := s.ro.QueryRow(symSelectFrom+` WHERE id=? AND project_id=?`, id, projectID)
 	return scanOneSymbol(row)
 }
 
@@ -1688,7 +1720,31 @@ type TraceResult struct {
 // using a single recursive CTE per direction (max 2 SQL calls for "both").
 // direction: "outbound" | "inbound" | "both"
 // Results are deduplicated: each symbol ID appears once at its minimum depth.
+//
+// **Cross-project caveat**: same as `GetSymbol`, this unscoped variant
+// traverses every edge whose endpoints match `startID` regardless of
+// which project owns them. With the pre-#1 global symbol-ID format,
+// that means a trace can hop into a sibling project if their IDs
+// collide. Callers with a project context should prefer
+// `TraceViaCTEScoped`; this unscoped form is preserved for legacy
+// callers and for the "no project" mode where the trace is genuinely
+// cross-corpus.
 func (s *Store) TraceViaCTE(startID, direction string, edgeKinds []string, maxDepth int) ([]TraceResult, error) {
+	return s.traceViaCTE("", startID, direction, edgeKinds, maxDepth)
+}
+
+// TraceViaCTEScoped is TraceViaCTE with the recursive edge join filtered
+// to a single project. Catches the cross-project leak that the global
+// symbol-ID format opens up: if two indexed repos collide on a symbol
+// ID (`cmd/main.go::main.main#Function` is a real-world dupe in the
+// dogfood corpus), the unscoped trace would walk edges across the
+// boundary. Pass an empty projectID to fall back to the unscoped path
+// when the caller deliberately wants cross-project traversal.
+func (s *Store) TraceViaCTEScoped(projectID, startID, direction string, edgeKinds []string, maxDepth int) ([]TraceResult, error) {
+	return s.traceViaCTE(projectID, startID, direction, edgeKinds, maxDepth)
+}
+
+func (s *Store) traceViaCTE(projectID, startID, direction string, edgeKinds []string, maxDepth int) ([]TraceResult, error) {
 	if len(edgeKinds) == 0 {
 		return nil, fmt.Errorf("TraceViaCTE: edgeKinds must not be empty")
 	}
@@ -1711,12 +1767,19 @@ func (s *Store) TraceViaCTE(startID, direction string, edgeKinds []string, maxDe
 			selectNeighbor = "e.from_id"
 		}
 
+		// projectID="" → unscoped (legacy). Non-empty → add the project
+		// filter to the recursive join so traversal can't escape the
+		// caller's project.
+		projectFilter := ""
+		if projectID != "" {
+			projectFilter = " AND e.project_id = ?"
+		}
 		q := `WITH RECURSIVE reach(id, depth, via) AS (
 			SELECT ?, 0, ''
 			UNION ALL
 			SELECT ` + selectNeighbor + `, r.depth + 1, e.kind
 			FROM reach r
-			JOIN edges e ON ` + joinCond + ` AND e.kind IN (` + in + `)
+			JOIN edges e ON ` + joinCond + ` AND e.kind IN (` + in + `)` + projectFilter + `
 			WHERE r.depth < ?
 		)
 		SELECT id, MIN(depth) AS depth, MIN(via) AS via
@@ -1729,6 +1792,9 @@ func (s *Store) TraceViaCTE(startID, direction string, edgeKinds []string, maxDe
 		args := []any{startID}
 		for _, k := range edgeKinds {
 			args = append(args, k)
+		}
+		if projectID != "" {
+			args = append(args, projectID)
 		}
 		args = append(args, maxDepth, startID)
 

@@ -242,7 +242,7 @@ The Cypher engine tokenizes and parses each query, then routes to one of three S
                                        <5ms at depth 3
 ```
 
-All three paths are project-scoped — cross-project data leakage is structurally impossible.
+Project-scoped paths — `search`, `symbol`/`symbols` when `project=` is passed, `query`, `trace`, `changes` — apply a `project_id` filter at lookup and BFS traversal time, so cross-project data is structurally inaccessible from those paths. The unscoped `GetSymbol(id)` fallback is preserved for callers that hold a stable ID without a project context (uncommon; every MCP tool passes `project` when it has one). The symbol-ID format itself (`{file_path}::{qualified_name}#{kind}`) is not yet project-scoped at the SQLite primary-key level — that's tracked as a schema migration ([#1 / PR #92 in flight](https://github.com/kwad77/pincherMCP/pull/92)).
 
 ---
 

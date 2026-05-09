@@ -399,6 +399,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"GetSessions":             true,
 	"ResolveStaleID":          true,
 	"TraceViaCTE":             true,
+	"TraceViaCTEScoped":       true,
+	"GetSymbolScoped":         true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).

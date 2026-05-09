@@ -685,7 +685,7 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 	if len(starts) == 0 {
 		return nil, fmt.Errorf("symbol %q not found in project", name)
 	}
-	return idx.TraceByID(ctx, starts[0].ID, direction, maxDepth, addRisk)
+	return idx.TraceByID(ctx, projectID, starts[0].ID, direction, maxDepth, addRisk)
 }
 
 // TraceByID is Trace with the start-symbol disambiguation step skipped:
@@ -693,7 +693,11 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 // `search`, `symbol`, or `changes` call), so resolving by name would be
 // wrong when multiple symbols share that name. Use this whenever you
 // have an ID; the name-based `Trace` is for tools that take a name.
-func (idx *Indexer) TraceByID(ctx context.Context, symbolID, direction string, maxDepth int, addRisk bool) ([]Hop, error) {
+//
+// projectID scopes the BFS traversal to a single project's edges (#7).
+// Pass "" to opt into legacy cross-project traversal (rare; useful only
+// when the caller is intentionally exploring an inter-project edge).
+func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, direction string, maxDepth int, addRisk bool) ([]Hop, error) {
 	if maxDepth <= 0 || maxDepth > 5 {
 		maxDepth = 3
 	}
@@ -701,14 +705,28 @@ func (idx *Indexer) TraceByID(ctx context.Context, symbolID, direction string, m
 	edgeKinds := []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
 
 	// Single CTE traversal per direction (max 2 SQL calls total for "both").
-	traceResults, err := idx.store.TraceViaCTE(symbolID, direction, edgeKinds, maxDepth)
+	// Project-scoped (#7): the recursive edge join restricts to the
+	// caller's project so a same-named or same-IDed symbol in a sibling
+	// project can't appear in the result set.
+	traceResults, err := idx.store.TraceViaCTEScoped(projectID, symbolID, direction, edgeKinds, maxDepth)
 	if err != nil {
 		return nil, err
 	}
 
 	var hops []Hop
 	for _, tr := range traceResults {
-		sym, getErr := idx.store.GetSymbol(tr.SymbolID)
+		// GetSymbolScoped (#2) belt-and-braces: the BFS already
+		// filtered edges, but a stale row whose target was overwritten
+		// by a colliding symbol in another project would still surface
+		// here. The scoped lookup verifies the symbol belongs to the
+		// requested project. Falls back to unscoped when projectID="".
+		var sym *db.Symbol
+		var getErr error
+		if projectID != "" {
+			sym, getErr = idx.store.GetSymbolScoped(projectID, tr.SymbolID)
+		} else {
+			sym, getErr = idx.store.GetSymbol(tr.SymbolID)
+		}
 		if getErr != nil || sym == nil {
 			continue
 		}
