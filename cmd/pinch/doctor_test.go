@@ -205,6 +205,60 @@ func TestTruncMid_Cases(t *testing.T) {
 	}
 }
 
+// TestSummarizeByReason_DescCountAlphaTie pins the rollup ordering: the
+// most common reason wins, ties break alphabetically so output is stable
+// across runs (map iteration order would otherwise jitter).
+func TestSummarizeByReason_DescCountAlphaTie(t *testing.T) {
+	rows := []DoctorFailureRow{
+		{Reason: "qualified_name_collision"},
+		{Reason: "file_too_large"},
+		{Reason: "file_too_large"},
+		{Reason: "file_too_large"},
+		{Reason: "byte_range_negative"},
+		{Reason: "byte_range_negative"},
+		{Reason: "qualified_name_collision"},
+	}
+	got := summarizeByReason(rows)
+	want := "3 file_too_large, 2 byte_range_negative, 2 qualified_name_collision"
+	if got != want {
+		t.Errorf("summarizeByReason mismatch:\n  got:  %s\n  want: %s", got, want)
+	}
+}
+
+func TestSummarizeByReason_Empty(t *testing.T) {
+	if got := summarizeByReason(nil); got != "(none)" {
+		t.Errorf("summarizeByReason(nil) = %q, want (none)", got)
+	}
+}
+
+// TestFormatDoctorMarkdown_RollupShownOver5Failures pins the visible
+// behaviour: the rollup line appears once the per-file list crosses
+// the visual-scan threshold, and is suppressed below it (where the
+// inline list is already legible).
+func TestFormatDoctorMarkdown_RollupShownOver5Failures(t *testing.T) {
+	rows6 := []DoctorFailureRow{
+		{Project: "p", Language: "go", File: "a.go", Reason: "byte_range_negative"},
+		{Project: "p", Language: "go", File: "b.go", Reason: "byte_range_negative"},
+		{Project: "p", Language: "go", File: "c.go", Reason: "qualified_name_collision"},
+		{Project: "p", Language: "go", File: "d.go", Reason: "qualified_name_collision"},
+		{Project: "p", Language: "go", File: "e.go", Reason: "qualified_name_collision"},
+		{Project: "p", Language: "go", File: "f.go", Reason: "file_too_large"},
+	}
+	out := formatDoctorMarkdown(&DoctorReport{ExtractionFailures: rows6, LookbackHours: 24})
+	if !strings.Contains(out, "by reason:") {
+		t.Errorf("expected rollup line for 6 failures, got:\n%s", out)
+	}
+	if !strings.Contains(out, "3 qualified_name_collision") {
+		t.Errorf("expected '3 qualified_name_collision' in rollup, got:\n%s", out)
+	}
+
+	// 5 failures: rollup suppressed (the inline list is short enough to scan).
+	out5 := formatDoctorMarkdown(&DoctorReport{ExtractionFailures: rows6[:5], LookbackHours: 24})
+	if strings.Contains(out5, "by reason:") {
+		t.Errorf("rollup should be suppressed at 5 failures, got:\n%s", out5)
+	}
+}
+
 func TestTruncEnd_Cases(t *testing.T) {
 	cases := []struct {
 		s    string

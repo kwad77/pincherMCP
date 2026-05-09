@@ -243,6 +243,13 @@ func formatDoctorMarkdown(r *DoctorReport) string {
 			fmt.Fprintf(&b, "      %s\n", truncEnd(f.Details, 80))
 		}
 	}
+	// Roll-up by reason once the per-file list is too long to scan visually.
+	// Surfaces the dominant failure mode at a glance — agents and humans
+	// alike usually want "is this 30 of the same problem or 30 different
+	// problems" before drilling in.
+	if len(r.ExtractionFailures) > 5 {
+		fmt.Fprintf(&b, "  → by reason: %s\n", summarizeByReason(r.ExtractionFailures))
+	}
 	if len(r.ExtractionFailures) > 0 {
 		fmt.Fprintln(&b)
 	}
@@ -292,6 +299,39 @@ func truncMid(s string, max int) string {
 	}
 	half := (max - 1) / 2
 	return s[:half] + "…" + s[len(s)-half:]
+}
+
+// summarizeByReason rolls up a failure list into "N reason1, M reason2"
+// format, sorted by descending count then alphabetically for stable output.
+// Returns "(none)" for an empty list — callers should already gate on
+// length, but defensive output is cheap.
+func summarizeByReason(rows []DoctorFailureRow) string {
+	if len(rows) == 0 {
+		return "(none)"
+	}
+	counts := map[string]int{}
+	for _, r := range rows {
+		counts[r.Reason]++
+	}
+	type pair struct {
+		reason string
+		count  int
+	}
+	pairs := make([]pair, 0, len(counts))
+	for r, c := range counts {
+		pairs = append(pairs, pair{r, c})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].count != pairs[j].count {
+			return pairs[i].count > pairs[j].count
+		}
+		return pairs[i].reason < pairs[j].reason
+	})
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		parts[i] = fmt.Sprintf("%d %s", p.count, p.reason)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func truncEnd(s string, max int) string {
