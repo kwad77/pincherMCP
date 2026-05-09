@@ -859,14 +859,14 @@ Current coverage by package:
 
 | Package | Coverage |
 |---|---|
-| `internal/ast` | 98.5% |
-| `internal/cypher` | 93.7% |
-| `internal/index` | 86.7% |
-| `internal/db` | 85.0% |
-| `internal/server` | 80.7% |
-| **total** | **84.0%** |
+| `internal/cypher` | 94.2% |
+| `internal/ast` | 89.9% |
+| `internal/server` | 89.1% |
+| `internal/index` | 84.1% |
+| `internal/db` | 84.1% |
+| **total** | **84.3%** |
 
-The `internal/server` number is dragged down by `ListenAndServeHTTP`, `handleFetch`, `extractTextFromHTML`, and the MCP `onInit`/`onRoots`/`detectRoot` callbacks — network/runtime code that needs integration-style tests. The CI gate is set to 83%.
+`internal/db` and `internal/index` set the floor — both have OS / SQLite / network code that resists pure unit testing (`ListenAndServeHTTP`, `handleFetch`, `extractTextFromHTML`, MCP `onInit`/`onRoots`/`detectRoot` callbacks, file-system race paths in the watcher). The CI gate is set to **84%**.
 
 ### Dependencies
 
