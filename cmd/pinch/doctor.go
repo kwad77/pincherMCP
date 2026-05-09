@@ -82,6 +82,7 @@ func runDoctorCLI(args []string) {
 // can rely on them.
 type DoctorReport struct {
 	GeneratedAt          string                  `json:"generated_at"`
+	BinaryVersion        string                  `json:"binary_version"`
 	SchemaVersion        int                     `json:"schema_version"`
 	BinarySupportsSchema bool                    `json:"binary_supports_schema"`
 	DBSizeBytes          int64                   `json:"db_size_bytes"`
@@ -125,6 +126,7 @@ type DoctorSlowQueryRow struct {
 func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*DoctorReport, error) {
 	r := &DoctorReport{
 		GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
+		BinaryVersion:        version,
 		LookbackHours:        lookbackHours,
 		BinarySupportsSchema: true, // assumption: the binary that opened the DB supports its schema
 	}
@@ -219,7 +221,13 @@ func formatDoctorMarkdown(r *DoctorReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "pincherMCP doctor — %s\n\n", r.GeneratedAt)
 
-	// Schema + storage
+	// Binary + storage. Binary version surfaces in support paste-ins
+	// without a separate `pincher --version` invocation; suppressed when
+	// blank so a directly-built binary (no -ldflags) doesn't print
+	// "Binary:           v" with an empty string after the v.
+	if r.BinaryVersion != "" {
+		fmt.Fprintf(&b, "Binary:           v%s\n", r.BinaryVersion)
+	}
 	fmt.Fprintf(&b, "Schema:           v%d\n", r.SchemaVersion)
 	fmt.Fprintf(&b, "Database size:    %s\n", humanBytes(r.DBSizeBytes))
 	fmt.Fprintf(&b, "WAL size:         %s\n", humanBytes(r.WALSizeBytes))
