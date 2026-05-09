@@ -1,4 +1,4 @@
-// Package server implements the pincherMCP MCP server with all 15 tools.
+// Package server implements the pincherMCP MCP server with all 16 tools.
 //
 // Every tool response includes a "_meta" envelope:
 //
@@ -1239,6 +1239,18 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleFetch)
+
+	// 16. guide
+	s.addTool(&mcp.Tool{
+		Name:        "guide",
+		Description: "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["task"],"properties":{
+				"task":{"type":"string","description":"Free-form description of what you're trying to do (e.g. 'fix the login timeout bug', 'add caching to the API gateway', 'understand how the indexer handles symlinks')."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+			}
+		}`),
+	}, s.handleGuide)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2721,6 +2733,179 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"stored":    true,
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
+}
+
+// guideShape is the inferred intent of a task description, picked by
+// classifyTaskShape. Each shape maps to a default workflow that the
+// guide tool returns to the agent. Stable string values so future
+// callers can reason about them programmatically.
+type guideShape string
+
+const (
+	shapeFix        guideShape = "fix"        // bug fix, error, broken behaviour
+	shapeAdd        guideShape = "add"        // new feature, new symbol
+	shapeRefactor   guideShape = "refactor"   // rename, restructure, move
+	shapeUnderstand guideShape = "understand" // orient, explain, explore
+	shapeTest       guideShape = "test"       // write or find tests
+	shapeReview     guideShape = "review"     // pre-commit review, blast radius
+	shapeUnknown    guideShape = "unknown"    // fallback
+)
+
+// classifyTaskShape inspects a task description and returns the most
+// likely intent. Keyword-based heuristic — no parsing or NLP. Order
+// matters: the first matching shape wins because some keywords
+// overlap ("fix tests" → tests, not fix).
+//
+// Pure function; pinned by tests so future keyword tweaks don't drift.
+func classifyTaskShape(task string) guideShape {
+	t := strings.ToLower(task)
+	contains := func(needles ...string) bool {
+		for _, n := range needles {
+			if strings.Contains(t, n) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case contains("test", "spec ", "coverage"):
+		return shapeTest
+	case contains("review", "diff", "before commit", "blast radius", "pre-commit", "impact"):
+		return shapeReview
+	case contains("fix", "bug", "broken", "error", "regression", "crash", "wrong"):
+		return shapeFix
+	case contains("refactor", "rename", "restructure", "extract", "clean up"):
+		// Note: "split", "move" intentionally NOT in this list — both are
+		// also nouns ("FTS5 split", "the move detector") and would over-
+		// match. Lose those signal words rather than false-positive.
+		return shapeRefactor
+	case contains("add", "implement", "build", "new feature", "support for", "introduce"):
+		return shapeAdd
+	case contains("understand", "explain", "what does", "how does", "what is", "explore", "learn", "orient"):
+		return shapeUnderstand
+	default:
+		return shapeUnknown
+	}
+}
+
+// guideRecommendations returns the default 2-3 next-tool suggestions
+// for a given task shape. The "args" slot is a best-effort template —
+// the guide tool fills in anything it can extract from the task string
+// (e.g. the most-likely symbol name) and leaves the rest as a
+// placeholder the agent fills in.
+func guideRecommendations(shape guideShape, taskHint string) []map[string]string {
+	switch shape {
+	case shapeFix:
+		return []map[string]string{
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "find the symbol the bug lives in"},
+			{"tool": "context", "args": `{"id":"<from-search>"}`,
+				"why": "read the function plus everything it calls — usually enough to spot the bug without opening any file"},
+			{"tool": "trace", "args": `{"name":"<symbol-name>"}`,
+				"why": "find callers if the bug might affect upstream code"},
+		}
+	case shapeAdd:
+		return []map[string]string{
+			{"tool": "architecture", "args": `{}`,
+				"why": "orient — see hotspots and entry points before adding new code"},
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "find similar existing code; copy its shape rather than reinvent"},
+		}
+	case shapeRefactor:
+		return []map[string]string{
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "locate the symbol you want to refactor"},
+			{"tool": "trace", "args": `{"name":"<symbol-name>","direction":"inbound"}`,
+				"why": "find callers — refactors that miss callers cause regressions"},
+		}
+	case shapeUnderstand:
+		return []map[string]string{
+			{"tool": "architecture", "args": `{}`,
+				"why": "high-level orientation: languages, entry points, hotspots"},
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "find the central symbol the question is about"},
+			{"tool": "context", "args": `{"id":"<from-search>"}`,
+				"why": "read it together with its imports — minimal token cost"},
+		}
+	case shapeTest:
+		return []map[string]string{
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s","kind":"Function"}`, taskHint),
+				"why": "find the function under test"},
+			{"tool": "context", "args": `{"id":"<from-search>"}`,
+				"why": "read it with its dependencies before deciding what to test"},
+		}
+	case shapeReview:
+		return []map[string]string{
+			{"tool": "changes", "args": `{}`,
+				"why": "see your git diff mapped to symbols + blast radius"},
+			{"tool": "context", "args": `{"id":"<from-changes>"}`,
+				"why": "read each high-risk impacted caller before declaring done"},
+		}
+	default:
+		// Unknown shape — orient first, then ask a refined question.
+		return []map[string]string{
+			{"tool": "architecture", "args": `{}`,
+				"why": "high-level orientation always pays before unfamiliar work"},
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "best-effort search using your task keywords; refine the query after seeing results"},
+		}
+	}
+}
+
+// taskHintFromString extracts the most likely symbol-name-shaped token
+// from a task description: the longest word that's plausibly an
+// identifier (alphanumerics + underscore, not a stop word). Returned
+// verbatim so the guide tool can inline it as the search query. Empty
+// if nothing identifier-shaped is present.
+func taskHintFromString(task string) string {
+	stopWords := map[string]bool{
+		"the": true, "a": true, "an": true, "is": true, "are": true,
+		"to": true, "for": true, "in": true, "on": true, "of": true,
+		"with": true, "and": true, "or": true, "but": true, "fix": true,
+		"add": true, "remove": true, "rename": true, "refactor": true,
+		"understand": true, "explain": true, "what": true, "how": true,
+		"does": true, "this": true, "that": true, "review": true,
+		"test": true, "tests": true, "bug": true, "broken": true,
+		"error": true, "regression": true, "feature": true, "support": true,
+		"implement": true, "build": true,
+	}
+	var best string
+	for _, tok := range strings.FieldsFunc(task, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
+	}) {
+		lower := strings.ToLower(tok)
+		if stopWords[lower] {
+			continue
+		}
+		if len(tok) > len(best) {
+			best = tok
+		}
+	}
+	return best
+}
+
+func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	start, tool, args := beginCall(req)
+	task := str(args, "task")
+	if task == "" {
+		return errResult("task is required (free-form description of what you're trying to do)"), nil
+	}
+	shape := classifyTaskShape(task)
+	hint := taskHintFromString(task)
+	if hint == "" {
+		// Fall back to the first non-trivial token so search args isn't
+		// completely empty. Edge case for very short or all-stop-word tasks.
+		hint = task
+	}
+	recommendations := guideRecommendations(shape, hint)
+
+	data := map[string]any{
+		"task":          task,
+		"shape":         string(shape),
+		"hint":          hint,
+		"recommended_next_tools": recommendations,
+	}
+	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
 
 // extractTextFromHTML strips HTML markup and returns (title, bodyText).
