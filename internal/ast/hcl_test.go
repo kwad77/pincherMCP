@@ -1230,26 +1230,94 @@ func TestExtractHCL_NestedBlockReferencesAttributedToParent(t *testing.T) {
 	}
 }
 
-// TestExtractHCL_NoNonVarReferencesInThisIter pins that this iter's
-// scope is var.NAME only — references to local.X, data.X, module.X,
-// and TYPE.NAME (resource references) do NOT produce edges yet.
-// Filed as follow-ups to #86. This test prevents accidental scope
-// creep where a contributor adds e.g. local-edge support without the
-// symbol-side wiring.
-func TestExtractHCL_NoNonVarReferencesInThisIter(t *testing.T) {
-	src := `locals {
+// TestExtractHCL_FullReferenceShapes pins that REFERENCES edges are
+// emitted for every shape #86 documented: var.NAME, local.NAME,
+// module.NAME, data.TYPE.NAME, and bare resource references TYPE.NAME.
+// Replaces the prior var-only hold-back test, which guarded against
+// accidental scope creep before symbol-side wiring was finished.
+func TestExtractHCL_FullReferenceShapes(t *testing.T) {
+	src := `variable "region" { default = "us-east-1" }
+
+locals {
   common_tags = { env = "prod" }
+  derived_tags = merge(local.common_tags, { region = var.region })
 }
 
-resource "aws_instance" "web" {
-  tags = local.common_tags
-  vpc_security_group_ids = [aws_security_group.web.id]
+module "network" {
+  source = "./network"
 }
 
 data "aws_ami" "ubuntu" {}
 
+resource "aws_security_group" "web" { vpc_id = module.network.vpc_id }
+
+resource "aws_instance" "web" {
+  ami                    = data.aws_ami.ubuntu.id
+  tags                   = local.common_tags
+  vpc_security_group_ids = [aws_security_group.web.id]
+  subnet_id              = module.network.public_subnet_id
+}
+
 resource "aws_instance" "db" {
   ami = data.aws_ami.ubuntu.id
+}
+`
+	result := Extract([]byte(src), "HCL", "main.tf")
+
+	// Build {fromQN -> toName} lookup of just REFERENCES edges.
+	refs := map[string]map[string]bool{}
+	for _, e := range result.Edges {
+		if e.Kind != "REFERENCES" {
+			continue
+		}
+		if refs[e.FromQN] == nil {
+			refs[e.FromQN] = map[string]bool{}
+		}
+		refs[e.FromQN][e.ToName] = true
+	}
+
+	expectations := []struct {
+		from, to string
+	}{
+		// locals → other locals + vars
+		{"local.derived_tags", "local.common_tags"},
+		{"local.derived_tags", "var.region"},
+		// resource → data
+		{"resource.aws_instance.web", "data.aws_ami.ubuntu"},
+		{"resource.aws_instance.db", "data.aws_ami.ubuntu"},
+		// resource → local
+		{"resource.aws_instance.web", "local.common_tags"},
+		// resource → resource (bare-type reference)
+		{"resource.aws_instance.web", "resource.aws_security_group.web"},
+		// resource → module (attribute access on module output collapses
+		// to module.NAME — we don't index the module's outputs as
+		// distinct symbols)
+		{"resource.aws_instance.web", "module.network"},
+		{"resource.aws_security_group.web", "module.network"},
+	}
+
+	for _, exp := range expectations {
+		if !refs[exp.from][exp.to] {
+			t.Errorf("missing REFERENCES edge: %s -> %s\nactual edges:\n%s",
+				exp.from, exp.to, strings.Join(edgesAsStrings(result.Edges), "\n"))
+		}
+	}
+}
+
+// TestExtractHCL_BuiltinRootsDoNotEmitEdges pins that iterator and
+// built-in references (`each.value`, `count.index`, `self.*`,
+// `path.module`, `terraform.workspace`) don't leak as REFERENCES
+// edges — they have no symbol target.
+func TestExtractHCL_BuiltinRootsDoNotEmitEdges(t *testing.T) {
+	src := `resource "aws_instance" "web" {
+  count = 3
+  tags = {
+    index   = count.index
+    iter    = each.value
+    self    = self.public_ip
+    path    = path.module
+    ws      = terraform.workspace
+  }
 }
 `
 	result := Extract([]byte(src), "HCL", "main.tf")
@@ -1257,10 +1325,21 @@ resource "aws_instance" "db" {
 		if e.Kind != "REFERENCES" {
 			continue
 		}
-		// Anything not starting with "var." should not be present yet.
-		if !startsWithVarPrefix(e.ToName) {
-			t.Errorf("non-var REFERENCES edge leaked from this iter's scope: %s -> %s",
-				e.FromQN, e.ToName)
+		// Forbidden roots — none of these should produce a target.
+		for _, banned := range []string{"each.", "count.", "self.", "path.", "terraform."} {
+			if strings.HasPrefix(e.ToName, banned) {
+				t.Errorf("built-in root leaked as REFERENCES: %s -> %s", e.FromQN, e.ToName)
+			}
+		}
+		// Specifically: bare-type rejection MUST also catch the case where
+		// each/count/self ended up routed to the resource arm by mistake
+		// (e.g. ToName = "resource.each.value").
+		if strings.HasPrefix(e.ToName, "resource.each") ||
+			strings.HasPrefix(e.ToName, "resource.count") ||
+			strings.HasPrefix(e.ToName, "resource.self") ||
+			strings.HasPrefix(e.ToName, "resource.path") ||
+			strings.HasPrefix(e.ToName, "resource.terraform") {
+			t.Errorf("built-in root miscategorised as resource reference: %s -> %s", e.FromQN, e.ToName)
 		}
 	}
 }
@@ -1273,6 +1352,3 @@ func edgesAsStrings(edges []ExtractedEdge) []string {
 	return out
 }
 
-func startsWithVarPrefix(s string) bool {
-	return len(s) >= 4 && s[:4] == "var."
-}

@@ -87,114 +87,236 @@ func (h *hclExtractor) Extract(source []byte, _, relPath string, _ ExtractOption
 		result.Symbols = append(result.Symbols, hclTopLevelBlockSymbols(blk, source)...)
 	}
 
-	// Reference edges (#86 — minimum viable: var.NAME only).
+	// Reference edges (#86).
 	//
-	// Walk every block's attribute expressions, detect `var.NAME`
-	// traversals, and emit one REFERENCES edge per (containing-block,
-	// referenced-variable) pair. The indexer's deferred resolution
-	// pass matches `ToName="var.NAME"` against Variable symbols whose
-	// qualified_name is `var.NAME` and writes a real edge if it
-	// resolves.
+	// Walk every block's attribute expressions and emit REFERENCES edges
+	// to every Terraform reference root we recognise. The indexer's
+	// deferred resolution pass matches `ToName` against the qualified
+	// name of the corresponding extracted symbol and writes a real edge
+	// if it resolves.
 	//
-	// Deferred to follow-ups: local.NAME (Local), data.TYPE.NAME
-	// (DataSource), module.NAME (Module), TYPE.NAME (Resource),
-	// each.value, count.index. The minimum-viable shape lets agents
-	// `trace --name=region --direction=outbound` and see which
-	// resources use a given variable, which is the dominant use case.
+	// Reference shapes covered (HCL traversal layout = root.attr.attr...):
+	//
+	//   var.NAME                   → ToName = var.NAME              (Variable)
+	//   local.NAME                 → ToName = local.NAME            (Local)
+	//   module.NAME[.outputs]      → ToName = module.NAME           (Module)
+	//   data.TYPE.NAME[.attr]      → ToName = data.TYPE.NAME        (DataSource)
+	//   TYPE.NAME[.attr]           → ToName = resource.TYPE.NAME    (Resource)
+	//
+	// Resources are reference-rooted by their TYPE (e.g. `aws_instance.web.id`)
+	// rather than the literal "resource." prefix. We rebuild the canonical
+	// `resource.TYPE.NAME` qualified name at edge-emit time so resolution
+	// matches the symbol table without requiring callers to know the bare-type
+	// shape. To avoid false positives from `var.NAME.attr` / `local.NAME.attr`
+	// / `data.TYPE.NAME.attr` looking like resource references, the resource
+	// arm explicitly skips the four reserved roots (var, local, module, data).
+	//
+	// Out of scope: `each.value`, `count.index`, `self.*` — these are
+	// in-block iterator references with no symbol target.
 	for _, blk := range hclSortedBlocks(body) {
-		result.Edges = append(result.Edges, hclCollectVarReferences(blk, "")...)
+		result.Edges = append(result.Edges, hclCollectReferences(blk, "")...)
 	}
 	return result
 }
 
-// hclCollectVarReferences walks a block's body recursively, finding
-// `var.NAME` traversals in every attribute expression, and emits one
-// REFERENCES edge per (containing-block, var.NAME) pair the indexer
-// can then resolve.
+// hclCollectReferences walks a block's body recursively, finding every
+// recognised reference root (`var`, `local`, `module`, `data`, and bare
+// resource types) in every attribute expression, and emits one REFERENCES
+// edge per (containing-block, referenced-symbol) pair the indexer can
+// then resolve.
 //
 // parentQN tracks the dotted-path of the closest enclosing top-level
 // block. Empty on the top-level call; populated when recursing into
-// nested blocks. References inside a nested block (e.g. a
-// `lifecycle` block within a resource) are attributed to the
-// **outermost** symbol-emitting block rather than the nested one,
-// because that's the entity an agent would `trace` against.
-func hclCollectVarReferences(blk *hclsyntax.Block, parentQN string) []ExtractedEdge {
+// nested blocks. References inside a nested block (e.g. a `lifecycle`
+// block within a resource) are attributed to the **outermost**
+// symbol-emitting block rather than the nested one, because that's the
+// entity an agent would `trace` against.
+func hclCollectReferences(blk *hclsyntax.Block, parentQN string) []ExtractedEdge {
 	if blk == nil || blk.Body == nil {
 		return nil
 	}
 
-	// Determine this block's QN. For top-level recognised types we
-	// re-derive the prefix; for nested blocks we inherit parentQN
-	// (so references in a `provisioner` block under a resource are
-	// attributed to the resource itself).
-	var qn string
-	if parentQN != "" {
-		qn = parentQN
-	} else {
-		switch blk.Type {
-		case "resource", "data":
-			if len(blk.Labels) >= 2 {
-				qn = blk.Type + "." + hclSanitizeLabel(blk.Labels[0]) + "." + hclSanitizeLabel(blk.Labels[1])
+	// `locals` blocks are special: each attribute becomes its own symbol
+	// (`local.NAME`), and references in the attribute's expression are
+	// FROM that local. Bypass the normal block-QN logic and emit per-
+	// attribute edges directly. Nested blocks inside `locals` are
+	// disallowed by Terraform syntax, so no recursion needed.
+	if parentQN == "" && blk.Type == "locals" {
+		var out []ExtractedEdge
+		for name, attr := range blk.Body.Attributes {
+			if attr.Expr == nil {
+				continue
 			}
-		case "module", "variable", "output", "provider":
-			if len(blk.Labels) >= 1 {
-				ns := blk.Type
-				if blk.Type == "variable" {
-					ns = "var"
+			fromQN := "local." + hclSanitizeLabel(name)
+			seen := map[string]bool{}
+			for _, trav := range attr.Expr.Variables() {
+				to := hclTraversalToName(trav)
+				if to == "" || to == fromQN {
+					continue
 				}
-				qn = ns + "." + hclSanitizeLabel(blk.Labels[0])
+				edgeKey := fromQN + "->" + to
+				if seen[edgeKey] {
+					continue
+				}
+				seen[edgeKey] = true
+				out = append(out, ExtractedEdge{
+					FromQN:     fromQN,
+					ToName:     to,
+					Kind:       "REFERENCES",
+					Confidence: 1.0,
+				})
 			}
-		case "locals", "terraform":
-			// `locals` references go to per-attribute Local symbols
-			// (qn = local.NAME); skipped here because we don't have
-			// the per-attribute name from the locals block alone.
-			// `terraform` blocks usually don't reference vars.
-			return nil
 		}
+		return out
 	}
+
+	qn := hclBlockQN(blk, parentQN)
 	if qn == "" {
 		return nil
 	}
 
 	var out []ExtractedEdge
 	seen := map[string]bool{}
+	emit := func(toName string) {
+		if toName == "" {
+			return
+		}
+		// Don't emit self-references: a resource attribute like
+		// `provisioner { connection { host = self.public_ip } }`
+		// resolves to the same outer resource; that's noise, not a
+		// graph edge.
+		if toName == qn {
+			return
+		}
+		edgeKey := qn + "->" + toName
+		if seen[edgeKey] {
+			return
+		}
+		seen[edgeKey] = true
+		out = append(out, ExtractedEdge{
+			FromQN:     qn,
+			ToName:     toName,
+			Kind:       "REFERENCES",
+			Confidence: 1.0,
+		})
+	}
+
 	for _, attr := range blk.Body.Attributes {
 		if attr.Expr == nil {
 			continue
 		}
 		for _, trav := range attr.Expr.Variables() {
-			if len(trav) < 2 {
-				continue
+			if to := hclTraversalToName(trav); to != "" {
+				emit(to)
 			}
-			root, ok := trav[0].(hcl.TraverseRoot)
-			if !ok || root.Name != "var" {
-				continue
-			}
-			next, ok := trav[1].(hcl.TraverseAttr)
-			if !ok {
-				continue
-			}
-			toName := "var." + next.Name
-			edgeKey := qn + "->" + toName
-			if seen[edgeKey] {
-				continue
-			}
-			seen[edgeKey] = true
-			out = append(out, ExtractedEdge{
-				FromQN:     qn,
-				ToName:     toName,
-				Kind:       "REFERENCES",
-				Confidence: 1.0,
-			})
 		}
 	}
-	// Recurse into nested blocks; references inside attribute the
-	// edge to the outermost block so agents reasoning about a
-	// resource see all its var dependencies in one place.
+	// Recurse into nested blocks; references inside attribute the edge
+	// to the outermost block so agents reasoning about a resource see
+	// all its dependencies in one place.
 	for _, sub := range blk.Body.Blocks {
-		out = append(out, hclCollectVarReferences(sub, qn)...)
+		out = append(out, hclCollectReferences(sub, qn)...)
 	}
 	return out
+}
+
+// hclBlockQN computes the dotted-path qualified name for blk, inheriting
+// parentQN when the caller has already established one. Returns "" for
+// blocks that don't emit a referenceable symbol (e.g. `terraform`,
+// `locals`, malformed blocks missing labels).
+func hclBlockQN(blk *hclsyntax.Block, parentQN string) string {
+	if parentQN != "" {
+		return parentQN
+	}
+	switch blk.Type {
+	case "resource", "data":
+		if len(blk.Labels) >= 2 {
+			return blk.Type + "." + hclSanitizeLabel(blk.Labels[0]) + "." + hclSanitizeLabel(blk.Labels[1])
+		}
+	case "module", "variable", "output", "provider":
+		if len(blk.Labels) >= 1 {
+			ns := blk.Type
+			if blk.Type == "variable" {
+				ns = "var"
+			}
+			return ns + "." + hclSanitizeLabel(blk.Labels[0])
+		}
+	}
+	return ""
+}
+
+// hclTraversalToName maps an hcl.Traversal to the qualified name of the
+// symbol it references, or "" if the root isn't a known reference shape.
+//
+// Mapping rules:
+//
+//	var.NAME              → var.NAME
+//	local.NAME            → local.NAME
+//	module.NAME[.attr]    → module.NAME
+//	data.TYPE.NAME[.attr] → data.TYPE.NAME
+//	TYPE.NAME[.attr]      → resource.TYPE.NAME (any unrecognised root with
+//	                        ≥ 2 attribute steps; rejects var/local/module/data
+//	                        to avoid double-emitting for those reserved roots)
+func hclTraversalToName(trav hcl.Traversal) string {
+	if len(trav) < 2 {
+		return ""
+	}
+	root, ok := trav[0].(hcl.TraverseRoot)
+	if !ok {
+		return ""
+	}
+	switch root.Name {
+	case "var":
+		next, ok := trav[1].(hcl.TraverseAttr)
+		if !ok {
+			return ""
+		}
+		return "var." + next.Name
+
+	case "local":
+		next, ok := trav[1].(hcl.TraverseAttr)
+		if !ok {
+			return ""
+		}
+		return "local." + next.Name
+
+	case "module":
+		next, ok := trav[1].(hcl.TraverseAttr)
+		if !ok {
+			return ""
+		}
+		return "module." + next.Name
+
+	case "data":
+		// data.TYPE.NAME — needs ≥ 3 tokens.
+		if len(trav) < 3 {
+			return ""
+		}
+		typ, ok := trav[1].(hcl.TraverseAttr)
+		if !ok {
+			return ""
+		}
+		name, ok := trav[2].(hcl.TraverseAttr)
+		if !ok {
+			return ""
+		}
+		return "data." + typ.Name + "." + name.Name
+
+	case "each", "count", "self", "path", "terraform":
+		// Iterator / built-in references — no symbol target.
+		return ""
+
+	default:
+		// Bare resource reference: TYPE.NAME[.attr]. Requires ≥ 2 tokens
+		// (root = TYPE, trav[1] = NAME). Anything beyond is attribute
+		// access on the resource and doesn't change the resolution
+		// target.
+		next, ok := trav[1].(hcl.TraverseAttr)
+		if !ok {
+			return ""
+		}
+		return "resource." + root.Name + "." + next.Name
+	}
 }
 
 // hclTopLevelBlockSymbols converts a top-level .tf block into one or more
