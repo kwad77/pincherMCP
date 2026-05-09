@@ -88,19 +88,33 @@ func BenchmarkHandleSymbols_Batch20_GoProject(b *testing.B) {
 
 // BenchmarkHandleSymbol — single byte-offset retrieval. The README claim
 // is "<1ms"; this measures it.
+//
+// The warmup pass is load-bearing for variance: handleSymbol does
+// `os.Stat` + `os.Open` + `Seek` + `Read` per call, and the first
+// invocation hits a cold OS page cache for the corpus file. Without
+// warmup, iter 1 takes ~5x longer than iter N, which inflates ns/op
+// stddev across short -benchtime runs (the 36% CV we saw at #135).
+// One pre-loop call drops the CV under 10% and reflects the real
+// hot-path cost agents see after a warm session.
 func BenchmarkHandleSymbol_GoProject(b *testing.B) {
 	srv, _, projectID := benchSetup(b, "go-project")
 
 	// Pick a known symbol from the corpus.
 	symbolID := "internal/auth/auth.go::auth.Open#Function"
+	args := makeReq(map[string]any{
+		"id":      symbolID,
+		"project": projectID,
+	})
+
+	// Warmup: prime FS cache + reader pool connection.
+	if _, err := srv.handleSymbol(context.Background(), args); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := srv.handleSymbol(context.Background(), makeReq(map[string]any{
-			"id":      symbolID,
-			"project": projectID,
-		}))
+		_, err := srv.handleSymbol(context.Background(), args)
 		if err != nil {
 			b.Fatalf("handleSymbol: %v", err)
 		}
@@ -110,14 +124,19 @@ func BenchmarkHandleSymbol_GoProject(b *testing.B) {
 // BenchmarkHandleSearch_BM25 — FTS5 query. README claim: ~1ms.
 func BenchmarkHandleSearch_BM25_GoProject(b *testing.B) {
 	srv, _, projectID := benchSetup(b, "go-project")
+	args := makeReq(map[string]any{
+		"query":   "Open",
+		"project": projectID,
+	})
+
+	if _, err := srv.handleSearch(context.Background(), args); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
-			"query":   "Open",
-			"project": projectID,
-		}))
+		_, err := srv.handleSearch(context.Background(), args)
 		if err != nil {
 			b.Fatalf("handleSearch: %v", err)
 		}
@@ -129,14 +148,19 @@ func BenchmarkHandleSearch_BM25_GoProject(b *testing.B) {
 // BM25 distribution profile from go-project.
 func BenchmarkHandleSearch_BM25_K8sOps(b *testing.B) {
 	srv, _, projectID := benchSetup(b, "k8s-ops")
+	args := makeReq(map[string]any{
+		"query":   "image",
+		"project": projectID,
+	})
+
+	if _, err := srv.handleSearch(context.Background(), args); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
-			"query":   "image",
-			"project": projectID,
-		}))
+		_, err := srv.handleSearch(context.Background(), args)
 		if err != nil {
 			b.Fatalf("handleSearch: %v", err)
 		}
@@ -190,14 +214,24 @@ func BenchmarkHandleQuery_SingleHopJoin_GoProject(b *testing.B) {
 func BenchmarkHandleSearch_Parallel_GoProject(b *testing.B) {
 	srv, _, projectID := benchSetup(b, "go-project")
 
+	args := makeReq(map[string]any{
+		"query":   "Open",
+		"project": projectID,
+	})
+	// Warmup: prime the SQLite plan cache + FTS5 query state. Parallel
+	// benches are inherently noisier than serial ones, but a cold first
+	// invocation magnifies that — every reader-pool connection has to
+	// page in the FTS5 index on its first use. One warmup pass on the
+	// main goroutine cuts the first-iter penalty.
+	if _, err := srv.handleSearch(context.Background(), args); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
-				"query":   "Open",
-				"project": projectID,
-			}))
+			_, err := srv.handleSearch(context.Background(), args)
 			if err != nil {
 				b.Fatalf("handleSearch: %v", err)
 			}
@@ -210,13 +244,16 @@ func BenchmarkHandleSearch_Parallel_GoProject(b *testing.B) {
 // (smaller scale).
 func BenchmarkHandleArchitecture_GoProject(b *testing.B) {
 	srv, _, projectID := benchSetup(b, "go-project")
+	args := makeReq(map[string]any{"project": projectID})
+
+	if _, err := srv.handleArchitecture(context.Background(), args); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{
-			"project": projectID,
-		}))
+		_, err := srv.handleArchitecture(context.Background(), args)
 		if err != nil {
 			b.Fatalf("handleArchitecture: %v", err)
 		}
