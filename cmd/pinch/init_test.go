@@ -150,15 +150,12 @@ func TestInitCLI_Binary_DryRun(t *testing.T) {
 		t.Skip("skipping CLI binary build in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	workdir := t.TempDir()
 	cmd := exec.Command(bin, "init", "--dry-run")
 	cmd.Dir = workdir
+	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("pincher init --dry-run: %v\n%s", err, out)
@@ -185,15 +182,12 @@ func TestInitCLI_Binary_WriteThenIdempotent(t *testing.T) {
 		t.Skip("skipping CLI binary build in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	workdir := t.TempDir()
 	cmd := exec.Command(bin, "init", "--data-dir", t.TempDir())
 	cmd.Dir = workdir
+	cmd.Env = pincherCoverEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("first init: %v\n%s", err, out)
 	}
@@ -210,6 +204,7 @@ func TestInitCLI_Binary_WriteThenIdempotent(t *testing.T) {
 	// Second init should produce identical output (idempotent).
 	cmd2 := exec.Command(bin, "init", "--data-dir", t.TempDir())
 	cmd2.Dir = workdir
+	cmd2.Env = pincherCoverEnv()
 	if out, err := cmd2.CombinedOutput(); err != nil {
 		t.Fatalf("second init: %v\n%s", err, out)
 	}
@@ -234,11 +229,7 @@ func TestInitCLI_Binary_PreservesExistingContent(t *testing.T) {
 		t.Skip("skipping CLI binary build in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	workdir := t.TempDir()
 	target := filepath.Join(workdir, "CLAUDE.md")
@@ -249,6 +240,7 @@ func TestInitCLI_Binary_PreservesExistingContent(t *testing.T) {
 
 	cmd := exec.Command(bin, "init", "--data-dir", t.TempDir())
 	cmd.Dir = workdir
+	cmd.Env = pincherCoverEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
