@@ -219,6 +219,8 @@ All three layers are populated in **one AST parse pass** from one `symbols` row.
 
 **Per-corpus FTS5 (#32 ✅)**: One symbol → one corpus. The `corpus` parameter on the `search` tool routes to a specific BM25 index so identifier searches aren't diluted by config keys or doc prose. Routing is `language`-driven (`YAML`/`JSON`/`HCL` → config, `Markdown` → docs, everything else → code; `Document` kind always → docs). **Default is `code`** — the most common search is for an identifier. Pass `corpus=config` for YAML/JSON/HCL settings, `corpus=docs` for Markdown / fetched Documents, or `corpus=all` to hit the legacy mixed index (deprecated, slated for removal in a future release).
 
+**Per-symbol confidence (#34 ✅)**: `extraction_confidence` is a per-symbol score composed from BaseExtractor + KindBaseline + PathPenalty + IdentBonus + GeneratedPen, clamped to `[0, 1]`. Lockfile keys score ~0.4-0.6, vendored Go ~0.7, real config ~0.95-1.0. The `search` tool accepts a `min_confidence` parameter and **defaults to 0.7** — low-quality symbols (lockfile keys, vendored matches, README sections) are filtered by default. Pass `min_confidence=0.0` to surface every symbol. Every response carries `_meta.confidence_distribution` (4-bucket histogram).
+
 ---
 
 ### Cypher Query Routing

@@ -1054,7 +1054,7 @@ func (s *Server) registerTools() {
 				"corpus":{"type":"string","description":"FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents; 'all' searches the legacy mixed index across every symbol kind (deprecated, kept for cross-corpus queries). Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds."},
 				"limit":{"type":"integer","description":"Max results (default 20)"},
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."},
-				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.0 (no filter). Set to 0.7 to suppress low-quality symbols (lockfile keys, vendored regex matches, README headings). Inclusive: a symbol scored exactly at the threshold IS returned."}
+				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.7 — filters low-quality symbols (lockfile keys, vendored regex matches, README headings) by default. Set to 0.0 to disable filtering and surface every symbol the index contains. Inclusive: a symbol scored exactly at the threshold IS returned."}
 			}
 		}`),
 	}, s.handleSearch)
@@ -1410,7 +1410,10 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	corpus := str(args, "corpus")
 	limit := intArg(args, "limit", 20)
 	fieldsArg := str(args, "fields")
-	minConfidence := floatArg(args, "min_confidence", 0.0)
+	// #34 Phase 4: default min_confidence is 0.7. Suppresses low-quality
+	// symbols (lockfile keys, vendored regex matches, README headings) by
+	// default. Callers explicitly pass 0.0 to surface every symbol.
+	minConfidence := floatArg(args, "min_confidence", 0.7)
 
 	// project=* searches all indexed projects — no project filter applied.
 	var projectID string

@@ -149,7 +149,9 @@ func TestHandleSearch_MinConfidenceFilter(t *testing.T) {
 		minConfidence any // any so we can omit it via nil to test default
 		wantCount     int
 	}{
-		{"no parameter (default)", nil, 4},
+		// Phase 4 default is 0.7. A symbol at 0.4 is filtered out by default.
+		{"no parameter (default 0.7)", nil, 3},
+		// Explicit 0.0 is the escape hatch — surfaces every symbol.
 		{"explicit 0.0", 0.0, 4},
 		{"0.7 includes the boundary", 0.7, 3},
 		{"0.9 excludes 0.7", 0.9, 2},
@@ -173,8 +175,9 @@ func TestHandleSearch_MinConfidenceFilter(t *testing.T) {
 			if len(rows) != c.wantCount {
 				t.Errorf("got %d results, want %d", len(rows), c.wantCount)
 			}
-			// Verify every returned row meets the threshold.
-			minConf := 0.0
+			// Verify every returned row meets the threshold (the EFFECTIVE
+			// threshold — Phase 4 default is 0.7 when caller omits the param).
+			minConf := 0.7
 			if c.minConfidence != nil {
 				minConf, _ = c.minConfidence.(float64)
 			}
@@ -190,41 +193,56 @@ func TestHandleSearch_MinConfidenceFilter(t *testing.T) {
 	}
 }
 
-// TestHandleSearch_DefaultEqualsExplicitZero is the no-silent-default-shift
-// gate: a search call without min_confidence MUST return identical results
-// to one with min_confidence=0.0. Catches the regression where someone
-// flips the default in code without flipping the docs.
-func TestHandleSearch_DefaultEqualsExplicitZero(t *testing.T) {
+// TestHandleSearch_DefaultIs0_7 — Phase 4 (#34) flipped the default
+// from 0.0 → 0.7. Asserts a low-confidence symbol (0.5) is filtered out
+// by default, and that explicit min_confidence=0.0 surfaces it as the
+// escape-hatch behavior.
+func TestHandleSearch_DefaultIs0_7(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "projEq"
 	store.UpsertProject(db.Project{ID: "projEq", Path: "/tmp/projEq", Name: "projEq", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
-		{ID: "sEq", ProjectID: "projEq", FilePath: "a.go", Name: "Foo",
-			QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go",
+		{ID: "sLow", ProjectID: "projEq", FilePath: "a.go", Name: "FooLow",
+			QualifiedName: "pkg.FooLow", Kind: "Function", Language: "Go",
 			StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 3,
 			ExtractionConfidence: 0.5},
+		{ID: "sHigh", ProjectID: "projEq", FilePath: "b.go", Name: "FooHigh",
+			QualifiedName: "pkg.FooHigh", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 3,
+			ExtractionConfidence: 0.95},
 	})
 
-	// Default
-	defResult, err := srv.handleSearch(context.Background(), makeReq(map[string]any{"query": "Foo"}))
+	// Default — Phase 4 filter at 0.7. Low-confidence symbol must be excluded.
+	defResult, err := srv.handleSearch(context.Background(), makeReq(map[string]any{"query": "Foo*"}))
 	if err != nil {
 		t.Fatalf("handleSearch default: %v", err)
 	}
 	defM := decode(t, defResult)
+	defRows, _ := defM["results"].([]any)
+	if len(defRows) != 1 {
+		t.Errorf("default search: got %d results, want 1 (low-confidence filtered)", len(defRows))
+	}
+	for _, r := range defRows {
+		row, _ := r.(map[string]any)
+		conf, _ := row["extraction_confidence"].(float64)
+		if conf < 0.7 {
+			t.Errorf("default search returned a symbol below 0.7 threshold: %v (conf=%v)",
+				row["name"], conf)
+		}
+	}
 
-	// Explicit 0.0
+	// Explicit 0.0 — escape hatch surfaces every symbol.
 	explResult, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
-		"query":          "Foo",
+		"query":          "Foo*",
 		"min_confidence": 0.0,
 	}))
 	if err != nil {
-		t.Fatalf("handleSearch explicit: %v", err)
+		t.Fatalf("handleSearch explicit 0.0: %v", err)
 	}
 	explM := decode(t, explResult)
-
-	if defM["count"] != explM["count"] {
-		t.Errorf("default count %v != explicit-0.0 count %v",
-			defM["count"], explM["count"])
+	explRows, _ := explM["results"].([]any)
+	if len(explRows) != 2 {
+		t.Errorf("explicit 0.0: got %d results, want 2 (escape hatch shows all)", len(explRows))
 	}
 }
 

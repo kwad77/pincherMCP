@@ -404,9 +404,17 @@ type SearchRelevanceHit struct {
 	NoMatch     bool   `json:"no_match,omitempty"`
 }
 
+// defaultMinConfidence mirrors the MCP `search` tool's default
+// (#34 Phase 4). Threading it through the snapshot's search_relevance
+// computation ensures the committed snapshot matches what an actual
+// `search` call returns. A future PR that changes the default surfaces
+// in the snapshot diff at PR time.
+const defaultMinConfidence = 0.7
+
 // computeSearchRelevance runs the curated query set for the given corpus
-// and returns the top-hit metadata for each. Returns nil if the project
-// has no registered query set (most corpora don't need one).
+// and returns the top-hit metadata for each. Mirrors handleSearch's
+// post-fetch filtering: pulls extra rows then applies min_confidence
+// before slicing to the limit.
 func computeSearchRelevance(store *db.Store, result *index.IndexResult) []SearchRelevanceHit {
 	queries, ok := searchRelevanceQueries[result.Project]
 	if !ok {
@@ -415,15 +423,29 @@ func computeSearchRelevance(store *db.Store, result *index.IndexResult) []Search
 	out := make([]SearchRelevanceHit, 0, len(queries))
 	for _, q := range queries {
 		hit := SearchRelevanceHit{Query: q.Query, Corpus: q.Corpus}
-		results, err := store.SearchSymbolsByCorpus(result.ProjectID, q.Query, "", "", q.Corpus, 1)
+		// Fetch extra so post-filter top-hit selection is robust.
+		results, err := store.SearchSymbolsByCorpus(result.ProjectID, q.Query, "", "", q.Corpus, 10)
 		if err != nil || len(results) == 0 {
 			hit.NoMatch = true
 			out = append(out, hit)
 			continue
 		}
-		top := results[0]
-		hit.TopHitKind = top.Symbol.Kind
-		hit.TopHitQN = top.Symbol.QualifiedName
+		// Apply default min_confidence — same threshold the MCP search tool
+		// uses by default. The first surviving hit is the snapshot top.
+		topIdx := -1
+		for i := range results {
+			if results[i].Symbol.ExtractionConfidence >= defaultMinConfidence {
+				topIdx = i
+				break
+			}
+		}
+		if topIdx < 0 {
+			hit.NoMatch = true
+			out = append(out, hit)
+			continue
+		}
+		hit.TopHitKind = results[topIdx].Symbol.Kind
+		hit.TopHitQN = results[topIdx].Symbol.QualifiedName
 		out = append(out, hit)
 	}
 	return out
