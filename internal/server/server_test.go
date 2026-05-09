@@ -3732,17 +3732,19 @@ func TestValidateFetchURL_NoHost(t *testing.T) {
 
 func TestDashboard_ESCWrapsAllAttributeJSONStringify(t *testing.T) {
 	// Post-#56: the JS lives in renderDashboardJS, not renderDashboard.
-	// Same attribute-injection patterns; just a different render call.
+	// Post-#3 (event-delegation migration): the inline `onclick="X(...)"`
+	// pattern is gone. The same attribute-injection sites now use
+	// `data-action="X" data-args="<json-array>"`, where the json-array MUST
+	// still be wrapped in esc() to survive the HTML-attribute boundary.
+	// Each pattern below is a stable substring of the expected safe form.
 	html := renderDashboardJS("")
 
-	// The five known attribute-injection sites must use esc(JSON.stringify(...)).
-	// Each pattern below is a stable substring of the expected safe form.
 	safeSites := []string{
-		"openDetail('+esc(JSON.stringify(id))+','+esc(JSON.stringify(name))+')",
-		"reindex('+esc(JSON.stringify(id))+',this)",
-		"deleteProject('+esc(JSON.stringify(id))+','+esc(JSON.stringify(name))+')",
-		"deleteADR('+esc(JSON.stringify(e.key||''))+')",
-		"copyID('+esc(JSON.stringify(r.id))+',this)",
+		`data-action="openDetail" data-args="'+esc(JSON.stringify([id, name]))+'"`,
+		`data-action="reindex" data-args="'+esc(JSON.stringify([id]))+'"`,
+		`data-action="deleteProject" data-args="'+esc(JSON.stringify([id, name]))+'"`,
+		`data-action="deleteADR" data-args="'+esc(JSON.stringify([e.key||'']))+'"`,
+		`data-action="copyID" data-args="'+esc(JSON.stringify([r.id]))+'"`,
 	}
 	for _, want := range safeSites {
 		if !strings.Contains(html, want) {
@@ -3919,6 +3921,67 @@ func TestDashboard_AssetEndpoints(t *testing.T) {
 		}
 		if strings.Contains(body, "<style>") {
 			t.Error("dashboard HTML contains inline <style> block")
+		}
+	})
+
+	t.Run("dashboard_html_starts_with_doctype", func(t *testing.T) {
+		// Pre-fix, dashboardTemplate accidentally included a copy of the
+		// file's Go prelude (package decl + imports + comments) before the
+		// actual <!DOCTYPE html>. Browsers parsed the response in quirks
+		// mode and view-source showed embarrassing junk. Pin that the
+		// served HTML starts with the doctype, leading whitespace stripped.
+		w := httpGet(t, srv, "/v1/dashboard")
+		head := strings.TrimLeft(w.Body.String(), " \t\r\n")
+		if !strings.HasPrefix(head, "<!DOCTYPE") {
+			preview := head
+			if len(preview) > 200 {
+				preview = preview[:200] + "…"
+			}
+			t.Errorf("dashboard response must start with <!DOCTYPE, got: %q", preview)
+		}
+	})
+
+	t.Run("dashboard_html_no_inline_event_handlers", func(t *testing.T) {
+		// The CSP ships `script-src 'self'` (no 'unsafe-inline'), so inline
+		// event attributes (onclick=, oninput=, onchange=, onkeydown=, etc.)
+		// would be silently blocked by strict browsers — buttons stop
+		// responding, search/filter inputs stop firing. Pin that we use
+		// data-action* attributes + addEventListener delegation instead.
+		//
+		// Static HTML (dashboardTemplate) is asserted via the rendered
+		// /v1/dashboard response. Dynamic HTML built in dashboardJSTemplate
+		// (project cards, search results, ADR rows) is asserted via the
+		// /v1/dashboard.js response so a future regression in either layer
+		// is caught.
+		dashHTML := httpGet(t, srv, "/v1/dashboard").Body.String()
+		dashJS := httpGet(t, srv, "/v1/dashboard.js").Body.String()
+
+		// Strip JS comments so a comment that mentions `onclick=` doesn't
+		// false-positive the test. A line comment `//` runs to end-of-line;
+		// we don't have multi-line `/* */` block comments mentioning event
+		// names in this file, but the line-comment strip is the case that
+		// actually matters for the dispatcher's documentation.
+		stripJSComments := func(src string) string {
+			var out strings.Builder
+			out.Grow(len(src))
+			for _, line := range strings.Split(src, "\n") {
+				if i := strings.Index(line, "//"); i >= 0 {
+					line = line[:i]
+				}
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			return out.String()
+		}
+		dashJSStripped := stripJSComments(dashJS)
+
+		for _, attr := range []string{"onclick=", "oninput=", "onchange=", "onkeydown=", "onsubmit=", "onload=", "onerror="} {
+			if strings.Contains(dashHTML, attr) {
+				t.Errorf("dashboard HTML contains inline %q attribute (CSP would block; migrate to data-action* + addEventListener)", attr)
+			}
+			if strings.Contains(dashJSStripped, attr) {
+				t.Errorf("dashboard.js builds HTML strings with inline %q attribute (would inject into the DOM and be CSP-blocked)", attr)
+			}
 		}
 	})
 }
