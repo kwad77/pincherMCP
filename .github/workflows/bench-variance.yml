@@ -1,0 +1,69 @@
+name: Bench variance characterisation
+
+# Manual-only. Does not run on PRs or push to master — variance
+# characterisation costs CI minutes (10 iterations × ~30s = ~5 min)
+# and produces a one-off data point that informs the bench-regression
+# gate's threshold tuning. Re-run when:
+#   - Considering re-promoting bench-regression to required (#160 / #162)
+#   - Wide bench gate flapping suggests CI runner pool changed
+#   - New benchmark added to the corpus that needs CV characterised
+#
+# Output: a CV table uploaded as an artifact, mirroring the format of
+# testdata/bench/variance-2026-05-09.md (the dev-machine version).
+# Per-bench CV thresholds:
+#   <10%  → safe to gate at +20% ns / +30% allocs
+#   10-20% → workable but headroom-tight; widen thresholds before required
+#   >=20% → too noisy; drop from required gate or fix test setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Number of bench iterations (each ~30-60s at 2s benchtime)"
+        required: false
+        default: "10"
+      benchtime:
+        description: "Per-iteration -benchtime"
+        required: false
+        default: "2s"
+
+jobs:
+  variance:
+    name: Run bench variance harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python (for the analyser)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run variance harness
+        env:
+          ITERATIONS: ${{ inputs.iterations }}
+          BENCHTIME: ${{ inputs.benchtime }}
+        run: bash scripts/bench-variance.sh
+
+      - name: Analyse and emit CV table
+        run: |
+          python scripts/bench-variance-analyze.py > variance-ci.md
+          echo "----- variance-ci.md -----"
+          cat variance-ci.md
+          echo "--------------------------"
+
+      - name: Upload variance artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-variance-${{ github.run_id }}
+          path: |
+            variance-ci.md
+            scripts/.bench-variance/
+          retention-days: 90
