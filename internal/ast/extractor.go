@@ -107,7 +107,12 @@ func ExtractWithModule(source []byte, language, relPath, modulePath string) *Fil
 	}
 	conf := e.Confidence()
 	for i := range result.Symbols {
-		result.Symbols[i].ExtractionConfidence = conf
+		// PROTOTYPE: per-symbol composed confidence (#34 perf eval).
+		// Replace single-line `result.Symbols[i].ExtractionConfidence = conf`
+		// with per-symbol signal computation. Numbers from this branch
+		// answer the design-review perf question; no merge intent.
+		sigs := computeSignals(&result.Symbols[i], conf, relPath, source)
+		result.Symbols[i].ExtractionConfidence = sigs.Compose()
 	}
 	return result
 }
