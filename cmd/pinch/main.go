@@ -49,6 +49,10 @@ func main() {
 		runStatsCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		runUpdateCLI(os.Args[2:])
+		return
+	}
 
 	var (
 		showVersion = flag.Bool("version", false, "Print version and exit")
@@ -207,6 +211,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher self-test              Smoke-test the install end-to-end")
 	fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
 	fmt.Fprintln(out, "  pincher stats                  Persisted savings + per-project counts (--json, --reset)")
+	fmt.Fprintln(out, "  pincher update                 Update pincher in place (git pull + build, or release asset)")
 	fmt.Fprintln(out, "  pincher --version              Print version and exit")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")
