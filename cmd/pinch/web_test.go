@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -185,14 +184,11 @@ func TestWebCLI_Binary_NoStart(t *testing.T) {
 		t.Skip("skipping CLI binary build in -short mode")
 	}
 
-	bin := filepath.Join(t.TempDir(), pincherBinaryName())
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildPincherBinary(t)
 
 	dataDir := t.TempDir()
 	cmd := exec.Command(bin, "web", "--no-start", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected non-zero exit with --no-start on empty store; got success.\nstdout: %s", out)
