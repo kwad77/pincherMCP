@@ -104,20 +104,20 @@ jobs:
   # Baselines captured on ubuntu-latest (AMD EPYC 7763, 4-core runner)
   # via the bench-ci-actual artifact from a green run, so deltas now
   # reflect run-to-run CI variance rather than dev-vs-CI hardware
-  # mismatch. Thresholds widened slightly above local-dev defaults
-  # (0.30 ns / 0.45 allocs) to absorb CI-runner variance until a
-  # multi-run characterisation justifies tightening further.
+  # mismatch. Thresholds set slightly above local-dev defaults
+  # (0.30 ns / 0.45 allocs) to absorb CI runner-to-runner variance.
   #
   # The job ALSO uploads the CI-actual bench output as a separate
   # artifact (`bench-ci-actual-*`) so a future PR can pull a green
   # run's numbers and update the baseline as the workload evolves.
   #
-  # `continue-on-error: true` stays set for now; promotion to required
-  # gate waits on a few green runs at the tightened thresholds.
+  # Promoted to required gate after three consecutive green runs at
+  # these thresholds (#157, #158, #159). Future tightening: pull the
+  # latest bench-ci-actual artifact, characterise CI variance over
+  # several runs, then drop thresholds toward local-dev defaults.
   bench-regression:
-    name: Benchmark regression (advisory)
+    name: Benchmark regression
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       # CI-baseline thresholds. Slightly above local-dev defaults
       # (0.20/0.30) to absorb runner-to-runner variance.
