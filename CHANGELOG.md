@@ -7,6 +7,19 @@ minors.
 
 ## [Unreleased]
 
+### Changed
+- **`query` tool's grammar renamed Cypher-like → pinchQL** (#206).
+  Same engine, same supported subset (MATCH / WHERE / RETURN /
+  ORDER BY / LIMIT, single-hop joins, bounded BFS) — but the language
+  now has a name we'll commit to instead of an open-ended "Cypher
+  subset" framing that implied an ever-pending feature backlog. The
+  MCP `query` tool's `pinchql` parameter is the new canonical name;
+  the `cypher` parameter is still accepted as a soft alias for one
+  release to ease transition. REFERENCE.md gains a "Why pinchQL and
+  not Cypher" rationale block. `internal/cypher/` package keeps its
+  filesystem name for git-blame continuity (the user-facing rename
+  doesn't require an internal-name churn).
+
 ### Documentation
 - **YAML/JSON sequence-rename ID instability decided as won't-fix** for
   v0.7.0 (#205). REFERENCE.md, CLAUDE.md, and README's known-limitations

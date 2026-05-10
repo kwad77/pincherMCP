@@ -195,7 +195,7 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 | 3 | `symbols` | Batch retrieve multiple symbols in one call |
 | 4 | `context` | Symbol + its direct imports as a minimal-token bundle |
 | 5 | `search` | FTS5 BM25 full-text search (wildcards, phrases, kind/language/fields filters) |
-| 6 | `query` | Cypher-like graph queries (node scan, single-hop JOIN, BFS) |
+| 6 | `query` | pinchQL graph queries — Cypher-shaped subset (node scan, single-hop JOIN, BFS). Parameter: `pinchql` (legacy alias `cypher` accepted for one release). |
 | 7 | `trace` | BFS call-path trace with CRITICAL/HIGH/MEDIUM/LOW risk labels |
 | 8 | `changes` | Git diff → affected symbols → blast radius BFS |
 | 9 | `architecture` | High-level orientation: languages, entry points, hotspot functions |
