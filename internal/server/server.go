@@ -3804,6 +3804,14 @@ func classifyTaskShape(task string) guideShape {
 	case contains("find ", "where is", "where are", "locate", "look up", "lookup"):
 		return shapeFind
 	default:
+		// #290: fall back to `find` when the task carries a qualified
+		// identifier (`os.Stat`, `pkg/sub`, `Class::method`). A user
+		// typing those almost always wants to *find* it, even without
+		// a verb keyword. Better than `unknown` which routes to a
+		// generic architecture+search recommendation.
+		if qualifiedIdentifierHint(task) != "" {
+			return shapeFind
+		}
 		return shapeUnknown
 	}
 }
@@ -3901,8 +3909,16 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 // ties broken by run position (later runs preferred, since user
 // intent typically peaks at the end of a sentence).
 //
+// #290: qualified identifiers (`os.Stat`, `pkg/sub`, `Class::method`)
+// short-circuit the run-detection. They're almost always the user's
+// intended subject and should be passed to `search` as a single unit
+// rather than split into bare words.
+//
 // Returns "" only when the task is exclusively stop words.
 func taskHintFromString(task string) string {
+	if hint := qualifiedIdentifierHint(task); hint != "" {
+		return hint
+	}
 	stopWords := map[string]bool{
 		// articles + conjunctions + prepositions
 		"the": true, "a": true, "an": true, "is": true, "are": true,
@@ -3932,6 +3948,11 @@ func taskHintFromString(task string) string {
 		"regression": true, "feature": true, "features": true,
 		"support": true, "function": true, "functions": true,
 		"method":  true, "methods": true, "code":   true, "files": true,
+		// generic project / scope nouns (#290)
+		"codebase":  true,
+		"repo":      true, "repository": true, "project": true,
+		"file":      true, "module":     true, "package": true,
+		"directory": true, "folder":     true,
 	}
 	tokens := strings.FieldsFunc(task, func(r rune) bool {
 		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
@@ -3979,6 +4000,117 @@ func taskHintFromString(task string) string {
 		}
 	}
 	return strings.Join(runs[bestIdx], " ")
+}
+
+// qualifiedIdentifierHint returns the highest-signal qualified
+// identifier in `task` (a token containing internal `.`, `::`, or `/`
+// between alphanumerics) — `os.Stat`, `pkg/sub`, `Class::method`.
+// Returns "" when no qualifier is present (caller falls through to
+// the run-based hint extractor). #290.
+//
+// Filename tokens like `indexer.go`, `config.yaml` also fit the
+// "internal qualifier" shape but they're almost always *scope*, not
+// *subject* — the user mentions them to narrow the search, not as
+// the thing they're searching for. The selector deprioritises
+// filename-shaped tokens by sorting them after non-filename ones,
+// then breaks remaining ties by length (longest wins).
+func qualifiedIdentifierHint(task string) string {
+	// Tokenize on whitespace + punctuation that can't be part of a
+	// qualified identifier. Keep word chars + `.`, `:`, `/`, `-`.
+	tokens := strings.FieldsFunc(task, func(r rune) bool {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return false
+		case r >= 'A' && r <= 'Z':
+			return false
+		case r >= '0' && r <= '9':
+			return false
+		case r == '_' || r == '.' || r == ':' || r == '/' || r == '-':
+			return false
+		}
+		return true
+	})
+	best := ""
+	bestIsFilename := true // start in worst-case bucket so any non-filename wins
+	for _, tok := range tokens {
+		// Trim leading/trailing special chars — `,os.Stat,` shouldn't
+		// preserve the commas, and a bare `.foo` or `foo.` isn't an
+		// identifier.
+		tok = strings.Trim(tok, "._:-/")
+		if !hasInternalQualifier(tok) {
+			continue
+		}
+		isFile := looksLikeFilename(tok)
+		switch {
+		case best == "":
+			best, bestIsFilename = tok, isFile
+		case bestIsFilename && !isFile:
+			// non-filename always beats filename
+			best, bestIsFilename = tok, isFile
+		case bestIsFilename == isFile && len(tok) > len(best):
+			// same bucket: longest wins
+			best, bestIsFilename = tok, isFile
+		}
+	}
+	return best
+}
+
+// looksLikeFilename returns true if tok ends in a recognised source-
+// code or config file extension. Used by qualifiedIdentifierHint to
+// deprioritise tokens like `indexer.go` against `os.Stat`.
+func looksLikeFilename(tok string) bool {
+	exts := []string{
+		".go", ".py", ".rs", ".ts", ".tsx", ".js", ".jsx", ".java",
+		".rb", ".php", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp",
+		".kt", ".swift", ".scala", ".lua", ".dart", ".r", ".zig",
+		".ex", ".exs", ".hs", ".elm",
+		".json", ".yaml", ".yml", ".toml", ".hcl", ".tf", ".tfvars",
+		".md", ".markdown", ".mdx", ".mdc", ".txt", ".rst",
+		".html", ".css", ".scss", ".sh", ".bash", ".zsh",
+		".sql", ".proto", ".graphql", ".vue", ".svelte",
+	}
+	low := strings.ToLower(tok)
+	for _, ext := range exts {
+		if strings.HasSuffix(low, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasInternalQualifier reports whether s contains a `.`, `:`, or `/`
+// run flanked by alphanumerics on both sides. Single (`os.Stat`) and
+// double (`Class::method`) variants both qualify; bare `os.` or `:foo`
+// do not.
+func hasInternalQualifier(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	isAlnum := func(c byte) bool {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+	}
+	isSep := func(c byte) bool { return c == '.' || c == ':' || c == '/' }
+	for i := 0; i < len(s); i++ {
+		if !isSep(s[i]) {
+			continue
+		}
+		// Walk to the end of this separator run.
+		j := i
+		for j < len(s) && isSep(s[j]) {
+			j++
+		}
+		// Need an alphanumeric immediately before the run start and
+		// immediately after the run end.
+		if i == 0 || j >= len(s) {
+			i = j
+			continue
+		}
+		if isAlnum(s[i-1]) && isAlnum(s[j]) {
+			return true
+		}
+		i = j - 1 // -1 so the for-loop increment lands on j
+	}
+	return false
 }
 
 func totalLen(toks []string) int {
