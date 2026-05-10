@@ -360,6 +360,12 @@ func pickAssetForPlatform(rel gitRelease) struct {
 // running binary, and atomically renames it over the running binary.
 // On Windows the running .exe cannot be deleted; we move it aside first
 // (mirrors the gh and rustup self-update strategy).
+// downloadAndSwap is the production entry point: it locates the running
+// binary's path via os.Executable() and delegates the actual download +
+// atomic install to downloadAndInstallAt, which is exercised directly by
+// tests against an httptest.Server + a temp exePath. The split keeps
+// the test path from having to override os.Executable() and from
+// risking the test binary being renamed mid-run.
 func downloadAndSwap(out io.Writer, url string) error {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -368,7 +374,13 @@ func downloadAndSwap(out io.Writer, url string) error {
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
 		exePath = resolved
 	}
+	return downloadAndInstallAt(out, url, exePath)
+}
 
+// downloadAndInstallAt fetches `url` and atomically replaces the file at
+// `exePath` with the response body. Inner half of downloadAndSwap; see
+// that function's doc for why the split exists.
+func downloadAndInstallAt(out io.Writer, url, exePath string) error {
 	dir := filepath.Dir(exePath)
 	tmp, err := os.CreateTemp(dir, "pincher-update-*.tmp")
 	if err != nil {
@@ -405,8 +417,10 @@ func downloadAndSwap(out io.Writer, url string) error {
 		// Windows can't replace a running .exe; move it aside.
 		old := exePath + ".old"
 		_ = os.Remove(old)
-		if err := os.Rename(exePath, old); err != nil {
-			return fmt.Errorf("move running binary aside: %w", err)
+		if _, statErr := os.Stat(exePath); statErr == nil {
+			if err := os.Rename(exePath, old); err != nil {
+				return fmt.Errorf("move running binary aside: %w", err)
+			}
 		}
 	}
 	if err := os.Rename(tmpPath, exePath); err != nil {
@@ -417,16 +431,24 @@ func downloadAndSwap(out io.Writer, url string) error {
 	return nil
 }
 
+// goInstallRunner is the indirection point for runGoInstall. Tests
+// override it to verify the LookPath-then-exec sequencing without
+// actually invoking `go install` (which has network deps and would
+// rebuild the test binary into the user's GOBIN).
+var goInstallRunner = func(out io.Writer, target string) error {
+	cmd := exec.Command("go", "install", target)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.Env = os.Environ()
+	return cmd.Run()
+}
+
 func runGoInstall(out io.Writer) error {
 	if _, err := exec.LookPath("go"); err != nil {
 		return errors.New("`go` not found on PATH; install Go or clone the repo and `go build`")
 	}
 	fmt.Fprintf(out, "  running: go install %s\n", updateGoInstall)
-	cmd := exec.Command("go", "install", updateGoInstall)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	cmd.Env = os.Environ()
-	return cmd.Run()
+	return goInstallRunner(out, updateGoInstall)
 }
 
 // confirmYes reads a single line from stdin and returns true if it
