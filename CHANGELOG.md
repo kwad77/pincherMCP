@@ -7,6 +7,25 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- **HTML extractor** (#100). Pure-Go via `golang.org/x/net/html`,
+  confidence 1.0. Emits one `Section` symbol per heading (h1–h6) with
+  hierarchical dotted-path qualified names matching the Markdown
+  extractor's pattern (e.g. `installation.from_source.windows`). The
+  document `<title>` produces a `Section` with QN `title` so SPA-style
+  pages with no h1 are still searchable. `<script src>`, `<link href>`,
+  and local `<a href>` produce `IMPORTS` edges; external URLs
+  (`http://`, `https://`, `//cdn.example/...`), anchor fragments, and
+  `mailto:`/`javascript:`/`tel:` schemes are skipped. `id=` /  `name=`
+  attributes are NOT extracted as Setting symbols (modern frameworks
+  generate IDs aggressively; the noise dilutes the symbol space).
+  Templated HTML is permissively parsed — partial output beats no
+  output. Routes to the `docs` corpus alongside Markdown.
+- Schema v13 — drop + recreate the per-corpus FTS5 sync triggers with
+  HTML in both predicates so existing v12 DBs route HTML symbols to
+  the docs corpus correctly. The vtabs themselves are unchanged. Fresh
+  installs hit the updated baseline schema directly.
+
 ### Changed
 - **`query` tool's grammar renamed Cypher-like → pinchQL** (#206).
   Same engine, same supported subset (MATCH / WHERE / RETURN /

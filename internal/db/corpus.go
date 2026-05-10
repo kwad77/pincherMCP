@@ -40,7 +40,7 @@ func ClassifyCorpus(language, kind string) string {
 		return CorpusDocs
 	}
 	switch language {
-	case "Markdown":
+	case "Markdown", "HTML":
 		return CorpusDocs
 	case "YAML", "JSON", "HCL", "TOML":
 		return CorpusConfig
