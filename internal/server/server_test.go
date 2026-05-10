@@ -280,7 +280,8 @@ func TestHandleList_ActiveFalse(t *testing.T) {
 	}
 }
 
-// limit caps the result set.
+// limit caps the page length (#301: count is now total after filters,
+// not the page length — read page.returned for the page size).
 func TestHandleList_LimitCaps(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	for i := 0; i < 5; i++ {
@@ -292,8 +293,16 @@ func TestHandleList_LimitCaps(t *testing.T) {
 		t.Fatalf("handleList: %v", err)
 	}
 	m := decode(t, result)
-	if got := m["count"].(float64); got != 2 {
-		t.Errorf("count = %v, want 2 (limit cap)", got)
+	if got := m["count"].(float64); got != 5 {
+		t.Errorf("count = %v, want 5 (total after filters)", got)
+	}
+	page, _ := m["page"].(map[string]any)
+	if got := page["returned"].(float64); got != 2 {
+		t.Errorf("page.returned = %v, want 2 (limit cap)", got)
+	}
+	projects, _ := m["projects"].([]any)
+	if len(projects) != 2 {
+		t.Errorf("len(projects) = %d, want 2 (limit cap)", len(projects))
 	}
 }
 
