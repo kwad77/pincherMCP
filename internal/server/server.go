@@ -2662,7 +2662,12 @@ func needsQuoting(s string) bool {
 		return false
 	}
 	for i := 1; i < len(s)-1; i++ {
-		if s[i] == '.' || s[i] == '-' {
+		// #289 added `.` and `-`; #356 adds `:` (FTS5 treats it as
+		// column-prefix syntax: `colname:term`). When the colon sits
+		// between alphanumerics in user input it's almost always a
+		// path/port/key separator (e.g. `localhost:8080`, `mod:fn`,
+		// YAML key paths), not an FTS5 column lookup.
+		if s[i] == '.' || s[i] == '-' || s[i] == ':' {
 			if isAlphanum(s[i-1]) && isAlphanum(s[i+1]) {
 				return true
 			}

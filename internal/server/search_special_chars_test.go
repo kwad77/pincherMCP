@@ -45,9 +45,17 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 		{"foo OR bar", "foo OR bar"},
 		{"NOT foo", "NOT foo"},
 
-		// Column-prefix syntax (`:`) preserved — FTS5-legitimate.
-		// The sanitizer only acts on `.` and `-`, so `kind:Function` flows through.
-		{"kind:Function", "kind:Function"},
+		// #356: colon-separated identifiers get wrapped — FTS5 treats
+		// `colname:term` as a column-prefix lookup, but the FTS5 vtab
+		// only indexes name/qualified_name/signature/docstring; user
+		// queries with `:` are almost always paths (`localhost:8080`,
+		// `mod:fn`) or YAML key chains, not column lookups. The
+		// `kind=`/`language=` PARAMETERS are the right way to filter
+		// — auto-quoting frees `:` for literal use.
+		{"kind:Function", `"kind:Function"`},
+		{"localhost:8080", `"localhost:8080"`},
+		{"a:b", `"a:b"`},
+		{"a:b:c", `"a:b:c"`},
 
 		// Edge cases: leading/trailing dot or hyphen don't trigger wrap
 		// (a token like `.foo` or `-foo` isn't a normal identifier; if it's
