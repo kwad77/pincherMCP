@@ -174,6 +174,49 @@ func TestIndex_ReadsEdges_HelperHasNoSpuriousReads(t *testing.T) {
 	}
 }
 
+// Repeated references to the same Variable from the same function
+// must produce ONE READS edge, not N. This pins the seen[key] dedupe
+// path in resolveReads — without it, a function with `_ = Cache; _ =
+// Cache` would emit two duplicate edges and inflate trace fan-in.
+// Also exercises the QN/name lookup-cache hit paths (second lookup of
+// the same identifier returns the cached entry instead of re-querying).
+func TestIndex_ReadsEdges_DedupesRepeatedReadsToSameTarget(t *testing.T) {
+	const repeated = `package svc
+
+// FooRepeats reads Cache three times — should still produce one
+// READS edge to Cache.
+func FooRepeats() {
+	_ = Cache
+	_ = Cache
+	_ = Cache
+}
+`
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "svc/config.go", fixtureConfig)
+	writeFile(t, dir, "svc/repeats.go", repeated)
+
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	cacheID := db.MakeSymbolID("svc/config.go", "svc.Cache", "Variable")
+	inbound, err := store.EdgesTo(cacheID, nil)
+	if err != nil {
+		t.Fatalf("EdgesTo Cache: %v", err)
+	}
+	fooID := db.MakeSymbolID("svc/repeats.go", "svc.FooRepeats", "Function")
+	count := 0
+	for _, e := range inbound {
+		if e.Kind == "READS" && e.FromID == fooID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("READS edge count from FooRepeats → Cache = %d, want 1 (dedup must collapse N references to one edge)", count)
+	}
+}
+
 // hasEdge reports whether the slice contains an edge with the given
 // FromID and Kind. Edges-to / edges-from queries return both endpoints
 // in a uniform shape; the caller already knows the target side, so we
