@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/zeebo/xxh3"
 	"github.com/kwad77/pincher/internal/ast"
 	"github.com/kwad77/pincher/internal/cypher"
 	"github.com/kwad77/pincher/internal/db"
@@ -1905,7 +1906,63 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 			data[f] = allFields[f]
 		}
 	}
+	// #317: warn when the file on disk has changed since indexing —
+	// byte offsets we just used point at content that no longer
+	// matches the indexed symbol. Only emitted when source was
+	// actually requested (offset-driven reads are the only path
+	// where a stale offset produces visible wrongness).
+	if includeSource && root != "" {
+		s.attachStalenessWarning(data, projectID, sym, root)
+	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
+}
+
+// attachStalenessWarning compares the on-disk file's xxh3 hash to
+// the hash captured at index time. On mismatch it adds a
+// _meta.warnings line and a re-index next_step so the agent
+// knows the source body may not match the symbol (#317).
+func (s *Server) attachStalenessWarning(data map[string]any, projectID string, sym *db.Symbol, root string) {
+	if sym == nil {
+		return
+	}
+	stored := s.store.GetFileHash(projectID, sym.FilePath)
+	if stored == "" {
+		// File hash never recorded — likely a Document or pre-#236 row.
+		// Nothing to compare against.
+		return
+	}
+	live, ok := fileHashOnDisk(filepath.Join(root, filepath.FromSlash(sym.FilePath)))
+	if !ok || live == stored {
+		return
+	}
+	meta, _ := data["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	warnings, _ := meta["warnings"].([]string)
+	warnings = append(warnings,
+		fmt.Sprintf("file %q modified since last index — source bytes may not match the symbol; re-index to refresh", sym.FilePath))
+	meta["warnings"] = warnings
+	steps, _ := meta["next_steps"].([]map[string]string)
+	steps = append(steps, map[string]string{
+		"tool": "index",
+		"args": nextStepArgs(map[string]any{"path": root, "force": true}),
+		"why":  "file changed since last index — re-index so byte offsets match the current source",
+	})
+	meta["next_steps"] = steps
+	data["_meta"] = meta
+}
+
+// fileHashOnDisk returns the xxh3 hex hash of the file at absPath
+// using the same format the indexer records (`fmt.Sprintf("%x", xxh3.Hash(content))`).
+// Returns (_, false) when the file can't be read; caller treats
+// missing as "no warning to emit" rather than a hard failure (#317).
+func fileHashOnDisk(absPath string) (string, bool) {
+	b, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%x", xxh3.Hash(b)), true
 }
 
 // maxBatchSymbols caps the number of IDs accepted by the symbols batch tool
@@ -2043,6 +2100,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// suggestion is offered: there's nothing further to chase.
 	if next := suggestContextNextSteps(*sym); len(next) > 0 {
 		data["_meta"] = map[string]any{"next_steps": next}
+	}
+	// #317: warn if the seed file changed since indexing — same
+	// signal as in handleSymbol. Only the seed; checking every
+	// import would multiply the cost without much value.
+	if root != "" {
+		s.attachStalenessWarning(data, sym.ProjectID, sym, root)
 	}
 	responseJSON, _ := json.Marshal(data)
 	return s.jsonResultWithMeta(data, start, tool, args, savedVsFileSizes(root, allPaths, responseJSON)), nil
