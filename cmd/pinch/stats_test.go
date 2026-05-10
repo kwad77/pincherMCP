@@ -147,6 +147,151 @@ func TestStatsCLI_TextOutput_ContainsExpectedSections(t *testing.T) {
 	}
 }
 
+// TestStatsCLI_TextOutput_BoxAlignmentWithWideContent regression-pins
+// the dynamic box-width fix. Pre-fix, the box was hardcoded to 44 chars,
+// so any project row whose value (e.g. "447,201 syms / 39,276 files" =
+// 28 chars) plus the 23-char label-prefix-padding exceeded 44 would
+// overflow the closing │ visually rightward. Post-fix, the box auto-sizes
+// to fit the widest content (capped at 100 chars).
+//
+// Test strategy: build a report with a project whose symbol/file counts
+// produce a value wider than the prior 44-char box, render, then assert:
+//   - every line ending with │ has the SAME column position
+//   - no line is wider than the closing │ on the bottom border
+//   - the wide value is fully present (not truncated under the cap)
+func TestStatsCLI_TextOutput_BoxAlignmentWithWideContent(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	// Seed a project whose value-line width forces dynamic resizing.
+	// 447,201 / 39,276 mirrors a real large-project shape.
+	if err := store.UpsertProject(db.Project{
+		ID: "/tmp/big", Path: "/tmp/big", Name: "thinksmart-shaped",
+		FileCount: 39276, SymCount: 447201,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	report, _ := buildStatsReport(store, dir)
+	out := formatStatsText(report)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("output too short to be a rendered box:\n%s", out)
+	}
+
+	// Every box line should have the same visual width — measured by the
+	// rune count, since the box-drawing characters are multi-byte UTF-8.
+	expectedWidth := len([]rune(lines[0]))
+	for i, ln := range lines {
+		if got := len([]rune(ln)); got != expectedWidth {
+			t.Errorf("line %d width = %d runes, want %d (box overflow):\n%s",
+				i, got, expectedWidth, out)
+		}
+	}
+
+	// The wide value must be present in the output (not truncated under
+	// the 100-char cap, since 447,201 syms / 39,276 files fits).
+	for _, want := range []string{"447,201 syms", "39,276 files", "thinksmart-shaped:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("wide-value content missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestStatsCLI_TextOutput_NoProjectsStillRenders pins that the box
+// closes cleanly when r.Projects is empty (only ALL-TIME + STORAGE
+// sections render). The dynamic-width refactor uses a magic index of 6
+// for "first project row" — if a future change shifts the fixed rows,
+// this test catches the off-by-one.
+func TestStatsCLI_TextOutput_NoProjectsStillRenders(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.RecordSession("s1", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+
+	report, _ := buildStatsReport(store, dir)
+	out := formatStatsText(report)
+
+	// Box must contain ALL-TIME + STORAGE headers but NOT the PROJECTS
+	// header (no projects → that section is skipped).
+	for _, want := range []string{"ALL-TIME", "STORAGE", "Tool calls:", "Data dir:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text output missing %q in projects-empty render:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "PROJECTS") {
+		t.Errorf("PROJECTS header rendered despite empty projects list:\n%s", out)
+	}
+
+	// Box must still be visually closed: every line same rune-width.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	expectedWidth := len([]rune(lines[0]))
+	for i, ln := range lines {
+		if got := len([]rune(ln)); got != expectedWidth {
+			t.Errorf("line %d width = %d runes, want %d (box not closed):\n%s",
+				i, got, expectedWidth, out)
+		}
+	}
+}
+
+// TestStatsCLI_TextOutput_PathologicalLengthHitsCap exercises the
+// 100-char cap and the value-truncation path. Seeds a project with an
+// extreme symbol/file count + ridiculously long name so the natural
+// width would exceed 100. Asserts the box still closes (truncation
+// kicks in) and the output stays bounded.
+func TestStatsCLI_TextOutput_PathologicalLengthHitsCap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	// Project name 90 chars + huge counts → natural value width would
+	// blow past 100. Triggers cap + truncation logic.
+	longName := strings.Repeat("x", 90)
+	if err := store.UpsertProject(db.Project{
+		ID: "/tmp/long", Path: "/tmp/long", Name: longName,
+		FileCount: 9999999, SymCount: 999999999,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	report, _ := buildStatsReport(store, dir)
+	out := formatStatsText(report)
+
+	// Box must close cleanly even at the cap.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	expectedWidth := len([]rune(lines[0]))
+	for i, ln := range lines {
+		if got := len([]rune(ln)); got != expectedWidth {
+			t.Errorf("line %d width = %d runes, want %d (cap-truncation didn't keep box square):\n%s",
+				i, got, expectedWidth, out)
+		}
+	}
+
+	// Width must be at the cap, not unbounded.
+	const maxBoxOuterWidth = 102 // 100 inner + 2 borders
+	if expectedWidth > maxBoxOuterWidth {
+		t.Errorf("box width %d exceeds cap of %d — truncation didn't engage:\n%s",
+			expectedWidth, maxBoxOuterWidth, out)
+	}
+}
+
 // TestStatsCLI_Reset_DeletesAllSessions covers the destructive path:
 // after seeding sessions, ResetSessions must return the row count and
 // subsequent GetAllTimeSavings must return zeros. Idempotent — running
