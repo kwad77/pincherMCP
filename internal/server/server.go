@@ -2205,9 +2205,13 @@ func suggestContextNextSteps(sym db.Symbol) []map[string]string {
 func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
-	query := str(args, "query")
+	// #344: TrimSpace before validating so whitespace-only queries
+	// (e.g. " ", "\t", "\n") don't leak through to FTS5 as a low-level
+	// SQLite "syntax error near \"\"" — return a friendly input-error
+	// instead.
+	query := strings.TrimSpace(str(args, "query"))
 	if query == "" {
-		return errResult("query is required"), nil
+		return errResult("query is required (and must contain non-whitespace characters)"), nil
 	}
 	projectArg := str(args, "project")
 	kind := str(args, "kind")
