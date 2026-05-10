@@ -5295,7 +5295,10 @@ func TestSuggestEmptySearchNextSteps_RecoveryActionsMatchFilters(t *testing.T) {
 		if len(steps) < 2 {
 			t.Fatalf("expected min_confidence drop + list fallback, got %d", len(steps))
 		}
-		if !strings.Contains(steps[0]["args"], `"min_confidence":0.0`) {
+		// Accept both "0.0" and "0" — json.Marshal canonicalises floats
+		// without trailing ".0" but the semantic is the same (#315).
+		if !strings.Contains(steps[0]["args"], `"min_confidence":0.0`) &&
+			!strings.Contains(steps[0]["args"], `"min_confidence":0`) {
 			t.Errorf("first suggestion should drop min_confidence, got: %v", steps[0])
 		}
 	})

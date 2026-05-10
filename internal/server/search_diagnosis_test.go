@@ -73,7 +73,11 @@ func TestVerifyEmptySearchCause_MinConfidenceVerifiedFromRawCount(t *testing.T) 
 	if !strings.Contains(cause, "5 match(es)") {
 		t.Errorf("cause must report the raw count for context, got: %q", cause)
 	}
-	if !strings.Contains(steps[0]["args"], `"min_confidence":0.0`) {
+	// json.Marshal collapses 0.0 → "0" so accept either spelling. The
+	// load-bearing assertion is that min_confidence is being set to
+	// zero, not the trailing .0 cosmetic (#315).
+	if !strings.Contains(steps[0]["args"], `"min_confidence":0.0`) &&
+		!strings.Contains(steps[0]["args"], `"min_confidence":0`) {
 		t.Errorf("recovery step must drop confidence threshold, got: %q", steps[0]["args"])
 	}
 }

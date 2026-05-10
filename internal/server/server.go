@@ -2349,7 +2349,7 @@ func verifyEmptySearchCause(
 		nextSteps = []map[string]string{
 			{
 				"tool": "search",
-				"args": fmt.Sprintf(`{"query":"%s","min_confidence":0.0}`, query),
+				"args": nextStepArgs(map[string]any{"query": query, "min_confidence": 0.0}),
 				"why":  "verified: relaxing the confidence threshold surfaces the results",
 			},
 		}
@@ -2365,7 +2365,7 @@ func verifyEmptySearchCause(
 					n, query, kind,
 				), []map[string]string{{
 					"tool": "search",
-					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"args": nextStepArgs(map[string]any{"query": query}),
 					"why":  fmt.Sprintf("verified: dropping kind=%q surfaces %d match(es)", kind, n),
 				}}, true
 		}
@@ -2377,7 +2377,7 @@ func verifyEmptySearchCause(
 					n, query, language,
 				), []map[string]string{{
 					"tool": "search",
-					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"args": nextStepArgs(map[string]any{"query": query}),
 					"why":  fmt.Sprintf("verified: dropping language=%q surfaces %d match(es)", language, n),
 				}}, true
 		}
@@ -2389,7 +2389,7 @@ func verifyEmptySearchCause(
 					n, query, corpus,
 				), []map[string]string{{
 					"tool": "search",
-					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"args": nextStepArgs(map[string]any{"query": query}),
 					"why":  fmt.Sprintf("verified: corpus=code (the default) has %d match(es)", n),
 				}}, true
 		}
@@ -2404,7 +2404,7 @@ func verifyEmptySearchCause(
 					n, query, kind, language,
 				), []map[string]string{{
 					"tool": "search",
-					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"args": nextStepArgs(map[string]any{"query": query}),
 					"why":  fmt.Sprintf("verified: dropping kind+language together surfaces %d match(es)", n),
 				}}, true
 		}
@@ -2547,28 +2547,28 @@ func suggestEmptySearchNextSteps(query, kind, language string, minConfidence flo
 	if minConfidence > 0 {
 		steps = append(steps, map[string]string{
 			"tool": "search",
-			"args": fmt.Sprintf(`{"query":"%s","min_confidence":0.0}`, query),
+			"args": nextStepArgs(map[string]any{"query": query, "min_confidence": 0.0}),
 			"why":  "drop the confidence threshold to surface bottom-floor matches",
 		})
 	}
 	if kind != "" {
 		steps = append(steps, map[string]string{
 			"tool": "search",
-			"args": fmt.Sprintf(`{"query":"%s"}`, query),
+			"args": nextStepArgs(map[string]any{"query": query}),
 			"why":  "retry without the kind filter to widen the result set",
 		})
 	}
 	if language != "" {
 		steps = append(steps, map[string]string{
 			"tool": "search",
-			"args": fmt.Sprintf(`{"query":"%s"}`, query),
+			"args": nextStepArgs(map[string]any{"query": query}),
 			"why":  "retry without the language filter",
 		})
 	}
 	if !strings.ContainsAny(query, "*\"") {
 		steps = append(steps, map[string]string{
 			"tool": "search",
-			"args": fmt.Sprintf(`{"query":"%s*"}`, query),
+			"args": nextStepArgs(map[string]any{"query": query + "*"}),
 			"why":  "wildcard match catches partial-name hits BM25 ranking can miss",
 		})
 	}
@@ -2578,6 +2578,19 @@ func suggestEmptySearchNextSteps(query, kind, language string, minConfidence flo
 		"why":  "confirm the right project is indexed — wrong project = no matches no matter the query",
 	})
 	return steps
+}
+
+// nextStepArgs builds a JSON-encoded args string with proper escaping
+// for embedded quotes/backslashes (#315). Falls back to "{}" if
+// json.Marshal fails (it shouldn't for the shapes we pass — string,
+// int, float, bool, nil — but the fallback keeps the tool call shape
+// valid even on a programming error).
+func nextStepArgs(args map[string]any) string {
+	b, err := json.Marshal(args)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // suggestNextSteps returns 1-2 follow-up tool suggestions tailored to the
@@ -4136,10 +4149,14 @@ func classifyTaskShape(task string) guideShape {
 // (e.g. the most-likely symbol name) and leaves the rest as a
 // placeholder the agent fills in.
 func guideRecommendations(shape guideShape, taskHint string) []map[string]string {
+	queryArgs := nextStepArgs(map[string]any{"query": taskHint})
+	queryFnArgs := nextStepArgs(map[string]any{"query": taskHint, "kind": "Function"})
+	traceInArgs := nextStepArgs(map[string]any{"name": taskHint, "direction": "inbound"})
+	traceOutArgs := nextStepArgs(map[string]any{"name": taskHint, "direction": "outbound"})
 	switch shape {
 	case shapeFix:
 		return []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "find the symbol the bug lives in"},
 			{"tool": "context", "args": `{"id":"<from-search>"}`,
 				"why": "read the function plus everything it calls — usually enough to spot the bug without opening any file"},
@@ -4150,12 +4167,12 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 		return []map[string]string{
 			{"tool": "architecture", "args": `{}`,
 				"why": "orient — see hotspots and entry points before adding new code"},
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "find similar existing code; copy its shape rather than reinvent"},
 		}
 	case shapeRefactor:
 		return []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "locate the symbol you want to refactor"},
 			{"tool": "trace", "args": `{"name":"<symbol-name>","direction":"inbound"}`,
 				"why": "find callers — refactors that miss callers cause regressions"},
@@ -4164,14 +4181,14 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 		return []map[string]string{
 			{"tool": "architecture", "args": `{}`,
 				"why": "high-level orientation: languages, entry points, hotspots"},
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "find the central symbol the question is about"},
 			{"tool": "context", "args": `{"id":"<from-search>"}`,
 				"why": "read it together with its imports — minimal token cost"},
 		}
 	case shapeTest:
 		return []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s","kind":"Function"}`, taskHint),
+			{"tool": "search", "args": queryFnArgs,
 				"why": "find the function under test"},
 			{"tool": "context", "args": `{"id":"<from-search>"}`,
 				"why": "read it with its dependencies before deciding what to test"},
@@ -4185,23 +4202,23 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 		}
 	case shapeFind:
 		return []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "BM25 search using the discriminating phrase from your task"},
 			{"tool": "context", "args": `{"id":"<from-search>"}`,
 				"why": "read the top hit with its imports — usually answers \"what is this?\" without opening any file"},
 		}
 	case shapeTraceIn:
 		return []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "first confirm the exact symbol name; ambiguous names trace the wrong target"},
-			{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"inbound"}`, taskHint),
+			{"tool": "trace", "args": traceInArgs,
 				"why": "find every caller (CRITICAL=direct, HIGH=2 hops, MEDIUM=3 hops)"},
 		}
 	case shapeTraceOut:
 		return []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "first confirm the exact symbol name"},
-			{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"outbound"}`, taskHint),
+			{"tool": "trace", "args": traceOutArgs,
 				"why": "find what this symbol calls (downstream dependency map)"},
 		}
 	default:
@@ -4209,7 +4226,7 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 		return []map[string]string{
 			{"tool": "architecture", "args": `{}`,
 				"why": "high-level orientation always pays before unfamiliar work"},
-			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+			{"tool": "search", "args": queryArgs,
 				"why": "best-effort search using your task keywords; refine the query after seeing results"},
 		}
 	}
