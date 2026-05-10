@@ -428,16 +428,20 @@ func TestCypherPropToCol(t *testing.T) {
 // Edge cases
 // ─────────────────────────────────────────────────────────────────────────────
 
+// #361: empty input must error — pre-fix the parser silently produced
+// an empty queryAST and the runner returned zero rows, indistinguishable
+// from a real-but-empty result. Typo in MATCH/RETURN looked like missing
+// data, not malformed query.
 func TestEmptyQuery(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
 	e := &Executor{DB: db, ProjectID: "proj1"}
-	r, err := e.Execute(context.Background(), "")
-	if err != nil {
-		t.Fatalf("empty query should not error: %v", err)
+	_, err := e.Execute(context.Background(), "")
+	if err == nil {
+		t.Fatal("empty query should error, got nil")
 	}
-	if r.Total != 0 {
-		t.Errorf("empty query should return 0 rows, got %d", r.Total)
+	if !strings.Contains(err.Error(), "MATCH") {
+		t.Errorf("error should mention MATCH; got %v", err)
 	}
 }
 
@@ -1490,14 +1494,21 @@ func TestBuildResult_OrderByDescSort(t *testing.T) {
 	}
 }
 
+// #361: a query without RETURN must error. Pre-fix the runner returned
+// an empty result silently — the pinchQL grammar requires RETURN.
 func TestBuildResult_NoReturnVars(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
 	insertSym(t, db, "nrV1", "Foo", "Function", "Go")
 
-	// No RETURN clause — auto-projects all columns from the map
-	r := exec(t, db, "MATCH (n:Function) WHERE n.name='Foo'")
-	_ = r // no panic required
+	e := &Executor{DB: db, MaxRows: 100, ProjectID: "proj1"}
+	_, err := e.Execute(context.Background(), "MATCH (n:Function) WHERE n.name='Foo'")
+	if err == nil {
+		t.Fatal("query missing RETURN should error, got nil")
+	}
+	if !strings.Contains(err.Error(), "RETURN") {
+		t.Errorf("error should mention RETURN; got %v", err)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

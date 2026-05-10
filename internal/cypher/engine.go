@@ -252,7 +252,12 @@ func (p *parser) skip(val string) {
 }
 
 func (p *parser) parseQuery() (*queryAST, error) {
-	q := &queryAST{limit: 200}
+	// limit=-1 = "no LIMIT clause; runner picks default". Distinct from
+	// LIMIT 0, which the parser sets to 0 below and the runner honors as
+	// "zero rows" (#360). Pre-fix the parser used 200 directly so an
+	// explicit `LIMIT 0` was indistinguishable from "unset" and silently
+	// returned the default.
+	q := &queryAST{limit: -1}
 
 	for p.pos < len(p.tokens) {
 		t := p.peek()
@@ -310,6 +315,17 @@ func (p *parser) parseQuery() (*queryAST, error) {
 		default:
 			p.next() // skip unknown tokens
 		}
+	}
+	// #361: validate the parsed query has the minimum shape pinchQL
+	// requires. Pre-fix, an empty input or a query missing MATCH / RETURN
+	// returned an empty result silently — typo in `MATCH` / `RETURN`
+	// looked like missing data. Reject up front so the agent sees the
+	// query is malformed, not the index.
+	if len(q.patterns) == 0 {
+		return nil, fmt.Errorf("pinchQL: query must contain a MATCH clause")
+	}
+	if len(q.returnVars) == 0 {
+		return nil, fmt.Errorf("pinchQL: query must contain a RETURN clause")
 	}
 	return q, nil
 }
@@ -1089,6 +1105,13 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 		// No group-by columns → existing single-row total path. Backward
 		// compatible: `RETURN COUNT(n)` still returns one row.
 		if len(groupVars) == 0 {
+			// #360: explicit LIMIT 0 short-circuits even the
+			// single-row aggregate path. `RETURN COUNT(f) LIMIT 0`
+			// is the SQL idiom for "validate the query, no result"
+			// and must return zero rows here too.
+			if q.limit == 0 {
+				return &Result{Columns: cols, Rows: []map[string]any{}, Total: 0}, nil
+			}
 			total := len(allRows)
 			row := map[string]any{}
 			for _, rv := range aggVars {
@@ -1160,7 +1183,10 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 			})
 		}
 		limit := q.limit
-		if limit <= 0 {
+		// #360: only treat absent LIMIT (q.limit==-1) as "default". An
+		// explicit LIMIT 0 must return zero rows; pre-fix the `<= 0`
+		// guard collapsed it to the 200-row default.
+		if limit < 0 {
 			limit = 200
 		}
 		if len(grouped) > limit {
@@ -1210,9 +1236,10 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 		})
 	}
 
-	// LIMIT
+	// LIMIT — see #360 note above; -1 means "no LIMIT clause", 0 means
+	// "explicit zero rows".
 	limit := q.limit
-	if limit <= 0 {
+	if limit < 0 {
 		limit = 200
 	}
 	if len(projected) > limit {
