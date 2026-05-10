@@ -183,6 +183,16 @@ type Server struct {
 	// reconnect via /mcp.
 	binaryPath       string
 	binaryStartMTime time.Time
+
+	// autoRestartOnce guards the #352 self-restart-on-drift exit path
+	// so concurrent tool calls don't race to os.Exit. Only fires when
+	// PINCHER_AUTO_RESTART_ON_DRIFT=1 is set AND the on-disk binary
+	// has been replaced since startup.
+	autoRestartOnce sync.Once
+	// exitFn is plumbed in for testability — production sets it to
+	// os.Exit; tests substitute a recording stub. Defaults to os.Exit
+	// in New().
+	exitFn func(int)
 }
 
 // New creates and registers all 14 MCP tools.
@@ -196,6 +206,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		version:             version,
 		persistentSessionID: fmt.Sprintf("sess-%d", now.UnixNano()),
 		sessionStartedAt:    now,
+		exitFn:              os.Exit, // #352: substituted by tests
 	}
 	// Capture the running binary's path + initial mtime so the
 	// health stale-binary check (#278) can compare against the
@@ -3888,10 +3899,12 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// in-memory copy, surface a binary_stale=true flag with a
 	// reconnect hint. Best-effort — failures (Windows AV scan
 	// holding the file, exe path moved) silently report false.
+	binaryReplaced := false
 	if s.binaryPath != "" && !s.binaryStartMTime.IsZero() {
 		if info, err := os.Stat(s.binaryPath); err == nil && info.ModTime().After(s.binaryStartMTime) {
 			data["binary_stale"] = true
 			data["binary_stale_message"] = "Newer pincher binary on disk; restart the MCP server (/mcp reconnect) to pick up changes."
+			binaryReplaced = true
 		}
 	}
 	if report.Project != nil {
@@ -3950,6 +3963,16 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if len(steps) > 0 {
 		data["_meta"] = map[string]any{"next_steps": steps}
 	}
+
+	// #352: when PINCHER_AUTO_RESTART_ON_DRIFT=1 is set AND the on-disk
+	// binary has been replaced since startup, exit cleanly so Claude
+	// Code's MCP transport respawns into the rebuilt binary. The
+	// response is still returned to the caller — the exit fires from
+	// inside maybeAutoRestart's sync.Once after we've enqueued the
+	// reply, so the agent sees the health output (with binary_stale=true)
+	// and the next tool call hits a fresh process.
+	driftDetected, _ := data["index_drift"].(bool)
+	s.maybeAutoRestart(binaryReplaced, driftDetected)
 
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
