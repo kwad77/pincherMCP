@@ -451,6 +451,21 @@ func (p *parser) parseOneCondition() (condition, error) {
 		p.skip("WITH")
 		c.op = "ENDS WITH"
 		c.value = normalizeConditionValue(p.next())
+	case "IS":
+		// #342: IS NULL / IS NOT NULL. Common Cypher pattern for
+		// finding rows with empty/absent properties (e.g. functions
+		// without docstrings). No value literal — the operator IS
+		// the predicate.
+		p.next() // consume IS
+		if p.peek().value == "NOT" {
+			p.next() // consume NOT
+			p.skip("NULL")
+			c.op = "IS NOT NULL"
+		} else {
+			p.skip("NULL")
+			c.op = "IS NULL"
+		}
+		c.value = ""
 	case "!":
 		// Detect `!=` (two-char op the tokenizer doesn't fuse) so the hint
 		// catches the SQL-muscle-memory case before the generic fallback.
@@ -660,7 +675,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 			continue
 		}
 		col := cypherPropToCol(c.property)
-		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH") {
+		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH" || c.op == "IS NULL" || c.op == "IS NOT NULL") {
 			appendWhereOp(&sqlQ, &args, "", col, c)
 		} else {
 			unpushed = append(unpushed, c)
@@ -771,7 +786,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 			continue
 		}
 		col := cypherPropToCol(c.property)
-		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH") {
+		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH" || c.op == "IS NULL" || c.op == "IS NOT NULL") {
 			appendWhereOp(&sqlQ, &args, tableAlias+".", col, c)
 		} else {
 			unpushed = append(unpushed, c)
@@ -1211,6 +1226,15 @@ func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
 		// but with the wildcard at the leading edge.
 		*sqlQ += " AND " + prefix + col + " LIKE ?"
 		*args = append(*args, "%"+c.value)
+	case "IS NULL":
+		// #342: NULL OR empty. SQLite's Go driver maps NULL TEXT to "" when
+		// scanned into a non-pointer string, so users see no difference
+		// between absent and intentionally-blank. Match both so the
+		// predicate matches the user's intent.
+		*sqlQ += " AND (" + prefix + col + " IS NULL OR " + prefix + col + " = '')"
+	case "IS NOT NULL":
+		// #342: complement of IS NULL.
+		*sqlQ += " AND (" + prefix + col + " IS NOT NULL AND " + prefix + col + " <> '')"
 	}
 }
 
@@ -1287,6 +1311,19 @@ func matchesConditionsWithCache(row map[string]any, conds []condition, reCache m
 		case "ENDS WITH":
 			// #340: suffix-match alongside the existing prefix-match path.
 			if !strings.HasSuffix(actual, c.value) {
+				return false
+			}
+		case "IS NULL":
+			// #342: empty string OR Go nil-interface map miss. Both
+			// flow through fmt.Sprint as "" / "<nil>"; treat as NULL.
+			raw, present := row[key]
+			if present && raw != nil && actual != "" && actual != "<nil>" {
+				return false
+			}
+		case "IS NOT NULL":
+			// #342: complement.
+			raw, present := row[key]
+			if !present || raw == nil || actual == "" || actual == "<nil>" {
 				return false
 			}
 		case ">", "<", ">=", "<=":

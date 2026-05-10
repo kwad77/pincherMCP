@@ -560,6 +560,79 @@ func TestNodeScan_EndsWith(t *testing.T) {
 	}
 }
 
+// #342: IS NULL parsed and stored.
+func TestParse_IsNull(t *testing.T) {
+	tokens := tokenize("MATCH (f:Function) WHERE f.qualified_name IS NULL RETURN f.name")
+	p := &parser{tokens: tokens}
+	q, err := p.parseQuery()
+	if err != nil {
+		t.Fatalf("parseQuery: %v", err)
+	}
+	if len(q.conditions) == 0 {
+		t.Fatal("expected at least 1 condition")
+	}
+	if q.conditions[0].op != "IS NULL" {
+		t.Errorf("op = %q, want 'IS NULL'", q.conditions[0].op)
+	}
+}
+
+// #342: IS NOT NULL parsed and stored.
+func TestParse_IsNotNull(t *testing.T) {
+	tokens := tokenize("MATCH (f:Function) WHERE f.qualified_name IS NOT NULL RETURN f.name")
+	p := &parser{tokens: tokens}
+	q, err := p.parseQuery()
+	if err != nil {
+		t.Fatalf("parseQuery: %v", err)
+	}
+	if q.conditions[0].op != "IS NOT NULL" {
+		t.Errorf("op = %q, want 'IS NOT NULL'", q.conditions[0].op)
+	}
+}
+
+// #342: IS NULL via SQL pushdown matches rows where the column is empty
+// or NULL. qualified_name is in cypherPropToCol so the predicate
+// pushes into SQL.
+func TestNodeScan_IsNull_SQLPushdown(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	// Two rows with QN, one with empty QN.
+	insertSym(t, db, "a", "Alpha", "Function", "Go")
+	insertSym(t, db, "b", "Beta", "Function", "Go")
+	insertSym(t, db, "c", "Gamma", "Function", "Go")
+	// Override QN for one row to empty so IS NULL matches it.
+	if _, err := db.Exec(`UPDATE symbols SET qualified_name = '' WHERE id = 'c'`); err != nil {
+		t.Fatal(err)
+	}
+
+	r := exec(t, db, "MATCH (f:Function) WHERE f.qualified_name IS NULL RETURN f.name")
+	if r.Total != 1 {
+		t.Errorf("expected 1 IS NULL result, got %d (%v)", r.Total, r.Rows)
+	}
+	if r.Total > 0 {
+		name, _ := r.Rows[0]["f.name"].(string)
+		if name != "Gamma" {
+			t.Errorf("expected Gamma to be the IS NULL match; got %q", name)
+		}
+	}
+}
+
+// #342: IS NOT NULL is the complement.
+func TestNodeScan_IsNotNull_SQLPushdown(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "a", "Alpha", "Function", "Go")
+	insertSym(t, db, "b", "Beta", "Function", "Go")
+	insertSym(t, db, "c", "Gamma", "Function", "Go")
+	if _, err := db.Exec(`UPDATE symbols SET qualified_name = '' WHERE id = 'c'`); err != nil {
+		t.Fatal(err)
+	}
+
+	r := exec(t, db, "MATCH (f:Function) WHERE f.qualified_name IS NOT NULL RETURN f.name")
+	if r.Total != 2 {
+		t.Errorf("expected 2 IS NOT NULL results, got %d (%v)", r.Total, r.Rows)
+	}
+}
+
 // #340: ENDS WITH on file_path filters by extension.
 func TestNodeScan_EndsWith_FilePath(t *testing.T) {
 	db := newTestDB(t)
