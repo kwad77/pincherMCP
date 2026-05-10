@@ -710,6 +710,82 @@ func TestAggregation_NoGroupBy_BackwardCompat(t *testing.T) {
 	}
 }
 
+// #354: WHERE NOT n.x = "..." inverts the comparison; previously the
+// parser errored "unsupported operator: <varname>" when NOT prefixed
+// a condition.
+func TestParse_NotPrefix(t *testing.T) {
+	tokens := tokenize("MATCH (f:Function) WHERE NOT f.name = 'main' RETURN f.name")
+	p := &parser{tokens: tokens}
+	q, err := p.parseQuery()
+	if err != nil {
+		t.Fatalf("parseQuery: %v", err)
+	}
+	if len(q.conditions) == 0 {
+		t.Fatal("expected at least 1 condition")
+	}
+	if !q.conditions[0].negated {
+		t.Errorf("conditions[0].negated = false; want true after NOT prefix")
+	}
+}
+
+// #354: NOT prefix runs through SQL pushdown — `NOT n.name = "main"`
+// returns rows where name != "main".
+func TestNodeScan_NotEquals_ViaNOT(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "m1", "main", "Function", "Go")
+	insertSym(t, db, "f1", "Alpha", "Function", "Go")
+	insertSym(t, db, "f2", "Beta", "Function", "Go")
+
+	r := exec(t, db, `MATCH (f:Function) WHERE NOT f.name = 'main' RETURN f.name`)
+	if r.Total != 2 {
+		t.Errorf("expected 2 rows after NOT name='main', got %d (%v)", r.Total, r.Rows)
+	}
+	for _, row := range r.Rows {
+		if row["f.name"] == "main" {
+			t.Errorf("row %v should be excluded by NOT name='main'", row)
+		}
+	}
+}
+
+// #354: NOT works alongside non-negated conditions in the same WHERE.
+func TestNodeScan_NotPrefix_Compound(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "f1", "main", "Function", "Go")
+	insertSym(t, db, "f2", "Alpha", "Function", "Go")
+	insertSym(t, db, "f3", "Beta", "Function", "Python")
+
+	// Functions, not Go, not main → only Beta (Python) qualifies.
+	r := exec(t, db, `MATCH (f:Function) WHERE f.kind = 'Function' AND NOT f.language = 'Go' RETURN f.name`)
+	if r.Total != 1 {
+		t.Errorf("expected 1 row, got %d (%v)", r.Total, r.Rows)
+	}
+	if r.Total > 0 {
+		if name, _ := r.Rows[0]["f.name"].(string); name != "Beta" {
+			t.Errorf("expected Beta, got %v", name)
+		}
+	}
+}
+
+// #354: NOT honours operators beyond `=` — wraps the entire inner clause.
+func TestNodeScan_NotContains(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "f1", "fooBar", "Function", "Go")
+	insertSym(t, db, "f2", "Baz", "Function", "Go")
+
+	r := exec(t, db, `MATCH (f:Function) WHERE NOT f.name CONTAINS 'foo' RETURN f.name`)
+	if r.Total != 1 {
+		t.Errorf("expected 1 row, got %d (%v)", r.Total, r.Rows)
+	}
+	if r.Total > 0 {
+		if name, _ := r.Rows[0]["f.name"].(string); name != "Baz" {
+			t.Errorf("expected Baz, got %v", name)
+		}
+	}
+}
+
 // #340: ENDS WITH on file_path filters by extension.
 func TestNodeScan_EndsWith_FilePath(t *testing.T) {
 	db := newTestDB(t)

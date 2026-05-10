@@ -108,8 +108,9 @@ type pattern struct {
 type condition struct {
 	variable string
 	property string
-	op       string // = <> > < >= <= =~ CONTAINS STARTS_WITH
+	op       string // = <> > < >= <= =~ CONTAINS STARTS_WITH ENDS_WITH IS_NULL IS_NOT_NULL
 	value    string
+	negated  bool // #354: WHERE NOT n.x = ... — invert the comparison result
 }
 
 type returnVar struct {
@@ -414,6 +415,14 @@ func (p *parser) parseConditions() ([]condition, error) {
 
 func (p *parser) parseOneCondition() (condition, error) {
 	c := condition{}
+
+	// #354: WHERE NOT n.x = ... — consume NOT prefix and flag the
+	// condition for negation. Single-condition prefix only; compound
+	// `NOT (a OR b)` requires paren-aware parsing that's out of scope.
+	if p.peek().value == "NOT" {
+		p.next()
+		c.negated = true
+	}
 
 	varTok := p.next()
 	c.variable = varTok.value
@@ -1295,30 +1304,35 @@ func symRowToMap(varName string, n *symRow) map[string]any {
 // appendWhereOp appends a SQL condition for a pushed-down Cypher WHERE clause.
 // prefix is "" for single-table queries or "alias." for JOIN queries.
 func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
+	// Build the inner clause first (without the leading " AND "), then
+	// wrap with " AND NOT (...)" or " AND " depending on c.negated (#354).
+	var inner string
 	switch c.op {
 	case "=":
-		*sqlQ += " AND " + prefix + col + "=?"
+		inner = prefix + col + "=?"
 		*args = append(*args, c.value)
 	case "CONTAINS":
-		*sqlQ += " AND " + prefix + col + " LIKE ?"
+		inner = prefix + col + " LIKE ?"
 		*args = append(*args, "%"+c.value+"%")
 	case "STARTS WITH":
-		*sqlQ += " AND " + prefix + col + " LIKE ?"
+		inner = prefix + col + " LIKE ?"
 		*args = append(*args, c.value+"%")
 	case "ENDS WITH":
-		// #340: SQL pushdown for the suffix-match family. Mirrors STARTS WITH
-		// but with the wildcard at the leading edge.
-		*sqlQ += " AND " + prefix + col + " LIKE ?"
+		// #340: SQL pushdown for the suffix-match family.
+		inner = prefix + col + " LIKE ?"
 		*args = append(*args, "%"+c.value)
 	case "IS NULL":
-		// #342: NULL OR empty. SQLite's Go driver maps NULL TEXT to "" when
-		// scanned into a non-pointer string, so users see no difference
-		// between absent and intentionally-blank. Match both so the
-		// predicate matches the user's intent.
-		*sqlQ += " AND (" + prefix + col + " IS NULL OR " + prefix + col + " = '')"
+		// #342: NULL OR empty. SQLite's Go driver maps NULL TEXT to "".
+		inner = "(" + prefix + col + " IS NULL OR " + prefix + col + " = '')"
 	case "IS NOT NULL":
-		// #342: complement of IS NULL.
-		*sqlQ += " AND (" + prefix + col + " IS NOT NULL AND " + prefix + col + " <> '')"
+		inner = "(" + prefix + col + " IS NOT NULL AND " + prefix + col + " <> '')"
+	default:
+		return
+	}
+	if c.negated {
+		*sqlQ += " AND NOT (" + inner + ")"
+	} else {
+		*sqlQ += " AND " + inner
 	}
 }
 
@@ -1354,89 +1368,76 @@ func matchesConditions(row map[string]any, conds []condition) bool {
 
 func matchesConditionsWithCache(row map[string]any, conds []condition, reCache map[string]*regexp.Regexp) bool {
 	for _, c := range conds {
-		key := c.variable + "." + c.property
-		actual := fmt.Sprint(row[key])
-
-		switch c.op {
-		case "=":
-			if actual != c.value {
-				return false
-			}
-		case "<>":
-			if actual == c.value {
-				return false
-			}
-		case "=~":
-			var re *regexp.Regexp
-			if reCache != nil {
-				re = reCache[c.value]
-			}
-			if re == nil {
-				var err error
-				re, err = regexp.Compile(c.value)
-				if err != nil {
-					return false
-				}
-				if reCache != nil {
-					reCache[c.value] = re
-				}
-			}
-			if !re.MatchString(actual) {
-				return false
-			}
-		case "CONTAINS":
-			if !strings.Contains(actual, c.value) {
-				return false
-			}
-		case "STARTS WITH":
-			if !strings.HasPrefix(actual, c.value) {
-				return false
-			}
-		case "ENDS WITH":
-			// #340: suffix-match alongside the existing prefix-match path.
-			if !strings.HasSuffix(actual, c.value) {
-				return false
-			}
-		case "IS NULL":
-			// #342: empty string OR Go nil-interface map miss. Both
-			// flow through fmt.Sprint as "" / "<nil>"; treat as NULL.
-			raw, present := row[key]
-			if present && raw != nil && actual != "" && actual != "<nil>" {
-				return false
-			}
-		case "IS NOT NULL":
-			// #342: complement.
-			raw, present := row[key]
-			if !present || raw == nil || actual == "" || actual == "<nil>" {
-				return false
-			}
-		case ">", "<", ">=", "<=":
-			an, aerr := strconv.ParseFloat(actual, 64)
-			bn, berr := strconv.ParseFloat(c.value, 64)
-			if aerr != nil || berr != nil {
-				return false
-			}
-			switch c.op {
-			case ">":
-				if !(an > bn) {
-					return false
-				}
-			case "<":
-				if !(an < bn) {
-					return false
-				}
-			case ">=":
-				if !(an >= bn) {
-					return false
-				}
-			case "<=":
-				if !(an <= bn) {
-					return false
-				}
-			}
+		matched := evalCondition(row, c, reCache)
+		if c.negated {
+			// #354: NOT prefix inverts the per-condition result.
+			matched = !matched
+		}
+		if !matched {
+			return false
 		}
 	}
 	return true
+}
+
+// evalCondition returns true iff the row satisfies the un-negated form
+// of c. Caller XORs with c.negated for #354 NOT semantics.
+func evalCondition(row map[string]any, c condition, reCache map[string]*regexp.Regexp) bool {
+	key := c.variable + "." + c.property
+	actual := fmt.Sprint(row[key])
+
+	switch c.op {
+	case "=":
+		return actual == c.value
+	case "<>":
+		return actual != c.value
+	case "=~":
+		var re *regexp.Regexp
+		if reCache != nil {
+			re = reCache[c.value]
+		}
+		if re == nil {
+			var err error
+			re, err = regexp.Compile(c.value)
+			if err != nil {
+				return false
+			}
+			if reCache != nil {
+				reCache[c.value] = re
+			}
+		}
+		return re.MatchString(actual)
+	case "CONTAINS":
+		return strings.Contains(actual, c.value)
+	case "STARTS WITH":
+		return strings.HasPrefix(actual, c.value)
+	case "ENDS WITH":
+		return strings.HasSuffix(actual, c.value)
+	case "IS NULL":
+		// Empty string OR Go nil-interface map miss — both treated as NULL (#342).
+		raw, present := row[key]
+		return !present || raw == nil || actual == "" || actual == "<nil>"
+	case "IS NOT NULL":
+		raw, present := row[key]
+		return present && raw != nil && actual != "" && actual != "<nil>"
+	case ">", "<", ">=", "<=":
+		an, aerr := strconv.ParseFloat(actual, 64)
+		bn, berr := strconv.ParseFloat(c.value, 64)
+		if aerr != nil || berr != nil {
+			return false
+		}
+		switch c.op {
+		case ">":
+			return an > bn
+		case "<":
+			return an < bn
+		case ">=":
+			return an >= bn
+		case "<=":
+			return an <= bn
+		}
+	}
+	return false
 }
 
 // QueryAST exposes minimal fields for external tests.
