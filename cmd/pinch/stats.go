@@ -196,7 +196,85 @@ func dbFileSizeKB(dir string) int64 {
 // section since the CLI binary has no in-memory atomic counters.
 func formatStatsText(r *StatsReport) string {
 	var b strings.Builder
-	const w = 44
+
+	commify := func(n int64) string {
+		s := fmt.Sprintf("%d", n)
+		for i := len(s) - 3; i > 0; i -= 3 {
+			s = s[:i] + "," + s[i:]
+		}
+		return s
+	}
+
+	// Pre-compute every (label, value) pair so we can size the box to the
+	// widest content. Without this, large symbol counts (e.g. thinksmart's
+	// 447,201 syms / 39,276 files = 28-char value) overflow the previous
+	// 44-char fixed-width box and push the closing │ visually rightward.
+	type row struct{ label, value string }
+	var rows []row
+
+	rows = append(rows,
+		row{"Tool calls:", commify(r.AllTime.Calls)},
+		row{"Tokens used:", commify(r.AllTime.TokensUsed)},
+		row{"Tokens saved:", "~" + commify(r.AllTime.TokensSaved)},
+		row{"Cost avoided:", fmt.Sprintf("$%.4f", r.AllTime.CostAvoided)},
+		row{"Data dir:", r.DataDir}, // no truncation; box auto-sizes
+		row{"DB size:", commify(r.DBSizeKB) + " KB"},
+	)
+	for _, p := range r.Projects {
+		// Two-line project rendering: name on line 1, count value on line 2.
+		// Both contribute to width independently.
+		rows = append(rows,
+			row{p.Name + ":", ""},
+			row{"", fmt.Sprintf("%s syms / %s files",
+				commify(int64(p.Symbols)),
+				commify(int64(p.Files)))})
+	}
+
+	// content layout: "  %-20s %s" — 2 leading spaces + label (padded to 20
+	// when shorter, expanded when longer because Go's %-Ns format is min-width
+	// not truncating) + 1 space + value. Inner width must accommodate the
+	// widest such content, including label-overflow rows like project names
+	// used as labels with empty values.
+	const labelWidth = 20
+	const minBoxWidth = 44
+	const maxBoxWidth = 100 // cap so terminals don't wrap absurdly on outliers
+	effLabelLen := func(label string) int {
+		if len(label) > labelWidth {
+			return len(label)
+		}
+		return labelWidth
+	}
+	w := minBoxWidth
+	for _, r := range rows {
+		need := 2 + effLabelLen(r.label) + 1 + len(r.value)
+		if need > w {
+			w = need
+		}
+	}
+	if w > maxBoxWidth {
+		w = maxBoxWidth
+		// At the cap, truncate to keep the closing │ aligned. Value gets
+		// truncated first (preferred — labels usually carry the meaning).
+		// If label alone exceeds the cap, label gets truncated too.
+		for i := range rows {
+			label := rows[i].label
+			value := rows[i].value
+			availForValue := w - 2 - effLabelLen(label) - 1
+			if availForValue < 0 {
+				availForLabel := w - 2 - 1
+				if availForLabel < 1 {
+					availForLabel = 1
+				}
+				label = truncEnd(label, availForLabel)
+				availForValue = 0
+			}
+			if len(value) > availForValue {
+				value = truncEnd(value, availForValue)
+			}
+			rows[i].label = label
+			rows[i].value = value
+		}
+	}
 
 	header := func(title string) string {
 		pad := w - 2 - len(title)
@@ -212,38 +290,25 @@ func formatStatsText(r *StatsReport) string {
 		return "│" + content + "│\n"
 	}
 	sep := "├" + strings.Repeat("─", w) + "┤\n"
-	commify := func(n int64) string {
-		s := fmt.Sprintf("%d", n)
-		for i := len(s) - 3; i > 0; i -= 3 {
-			s = s[:i] + "," + s[i:]
-		}
-		return s
-	}
 
 	b.WriteString("┌" + strings.Repeat("─", w) + "┐\n")
 	b.WriteString(header("ALL-TIME"))
-	b.WriteString(line("Tool calls:", commify(r.AllTime.Calls)))
-	b.WriteString(line("Tokens used:", commify(r.AllTime.TokensUsed)))
-	b.WriteString(line("Tokens saved:", "~"+commify(r.AllTime.TokensSaved)))
-	b.WriteString(line("Cost avoided:", fmt.Sprintf("$%.4f", r.AllTime.CostAvoided)))
+	b.WriteString(line(rows[0].label, rows[0].value))
+	b.WriteString(line(rows[1].label, rows[1].value))
+	b.WriteString(line(rows[2].label, rows[2].value))
+	b.WriteString(line(rows[3].label, rows[3].value))
 
 	b.WriteString(sep)
 	b.WriteString(header("STORAGE"))
-	b.WriteString(line("Data dir:", truncMid(r.DataDir, 22)))
-	b.WriteString(line("DB size:", commify(r.DBSizeKB)+" KB"))
+	b.WriteString(line(rows[4].label, rows[4].value))
+	b.WriteString(line(rows[5].label, rows[5].value))
 
 	if len(r.Projects) > 0 {
 		b.WriteString(sep)
 		b.WriteString(header("PROJECTS"))
-		// Two lines per project so symbol counts up to ~447k still fit
-		// inside the 44-char box. Name on line 1, symbol/file counts on
-		// line 2 indented under the name.
-		for _, p := range r.Projects {
-			b.WriteString(line(truncEnd(p.Name, 28)+":", ""))
-			b.WriteString(line("",
-				fmt.Sprintf("%s syms / %s files",
-					commify(int64(p.Symbols)),
-					commify(int64(p.Files)))))
+		// Project rows start at index 6; each project contributes two rows.
+		for i := 6; i < len(rows); i++ {
+			b.WriteString(line(rows[i].label, rows[i].value))
 		}
 	}
 
