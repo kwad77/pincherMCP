@@ -1,4 +1,4 @@
-package main
+package init
 
 import (
 	"encoding/json"
@@ -8,117 +8,144 @@ import (
 	"strings"
 )
 
-// initTarget describes one of the editor / agent rule files that
-// `pincher init` knows how to seed. Each target writes the policy block
-// in its expected location and format; the marker-block convention
-// (`<!-- pincher:start --> ... <!-- pincher:end -->`) is shared across
-// every target so re-runs replace in place rather than duplicating.
+// Target describes one of the editor / agent rule files that
+// `pincher init` knows how to seed. Each target writes the policy
+// block in its expected location and format; the marker-block
+// convention (`<!-- pincher:start --> ... <!-- pincher:end -->`) is
+// shared across every target so re-runs replace in place rather than
+// duplicating.
 //
-// Closes #191.
-type initTarget struct {
-	// name is the value the user passes to --target (e.g. "cursor").
-	name string
+// Closes #191. Carved out of cmd/pinch in #253 so the MCP server can
+// import the target machinery without dragging package main along.
+type Target struct {
+	// Name is the value the user passes to --target / the MCP
+	// `target` arg (e.g. "cursor").
+	Name string
 
-	// describe is the one-line summary shown in --help output and the
+	// Describe is the one-line summary shown in --help output and the
 	// post-write banner.
-	describe string
+	Describe string
 
-	// supportsGlobal reports whether `--global` is meaningful for this
-	// target. claude maps to ~/.claude/CLAUDE.md when global; cursor /
-	// windsurf / aider have no equivalent global rules file (the files
-	// live per-project), so passing --global with those is an error.
-	// continue is global-only — the file always lives at
-	// ~/.continue/config.json regardless of cwd.
-	supportsGlobal bool
+	// SupportsGlobal reports whether `--global` is meaningful for
+	// this target. Claude maps to ~/.claude/CLAUDE.md when global;
+	// cursor / windsurf / aider have no equivalent global rules file
+	// (the files live per-project), so passing --global with those
+	// is an error. continue is global-only — the file always lives
+	// at ~/.continue/config.json regardless of cwd.
+	SupportsGlobal bool
 
-	// alwaysGlobal is true for targets where --global is implied (the
-	// rules file is global by design — currently just continue).
-	alwaysGlobal bool
+	// AlwaysGlobal is true for targets where --global is implied
+	// (the rules file is global by design — currently just continue).
+	AlwaysGlobal bool
 
-	// pathFn resolves the absolute file path. global is the user's
-	// --global value; honored only when supportsGlobal && !alwaysGlobal.
-	// cwd is the project root the caller wants paths resolved against —
-	// CLI passes os.Getwd(); MCP (#244) passes the session project root
-	// so the server's own working directory doesn't influence target
-	// paths. Targets ignoring cwd (the alwaysGlobal `continue` target,
-	// for example) accept it as a no-op for signature uniformity.
-	pathFn func(cwd string, global bool) (string, error)
+	// PathFn resolves the absolute file path. global is the user's
+	// --global value; honored only when SupportsGlobal &&
+	// !AlwaysGlobal. cwd is the project root the caller wants paths
+	// resolved against — CLI passes os.Getwd(); MCP passes the
+	// session project root. Targets ignoring cwd (the AlwaysGlobal
+	// continue target) accept it as a no-op for signature uniformity.
+	PathFn func(cwd string, global bool) (string, error)
 
-	// detectFn returns true when a marker file or directory for this
+	// DetectFn returns true when a marker file or directory for this
 	// editor exists under cwd. Used by --target=detect.
-	detectFn func(cwd string) bool
+	DetectFn func(cwd string) bool
 
-	// writeFn produces the new file content given the existing content
-	// (may be empty if file doesn't exist) and the raw policy markdown
-	// embedded in the binary. Returns (newContent, action) where action
-	// is "wrote" / "updated" / "appended" — same vocabulary as
-	// claude's mergePolicyBlock so the post-write banner stays uniform
-	// across targets.
-	writeFn func(existing, policy string) (string, string)
+	// WriteFn produces the new file content given the existing
+	// content (may be empty if the file doesn't exist) and the raw
+	// policy markdown embedded in the binary. Returns (newContent,
+	// action) where action is "wrote" / "updated" / "appended" /
+	// "error".
+	WriteFn func(existing, policy string) (string, string)
 }
 
-// allInitTargets is the registry of every editor / agent target the
-// init subcommand can write to. Order is meaningful for --target=all
+// AllTargets is the registry of every editor / agent target the init
+// path knows how to write to. Order is meaningful for --target=all
 // and detection-priority output ordering.
-var allInitTargets = []initTarget{
-	claudeInitTarget,
-	cursorInitTarget,
-	cursorLegacyInitTarget,
-	windsurfInitTarget,
-	aiderInitTarget,
-	continueInitTarget,
+var AllTargets = []Target{
+	ClaudeTarget,
+	CursorTarget,
+	CursorLegacyTarget,
+	WindsurfTarget,
+	AiderTarget,
+	ContinueTarget,
 }
 
-// findInitTarget looks up a target by its --target value.
-func findInitTarget(name string) (initTarget, bool) {
-	for _, t := range allInitTargets {
-		if t.name == name {
+// FindTarget looks up a target by its --target value.
+func FindTarget(name string) (Target, bool) {
+	for _, t := range AllTargets {
+		if t.Name == name {
 			return t, true
 		}
 	}
-	return initTarget{}, false
+	return Target{}, false
 }
 
-// initTargetNames returns the list of valid --target values for help
-// text. Order matches allInitTargets.
-func initTargetNames() []string {
-	out := make([]string, 0, len(allInitTargets)+2)
-	for _, t := range allInitTargets {
-		out = append(out, t.name)
+// TargetNames returns the list of valid --target values for help
+// text. Order matches AllTargets, with the detect/all aliases
+// appended.
+func TargetNames() []string {
+	out := make([]string, 0, len(AllTargets)+2)
+	for _, t := range AllTargets {
+		out = append(out, t.Name)
 	}
 	out = append(out, "detect", "all")
 	return out
 }
 
-// detectInitTargets walks cwd and returns every target whose detectFn
+// DetectTargets walks cwd and returns every target whose DetectFn
 // returns true. If none match, returns just claude (the safe default).
-func detectInitTargets(cwd string) []initTarget {
-	var hits []initTarget
-	for _, t := range allInitTargets {
-		if t.detectFn != nil && t.detectFn(cwd) {
+func DetectTargets(cwd string) []Target {
+	var hits []Target
+	for _, t := range AllTargets {
+		if t.DetectFn != nil && t.DetectFn(cwd) {
 			hits = append(hits, t)
 		}
 	}
 	if len(hits) == 0 {
-		hits = append(hits, claudeInitTarget)
+		hits = append(hits, ClaudeTarget)
 	}
 	return hits
+}
+
+// ResolveTargets expands a target name (a single target name,
+// "detect", or "all") into the concrete list of Targets to write.
+// cwd is the project root used for the "detect" target's marker-file
+// scan; pass os.Getwd() from the CLI or the session project root
+// from the MCP handler.
+func ResolveTargets(name, cwd string) ([]Target, error) {
+	switch name {
+	case "":
+		return nil, fmt.Errorf("--target is required (one of: %s)", strings.Join(TargetNames(), ", "))
+	case "detect":
+		return DetectTargets(cwd), nil
+	case "all":
+		// MCP-context callers should filter out AlwaysGlobal targets
+		// (continue) before write — `target=all` from an MCP request
+		// must not silently escape the project_path. The CLI keeps
+		// the historical broad semantic.
+		return AllTargets, nil
+	}
+	t, ok := FindTarget(name)
+	if !ok {
+		return nil, fmt.Errorf("unknown --target %q (one of: %s)", name, strings.Join(TargetNames(), ", "))
+	}
+	return []Target{t}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // claude — the original target (./CLAUDE.md, ~/.claude/CLAUDE.md global)
 // ─────────────────────────────────────────────────────────────────────────────
 
-var claudeInitTarget = initTarget{
-	name:           "claude",
-	describe:       "Claude Code: ./CLAUDE.md (or ~/.claude/CLAUDE.md with --global)",
-	supportsGlobal: true,
-	pathFn:         resolveCLAUDEPath,
-	detectFn: func(cwd string) bool {
+var ClaudeTarget = Target{
+	Name:           "claude",
+	Describe:       "Claude Code: ./CLAUDE.md (or ~/.claude/CLAUDE.md with --global)",
+	SupportsGlobal: true,
+	PathFn:         ResolveCLAUDEPath,
+	DetectFn: func(cwd string) bool {
 		_, err := os.Stat(filepath.Join(cwd, "CLAUDE.md"))
 		return err == nil
 	},
-	writeFn: mergePolicyBlock,
+	WriteFn: MergePolicyBlock,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,47 +161,42 @@ alwaysApply: true
 
 `
 
-var cursorInitTarget = initTarget{
-	name:     "cursor",
-	describe: "Cursor (modern): ./.cursor/rules/pincher.mdc with YAML frontmatter",
-	pathFn: func(cwd string, global bool) (string, error) {
+var CursorTarget = Target{
+	Name:     "cursor",
+	Describe: "Cursor (modern): ./.cursor/rules/pincher.mdc with YAML frontmatter",
+	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("cursor target has no global variant; rules live per-project")
 		}
 		return filepath.Join(cwd, ".cursor", "rules", "pincher.mdc"), nil
 	},
-	detectFn: func(cwd string) bool {
+	DetectFn: func(cwd string) bool {
 		_, err := os.Stat(filepath.Join(cwd, ".cursor"))
 		return err == nil
 	},
-	writeFn: cursorMDCWriter,
+	WriteFn: cursorMDCWriter,
 }
 
 // cursorMDCWriter wraps the policy in MDX YAML frontmatter on first
 // write. On subsequent writes (existing file present), it preserves
 // any frontmatter the user has customised and only replaces the
-// marker block in the body. This means tweaking `globs:` or
-// `alwaysApply:` in the frontmatter survives `pincher init` re-runs.
+// marker block in the body.
 func cursorMDCWriter(existing, policy string) (string, string) {
 	if existing == "" {
-		body, _ := mergePolicyBlockBare("", policy)
+		body, _ := MergePolicyBlockBare("", policy)
 		return cursorRuleFrontmatter + body, "wrote"
 	}
-	// Existing file: preserve everything before the body (frontmatter +
-	// any prose the user added above pincher's block), and run the
-	// usual marker merge over the body.
-	frontmatter, body := splitMDXFrontmatter(existing)
-	mergedBody, action := mergePolicyBlockBare(body, policy)
+	frontmatter, body := SplitMDXFrontmatter(existing)
+	mergedBody, action := MergePolicyBlockBare(body, policy)
 	return frontmatter + mergedBody, action
 }
 
-// splitMDXFrontmatter returns (frontmatterIncludingTrailingBlank, body).
+// SplitMDXFrontmatter returns (frontmatterIncludingTrailingBlank, body).
 // If no frontmatter delimiter is found, returns ("", content).
-func splitMDXFrontmatter(content string) (string, string) {
+func SplitMDXFrontmatter(content string) (string, string) {
 	if !strings.HasPrefix(content, "---\n") && !strings.HasPrefix(content, "---\r\n") {
 		return "", content
 	}
-	// Find the closing `---` line. Search after the opening delimiter.
 	rest := content[4:]
 	if strings.HasPrefix(content, "---\r\n") {
 		rest = content[5:]
@@ -183,18 +205,13 @@ func splitMDXFrontmatter(content string) (string, string) {
 	if closeIdx < 0 {
 		closeIdx = strings.Index(rest, "\n---\r\n")
 		if closeIdx < 0 {
-			// Malformed frontmatter (no close); treat whole file as body.
 			return "", content
 		}
 	}
-	// Compute split point in the original string. Include the closing
-	// `---` line and the blank line following it (which conventionally
-	// separates frontmatter from body).
 	end := len(content) - len(rest) + closeIdx + len("\n---\n")
 	if end > len(content) {
 		end = len(content)
 	}
-	// Skip a single trailing blank line if present.
 	if end < len(content) && content[end] == '\n' {
 		end++
 	}
@@ -205,57 +222,56 @@ func splitMDXFrontmatter(content string) (string, string) {
 // cursor-legacy (./.cursorrules, plain text)
 // ─────────────────────────────────────────────────────────────────────────────
 
-var cursorLegacyInitTarget = initTarget{
-	name:     "cursor-legacy",
-	describe: "Cursor (legacy): ./.cursorrules plain text",
-	pathFn: func(cwd string, global bool) (string, error) {
+var CursorLegacyTarget = Target{
+	Name:     "cursor-legacy",
+	Describe: "Cursor (legacy): ./.cursorrules plain text",
+	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("cursor-legacy target has no global variant")
 		}
 		return filepath.Join(cwd, ".cursorrules"), nil
 	},
-	detectFn: func(cwd string) bool {
+	DetectFn: func(cwd string) bool {
 		_, err := os.Stat(filepath.Join(cwd, ".cursorrules"))
 		return err == nil
 	},
-	writeFn: mergePolicyBlockBare,
+	WriteFn: MergePolicyBlockBare,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // windsurf (./.windsurfrules, plain text/markdown)
 // ─────────────────────────────────────────────────────────────────────────────
 
-var windsurfInitTarget = initTarget{
-	name:     "windsurf",
-	describe: "Windsurf: ./.windsurfrules plain text/markdown",
-	pathFn: func(cwd string, global bool) (string, error) {
+var WindsurfTarget = Target{
+	Name:     "windsurf",
+	Describe: "Windsurf: ./.windsurfrules plain text/markdown",
+	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("windsurf target has no global variant")
 		}
 		return filepath.Join(cwd, ".windsurfrules"), nil
 	},
-	detectFn: func(cwd string) bool {
+	DetectFn: func(cwd string) bool {
 		_, err := os.Stat(filepath.Join(cwd, ".windsurfrules"))
 		return err == nil
 	},
-	writeFn: mergePolicyBlockBare,
+	WriteFn: MergePolicyBlockBare,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // aider (./CONVENTIONS.md, the documented Aider convention)
 // ─────────────────────────────────────────────────────────────────────────────
 
-var aiderInitTarget = initTarget{
-	name:     "aider",
-	describe: "Aider: ./CONVENTIONS.md (Aider's documented convention)",
-	pathFn: func(cwd string, global bool) (string, error) {
+var AiderTarget = Target{
+	Name:     "aider",
+	Describe: "Aider: ./CONVENTIONS.md (Aider's documented convention)",
+	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("aider --global needs ~/.aider.conf.yml work — not yet implemented; use project CONVENTIONS.md")
 		}
 		return filepath.Join(cwd, "CONVENTIONS.md"), nil
 	},
-	detectFn: func(cwd string) bool {
-		// Heuristic: CONVENTIONS.md exists, OR an aider config marker.
+	DetectFn: func(cwd string) bool {
 		if _, err := os.Stat(filepath.Join(cwd, "CONVENTIONS.md")); err == nil {
 			return true
 		}
@@ -264,20 +280,18 @@ var aiderInitTarget = initTarget{
 		}
 		return false
 	},
-	writeFn: mergePolicyBlockBare,
+	WriteFn: MergePolicyBlockBare,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // continue (~/.continue/config.json, JSON-string merge into systemMessage)
 // ─────────────────────────────────────────────────────────────────────────────
 
-var continueInitTarget = initTarget{
-	name:         "continue",
-	describe:     "Continue.dev: ~/.continue/config.json (merges into systemMessage)",
-	alwaysGlobal: true,
-	pathFn: func(cwd string, global bool) (string, error) {
-		// Always global — passing --global is a no-op (and not erroneous).
-		// cwd is ignored; the config lives in the user's home directory.
+var ContinueTarget = Target{
+	Name:         "continue",
+	Describe:     "Continue.dev: ~/.continue/config.json (merges into systemMessage)",
+	AlwaysGlobal: true,
+	PathFn: func(cwd string, global bool) (string, error) {
 		_ = cwd
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -285,9 +299,7 @@ var continueInitTarget = initTarget{
 		}
 		return filepath.Join(home, ".continue", "config.json"), nil
 	},
-	detectFn: func(cwd string) bool {
-		// cwd doesn't determine continue presence; this is global. We
-		// detect via the home directory instead.
+	DetectFn: func(cwd string) bool {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return false
@@ -295,20 +307,12 @@ var continueInitTarget = initTarget{
 		_, err = os.Stat(filepath.Join(home, ".continue"))
 		return err == nil
 	},
-	writeFn: continueJSONWriter,
+	WriteFn: continueJSONWriter,
 }
 
 // continueJSONWriter merges the policy into the `systemMessage` field
 // of a Continue config.json. Markers are line-prefixed with `// ` so
 // the same scan-and-replace pattern works inside a JSON-escaped string.
-//
-// Behaviour:
-//   - Empty file → emit a minimal config with just `systemMessage`.
-//   - Existing JSON with no systemMessage → add the field with the block.
-//   - Existing systemMessage → replace the marker block in place; if no
-//     markers, append a separator + block.
-//   - Malformed JSON → error (caller surfaces it; we don't risk
-//     corrupting a user-edited config).
 func continueJSONWriter(existing, policy string) (string, string) {
 	const (
 		startMark = "// pincher:start"
@@ -340,20 +344,13 @@ func continueJSONWriter(existing, policy string) (string, string) {
 	}
 
 	if existing == "" {
-		// Fresh write: minimal config with just the systemMessage.
 		msg, action := mergeMessage("")
 		raw, _ := json.MarshalIndent(map[string]any{"systemMessage": msg}, "", "  ")
 		return string(raw) + "\n", action
 	}
 
-	// Decode existing into a generic map so we can preserve unknown
-	// keys (Continue's config has many fields we don't touch).
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(existing), &cfg); err != nil {
-		// Caller catches this via a follow-up json.Unmarshal — but
-		// since we're called inline, we surface it by returning the
-		// existing content unchanged with an "error" action. The
-		// runInitCLI loop checks `action` to detect this.
 		return existing, "error"
 	}
 	prev, _ := cfg["systemMessage"].(string)

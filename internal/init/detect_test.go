@@ -1,4 +1,4 @@
-package main
+package init
 
 import (
 	"strings"
@@ -29,7 +29,7 @@ More pincher content.
 
 Unrelated content.
 `
-	start, end, ok := detectPincherPolicySection(content)
+	start, end, ok := DetectPincherPolicySection(content)
 	if !ok {
 		t.Fatal("detector did not find heading-bounded pincher section")
 	}
@@ -54,7 +54,7 @@ Some content.
 
 Nothing pincher-related.
 `
-	_, _, ok := detectPincherPolicySection(content)
+	_, _, ok := DetectPincherPolicySection(content)
 	if ok {
 		t.Error("detector fired on content with no pincher heading")
 	}
@@ -72,7 +72,7 @@ Some intro.
 
 You can call mcp__pincher__search to find symbols.
 `
-	_, _, ok := detectPincherPolicySection(content)
+	_, _, ok := DetectPincherPolicySection(content)
 	if ok {
 		t.Error("detector fired on a non-heading mention; conservative path should leave this alone")
 	}
@@ -85,7 +85,7 @@ func TestDetectPincherPolicySection_HeadingExtendsToEOF(t *testing.T) {
 
 Section content with no following heading.
 `
-	start, end, ok := detectPincherPolicySection(content)
+	start, end, ok := DetectPincherPolicySection(content)
 	if !ok {
 		t.Fatal("detector did not find EOF-bounded pincher section")
 	}
@@ -114,7 +114,7 @@ Inside the pincher section.
 
 Outside.
 `
-	start, end, ok := detectPincherPolicySection(content)
+	start, end, ok := DetectPincherPolicySection(content)
 	if !ok {
 		t.Fatal("detector did not find pincher section")
 	}
@@ -143,9 +143,9 @@ func TestMarkdownHeadingLevel_Cases(t *testing.T) {
 		{"\n", 0, false},
 	}
 	for _, tc := range cases {
-		gotLevel, gotOK := markdownHeadingLevel(tc.line)
+		gotLevel, gotOK := MarkdownHeadingLevel(tc.line)
 		if gotLevel != tc.level || gotOK != tc.ok {
-			t.Errorf("markdownHeadingLevel(%q) = (%d, %v), want (%d, %v)",
+			t.Errorf("MarkdownHeadingLevel(%q) = (%d, %v), want (%d, %v)",
 				tc.line, gotLevel, gotOK, tc.level, tc.ok)
 		}
 	}
@@ -161,7 +161,7 @@ func TestMergePolicyBlockBare_DetectAndReplaceUnmarkered(t *testing.T) {
 
 Hand-rolled policy text the user wrote.
 `
-	merged, action := mergePolicyBlockBare(existing, "CANONICAL POLICY BODY")
+	merged, action := MergePolicyBlockBare(existing, "CANONICAL POLICY BODY")
 	if action != "updated" {
 		t.Errorf("action = %q, want \"updated\" (detector should treat unmarkered pincher heading as the managed block)", action)
 	}
@@ -173,7 +173,7 @@ Hand-rolled policy text the user wrote.
 	}
 	// Markers must be present after the merge — subsequent runs should
 	// take the marker path, not the detector path.
-	if !strings.Contains(merged, pincherInitMarkerStart) || !strings.Contains(merged, pincherInitMarkerEnd) {
+	if !strings.Contains(merged, MarkerStart) || !strings.Contains(merged, MarkerEnd) {
 		t.Error("merged content missing pincher init markers; subsequent runs would re-detect from scratch")
 	}
 }
@@ -187,11 +187,11 @@ func TestMergePolicyBlockBare_MarkersPrecedeDetection(t *testing.T) {
 
 Hand-rolled text outside markers.
 
-` + pincherInitMarkerStart + `
+` + MarkerStart + `
 old marker block
-` + pincherInitMarkerEnd + `
+` + MarkerEnd + `
 `
-	merged, action := mergePolicyBlockBare(existing, "NEW POLICY BODY")
+	merged, action := MergePolicyBlockBare(existing, "NEW POLICY BODY")
 	if action != "updated" {
 		t.Errorf("action = %q, want \"updated\" (marker path should fire)", action)
 	}
@@ -219,7 +219,7 @@ Random content.
 
 More content.
 `
-	merged, action := mergePolicyBlockBare(existing, "POLICY")
+	merged, action := MergePolicyBlockBare(existing, "POLICY")
 	if action != "appended" {
 		t.Errorf("action = %q, want \"appended\" (no pincher content present, no markers, conservative path)", action)
 	}
@@ -230,7 +230,7 @@ More content.
 
 // Empty existing content: fresh write, action="wrote" (unchanged).
 func TestMergePolicyBlockBare_EmptyExistingWrites(t *testing.T) {
-	merged, action := mergePolicyBlockBare("", "POLICY BODY")
+	merged, action := MergePolicyBlockBare("", "POLICY BODY")
 	if action != "wrote" {
 		t.Errorf("action = %q, want \"wrote\"", action)
 	}

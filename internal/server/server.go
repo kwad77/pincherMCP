@@ -1572,6 +1572,19 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleNeighborhood)
+
+	// 18. init
+	s.addTool(&mcp.Tool{
+		Name:        "init",
+		Description: "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / cursor / cursor-legacy / windsurf / aider / detect / all. The continue target is rejected (always-global, escapes project scope from an MCP context). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out}.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"target":{"type":"string","description":"Editor target: claude|cursor|cursor-legacy|windsurf|aider|detect|all. Default: detect."},
+				"write":{"type":"boolean","description":"If true, mutate target files. Default false (dry-run)."},
+				"project_path":{"type":"string","description":"Project root override. Defaults to the session project root."}
+			}
+		}`),
+	}, s.handleInit)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
