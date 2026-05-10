@@ -4760,18 +4760,28 @@ func TestClassifyTaskShape_KeywordMatching(t *testing.T) {
 	}
 }
 
-func TestTaskHintFromString_PicksLongestNonStopWord(t *testing.T) {
+// #284 hint extraction: prefers a run of consecutive non-stopword
+// tokens over a single longest word. For "find all functions that
+// handle the http listener lifecycle", the right hint is
+// "http listener lifecycle", not "functions".
+func TestTaskHintFromString_PicksLongestPhrase(t *testing.T) {
 	cases := []struct {
 		task string
 		want string
 	}{
-		{"fix the login timeout bug", "timeout"},
+		// Single-word task: still extracts the identifier.
 		{"refactor handleSearch", "handleSearch"},
-		{"understand how indexing works", "indexing"},
+		// Multi-word adjacent runs win over single longest token.
+		{"fix the login timeout bug", "login timeout"},
+		{"understand how indexing", "indexing"},
+		// The #284 motivating example: "functions" should NOT win when
+		// "http listener lifecycle" is a 3-word run elsewhere.
+		{"find all functions that handle the http listener lifecycle", "http listener lifecycle"},
 		// All stop words → empty.
 		{"fix bug", ""},
 		{"", ""},
-		// Symbol-name shaped wins over short words.
+		// Adverb-heavy task: "here" is a filler stop word so the run
+		// is just the symbol name.
 		{"add a snake_case_helper here", "snake_case_helper"},
 	}
 	for _, c := range cases {
@@ -4781,8 +4791,34 @@ func TestTaskHintFromString_PicksLongestNonStopWord(t *testing.T) {
 	}
 }
 
+// #284 shape classifier: trace-shape verbs route to trace_in / trace_out
+// before the broader "understand" catch-all.
+func TestClassifyTaskShape_TraceVerbs(t *testing.T) {
+	cases := []struct {
+		task string
+		want guideShape
+	}{
+		{"who calls flushSession", shapeTraceIn},
+		{"what calls Index", shapeTraceIn},
+		{"callers of Open", shapeTraceIn},
+		{"what does Index call", shapeTraceOut},
+		{"downstream of jsonResultWithMeta", shapeTraceOut},
+		// "what does X do" is understand, not trace
+		{"what does the indexer do", shapeUnderstand},
+		// "find" / "where is" routes to find shape
+		{"find the auth middleware", shapeFind},
+		{"where is the http listener bound", shapeFind},
+		{"locate the schema migration", shapeFind},
+	}
+	for _, c := range cases {
+		if got := classifyTaskShape(c.task); got != c.want {
+			t.Errorf("classifyTaskShape(%q) = %v, want %v", c.task, got, c.want)
+		}
+	}
+}
+
 func TestGuideRecommendations_AllShapesNonEmpty(t *testing.T) {
-	for _, shape := range []guideShape{shapeFix, shapeAdd, shapeRefactor, shapeUnderstand, shapeTest, shapeReview, shapeUnknown} {
+	for _, shape := range []guideShape{shapeFix, shapeAdd, shapeRefactor, shapeUnderstand, shapeTest, shapeReview, shapeFind, shapeTraceIn, shapeTraceOut, shapeUnknown} {
 		recs := guideRecommendations(shape, "Foo")
 		if len(recs) == 0 {
 			t.Errorf("guideRecommendations(%v) returned empty — every shape must have at least 1 suggestion", shape)

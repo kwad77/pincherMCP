@@ -3744,6 +3744,9 @@ const (
 	shapeUnderstand guideShape = "understand" // orient, explain, explore
 	shapeTest       guideShape = "test"       // write or find tests
 	shapeReview     guideShape = "review"     // pre-commit review, blast radius
+	shapeFind       guideShape = "find"       // find/where is — search-leaning (#284)
+	shapeTraceIn    guideShape = "trace_in"   // who calls / what calls — trace inbound (#284)
+	shapeTraceOut   guideShape = "trace_out"  // what does X call — trace outbound (#284)
 	shapeUnknown    guideShape = "unknown"    // fallback
 )
 
@@ -3777,8 +3780,29 @@ func classifyTaskShape(task string) guideShape {
 		return shapeRefactor
 	case contains("add", "implement", "build", "new feature", "support for", "introduce"):
 		return shapeAdd
-	case contains("understand", "explain", "what does", "how does", "what is", "explore", "learn", "orient"):
+	// #284: trace-shape questions explicitly mention who/what calls a
+	// symbol. Match the verb pattern before the broader "understand"
+	// catch-all so "who calls X" doesn't fall through to architecture.
+	case contains("who calls", "what calls", "callers of", "called by", "depends on", "depend on"):
+		return shapeTraceIn
+	// "downstream of X" / "calls from" are unambiguously trace-out.
+	// "what does X call" needs disambiguation: we treat it as
+	// trace-out only when "call" appears anywhere in the task. Without
+	// "call" the task is shapeUnderstand ("what does the indexer do").
+	case contains("downstream of", "calls from"):
+		return shapeTraceOut
+	case contains("what does"):
+		if strings.Contains(t, "call") {
+			return shapeTraceOut
+		}
 		return shapeUnderstand
+	case contains("understand", "explain", "how does", "what is", "explore", "learn", "orient"):
+		return shapeUnderstand
+	// #284: search-shape questions explicitly mention finding/locating.
+	// Below the trace cases so "who calls X" doesn't grab "find" if it
+	// happens to appear in the task ("find out who calls X").
+	case contains("find ", "where is", "where are", "locate", "look up", "lookup"):
+		return shapeFind
 	default:
 		return shapeUnknown
 	}
@@ -3837,6 +3861,27 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 			{"tool": "context", "args": `{"id":"<from-changes>"}`,
 				"why": "read each high-risk impacted caller before declaring done"},
 		}
+	case shapeFind:
+		return []map[string]string{
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "BM25 search using the discriminating phrase from your task"},
+			{"tool": "context", "args": `{"id":"<from-search>"}`,
+				"why": "read the top hit with its imports — usually answers \"what is this?\" without opening any file"},
+		}
+	case shapeTraceIn:
+		return []map[string]string{
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "first confirm the exact symbol name; ambiguous names trace the wrong target"},
+			{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"inbound"}`, taskHint),
+				"why": "find every caller (CRITICAL=direct, HIGH=2 hops, MEDIUM=3 hops)"},
+		}
+	case shapeTraceOut:
+		return []map[string]string{
+			{"tool": "search", "args": fmt.Sprintf(`{"query":"%s"}`, taskHint),
+				"why": "first confirm the exact symbol name"},
+			{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"outbound"}`, taskHint),
+				"why": "find what this symbol calls (downstream dependency map)"},
+		}
 	default:
 		// Unknown shape — orient first, then ask a refined question.
 		return []map[string]string{
@@ -3848,36 +3893,100 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 	}
 }
 
-// taskHintFromString extracts the most likely symbol-name-shaped token
-// from a task description: the longest word that's plausibly an
-// identifier (alphanumerics + underscore, not a stop word). Returned
-// verbatim so the guide tool can inline it as the search query. Empty
-// if nothing identifier-shaped is present.
+// taskHintFromString extracts the most discriminating phrase from a
+// task description (#284). Prefers a run of consecutive non-stopword
+// tokens over a single longest word — for "find all functions that
+// handle the http listener lifecycle", the right hint is
+// "http listener lifecycle", not "functions". The longest *run* wins;
+// ties broken by run position (later runs preferred, since user
+// intent typically peaks at the end of a sentence).
+//
+// Returns "" only when the task is exclusively stop words.
 func taskHintFromString(task string) string {
 	stopWords := map[string]bool{
+		// articles + conjunctions + prepositions
 		"the": true, "a": true, "an": true, "is": true, "are": true,
 		"to": true, "for": true, "in": true, "on": true, "of": true,
-		"with": true, "and": true, "or": true, "but": true, "fix": true,
-		"add": true, "remove": true, "rename": true, "refactor": true,
-		"understand": true, "explain": true, "what": true, "how": true,
-		"does": true, "this": true, "that": true, "review": true,
-		"test": true, "tests": true, "bug": true, "broken": true,
-		"error": true, "regression": true, "feature": true, "support": true,
-		"implement": true, "build": true,
+		"with": true, "and": true, "or": true, "but": true, "at": true,
+		"by": true, "from": true, "as": true, "be": true, "do": true,
+		"can": true, "all": true, "any": true, "some": true,
+		// task verbs (the shape detector handles these; not signal in the hint)
+		"fix":  true, "fixes": true, "fixed": true,
+		"add":  true, "adds":  true, "added": true,
+		"remove": true, "rename": true, "refactor": true,
+		"understand": true, "explain": true, "explore": true,
+		"review": true, "test": true, "tests": true, "implement": true,
+		"build": true, "builds": true, "built": true, "make": true,
+		"use":   true, "using": true, "find":  true, "show":  true,
+		"handle": true, "handles": true,
+		// generic interrogatives
+		"what": true, "how": true, "why": true, "which": true, "where": true,
+		"when": true, "who": true, "does": true, "this": true, "that": true,
+		"these": true, "those": true, "i": true, "we": true, "it": true,
+		"its": true, "they": true, "you": true,
+		// generic adverbs / fillers
+		"here": true, "there": true, "now": true, "then": true,
+		"works": true, "working": true, "work": true,
+		// pincher-noise
+		"bug": true, "broken": true, "error": true, "errors": true,
+		"regression": true, "feature": true, "features": true,
+		"support": true, "function": true, "functions": true,
+		"method":  true, "methods": true, "code":   true, "files": true,
 	}
-	var best string
-	for _, tok := range strings.FieldsFunc(task, func(r rune) bool {
+	tokens := strings.FieldsFunc(task, func(r rune) bool {
 		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
-	}) {
-		lower := strings.ToLower(tok)
-		if stopWords[lower] {
+	})
+
+	// Slice tokens into runs of consecutive non-stopwords. Stop words
+	// act as run breaks. A run of length 1 is fine — that just means
+	// no multi-token phrase is present.
+	var runs [][]string
+	var cur []string
+	for _, tok := range tokens {
+		if stopWords[strings.ToLower(tok)] {
+			if len(cur) > 0 {
+				runs = append(runs, cur)
+				cur = nil
+			}
 			continue
 		}
-		if len(tok) > len(best) {
-			best = tok
+		cur = append(cur, tok)
+	}
+	if len(cur) > 0 {
+		runs = append(runs, cur)
+	}
+
+	if len(runs) == 0 {
+		return ""
+	}
+
+	// Pick the longest run by token count; ties broken by total
+	// character length (a 3-word run of long names beats a 3-word run
+	// of short ones); further ties broken by position (later wins).
+	bestIdx := 0
+	bestLen := len(runs[0])
+	bestChars := totalLen(runs[0])
+	for i := 1; i < len(runs); i++ {
+		runLen := len(runs[i])
+		runChars := totalLen(runs[i])
+		switch {
+		case runLen > bestLen:
+			bestIdx, bestLen, bestChars = i, runLen, runChars
+		case runLen == bestLen && runChars > bestChars:
+			bestIdx, bestLen, bestChars = i, runLen, runChars
+		case runLen == bestLen && runChars == bestChars:
+			bestIdx = i // later wins on tie
 		}
 	}
-	return best
+	return strings.Join(runs[bestIdx], " ")
+}
+
+func totalLen(toks []string) int {
+	n := 0
+	for _, t := range toks {
+		n += len(t)
+	}
+	return n
 }
 
 func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
