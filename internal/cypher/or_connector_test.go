@@ -102,23 +102,8 @@ func TestParseConditions_StampsOrConnector(t *testing.T) {
 	}
 }
 
-func TestConditionsHaveOr(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []condition
-		want bool
-	}{
-		{"empty", nil, false},
-		{"single", []condition{{}}, false},
-		{"all-AND", []condition{{}, {connector: "AND"}}, false},
-		{"has-OR", []condition{{}, {connector: "OR"}}, true},
-		{"trailing-OR", []condition{{}, {connector: "AND"}, {connector: "OR"}}, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := conditionsHaveOr(c.in); got != c.want {
-				t.Errorf("conditionsHaveOr = %v, want %v", got, c.want)
-			}
-		})
-	}
-}
+// TestConditionsHaveOr was deleted in #362 alongside the conditionsHaveOr
+// helper. Its job (gating SQL pushdown on the presence of OR) moved to
+// pushdownAllowed, which checks the queryAST.where tree directly and
+// also catches paren-grouped and NOT-group queries the old helper missed.
+// See parens_test.go for the replacement coverage.
