@@ -253,6 +253,18 @@ func mergePolicyBlockBare(existing, policy string) (string, string) {
 		return block + "\n", "wrote"
 	}
 
+	// #243: when no markers exist but the file already contains a
+	// hand-rolled pincher policy section (heading-bounded), wrap the
+	// detected block with markers in-memory so the replace path below
+	// canonicalizes it instead of appending a duplicate. The detector
+	// is conservative — it only fires on heading-bounded blocks; loose
+	// mcp__pincher__ mentions in code examples are left alone.
+	if !hasInitMarkers(existing) {
+		if hStart, hEnd, ok := detectPincherPolicySection(existing); ok {
+			existing = existing[:hStart] + pincherInitMarkerStart + "\n" + existing[hStart:hEnd] + pincherInitMarkerEnd + existing[hEnd:]
+		}
+	}
+
 	startIdx := strings.Index(existing, pincherInitMarkerStart)
 	endIdx := strings.Index(existing, pincherInitMarkerEnd)
 	if startIdx >= 0 && endIdx > startIdx {
