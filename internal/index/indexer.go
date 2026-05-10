@@ -181,6 +181,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		edgeBuf        []db.Edge
 		pendingImport  []ast.ExtractedEdge // deferred IMPORTS: resolved globally after full pass
 		pendingCalls   []ast.ExtractedEdge // deferred Go CALLS: resolved globally after full pass
+		pendingReads   []ast.ExtractedEdge // deferred Go READS (#247 #3): resolved globally; only Variable targets persist
 		bufMu          sync.Mutex
 		lastStatsFlush time.Time // throttle for in-flight project counts; guarded by bufMu
 	)
@@ -337,12 +338,24 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			// test file) get resolved against the full project symbol table.
 			// Non-Go regex extractors emit noisy CALLS targets — leave the
 			// per-file drop in place to avoid creating false-positive edges.
+			//
+			// Go READS edges (#247 #3) ALWAYS defer — the local nameToID
+			// would only catch in-file Variable references; cross-file
+			// references need the project-wide post-pass. The post-pass
+			// also drops references that don't resolve to a Variable
+			// symbol, which is what filters out function names, types,
+			// local vars, and parameters from over-emission.
 			edges := make([]db.Edge, 0, len(result.Edges))
 			deferredImports := make([]ast.ExtractedEdge, 0)
 			deferredCalls := make([]ast.ExtractedEdge, 0)
+			deferredReads := make([]ast.ExtractedEdge, 0)
 			for _, e := range result.Edges {
 				if e.Kind == "IMPORTS" {
 					deferredImports = append(deferredImports, e)
+					continue
+				}
+				if e.Kind == "READS" && lang == "Go" {
+					deferredReads = append(deferredReads, e)
 					continue
 				}
 				fromID := nameToID[e.FromQN]
@@ -375,6 +388,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			edgeBuf = append(edgeBuf, edges...)
 			pendingImport = append(pendingImport, deferredImports...)
 			pendingCalls = append(pendingCalls, deferredCalls...)
+			pendingReads = append(pendingReads, deferredReads...)
 			// Flush when buffer is large enough
 			if len(symBuf) >= 500 {
 				totalSymbols += len(symBuf)
@@ -428,6 +442,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// symbols. See LATENT_ISSUES #4 in pincher-followups for the original
 	// observation.
 	if n := idx.resolveCalls(projectID, pendingCalls); n > 0 {
+		totalEdges += n
+	}
+
+	// Resolve deferred Go READS edges against the full symbol table.
+	// Only persists edges where the resolved target is a Variable
+	// symbol — this is the natural filter for the over-emission from
+	// extractGoReads (function names, types, local vars all get dropped
+	// here without needing scope analysis at extraction time). #247 #3.
+	if n := idx.resolveReads(projectID, pendingReads); n > 0 {
 		totalEdges += n
 	}
 
@@ -1033,6 +1056,117 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 	}
 	if err := idx.store.BulkUpsertEdges(edges); err != nil {
 		slog.Warn("pincher.calls.upsert.err", "err", err)
+		return 0
+	}
+	return len(edges)
+}
+
+// resolveReads converts deferred Go READS edges into concrete db.Edge
+// rows when the resolved target is a Variable symbol. Anything else
+// (Function, Method, Class, local-name shadow with no Variable in the
+// project) is dropped — that's the natural filter for the
+// over-emission from extractGoReads which deliberately walks every
+// identifier without scope analysis. Self-edges and duplicates are
+// dropped. Returns the number of edges actually persisted.
+//
+// #247 #3: enables `trace inbound name=Cache` to surface every
+// function reading a package-level var. Confidence is preserved from
+// the extracted edge (0.5 for unresolved-by-default READS — lower
+// than CALLS at 0.7 because over-emission is expected).
+func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) int {
+	if len(pending) == 0 {
+		return 0
+	}
+
+	// QN cache: maps the qualified name to a (id, isVariable) pair so we
+	// can distinguish the "looked up but not a Variable" case from the
+	// "never looked up" case without re-querying.
+	type lookup struct {
+		id     string
+		isVar  bool
+	}
+	qnCache := make(map[string]lookup)
+	lookupQN := func(qn string) lookup {
+		if qn == "" {
+			return lookup{}
+		}
+		if v, ok := qnCache[qn]; ok {
+			return v
+		}
+		syms, err := idx.store.GetSymbolsByQN(projectID, qn)
+		if err != nil || len(syms) == 0 {
+			qnCache[qn] = lookup{}
+			return lookup{}
+		}
+		v := lookup{id: syms[0].ID, isVar: syms[0].Kind == "Variable"}
+		qnCache[qn] = v
+		return v
+	}
+
+	nameCache := make(map[string]lookup)
+	lookupName := func(name string) lookup {
+		if name == "" {
+			return lookup{}
+		}
+		if v, ok := nameCache[name]; ok {
+			return v
+		}
+		// Variable matches preferred — pull a small batch and pick the
+		// first Variable. Falls back to the first hit when no Variable
+		// is in the result set; that hit fails the isVar gate below.
+		syms, err := idx.store.GetSymbolsByName(projectID, name, 5)
+		if err != nil || len(syms) == 0 {
+			nameCache[name] = lookup{}
+			return lookup{}
+		}
+		v := lookup{id: syms[0].ID, isVar: syms[0].Kind == "Variable"}
+		for _, s := range syms {
+			if s.Kind == "Variable" {
+				v = lookup{id: s.ID, isVar: true}
+				break
+			}
+		}
+		nameCache[name] = v
+		return v
+	}
+
+	seen := make(map[string]bool)
+	edges := make([]db.Edge, 0, len(pending))
+	for _, e := range pending {
+		from := lookupQN(e.FromQN)
+		fromID := from.id
+		if fromID == "" && !strings.Contains(e.FromQN, ".") {
+			fromID = lookupName(e.FromQN).id
+		}
+		if fromID == "" {
+			continue
+		}
+		to := lookupQN(e.ToName)
+		if to.id == "" && !strings.Contains(e.ToName, ".") {
+			to = lookupName(e.ToName)
+		}
+		if to.id == "" || !to.isVar || fromID == to.id {
+			continue
+		}
+		key := fromID + "\x00" + to.id
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		edges = append(edges, db.Edge{
+			ProjectID:  projectID,
+			FromID:     fromID,
+			ToID:       to.id,
+			Kind:       "READS",
+			Confidence: e.Confidence,
+		})
+	}
+
+	if len(edges) == 0 {
+		return 0
+	}
+	if err := idx.store.BulkUpsertEdges(edges); err != nil {
+		slog.Warn("pincher.reads.upsert.err", "err", err)
 		return 0
 	}
 	return len(edges)

@@ -439,6 +439,11 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 			if d.Body != nil {
 				calls := extractGoCalls(d.Body, sym.QualifiedName)
 				result.Edges = append(result.Edges, calls...)
+				// #247 #3: identifier references for READS edges. Walks
+				// the same body — costs an extra ast.Inspect pass per
+				// function, dwarfed by the parser cost itself.
+				reads := extractGoReads(d.Body, sym.QualifiedName)
+				result.Edges = append(result.Edges, reads...)
 			}
 
 		case *ast.GenDecl:
@@ -535,6 +540,43 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 				Docstring:     doc,
 				IsExported:    ast.IsExported(sp.Name.Name),
 			})
+		case *ast.ValueSpec:
+			// #247 #3: package-level `var` and `const` declarations as
+			// Variable symbols. One symbol per name (so `var a, b int`
+			// produces two). Required for READS edge resolution — the
+			// resolver only persists READS when the target is a Variable.
+			// Without these symbols, no inbound trace would ever surface
+			// references to package vars; that's the gap #247 #3 fixes.
+			//
+			// const declarations also extract as Variable (no separate
+			// Constant kind in the registered enum). The user-facing
+			// benefit is "find references to this name" which works
+			// regardless of var-vs-const distinction.
+			if d.Tok != token.VAR && d.Tok != token.CONST {
+				continue
+			}
+			doc := ""
+			if d.Doc != nil {
+				doc = strings.TrimSpace(d.Doc.Text())
+			}
+			specStart := fset.Position(sp.Pos())
+			specEnd := fset.Position(sp.End())
+			for _, name := range sp.Names {
+				if name == nil || name.Name == "_" {
+					continue
+				}
+				syms = append(syms, ExtractedSymbol{
+					Name:          name.Name,
+					QualifiedName: pkg + "." + name.Name,
+					Kind:          "Variable",
+					StartByte:     specStart.Offset,
+					EndByte:       specEnd.Offset,
+					StartLine:     specStart.Line,
+					EndLine:       specEnd.Line,
+					Docstring:     doc,
+					IsExported:    ast.IsExported(name.Name),
+				})
+			}
 		}
 	}
 	return syms
@@ -556,6 +598,53 @@ func extractGoCalls(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
 				Confidence: 0.7, // unresolved, lower confidence
 			})
 		}
+		return true
+	})
+	return edges
+}
+
+// extractGoReads emits READS edges for every distinct identifier
+// referenced inside a function body. The post-pass resolution drops
+// references that don't match a known package-level Variable symbol,
+// which is the natural filter without doing scope analysis at
+// extraction time. Local variables, parameters, types, and function
+// names all surface here and get dropped at resolve-time.
+//
+// One edge per distinct identifier per function (deduped here so a
+// var read 50 times in one body emits one READS, not 50). Confidence
+// 0.5 — lower than CALLS (0.7) because over-emission is expected.
+//
+// #247 #3: enables `trace inbound name=Cache` to surface every
+// function that reads a package-level var. Refactoring a var name
+// becomes a one-shot trace instead of a Grep + judgment exercise.
+func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
+	if body == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var edges []ExtractedEdge
+	ast.Inspect(body, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		// Skip the blank identifier and Go's predeclared booleans/nil/etc;
+		// they would never resolve to a Variable symbol but they're noisy
+		// in pending-edge memory. Cheap filter at extraction time.
+		switch id.Name {
+		case "_", "true", "false", "nil", "iota":
+			return true
+		}
+		if seen[id.Name] {
+			return true
+		}
+		seen[id.Name] = true
+		edges = append(edges, ExtractedEdge{
+			FromQN:     callerQN,
+			ToName:     id.Name,
+			Kind:       "READS",
+			Confidence: 0.5,
+		})
 		return true
 	})
 	return edges
