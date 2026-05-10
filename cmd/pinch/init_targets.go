@@ -37,7 +37,12 @@ type initTarget struct {
 
 	// pathFn resolves the absolute file path. global is the user's
 	// --global value; honored only when supportsGlobal && !alwaysGlobal.
-	pathFn func(global bool) (string, error)
+	// cwd is the project root the caller wants paths resolved against —
+	// CLI passes os.Getwd(); MCP (#244) passes the session project root
+	// so the server's own working directory doesn't influence target
+	// paths. Targets ignoring cwd (the alwaysGlobal `continue` target,
+	// for example) accept it as a no-op for signature uniformity.
+	pathFn func(cwd string, global bool) (string, error)
 
 	// detectFn returns true when a marker file or directory for this
 	// editor exists under cwd. Used by --target=detect.
@@ -132,13 +137,9 @@ alwaysApply: true
 var cursorInitTarget = initTarget{
 	name:     "cursor",
 	describe: "Cursor (modern): ./.cursor/rules/pincher.mdc with YAML frontmatter",
-	pathFn: func(global bool) (string, error) {
+	pathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("cursor target has no global variant; rules live per-project")
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
 		}
 		return filepath.Join(cwd, ".cursor", "rules", "pincher.mdc"), nil
 	},
@@ -207,13 +208,9 @@ func splitMDXFrontmatter(content string) (string, string) {
 var cursorLegacyInitTarget = initTarget{
 	name:     "cursor-legacy",
 	describe: "Cursor (legacy): ./.cursorrules plain text",
-	pathFn: func(global bool) (string, error) {
+	pathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("cursor-legacy target has no global variant")
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
 		}
 		return filepath.Join(cwd, ".cursorrules"), nil
 	},
@@ -231,13 +228,9 @@ var cursorLegacyInitTarget = initTarget{
 var windsurfInitTarget = initTarget{
 	name:     "windsurf",
 	describe: "Windsurf: ./.windsurfrules plain text/markdown",
-	pathFn: func(global bool) (string, error) {
+	pathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("windsurf target has no global variant")
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
 		}
 		return filepath.Join(cwd, ".windsurfrules"), nil
 	},
@@ -255,13 +248,9 @@ var windsurfInitTarget = initTarget{
 var aiderInitTarget = initTarget{
 	name:     "aider",
 	describe: "Aider: ./CONVENTIONS.md (Aider's documented convention)",
-	pathFn: func(global bool) (string, error) {
+	pathFn: func(cwd string, global bool) (string, error) {
 		if global {
 			return "", fmt.Errorf("aider --global needs ~/.aider.conf.yml work — not yet implemented; use project CONVENTIONS.md")
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
 		}
 		return filepath.Join(cwd, "CONVENTIONS.md"), nil
 	},
@@ -286,8 +275,10 @@ var continueInitTarget = initTarget{
 	name:         "continue",
 	describe:     "Continue.dev: ~/.continue/config.json (merges into systemMessage)",
 	alwaysGlobal: true,
-	pathFn: func(global bool) (string, error) {
+	pathFn: func(cwd string, global bool) (string, error) {
 		// Always global — passing --global is a no-op (and not erroneous).
+		// cwd is ignored; the config lives in the user's home directory.
+		_ = cwd
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("user home dir: %w", err)

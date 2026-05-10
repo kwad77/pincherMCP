@@ -67,14 +67,19 @@ func runInitCLI(args []string) {
 	_ = force // kept for future "do nothing if a non-pincher block exists at that path" semantics
 
 	out := os.Stdout
-	targets, err := resolveTargets(*targetFlag)
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pincher init: cwd: %v\n", err)
+		os.Exit(1)
+	}
+	targets, err := resolveTargets(*targetFlag, cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 		os.Exit(1)
 	}
 
 	for _, t := range targets {
-		if err := runInitTarget(out, t, *global, *dryRun); err != nil {
+		if err := runInitTarget(out, t, cwd, *global, *dryRun); err != nil {
 			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 			os.Exit(1)
 		}
@@ -87,15 +92,14 @@ func runInitCLI(args []string) {
 
 // resolveTargets expands the --target value (a single target name,
 // "detect", or "all") into the concrete list of initTargets to write.
-func resolveTargets(name string) ([]initTarget, error) {
+// cwd is the project root used for the "detect" target's marker-file
+// scan; pass os.Getwd() from the CLI or the session project root from
+// the MCP handler.
+func resolveTargets(name, cwd string) ([]initTarget, error) {
 	switch name {
 	case "":
 		return nil, fmt.Errorf("--target is required (one of: %s)", strings.Join(initTargetNames(), ", "))
 	case "detect":
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("cwd: %w", err)
-		}
 		return detectInitTargets(cwd), nil
 	case "all":
 		return allInitTargets, nil
@@ -107,10 +111,35 @@ func resolveTargets(name string) ([]initTarget, error) {
 	return []initTarget{t}, nil
 }
 
-// runInitTarget writes (or dry-runs) a single target. global is the user's
-// --global flag; for targets that don't support it, we silently ignore
-// rather than error so that --target=all keeps working with --global set.
-func runInitTarget(out io.Writer, t initTarget, global, dryRun bool) error {
+// initTargetPlan is the pure result of resolving a target against an
+// existing file: where to write, what's there, what the merge would
+// produce, and which action would be taken. Callers (CLI for human
+// output, MCP for structured response) consume the same plan; the
+// disk write is a separate step in runInitTarget.
+//
+// Action values match the CLI's output vocabulary: "wrote" / "updated"
+// / "appended" for produce-result outcomes, "error" for malformed
+// inputs (currently only the continue target's JSON path can produce
+// this — see continueJSONWriter).
+//
+// #244: extracted from runInitTarget so the MCP `init` tool can compute
+// the same plan without writing or printing. The plan struct also
+// carries Existing for diff display in the MCP response.
+type initTargetPlan struct {
+	Target   string
+	Path     string
+	Existing string
+	Updated  string
+	Action   string
+	BytesIn  int
+	BytesOut int
+}
+
+// planInitTarget resolves a target into an initTargetPlan without
+// touching the filesystem (apart from reading the existing file, if
+// any). cwd is the project root paths resolve relative to; CLI passes
+// os.Getwd(), MCP passes the session project root.
+func planInitTarget(t initTarget, cwd string, global bool) (initTargetPlan, error) {
 	useGlobal := global
 	if t.alwaysGlobal {
 		useGlobal = true
@@ -118,44 +147,62 @@ func runInitTarget(out io.Writer, t initTarget, global, dryRun bool) error {
 		useGlobal = false
 	}
 
-	path, err := t.pathFn(useGlobal)
+	path, err := t.pathFn(cwd, useGlobal)
 	if err != nil {
-		return fmt.Errorf("[%s] %w", t.name, err)
+		return initTargetPlan{}, fmt.Errorf("[%s] %w", t.name, err)
 	}
 
 	existing := readFileIfExists(path)
 	updated, action := t.writeFn(existing, pincherPolicyMarkdown)
 	if action == "error" {
-		return fmt.Errorf("[%s] cannot merge into %s: file exists but is not valid for this target (malformed JSON?)", t.name, path)
+		return initTargetPlan{}, fmt.Errorf("[%s] cannot merge into %s: file exists but is not valid for this target (malformed JSON?)", t.name, path)
+	}
+
+	return initTargetPlan{
+		Target:   t.name,
+		Path:     path,
+		Existing: existing,
+		Updated:  updated,
+		Action:   action,
+		BytesIn:  len(existing),
+		BytesOut: len(updated),
+	}, nil
+}
+
+// runInitTarget writes (or dry-runs) a single target. global is the user's
+// --global flag; for targets that don't support it, we silently ignore
+// rather than error so that --target=all keeps working with --global set.
+func runInitTarget(out io.Writer, t initTarget, cwd string, global, dryRun bool) error {
+	plan, err := planInitTarget(t, cwd, global)
+	if err != nil {
+		return err
 	}
 
 	if dryRun {
-		fmt.Fprintf(out, "pincher init [%s]: would %s %s\n\n", t.name, action, path)
+		fmt.Fprintf(out, "pincher init [%s]: would %s %s\n\n", plan.Target, plan.Action, plan.Path)
 		fmt.Fprintln(out, "--- new file content ---")
-		fmt.Fprintln(out, updated)
+		fmt.Fprintln(out, plan.Updated)
 		return nil
 	}
 
-	if err := writeFileEnsuringDir(path, updated); err != nil {
-		return fmt.Errorf("[%s] write %s: %w", t.name, path, err)
+	if err := writeFileEnsuringDir(plan.Path, plan.Updated); err != nil {
+		return fmt.Errorf("[%s] write %s: %w", plan.Target, plan.Path, err)
 	}
-	fmt.Fprintf(out, "pincher init [%s]: %s %s\n", t.name, action, path)
+	fmt.Fprintf(out, "pincher init [%s]: %s %s\n", plan.Target, plan.Action, plan.Path)
 	return nil
 }
 
 // resolveCLAUDEPath returns the absolute path to the CLAUDE.md that
-// `pincher init` should write to.
-func resolveCLAUDEPath(global bool) (string, error) {
+// `pincher init` should write to. cwd is the project root; the CLI
+// passes os.Getwd() and the MCP path passes the session project root
+// so the server's own working directory doesn't influence the output.
+func resolveCLAUDEPath(cwd string, global bool) (string, error) {
 	if global {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("user home dir: %w", err)
 		}
 		return filepath.Join(home, ".claude", "CLAUDE.md"), nil
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("cwd: %w", err)
 	}
 	return filepath.Join(cwd, "CLAUDE.md"), nil
 }

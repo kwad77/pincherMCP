@@ -118,7 +118,7 @@ func TestResolveCLAUDEPath_ProjectDefault(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	got, err := resolveCLAUDEPath(false)
+	got, err := resolveCLAUDEPath(tmp, false)
 	if err != nil {
 		t.Fatalf("resolveCLAUDEPath: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResolveCLAUDEPath_ProjectDefault(t *testing.T) {
 }
 
 func TestResolveCLAUDEPath_Global(t *testing.T) {
-	got, err := resolveCLAUDEPath(true)
+	got, err := resolveCLAUDEPath(t.TempDir(), true)
 	if err != nil {
 		t.Fatalf("resolveCLAUDEPath(true): %v", err)
 	}
