@@ -421,6 +421,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"AvgConfidenceByKind":     true,
 	"GetProject":              true,
 	"ListProjects":            true,
+	"ProjectsContainingPath":  true,
 	"GetADR":                  true,
 	"ListADRs":                true,
 	"GetFileHash":             true,
