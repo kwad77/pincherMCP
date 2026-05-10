@@ -7,6 +7,18 @@ minors.
 
 ## [Unreleased]
 
+### Documentation
+- **Bench-regression gate decided to stay advisory** (#207). Variance
+  data captured at `testdata/bench/variance-ci-2026-05-09.md` (N=10)
+  shows 20 of 21 benchmarks at <10% CV but one I/O-bound outlier at
+  21.5%. The standing project rule is N≥20 before flipping a
+  noise-prone gate to required, and the prior promotion (#160)
+  blocked a docs-only PR (#161) with an unexplainable +109% / +276%
+  spike. Workflow comment in `.github/workflows/ci.yml` updated with
+  the formal decision and the re-promotion checklist (capture N≥20
+  across weeks, identify new noisy benchmarks for `BENCH_EXCLUDE`,
+  then flip in a dedicated PR).
+
 ## [v0.6.0] — 2026-05-09 — Multi-client adoption
 
 The "any agent, any editor" milestone. Closes the gap between

@@ -131,27 +131,39 @@ jobs:
   # bench-regression gates ns/op + allocs/op against the committed
   # baselines under testdata/bench/ (#50).
   #
+  # Decision (#207, v0.7.0): KEEP ADVISORY. Rationale captured here as
+  # the workflow comment is the place future maintainers see first when
+  # tempted to flip continue-on-error.
+  #
+  # Why advisory and not required:
+  #
+  # 1. Variance data is N=10. The standing rule (project memory) is
+  #    capture N≥20 before flipping a noise-prone CI gate to required.
+  #    Manual variance run from #166 lives at
+  #    testdata/bench/variance-ci-2026-05-09.md: 20 of 21 benchmarks
+  #    at <10% CV, but 1 noisy outlier at 21.5%
+  #    (`Index_Incremental_NoChange_GoProject`, I/O-bound). One
+  #    confirmed-stable batch isn't enough — the prior promotion (#160)
+  #    blocked a docs-only PR (#161) with a +109% / +276% outlier run
+  #    that no source change could plausibly explain.
+  #
+  # 2. Real benefit of advisory mode: the artifact + the failure
+  #    annotation is still visible on every PR. Reviewers who care can
+  #    look; the gate doesn't block a docs-only or unrelated PR when
+  #    the runner has a noisy day.
+  #
+  # 3. To re-promote: capture N≥20 across multiple weeks, identify any
+  #    new noisy benchmarks for BENCH_EXCLUDE, then flip
+  #    continue-on-error: false in a dedicated PR. Don't fold the
+  #    promotion in with another change — keep the bisect surface tiny
+  #    when something does eventually trip.
+  #
   # Baselines captured on ubuntu-latest (AMD EPYC 7763, 4-core runner)
-  # via the bench-ci-actual artifact from a green run.
-  #
-  # CI variance characterised at testdata/bench/variance-ci-2026-05-09.md
-  # — 10-iteration manual run (workflow_dispatch from #166): 20 of 21
-  # benchmarks at <10% CV, 1 noisy outlier at 21.5%
-  # (`Index_Incremental_NoChange_GoProject`, I/O-bound). Confirms the
-  # 0.30/0.45 threshold range is roughly right for the typical case;
-  # re-promotion to required gate still waits on a second multi-run
-  # confirmation that the outlier doesn't repeat.
-  #
-  # Reverted to advisory after #160's promotion immediately blocked a
-  # docs-only PR (#161): Index_Cold_NodeMonorepo +109% and
-  # Incremental_NoChange_K8sOps +276% in a single outlier run that no
-  # source change could plausibly explain. CI runner variance is wider
-  # than three green runs let us measure.
-  #
-  # The job uploads the CI-actual bench output as a separate artifact
+  # via the bench-ci-actual artifact from a green run. The job uploads
+  # the CI-actual bench output as a separate artifact
   # (`bench-ci-actual-*`) so any green run's numbers can become the
   # next baseline; that's the substrate for both re-baselining and
-  # variance characterisation.
+  # the eventual N≥20 variance characterisation.
   bench-regression:
     name: Benchmark regression (advisory)
     runs-on: ubuntu-latest
