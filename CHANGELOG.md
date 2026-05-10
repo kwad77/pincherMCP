@@ -7,6 +7,20 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- **`pincher index` warns on nested-under-existing-project** (#235,
+  reported by @nbarari). Indexing a subdirectory of an
+  already-indexed project no longer silently stores symbols twice.
+  New `Store.ProjectsContainingPath(target)` finds every existing
+  project whose canonical path is a strict ancestor of `target`; the
+  CLI prints a stderr warning naming each parent project (with file
+  + symbol counts) and a suggested `pincher project rm` command. The
+  index still proceeds — silent stderr preserves scriptability per
+  the chosen Option A. Catches the real-world Proxmox / monorepo
+  case nbarari hit during validation: a 745MB DB with a parent
+  project at 447k symbols and two nested duplicates re-storing 12k
+  symbols and their FTS5 index entries.
+
 ### Changed
 - **HTTP dashboard polish** (#203). `/v1/health` now exposes
   `auth_required` so the dashboard can show a one-time amber banner

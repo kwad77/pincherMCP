@@ -1605,6 +1605,61 @@ func (s *Store) ListProjects() ([]Project, error) {
 	return out, rows.Err()
 }
 
+// ProjectsContainingPath returns every project whose canonical path is a
+// strict ancestor of `target` (i.e. `target` is nested under that
+// project). Returns the empty slice when no enclosing project exists.
+//
+// Used by the indexer (#235) to warn the user before silently
+// duplicating symbols of a child path that's already covered by a
+// parent index. The lookup is case-sensitive on Unix and
+// case-insensitive on Windows / macOS via filepath.EqualFold-style
+// comparison; we hand-roll the prefix check rather than using SQL
+// LIKE because path separator handling differs across platforms and
+// SQLite's collations don't cover it.
+//
+// `target` should already be canonicalised (Abs + EvalSymlinks)
+// before passing in — callers like the indexer always work with
+// resolved paths anyway.
+func (s *Store) ProjectsContainingPath(target string) ([]Project, error) {
+	target = filepath.Clean(target)
+	all, err := s.ListProjects()
+	if err != nil {
+		return nil, err
+	}
+	var out []Project
+	for _, p := range all {
+		ppath := filepath.Clean(p.Path)
+		if pathContains(ppath, target) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// pathContains reports whether `child` is a strict descendant of
+// `parent`. Equal paths return false (the indexer's caller wants
+// "nested under", not "is the same as"). Path separators are
+// normalised; on case-insensitive filesystems the comparison is
+// case-insensitive.
+func pathContains(parent, child string) bool {
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+	if parent == child {
+		return false
+	}
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	// Rel returns a "../..." when child is outside parent, and a
+	// relative dotted path when it's inside. Reject the "../" case
+	// so we don't false-positive on siblings.
+	if strings.HasPrefix(rel, "..") {
+		return false
+	}
+	return rel != "." && rel != ""
+}
+
 // GetProject returns a single project by ID, or nil if not found.
 func (s *Store) GetProject(id string) (*Project, error) {
 	// Reader pool (#51).

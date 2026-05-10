@@ -861,6 +861,95 @@ func TestUpsertProject(t *testing.T) {
 	}
 }
 
+// TestProjectsContainingPath_NestedHit covers the canonical case for
+// #235: a target path that's a strict descendant of a registered
+// project should turn up as containing.
+func TestProjectsContainingPath_NestedHit(t *testing.T) {
+	s := newTestStore(t)
+	parent := testProject("parent")
+	parent.Path = filepath.Join(t.TempDir(), "thinksmart")
+	if err := os.MkdirAll(parent.Path, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := s.UpsertProject(parent); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	target := filepath.Join(parent.Path, "kernel")
+	got, err := s.ProjectsContainingPath(target)
+	if err != nil {
+		t.Fatalf("ProjectsContainingPath: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "parent" {
+		t.Errorf("got %#v, want one project [parent]", got)
+	}
+}
+
+// TestProjectsContainingPath_SiblingMiss covers a sibling directory —
+// must NOT match because Rel() would return "../sibling".
+func TestProjectsContainingPath_SiblingMiss(t *testing.T) {
+	s := newTestStore(t)
+	root := t.TempDir()
+	parent := testProject("parent")
+	parent.Path = filepath.Join(root, "alpha")
+	os.MkdirAll(parent.Path, 0o755)
+	s.UpsertProject(parent)
+
+	target := filepath.Join(root, "beta") // sibling, not nested
+	got, err := s.ProjectsContainingPath(target)
+	if err != nil {
+		t.Fatalf("ProjectsContainingPath: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no parents for sibling path; got %#v", got)
+	}
+}
+
+// TestProjectsContainingPath_SamePathMiss covers the equality case —
+// indexing a project's own root should not warn (Rel returns ".").
+func TestProjectsContainingPath_SamePathMiss(t *testing.T) {
+	s := newTestStore(t)
+	parent := testProject("parent")
+	parent.Path = filepath.Join(t.TempDir(), "self")
+	os.MkdirAll(parent.Path, 0o755)
+	s.UpsertProject(parent)
+
+	got, err := s.ProjectsContainingPath(parent.Path)
+	if err != nil {
+		t.Fatalf("ProjectsContainingPath: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no parents for self-path; got %#v", got)
+	}
+}
+
+// TestProjectsContainingPath_DeepNesting covers a multi-level descent
+// (parent/a/b/c) and the case where a child project is also indexed —
+// then both parent and intermediate child show up as ancestors of the
+// deepest target.
+func TestProjectsContainingPath_DeepNesting(t *testing.T) {
+	s := newTestStore(t)
+	root := t.TempDir()
+	parent := testProject("parent")
+	parent.Path = filepath.Join(root, "monorepo")
+	os.MkdirAll(parent.Path, 0o755)
+	s.UpsertProject(parent)
+
+	mid := testProject("mid")
+	mid.Path = filepath.Join(parent.Path, "services")
+	os.MkdirAll(mid.Path, 0o755)
+	s.UpsertProject(mid)
+
+	target := filepath.Join(mid.Path, "auth")
+	got, err := s.ProjectsContainingPath(target)
+	if err != nil {
+		t.Fatalf("ProjectsContainingPath: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 ancestors (parent + mid), got %d: %#v", len(got), got)
+	}
+}
+
 func TestUpsertProject_Update(t *testing.T) {
 	s := newTestStore(t)
 	p := testProject("proj1")

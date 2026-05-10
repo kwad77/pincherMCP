@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -321,6 +322,12 @@ func runIndexCLI(args []string) {
 	idx := index.New(store)
 	idx.SetMaxFileSize(int64(*maxFileMB) * 1024 * 1024)
 
+	// Warn when the target is nested under an already-indexed project
+	// (#235). Silent stderr output preserves scriptability — the actual
+	// index still runs. Helps users avoid the symbols-stored-twice
+	// trap that nbarari hit during a validation test.
+	warnIfNestedUnderIndexed(store, path)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -566,6 +573,36 @@ func dbSchemaVersion(store *db.Store) int {
 	var v int
 	_ = store.DB().QueryRow(`SELECT version FROM schema_version`).Scan(&v)
 	return v
+}
+
+// warnIfNestedUnderIndexed prints a stderr warning when `target` is a
+// strict descendant of an already-indexed project. Silent on any error
+// (resolving abs path, reading projects table) — the warning is purely
+// advisory; never block the user's index run on it.
+//
+// #235 (nbarari, 2026-05-09): without this, accidentally indexing a
+// subfolder of a parent project silently stores symbols twice — once
+// under the parent, once under the child — with measurable storage
+// cost on large repos. Pincher's project_id derivation uses the
+// canonical path, so the duplication isn't caught at insert time.
+func warnIfNestedUnderIndexed(store *db.Store, target string) {
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	parents, err := store.ProjectsContainingPath(abs)
+	if err != nil || len(parents) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "pincher: warning: %s is nested under %d already-indexed project(s):\n", abs, len(parents))
+	for _, p := range parents {
+		fmt.Fprintf(os.Stderr, "  - %s (%d symbols, %d files)\n", p.Path, p.SymCount, p.FileCount)
+	}
+	fmt.Fprintf(os.Stderr, "  Symbols in this subtree are already indexed by the parent project(s).\n")
+	fmt.Fprintf(os.Stderr, "  To remove a duplicate parent: pincher project rm <name>\n")
 }
 
 // gitChangedCount returns the number of files with uncommitted changes
