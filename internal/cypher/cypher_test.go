@@ -522,6 +522,64 @@ func TestNodeScan_StartsWith(t *testing.T) {
 	}
 }
 
+// #340: ENDS WITH parsed and stored as a first-class operator,
+// symmetric to STARTS WITH.
+func TestParse_EndsWith(t *testing.T) {
+	tokens := tokenize("MATCH (f:Function) WHERE f.name ENDS WITH 'User' RETURN f.name")
+	p := &parser{tokens: tokens}
+	q, err := p.parseQuery()
+	if err != nil {
+		t.Fatalf("parseQuery: %v", err)
+	}
+	if len(q.conditions) == 0 {
+		t.Fatal("expected at least 1 condition")
+	}
+	if q.conditions[0].op != "ENDS WITH" {
+		t.Errorf("op = %q, want 'ENDS WITH'", q.conditions[0].op)
+	}
+}
+
+// #340: ENDS WITH executed via the SQL JOIN/scan path returns matching
+// rows. Three seeds where two end in "User" and one doesn't.
+func TestNodeScan_EndsWith(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "g1", "GetUser", "Function", "Go")
+	insertSym(t, db, "s1", "SetUser", "Function", "Go")
+	insertSym(t, db, "d1", "DeleteAccount", "Function", "Go")
+
+	r := exec(t, db, "MATCH (f:Function) WHERE f.name ENDS WITH 'User' RETURN f.name")
+	if r.Total != 2 {
+		t.Errorf("expected 2 results for ENDS WITH 'User', got %d (%v)", r.Total, r.Rows)
+	}
+	for _, row := range r.Rows {
+		name, _ := row["f.name"].(string)
+		if !strings.HasSuffix(name, "User") {
+			t.Errorf("row %q does not end in User", name)
+		}
+	}
+}
+
+// #340: ENDS WITH on file_path filters by extension.
+func TestNodeScan_EndsWith_FilePath(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "a", "X", "Function", "Go")
+	// Override file_path on the seed so we have a mix of extensions.
+	if _, err := db.Exec(`UPDATE symbols SET file_path = 'main.go' WHERE id = 'a'`); err != nil {
+		t.Fatal(err)
+	}
+	insertSym(t, db, "b", "Y", "Function", "Python")
+	if _, err := db.Exec(`UPDATE symbols SET file_path = 'app.py' WHERE id = 'b'`); err != nil {
+		t.Fatal(err)
+	}
+
+	r := exec(t, db, `MATCH (f:Function) WHERE f.file_path ENDS WITH '.go' RETURN f.name`)
+	if r.Total != 1 {
+		t.Errorf("expected 1 result for file_path ENDS WITH '.go', got %d (%v)", r.Total, r.Rows)
+	}
+}
+
 func TestNodeScan_WhereNotEquals(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()

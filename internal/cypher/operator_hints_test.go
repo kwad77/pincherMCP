@@ -87,7 +87,8 @@ func TestParse_SupportedOperators_StillWork(t *testing.T) {
 // operatorHint table coverage — ensure every entry returns a non-empty
 // hint. Mostly a guard against typos in future additions to the map.
 func TestOperatorHint_AllEntriesNonEmpty(t *testing.T) {
-	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "ENDS", "MATCHES", "IN", "in"} {
+	// ENDS dropped — ENDS WITH is now a first-class operator (#340).
+	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "MATCHES", "IN", "in"} {
 		hint, ok := operatorHint(op)
 		if !ok || hint == "" {
 			t.Errorf("operatorHint(%q) returned empty/false", op)

@@ -216,7 +216,7 @@ func tokenize(s string) []token {
 			upper := strings.ToUpper(word)
 			switch upper {
 			case "MATCH", "WHERE", "RETURN", "ORDER", "BY", "LIMIT", "DISTINCT",
-				"AND", "OR", "NOT", "CONTAINS", "STARTS", "WITH", "ASC", "DESC",
+				"AND", "OR", "NOT", "CONTAINS", "STARTS", "ENDS", "WITH", "ASC", "DESC",
 				"COUNT", "IN", "IS", "NULL", "TRUE", "FALSE":
 				kind = "KEYWORD"
 				word = upper
@@ -443,6 +443,14 @@ func (p *parser) parseOneCondition() (condition, error) {
 		p.skip("WITH")
 		c.op = "STARTS WITH"
 		c.value = normalizeConditionValue(p.next())
+	case "ENDS":
+		// #340: ENDS WITH as a first-class operator, symmetric to
+		// STARTS WITH (#288). Same two-token shape — consume "WITH"
+		// then the value literal.
+		p.next()
+		p.skip("WITH")
+		c.op = "ENDS WITH"
+		c.value = normalizeConditionValue(p.next())
 	case "!":
 		// Detect `!=` (two-char op the tokenizer doesn't fuse) so the hint
 		// catches the SQL-muscle-memory case before the generic fallback.
@@ -538,8 +546,7 @@ func operatorHint(op string) (string, bool) {
 		return "use =~ ('name =~ \".*foo.*\"')", true
 	case "STARTS_WITH":
 		return "use STARTS WITH (two words, no underscore)", true
-	case "ENDS":
-		return "ENDS WITH is not supported; use =~ '.*foo$' instead", true
+	// ENDS WITH is now a first-class operator (#340) — no hint needed.
 	case "MATCHES":
 		return "use =~ for regex match", true
 	case "IN":
@@ -653,7 +660,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 			continue
 		}
 		col := cypherPropToCol(c.property)
-		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH") {
+		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH") {
 			appendWhereOp(&sqlQ, &args, "", col, c)
 		} else {
 			unpushed = append(unpushed, c)
@@ -764,7 +771,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 			continue
 		}
 		col := cypherPropToCol(c.property)
-		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH") {
+		if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH") {
 			appendWhereOp(&sqlQ, &args, tableAlias+".", col, c)
 		} else {
 			unpushed = append(unpushed, c)
@@ -1199,6 +1206,11 @@ func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
 	case "STARTS WITH":
 		*sqlQ += " AND " + prefix + col + " LIKE ?"
 		*args = append(*args, c.value+"%")
+	case "ENDS WITH":
+		// #340: SQL pushdown for the suffix-match family. Mirrors STARTS WITH
+		// but with the wildcard at the leading edge.
+		*sqlQ += " AND " + prefix + col + " LIKE ?"
+		*args = append(*args, "%"+c.value)
 	}
 }
 
@@ -1270,6 +1282,11 @@ func matchesConditionsWithCache(row map[string]any, conds []condition, reCache m
 			}
 		case "STARTS WITH":
 			if !strings.HasPrefix(actual, c.value) {
+				return false
+			}
+		case "ENDS WITH":
+			// #340: suffix-match alongside the existing prefix-match path.
+			if !strings.HasSuffix(actual, c.value) {
 				return false
 			}
 		case ">", "<", ">=", "<=":
