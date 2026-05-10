@@ -8,6 +8,33 @@ minors.
 ## [Unreleased]
 
 ### Added
+- **`pincher init --target=codex` (S4).** Closes the v0.11.0
+  supervisor plan. Adds Codex (OpenAI's CLI) as an init target. Writes
+  a marker-wrapped block into `~/.codex/config.toml` (or
+  `$CODEX_HOME/config.toml`) registering pincher as an MCP server with
+  two key choices baked in:
+  - `command = "<pincher path>"`, `args = ["supervised"]` — uses the
+    S1+S2 supervisor wrapper so MCP disconnects auto-recover without
+    manual `/mcp`.
+  - `[mcp_servers.pincher.env]` with `PINCHER_DATA_DIR` set to a
+    Codex-specific path (`%APPDATA%\pincherMCP\codex` on Windows;
+    `~/Library/Application Support/pincherMCP/codex` on macOS;
+    `$XDG_DATA_HOME/pincherMCP/codex` or `~/.local/share/...` on
+    Linux). Per-target isolation eliminates cross-CLI DB contention
+    (the multi-process drift concern from S2's design notes).
+
+  Refuses to write when an un-managed `[mcp_servers.pincher]` block is
+  already present (would produce duplicate-table TOML and break Codex).
+  Action surfaces as `skipped (existing un-managed [mcp_servers.pincher])`
+  with a stderr message giving the operator the exact markers to wrap
+  their existing block with if they want to opt into managed updates.
+
+  Eight new tests cover registry registration, `CODEX_HOME` resolution,
+  empty-existing write, append-without-markers, in-place update,
+  refuse-on-unmanaged-existing, idempotent re-run, and data-dir
+  computation.
+
+### Added
 - **Supervisor health surface + `pincher health-check` CLI (S3).**
   Two pieces:
   - **`pincher.supervisor.status` MCP tool.** The supervisor intercepts

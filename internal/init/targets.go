@@ -68,6 +68,7 @@ var AllTargets = []Target{
 	WindsurfTarget,
 	AiderTarget,
 	ContinueTarget,
+	CodexTarget,
 }
 
 // FindTarget looks up a target by its --target value.
