@@ -138,7 +138,7 @@ End-to-end walkthroughs (~10 min each):
 
 **Reader pool.** SQLite WAL gives concurrent readers; pincher uses a separate read-only connection pool (`--db-readers`, capped at 32) so a busy MCP session can't block the writer.
 
-Measured on this codebase (13 files, 618 symbols, 5,785 edges): cold index 190 ms, single-hop Cypher 2 ms, BFS depth 3 <5 ms, FTS5 search 1 ms. Full benchmark + methodology in [REFERENCE.md → Performance](docs/REFERENCE.md#performance).
+Measured on this codebase (13 files, 618 symbols, 5,785 edges): cold index 190 ms, single-hop pinchQL 2 ms, BFS depth 3 <5 ms, FTS5 search 1 ms. Full benchmark + methodology in [REFERENCE.md → Performance](docs/REFERENCE.md#performance).
 
 ---
 
@@ -197,7 +197,7 @@ Other CLI subcommands ([`pincher index`](docs/REFERENCE.md#pincher-index), [`pin
 | **v0.4** | Capture-what-shipped (schema v11, four new CLI subcommands `update`/`web`/`init`/`stats`, HCL REFERENCES edges, plugin SessionStart hook, README split, Terraform pinned corpus) | ✅ shipped |
 | **v0.5** | Trustworthy single-binary release (`go install` fix, default-deny remote HTTP, legacy `symbols_fts` removed, case-insensitive `project_id` fix, release artifact pipeline) | ✅ shipped |
 | **v0.6** | Multi-client adoption (`pincher init` for Cursor / Windsurf / Aider / Continue, three end-to-end tutorials, `pincher project rm` CLI, coverage gate restored to 84%) | ✅ shipped |
-| **v0.7** | Language + polish (HTML / XML extractors, stats reconciliation, Cypher polish vs rename, bench gate verdict) | planned |
+| **v0.7** | Language + polish (HTML / XML extractors, stats reconciliation, pinchQL rename done [#206], bench gate decided advisory [#207]) | 🚧 in flight |
 | **v1.0** | Freeze + announce (tool schemas frozen, schema attestation, migration guide, public launch) | planned |
 
 Live milestone burndown: <https://github.com/kwad77/pincher/milestones>. Full punch lists per release: [#193](https://github.com/kwad77/pincher/issues/193).

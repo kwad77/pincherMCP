@@ -1,6 +1,11 @@
-// Package cypher implements a lightweight Cypher-to-SQL query engine.
+// Package cypher implements pinchQL — pincher's lightweight graph
+// query language. The package name is "cypher" for git-blame
+// continuity (the language was originally documented as "Cypher-like");
+// the user-facing name is "pinchQL" since #206. The grammar is
+// Cypher-shaped but deliberately a pragmatic subset, not a moving
+// target trying to track Neo4j.
 //
-// Supported subset:
+// Supported pinchQL subset:
 //
 //	MATCH (n:Kind) RETURN n.name
 //	MATCH (n:Kind) WHERE n.name = 'x' RETURN n.name, n.file_path
@@ -9,9 +14,9 @@
 //	MATCH (a)-[:CALLS]->(b) WHERE a.name =~ '.*Handler.*' RETURN b.name
 //	MATCH (a)-[:CALLS]->(b) ORDER BY a.name LIMIT 10
 //
-// The engine translates Cypher patterns to SQLite queries against the
-// pincherMCP schema (symbols + edges tables). Single-hop patterns are
-// fused into a single JOIN for sub-millisecond execution.
+// The engine translates pinchQL patterns to SQLite queries against
+// the pincherMCP schema (symbols + edges tables). Single-hop patterns
+// are fused into a single JOIN for sub-millisecond execution.
 package cypher
 
 import (

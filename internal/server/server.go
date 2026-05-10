@@ -1172,10 +1172,11 @@ func (s *Server) registerTools() {
 	// 6. query
 	s.addTool(&mcp.Tool{
 		Name:        "query",
-		Description: "**Use when you need structural relationships, not text matches** — Cypher graph queries over the symbol graph. Examples: callers `MATCH (a)-[:CALLS]->(b) WHERE b.name=\"Open\" RETURN a.name`; classes in a file `MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name`; multi-hop `MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name=\"main\" RETURN b.name`. Prefer `search` for name/text lookups, `trace` for fixed-shape callgraph BFS — both are cheaper.",
+		Description: "**Use when you need structural relationships, not text matches** — pinchQL graph queries over the symbol graph. pinchQL is a pragmatic Cypher-shaped subset: `MATCH`, `WHERE`, `RETURN`, `LIMIT`, single-hop joins (`-[:CALLS]->`), and bounded variable-length BFS (`-[:CALLS*1..3]->`). Examples: callers `MATCH (a)-[:CALLS]->(b) WHERE b.name=\"Open\" RETURN a.name`; classes in a file `MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name`; multi-hop `MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name=\"main\" RETURN b.name`. The legacy `cypher` parameter name is still accepted as a soft alias for one release. Prefer `search` for name/text lookups, `trace` for fixed-shape callgraph BFS — both are cheaper.",
 		InputSchema: json.RawMessage(`{
-			"type":"object","required":["cypher"],"properties":{
-				"cypher":{"type":"string","description":"Cypher query. Example: MATCH (f:Function)-[:CALLS]->(g) WHERE f.name='main' RETURN g.name LIMIT 20"},
+			"type":"object","properties":{
+				"pinchql":{"type":"string","description":"pinchQL query. Example: MATCH (f:Function)-[:CALLS]->(g) WHERE f.name='main' RETURN g.name LIMIT 20. Alias: cypher (deprecated, kept for one release)."},
+				"cypher":{"type":"string","description":"Deprecated alias for pinchql; kept for one release. Pass either, not both."},
 				"project":{"type":"string"},
 				"max_rows":{"type":"integer","description":"Max rows (default 200, max 10000)"},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.0 (no filter). Filters rows whose query selects an extraction_confidence column; rows from queries that don't return confidence are unaffected."}
@@ -1966,9 +1967,15 @@ func suggestNextSteps(top db.Symbol) []map[string]string {
 func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
-	cql := str(args, "cypher")
+	// Accept both `pinchql` (current) and `cypher` (legacy alias, kept
+	// for one release per #206). New callers should use `pinchql`; the
+	// alias is honored silently so existing scripts keep working.
+	cql := str(args, "pinchql")
 	if cql == "" {
-		return errResult("cypher query is required"), nil
+		cql = str(args, "cypher")
+	}
+	if cql == "" {
+		return errResult("pinchql query is required (parameter `pinchql`; legacy alias `cypher` also accepted)"), nil
 	}
 	maxRows := intArg(args, "max_rows", 200)
 	minConfidence := floatArg(args, "min_confidence", 0.0)

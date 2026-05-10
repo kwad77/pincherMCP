@@ -9,13 +9,13 @@ The long-form reference. The [README](../README.md) is the pitch + quickstart; t
 - [Architecture](#architecture)
   - [Two-process architecture](#two-process-architecture)
   - [Three-layer storage](#three-layer-storage)
-  - [Cypher query routing](#cypher-query-routing)
+  - [pinchQL query routing](#pinchql-query-routing)
   - [Data flow: index to query](#data-flow-index-to-query)
 - [The 16 MCP tools](#the-16-mcp-tools)
   - [Stable symbol IDs](#stable-symbol-ids)
   - [Field projection](#field-projection)
   - [Extraction confidence](#extraction-confidence)
-- [Cypher query reference](#cypher-query-reference)
+- [pinchQL query reference](#pinchql-query-reference)
 - [Language support](#language-support)
   - [Skip rules](#skip-rules)
   - [Refusing obvious bloat traps](#refusing-obvious-bloat-traps)
@@ -127,7 +127,7 @@ All three layers populate in **one AST parse pass** from one `symbols` row.
 
 **Per-symbol confidence** (#34 ✅): `extraction_confidence` is composed from BaseExtractor + KindBaseline + PathPenalty + IdentBonus + GeneratedPen, clamped to `[0, 1]`. Lockfile keys score ~0.4–0.6, vendored Go ~0.7, real config ~0.95–1.0. `search` accepts `min_confidence` and **defaults to 0.7**. Every search response carries `_meta.confidence_distribution` (4-bucket histogram).
 
-### Cypher query routing
+### pinchQL query routing
 
 ```
   MATCH (n) WHERE ...              →  runNodeScan
@@ -204,7 +204,7 @@ All latencies measured on this codebase (13 files, 618 symbols, 5,785 edges). To
 | Tool | Capability | Tested latency |
 |---|---|---|
 | `search` | FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents, `all` for the legacy index. `fields` projects columns. `project=*` searches all repos. | 1 ms |
-| `query` | Cypher-like graph queries. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. `max_rows` (default 200, max 10000). | 2 ms (single-hop) |
+| `query` | pinchQL graph queries — Cypher-shaped subset. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. `max_rows` (default 200, max 10000). Parameter: `pinchql` (legacy alias `cypher` accepted for one release). | 2 ms (single-hop) |
 | `trace` | BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). | <5 ms (depth 3) |
 
 ### Architecture & knowledge
@@ -253,11 +253,13 @@ Every symbol carries an `extraction_confidence` score surfaced in search results
 
 ---
 
-## Cypher query reference
+## pinchQL query reference
 
-pincher translates a Cypher subset to SQL at query time. All queries are scoped to one project.
+pincher's graph-query language is **pinchQL** — a Cypher-shaped pragmatic subset that translates to SQL at query time. The grammar below is the contract; anything outside it is unsupported. All queries are scoped to one project.
 
-```cypher
+> **Why "pinchQL" and not "Cypher"?** Real Cypher (the Neo4j query language) is a moving target with hundreds of features pincher doesn't implement and won't. Calling our subset "Cypher-like" set a maintenance backlog of forever-pending features. pinchQL is honest about scope: what's documented below is what works, full stop. The MCP `query` tool's `pinchql` parameter is the new canonical name; the `cypher` parameter name is still accepted as a soft alias for one release to ease transition. Decided in #206.
+
+```pinchql
 -- Node scan: all functions matching a regex
 MATCH (f:Function) WHERE f.name =~ '.*Handler.*' RETURN f.name, f.file_path
 
@@ -370,9 +372,9 @@ curl -s -X POST http://localhost:8080/v1/search \
 curl -s -X POST http://localhost:8080/v1/search \
   -d '{"query": "auth*", "project": "*"}' | jq .
 
-# Cypher graph query
+# pinchQL graph query (legacy `cypher` parameter still accepted for one release)
 curl -s -X POST http://localhost:8080/v1/query \
-  -d '{"cypher": "MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = '\''main'\'' RETURN g.name LIMIT 10", "project": "myproject"}' | jq .
+  -d '{"pinchql": "MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = '\''main'\'' RETURN g.name LIMIT 10", "project": "myproject"}' | jq .
 
 # Liveness probe — no auth required
 curl http://localhost:8080/v1/health
@@ -590,7 +592,7 @@ Measured on this codebase (13 files, 618 symbols, 5,785 edges, Windows 11, SQLit
 | `health` | 1 ms | |
 | `stats` | 8 ms | |
 | `symbol` (byte-offset seek) | <1 ms | 1 SQL + 1 seek + 1 read |
-| Single-hop Cypher query | 2 ms | SQL JOIN |
+| Single-hop pinchQL query | 2 ms | SQL JOIN |
 | BFS depth 3 | <5 ms | Go BFS over CTE |
 | Session stats flush | every 10 s | Background goroutine |
 

@@ -765,6 +765,34 @@ func TestHandleQuery_EmptyCypher(t *testing.T) {
 	}
 }
 
+// TestHandleQuery_PinchQLParameter pins #206 — the renamed `pinchql`
+// parameter is the primary way to pass a query. The legacy `cypher`
+// alias is covered by every other test in this file (TestHandleQuery_*
+// uses "cypher": ...).
+func TestHandleQuery_PinchQLParameter(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "f1", ProjectID: "p1", FilePath: "a.go", Name: "main", QualifiedName: "main.main",
+			Kind: "Function", Language: "Go", StartByte: 0, EndByte: 50, StartLine: 1, EndLine: 5},
+	})
+
+	result, err := srv.handleQuery(context.Background(), makeReq(map[string]any{
+		"pinchql": "MATCH (f:Function) WHERE f.name = 'main' RETURN f.name",
+	}))
+	if err != nil {
+		t.Fatalf("handleQuery: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error using pinchql parameter: %v", decode(t, result))
+	}
+	m := decode(t, result)
+	if m["total"].(float64) != 1 {
+		t.Errorf("expected 1 row via pinchql, got %v", m["total"])
+	}
+}
+
 func TestHandleQuery_ValidQuery(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
