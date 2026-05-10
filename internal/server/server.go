@@ -531,6 +531,26 @@ func isTestFile(filePath string) bool {
 	return false
 }
 
+// isHotspotKind reports whether a symbol kind belongs in architecture
+// hotspots — the change-risk surface an agent should orient around (#380).
+//
+// Inbound CALLS edge counts get inflated by Variables (a JS script's
+// `var result` accumulator can rack up the most reads in a project),
+// Settings (YAML keys referenced everywhere), and Sections (Markdown
+// headings linked from a TOC). None of these are code an agent can
+// safely refactor against. Hotspots should mean "if you change this,
+// what depends on it?" — that's Function/Method/Class/Interface/Type/Module.
+//
+// Mirrors the kind-filter precedent in `firstCodeSymbolName` (excludes
+// Section/Heading/Document) and the test-file precedent in `isTestFile`.
+func isHotspotKind(kind string) bool {
+	switch kind {
+	case "Function", "Method", "Class", "Interface", "Type", "Module":
+		return true
+	}
+	return false
+}
+
 // languageRE matches the first occurrence of `"language":"X"` in a
 // marshalled response payload. JSON guarantees a single quoting style,
 // so this is safe to scan against the rendered payload (#240). Picks
@@ -3594,12 +3614,15 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// test helpers (`newTestServer`, `makeReq`, `decode`) have huge
 	// in-degree because every test imports them, but they're not
 	// signal for "what's the most important code in this project?"
-	// Fetch ~5x more than we want and post-filter so the top-N stays
-	// at the intended size after dropping tests.
+	// #380: also exclude non-code kinds (Variable, Setting, Section)
+	// since their high in-degree comes from data references, not from
+	// callers depending on them as a change-risk surface.
+	// Fetch over-quota and post-filter so the top-10 stays at the
+	// intended size after dropping tests + non-hotspot kinds.
 	includeTests := boolArg(args, "include_tests")
-	hotspotFetchLimit := 50
+	hotspotFetchLimit := 100
 	if includeTests {
-		hotspotFetchLimit = 10 // legacy path — no filter, no over-fetch
+		hotspotFetchLimit = 50 // legacy path keeps tests; still filter kinds
 	}
 	rawHotspots, _ := s.store.GetHotspots(projectID, hotspotFetchLimit)
 	var hotspots []db.Symbol
@@ -3608,6 +3631,9 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	hotspotMaps := []map[string]any{}
 	for _, h := range rawHotspots {
 		if !includeTests && isTestFile(h.FilePath) {
+			continue
+		}
+		if !isHotspotKind(h.Kind) {
 			continue
 		}
 		hotspots = append(hotspots, h)
