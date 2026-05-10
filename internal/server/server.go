@@ -3221,18 +3221,89 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	if report.Project != nil {
 		data["project"] = map[string]any{
-			"name":             report.Project.Name,
-			"path":             report.Project.Path,
-			"files":            report.Project.FileCount,
-			"symbols":          report.Project.SymCount,
-			"edges":            report.Project.EdgeCount,
-			"indexed_at":       report.Project.IndexedAt.Format(time.RFC3339),
-			"staleness_human":  report.StalenessHuman,
+			"name":              report.Project.Name,
+			"path":              report.Project.Path,
+			"files":             report.Project.FileCount,
+			"symbols":           report.Project.SymCount,
+			"edges":             report.Project.EdgeCount,
+			"indexed_at":        report.Project.IndexedAt.Format(time.RFC3339),
+			"staleness_human":   report.StalenessHuman,
 			"staleness_seconds": report.StalenessSecs,
 		}
 		data["extraction_coverage"] = report.Coverage
 	}
+
+	// #276: surface next-step hints from health so an agent has the
+	// obvious follow-up call spelled out instead of having to choose.
+	// Only emitted when the report carries an actionable signal:
+	// stale index, low-confidence language, or no project resolved.
+	steps := suggestHealthNextSteps(report)
+	if len(steps) > 0 {
+		data["_meta"] = map[string]any{"next_steps": steps}
+	}
+
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
+}
+
+// suggestHealthNextSteps composes the next_steps surface from a
+// HealthReport. Order is most-actionable-first: stale index > low
+// confidence > orientation. Empty when there's nothing useful to
+// suggest (healthy project, fresh index).
+func suggestHealthNextSteps(report *db.HealthReport) []map[string]string {
+	var steps []map[string]string
+
+	// No project resolved: the most useful next move is `list` so the
+	// agent can pick a project to scope to.
+	if report.Project == nil {
+		steps = append(steps, map[string]string{
+			"tool": "list",
+			"args": "{}",
+			"why":  "no project resolved — list active projects to pick one before querying",
+		})
+		return steps
+	}
+
+	// Stale index: the project's last indexed_at is meaningfully behind
+	// real time. Suggest re-index. Threshold is conservative (>1h)
+	// because pincher's watcher keeps things fresh during a session;
+	// >1h staleness usually means the watcher hasn't been running.
+	if report.StalenessSecs > 3600 {
+		steps = append(steps, map[string]string{
+			"tool": "index",
+			"args": fmt.Sprintf(`{"path":%q}`, report.Project.Path),
+			"why":  "index is " + report.StalenessHuman + " stale — re-run to pick up file changes",
+		})
+	}
+
+	// Low-confidence language: any (language, kind) with p10 < 0.7
+	// means searching that corpus at the default min_confidence=0.71
+	// will under-emit. Suggest the corresponding `search` floor drop.
+	for _, c := range report.Coverage {
+		for _, k := range c.ByKind {
+			if k.P10 < 0.7 {
+				steps = append(steps, map[string]string{
+					"tool": "search",
+					"args": fmt.Sprintf(`{"query":"…","language":%q,"kind":%q,"min_confidence":0.0}`, c.Language, k.Kind),
+					"why":  c.Language + " " + k.Kind + " p10=" + fmt.Sprintf("%.2f", k.P10) + " sits below the default 0.71 floor — drop min_confidence to surface those symbols",
+				})
+				goto coverageDone // one suggestion per call is enough
+			}
+		}
+	}
+coverageDone:
+
+	// Always-helpful tail: orientation. If the project is large
+	// enough that an agent might not know where to start, point at
+	// architecture. Cheap to surface.
+	if report.Project.SymCount > 100 {
+		steps = append(steps, map[string]string{
+			"tool": "architecture",
+			"args": "{}",
+			"why":  "orient before querying: returns entry points, hotspots, language breakdown",
+		})
+	}
+
+	return steps
 }
 
 func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
