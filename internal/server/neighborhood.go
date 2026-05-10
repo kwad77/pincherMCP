@@ -35,6 +35,19 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 	projectArg := str(args, "project")
 	includeSource := boolArg(args, "include_source") // default false
 	includeSelf := boolArg(args, "include_self")     // default false
+	// #293: pagination. The pre-fix tool dumped every symbol in the
+	// file, which blew the response budget on big files
+	// (server.go = 114 symbols → 54KB). Default to 50 so a
+	// signature-only response stays around 5-10KB; offset lets the
+	// agent page when the count exceeds the limit.
+	limit := intArg(args, "limit", 50)
+	offset := intArg(args, "offset", 0)
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
 
 	// Resolve project the same way handleSymbol does so a request
 	// authenticated for project A can't accidentally read project B.
@@ -91,11 +104,32 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 		}
 	}
 
-	neighbors := make([]map[string]any, 0, len(siblings))
+	// totalNeighbors is the count after the include_self filter but
+	// before pagination. Returned as `count` so the caller can decide
+	// whether to page; the slice we ship back is `neighbors`.
+	var filtered []db.Symbol
 	for _, sym := range siblings {
 		if !includeSelf && sym.ID == seed.ID {
 			continue
 		}
+		filtered = append(filtered, sym)
+	}
+	totalNeighbors := len(filtered)
+
+	// Apply offset / limit window. Out-of-range offsets clamp to a
+	// zero-length slice rather than erroring — caller can still see
+	// `count` and adjust.
+	end := offset + limit
+	if offset > totalNeighbors {
+		offset = totalNeighbors
+	}
+	if end > totalNeighbors {
+		end = totalNeighbors
+	}
+	page := filtered[offset:end]
+
+	neighbors := make([]map[string]any, 0, len(page))
+	for _, sym := range page {
 		entry := map[string]any{
 			"id":                    sym.ID,
 			"name":                  sym.Name,
@@ -150,7 +184,26 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 		"file_path": seed.FilePath,
 		"language":  seed.Language,
 		"neighbors": neighbors,
-		"count":     len(neighbors),
+		// `count` is the total in the file (after the include_self
+		// filter), not the page length — agents can compare against
+		// `len(neighbors)` to decide whether to page (#293).
+		"count": totalNeighbors,
+		"page":  map[string]any{"limit": limit, "offset": offset, "returned": len(neighbors)},
+	}
+	// #293: when the response is a partial window, surface the next
+	// page in _meta.next_steps so the agent doesn't need to compute
+	// pagination math themselves.
+	if end < totalNeighbors {
+		data["_meta"] = map[string]any{
+			"next_steps": []map[string]string{
+				{
+					"tool": "neighborhood",
+					"args": fmt.Sprintf(`{"id":"%s","limit":%d,"offset":%d}`, seed.ID, limit, end),
+					"why": fmt.Sprintf("file has %d neighbors total; you've seen %d-%d. Page to see the rest.",
+						totalNeighbors, offset+1, end),
+				},
+			},
+		}
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
 }

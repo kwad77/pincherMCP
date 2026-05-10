@@ -209,7 +209,7 @@
   },
   {
     "name": "neighborhood",
-    "description": "**Use for in-file refactor planning** — given a seed symbol ID, returns every symbol in the same file (signatures + line ranges) ordered by source position. One round-trip vs N `symbol` calls or one whole-file `Read`. Default response excludes `source`; pass `include_source=true` to also fetch each neighbor's body. Best for sub-1k-LOC files where the agent needs to see siblings to coordinate a multi-symbol edit.",
+    "description": "**Use for in-file refactor planning** — given a seed symbol ID, returns every symbol in the same file (signatures + line ranges) ordered by source position. One round-trip vs N `symbol` calls or one whole-file `Read`. Paginated: defaults to 50 neighbors per call (limit/offset), with the next page surfaced in `_meta.next_steps` when the file has more. Default response excludes `source`; pass `include_source=true` to also fetch each neighbor's body.",
     "input_schema": {
       "properties": {
         "id": {
@@ -223,6 +223,14 @@
         "include_source": {
           "description": "If true, also fetch each neighbor's source body via the byte-offset path. Default false (signatures only — much cheaper).",
           "type": "boolean"
+        },
+        "limit": {
+          "description": "Maximum neighbors to return (default 50). Files with more symbols paginate via _meta.next_steps.",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip the first N neighbors (default 0). Use the value from _meta.next_steps to walk the file.",
+          "type": "integer"
         },
         "project": {
           "description": "Project name or ID. Defaults to session project.",
