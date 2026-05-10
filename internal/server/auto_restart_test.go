@@ -175,6 +175,48 @@ func TestCheckAutoRestart_NoOpWhenEnvUnset(t *testing.T) {
 	}
 }
 
+// #371: maybeAutoRestart must NOT call exitFn synchronously when a
+// non-zero autoRestartDelay is configured — the in-flight tool
+// response is still bubbling back through the SDK at this point in the
+// call stack, and a synchronous os.Exit would terminate the process
+// before the response is serialized and written. The fix defers the
+// exit; this test pins the deferred behaviour so a regression that
+// drops the time.AfterFunc and re-introduces the lost-response bug
+// can't sneak in.
+func TestMaybeAutoRestart_DeferredExit_DoesNotBlockCaller(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	t.Setenv(autoRestartEnvVar, "1")
+	srv.autoRestartDelay = 50 * time.Millisecond
+
+	exited := make(chan int, 1)
+	srv.exitFn = func(code int) { exited <- code }
+
+	start := time.Now()
+	srv.maybeAutoRestart(true, true) // env on + binary replaced
+	returnedAfter := time.Since(start)
+
+	// Caller must return well before the delay fires — otherwise the
+	// SDK never gets to write the response.
+	if returnedAfter > 20*time.Millisecond {
+		t.Errorf("maybeAutoRestart blocked for %s; expected <20ms (must return so SDK can write response before exit)", returnedAfter)
+	}
+	// exitFn must NOT have fired yet.
+	select {
+	case code := <-exited:
+		t.Errorf("exitFn fired synchronously (code=%d); expected deferred", code)
+	default:
+	}
+	// And it MUST fire eventually, after the delay.
+	select {
+	case code := <-exited:
+		if code != 0 {
+			t.Errorf("deferred exitFn fired with code %d, want 0", code)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("deferred exitFn never fired within 500ms")
+	}
+}
+
 func TestCheckAutoRestart_NoOpWhenBinaryNotReplaced(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	t.Setenv(autoRestartEnvVar, "1")

@@ -7,6 +7,24 @@ minors.
 
 ## [Unreleased]
 
+### Fixed
+- **Supervised mode lost the in-flight response when the inner
+  self-restarted on binary drift (#371).** `Server.jsonResultWithMeta`
+  called `s.checkAutoRestart()` before `return result`; the production
+  exitFn (`os.Exit`) is synchronous, so the function never returned,
+  the SDK never serialized the response, and the supervisor saw the
+  inner exit before the response reached the client. The client timed
+  out and dropped the stdio session — exactly the friction the
+  supervisor was supposed to eliminate. Fix: `maybeAutoRestart` now
+  schedules `exitFn(0)` via `time.AfterFunc(s.autoRestartDelay, …)`
+  (default 100ms in `New()`). The 100ms grace period lets the SDK
+  finish writing the response before the process exits. Tests reset
+  the delay to 0 in `newTestServer` so existing exit-gate assertions
+  stay deterministic; new `TestMaybeAutoRestart_DeferredExit_DoesNotBlockCaller`
+  pins the deferred behaviour. Unit tests with a recording exitFn
+  stub didn't catch this — only an integration probe driving real
+  stdio does.
+
 ## [v0.11.0] — 2026-05-10 — Supervisor: auto-respawn for agent CLIs
 
 Closes the multi-CLI / version-drift / manual-/mcp-reconnect concerns

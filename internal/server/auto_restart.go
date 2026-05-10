@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"os"
+	"time"
 )
 
 // autoRestartEnvVar is the opt-in flag for #352 self-restart-on-drift.
@@ -12,6 +13,16 @@ import (
 // off — opt-in only because the respawn behaviour depends on the
 // caller's MCP client implementation.
 const autoRestartEnvVar = "PINCHER_AUTO_RESTART_ON_DRIFT"
+
+// autoRestartExitDelay is the grace period between deciding to restart
+// and actually calling exitFn. Set as the production default for
+// Server.autoRestartDelay in New(). 100ms is generous — typical SDK
+// serialize+write of a tool response on Windows pipes is well under
+// 10ms — but cheap insurance against the response getting clipped
+// (#371). Slow handlers that took >100ms to complete already have
+// their result in hand by the time checkAutoRestart fires; the delay
+// is for the per-response SDK write, not handler latency.
+const autoRestartExitDelay = 100 * time.Millisecond
 
 // maybeAutoRestart checks whether this server should exit so that a
 // fresh binary on disk takes over on the next request. Three conditions
@@ -23,9 +34,15 @@ const autoRestartEnvVar = "PINCHER_AUTO_RESTART_ON_DRIFT"
 //  3. s.autoRestartOnce guards the actual exit so concurrent tool
 //     calls in flight don't all race to call os.Exit.
 //
-// When all three hold, log a single line and call s.exitFn(0). Tests
-// substitute s.exitFn with a recording stub to assert the path fired
-// without actually killing the test process.
+// When all three hold, log a single line and schedule s.exitFn(0)
+// after s.autoRestartDelay. The delay is load-bearing (#371): this
+// hook fires from inside jsonResultWithMeta *before* `return result`,
+// so calling os.Exit synchronously would terminate the process before
+// the SDK serializes and writes the response — the client would see
+// EOF instead of the requested data. Deferring exit by ~100ms gives
+// the SDK time to flush the in-flight response. Tests set
+// autoRestartDelay to 0 in newTestServer to keep the exit-gate
+// assertions deterministic.
 //
 // driftDetected is informational — included in the log line so the
 // reason for the restart is searchable. Not part of the gate (binary
@@ -45,11 +62,17 @@ func (s *Server) maybeAutoRestart(binaryReplaced, driftDetected bool) {
 			"version", s.version,
 			"binary_path", s.binaryPath,
 			"drift_detected", driftDetected,
+			"exit_delay", s.autoRestartDelay,
 			"env_var", autoRestartEnvVar+"=1")
-		// Exit 0 — clean shutdown. Claude Code's MCP transport sees
-		// the stdio EOF and respawns the configured command. The new
-		// process loads the rebuilt binary and serves the next call.
-		s.exitFn(0)
+		// Exit 0 — clean shutdown. The supervisor or MCP client
+		// transport sees the stdio EOF and respawns. The new process
+		// loads the rebuilt binary and serves the next call. Deferred
+		// to give the in-flight response time to make it out.
+		if s.autoRestartDelay > 0 {
+			time.AfterFunc(s.autoRestartDelay, func() { s.exitFn(0) })
+		} else {
+			s.exitFn(0)
+		}
 	})
 }
 

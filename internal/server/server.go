@@ -193,6 +193,17 @@ type Server struct {
 	// os.Exit; tests substitute a recording stub. Defaults to os.Exit
 	// in New().
 	exitFn func(int)
+	// autoRestartDelay is the grace period between deciding to restart
+	// and actually calling exitFn. Production defaults to 100ms in
+	// New() so the in-flight tool response — which is *not yet
+	// returned* from jsonResultWithMeta when checkAutoRestart fires —
+	// has time to bubble back through the SDK and be written to
+	// stdout before the process terminates. Without this delay, the
+	// synchronous os.Exit inside checkAutoRestart loses the response
+	// the client is waiting on (#371). Tests set this to 0 in
+	// newTestServer so the existing exit-gate assertions stay
+	// deterministic.
+	autoRestartDelay time.Duration
 }
 
 // New creates and registers all 14 MCP tools.
@@ -207,6 +218,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		persistentSessionID: fmt.Sprintf("sess-%d", now.UnixNano()),
 		sessionStartedAt:    now,
 		exitFn:              os.Exit, // #352: substituted by tests
+		autoRestartDelay:    autoRestartExitDelay,
 	}
 	// Capture the running binary's path + initial mtime so the
 	// health stale-binary check (#278) can compare against the

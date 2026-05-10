@@ -33,6 +33,12 @@ func newTestServer(t *testing.T) (*Server, *db.Store, string) {
 	t.Cleanup(func() { store.Close() })
 	idx := index.New(store)
 	srv := New(store, idx, "test")
+	// Tests assert exit-gate behaviour synchronously via a recording
+	// exitFn; the production AfterFunc grace period (#371) would race
+	// those assertions. Reset to 0 so maybeAutoRestart calls exitFn
+	// inline. Tests that specifically exercise the delay path can
+	// override this back to a non-zero value.
+	srv.autoRestartDelay = 0
 	return srv, store, dir
 }
 
