@@ -370,6 +370,119 @@ func TestIndex_WritesEdges_ShortVarDeclSkipsWrites(t *testing.T) {
 	}
 }
 
+// fixtureControlFlow exercises the walker's non-trivial AST branches:
+// IfStmt (init+cond+else), ForStmt (init+cond+post), RangeStmt with
+// both := and = forms, SwitchStmt + CaseClause, TypeSwitchStmt,
+// SelectStmt + CommClause, LabeledStmt. Without exercise across these
+// shapes, an extractGoReads regression in any one branch (eg. failing
+// to recurse into a switch case body) would slip past the other
+// fixture-driven tests because they all use straight-line code.
+const fixtureControlFlow = `package pkg
+
+var Cap int
+var State int
+var Items []int
+
+// AllShapes bundles every control-flow shape so extractor walks each
+// branch at least once. The expected READS/WRITES targets are pinned
+// in the test below; we don't re-list them here so the fixture stays
+// readable.
+func AllShapes(thing interface{}) {
+	// IfStmt with init + else
+	if x := State; x > 0 {
+		Cap = x
+	} else {
+		_ = Cap
+	}
+
+	// ForStmt with init/cond/post (post is an IncDecStmt on a local —
+	// non-Ident target hits the IncDecStmt walkRead branch).
+	for i := 0; i < Cap; i++ {
+		_ = i
+	}
+
+	// RangeStmt with assignment form (k is a package-level write target).
+	var k int
+	for k = range Items {
+		State = k
+	}
+
+	// RangeStmt with short-var-decl (k local — no write to package var).
+	for k := range Items {
+		_ = k
+	}
+
+	// SwitchStmt + CaseClause
+	switch State {
+	case 0:
+		Cap = 0
+	case 1:
+		_ = Cap
+	}
+
+	// TypeSwitchStmt
+	switch t := thing.(type) {
+	case int:
+		_ = t
+	default:
+		_ = State
+	}
+
+	// SelectStmt + CommClause (with a default — exercises the empty
+	// Comm branch that walkRead would otherwise miss).
+	ch := make(chan int)
+	select {
+	case v := <-ch:
+		_ = v
+	default:
+		_ = State
+	}
+
+	// LabeledStmt wrapping a for — extractor must descend through
+	// the label to reach the loop body's writes.
+Outer:
+	for {
+		Cap++
+		break Outer
+	}
+}
+`
+
+// AllShapes exercises the walker across many control-flow branches at
+// once. The assertions are intentionally narrow — we pin the load-
+// bearing edges (Cap WRITES from the if-body, State WRITES from the
+// switch's range-loop body, Cap WRITES from the labeled for) without
+// over-specifying anything that would make the test brittle to AST
+// changes. This is primarily a coverage hop: the regression value is
+// in any future change to extractGoReads's switch ladder breaking
+// extraction silently.
+func TestIndex_WritesEdges_ControlFlowShapesEmitEdges(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/file.go", fixtureControlFlow)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	allID := db.MakeSymbolID("pkg/file.go", "pkg.AllShapes", "Function")
+	capID := db.MakeSymbolID("pkg/file.go", "pkg.Cap", "Variable")
+	stateID := db.MakeSymbolID("pkg/file.go", "pkg.State", "Variable")
+
+	outbound, err := store.EdgesFrom(allID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom AllShapes: %v", err)
+	}
+	if !hasEdge(outbound, capID, "WRITES") {
+		t.Errorf("WRITES → Cap missing — at least one of the if/switch/labeled-for write paths must emit:\n  outbound: %v", outbound)
+	}
+	if !hasEdge(outbound, capID, "READS") {
+		t.Errorf("READS → Cap missing — `else { _ = Cap }` and `for ... < Cap` must emit:\n  outbound: %v", outbound)
+	}
+	if !hasEdge(outbound, stateID, "WRITES") {
+		t.Errorf("WRITES → State missing — `State = k` inside the range loop body must emit:\n  outbound: %v", outbound)
+	}
+}
+
 // Pure read functions still get the READS edge (regression gate
 // against the WRITES extension breaking the original READS path).
 func TestIndex_WritesEdges_ReadOnlyKeepsReadsBehaviour(t *testing.T) {
