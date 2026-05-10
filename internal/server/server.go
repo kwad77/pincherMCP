@@ -344,6 +344,41 @@ func (s *Server) recordCallLanguage(lang string) {
 	}
 }
 
+// isDeveloperScratchPath reports whether file_path's basename matches
+// the developer-scratch naming convention (#275): `scratch_*.go`,
+// `.scratch_*.go`, `tmp_*.go`, `_scratch.go`. Used by handleArchitecture
+// to keep the entry_points list focused on the project's actual
+// entrypoints rather than dev-machine pollution.
+//
+// Filter applies at the project root only — directory components are
+// ignored so a `testdata/corpus/foo/scratch.go` test fixture still
+// surfaces. The check is intentionally narrow: anything else
+// (`tmp.go`, `playground.go`, `notes.go`) stays visible because the
+// false-negative cost is low — at worst the entry_points list shows
+// one extra row.
+func isDeveloperScratchPath(filePath string) bool {
+	base := filePath
+	if i := strings.LastIndexAny(filePath, `/\`); i >= 0 {
+		base = filePath[i+1:]
+	}
+	if base == filePath {
+		// File is at project root — apply the scratch filter.
+	} else {
+		// File is nested — keep it visible.
+		return false
+	}
+	switch {
+	case strings.HasPrefix(base, "scratch_"),
+		strings.HasPrefix(base, ".scratch_"),
+		strings.HasPrefix(base, "tmp_"),
+		base == "_scratch.go",
+		base == "scratch.go",
+		base == ".scratch.go":
+		return true
+	}
+	return false
+}
+
 // languageRE matches the first occurrence of `"language":"X"` in a
 // marshalled response payload. JSON guarantees a single quoting style,
 // so this is safe to scan against the rendered payload (#240). Picks
@@ -2964,17 +2999,28 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 		_ = langRows.Err()
 	}
 
-	// Entry points
+	// Entry points. #275: skip top-level scratch files (`scratch_*.go`,
+	// `.scratch_*.go`, `tmp_*.go`) — they declare `package main` so the
+	// indexer flags them is_entry_point=1, but they're developer
+	// scratch space, not real entrypoints. Filter at the basename
+	// level only so a legitimate testdata/corpus/.../scratch.go fixture
+	// can still surface (path components past the basename are ignored).
 	var entryPoints []map[string]any
 	if epRows, err := s.store.RO().QueryContext(ctx,
-		`SELECT name, file_path, start_line FROM symbols WHERE project_id=? AND is_entry_point=1 LIMIT 20`,
+		`SELECT name, file_path, start_line FROM symbols WHERE project_id=? AND is_entry_point=1 LIMIT 40`,
 		projectID); err == nil {
 		defer epRows.Close()
 		for epRows.Next() {
 			var name, fp string
 			var line int
 			if scanErr := epRows.Scan(&name, &fp, &line); scanErr == nil {
+				if isDeveloperScratchPath(fp) {
+					continue
+				}
 				entryPoints = append(entryPoints, map[string]any{"name": name, "file_path": fp, "start_line": line})
+				if len(entryPoints) >= 20 {
+					break
+				}
 			}
 		}
 		_ = epRows.Err()
