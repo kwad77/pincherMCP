@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -377,6 +378,204 @@ func TestSupervisor_NonInitLinesNotReplayed(t *testing.T) {
 	fakes[1].Close()
 	cancel()
 	<-runDone
+}
+
+// TestSupervisor_ProbeIsSentAndAnswered: with an aggressively short
+// probe interval, the supervisor sends a probe to the inner; if the
+// fake inner immediately replies with the matching ID, the response
+// is intercepted (NOT forwarded to client) and ProbesAnswered ticks.
+func TestSupervisor_ProbeIsSentAndAnswered(t *testing.T) {
+	clientStdinR, clientStdinW := io.Pipe()
+	var clientStdout bytes.Buffer
+
+	fake := newFakeInner(1)
+
+	sup := &Supervisor{
+		Stdin:         clientStdinR,
+		Stdout:        &clientStdout,
+		Stderr:        io.Discard,
+		ProbeInterval: 50 * time.Millisecond,
+		ProbeTimeout:  500 * time.Millisecond,
+		spawnFn:       func() (*innerProc, error) { return fake.makeProc(), nil },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- sup.Run(ctx) }()
+
+	// Reply-bot: anytime the fake's stdin sees a probe-prefixed id,
+	// echo a JSON-RPC response with that id back via Send().
+	go func() {
+		seen := []byte{}
+		for {
+			latest := fake.Receive()
+			if !bytes.Equal(latest, seen) {
+				delta := latest[len(seen):]
+				lines := bytes.Split(delta, []byte("\n"))
+				for _, line := range lines {
+					if !bytes.Contains(line, []byte(probeIDPrefix)) {
+						continue
+					}
+					var head struct {
+						ID string `json:"id"`
+					}
+					if err := json.Unmarshal(line, &head); err != nil {
+						continue
+					}
+					_ = fake.Send(`{"jsonrpc":"2.0","id":"` + head.ID + `","result":{"tools":[]}}` + "\n")
+				}
+				seen = latest
+			}
+			time.Sleep(20 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+	}()
+
+	// Wait for at least one probe-answer cycle.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sup.ProbesAnswered.Load() >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := sup.ProbesAnswered.Load(); got < 1 {
+		t.Errorf("ProbesAnswered = %d, want >= 1 after 2s with 50ms probe interval", got)
+	}
+
+	// Probe response must NOT have leaked to clientStdout.
+	if bytes.Contains(clientStdout.Bytes(), []byte(probeIDPrefix)) {
+		t.Errorf("probe response leaked to client stdout: %q", clientStdout.String())
+	}
+
+	clientStdinW.Close()
+	fake.Close()
+	cancel()
+	<-runDone
+}
+
+// TestSupervisor_ProbeTimeoutKillsInner: when the fake inner doesn't
+// answer probes, the timeout fires, kills the inner (via the existing
+// killInner path), and ProbesTimedOut ticks. With cmd=nil in tests
+// the kill is a no-op but the counter still increments.
+func TestSupervisor_ProbeTimeoutKillsInner(t *testing.T) {
+	clientStdinR, clientStdinW := io.Pipe()
+	var clientStdout bytes.Buffer
+
+	fake := newFakeInner(1)
+
+	sup := &Supervisor{
+		Stdin:         clientStdinR,
+		Stdout:        &clientStdout,
+		Stderr:        io.Discard,
+		ProbeInterval: 100 * time.Millisecond,
+		ProbeTimeout:  50 * time.Millisecond, // short to keep test snappy
+		spawnFn:       func() (*innerProc, error) { return fake.makeProc(), nil },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- sup.Run(ctx) }()
+
+	// Wait for the timeout to fire at least once.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if sup.ProbesTimedOut.Load() >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := sup.ProbesTimedOut.Load(); got < 1 {
+		t.Errorf("ProbesTimedOut = %d, want >= 1", got)
+	}
+
+	clientStdinW.Close()
+	fake.Close()
+	cancel()
+	<-runDone
+}
+
+// TestSupervisor_CircuitBreakerTrips: when respawns happen faster than
+// MaxRestarts within RestartWindow, Run returns the breaker error.
+func TestSupervisor_CircuitBreakerTrips(t *testing.T) {
+	clientStdinR, _ := io.Pipe()
+	var clientStdout bytes.Buffer
+
+	var (
+		spawnCount int
+		fakes      []*fakeInner
+		spawnMu    sync.Mutex
+	)
+
+	sup := &Supervisor{
+		Stdin:  clientStdinR,
+		Stdout: &clientStdout,
+		Stderr: io.Discard,
+		// Disable probes so they don't interfere with the breaker test.
+		ProbeInterval: 24 * time.Hour,
+		MaxRestarts:   2,
+		RestartWindow: 10 * time.Second,
+		spawnFn: func() (*innerProc, error) {
+			spawnMu.Lock()
+			defer spawnMu.Unlock()
+			spawnCount++
+			f := newFakeInner(spawnCount)
+			fakes = append(fakes, f)
+			// Each spawn returns a fake whose stdout we'll close
+			// immediately to force respawn.
+			go func(f *fakeInner) {
+				time.Sleep(20 * time.Millisecond)
+				f.Close()
+			}(f)
+			return f.makeProc(), nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- sup.Run(ctx) }()
+
+	// Wait for Run to error out via breaker.
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatal("expected breaker error, got nil")
+		}
+		if !strings.Contains(err.Error(), "circuit breaker") {
+			t.Errorf("error doesn't mention breaker: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run() did not return within 3s — breaker may not have tripped")
+	}
+}
+
+// TestRecordRestart_TrimsOldEntries: entries older than RestartWindow
+// don't count toward the breaker threshold.
+func TestRecordRestart_TrimsOldEntries(t *testing.T) {
+	sup := &Supervisor{
+		MaxRestarts:   2,
+		RestartWindow: 50 * time.Millisecond,
+	}
+
+	if err := sup.recordRestart(); err != nil {
+		t.Fatalf("first restart should not trip: %v", err)
+	}
+	if err := sup.recordRestart(); err != nil {
+		t.Fatalf("second restart should not trip: %v", err)
+	}
+	// Wait past window so the first two age out.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := sup.recordRestart(); err != nil {
+		t.Fatalf("third restart after window should not trip (first two aged out): %v", err)
+	}
 }
 
 // waitForReceived polls fake.Receive() until needle appears or
