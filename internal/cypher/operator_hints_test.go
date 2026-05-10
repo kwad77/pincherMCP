@@ -87,7 +87,7 @@ func TestParse_SupportedOperators_StillWork(t *testing.T) {
 // operatorHint table coverage — ensure every entry returns a non-empty
 // hint. Mostly a guard against typos in future additions to the map.
 func TestOperatorHint_AllEntriesNonEmpty(t *testing.T) {
-	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "ENDS", "MATCHES"} {
+	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "ENDS", "MATCHES", "IN", "in"} {
 		hint, ok := operatorHint(op)
 		if !ok || hint == "" {
 			t.Errorf("operatorHint(%q) returned empty/false", op)
@@ -95,5 +95,23 @@ func TestOperatorHint_AllEntriesNonEmpty(t *testing.T) {
 	}
 	if _, ok := operatorHint("BOGUS"); ok {
 		t.Error("operatorHint(BOGUS) should return false")
+	}
+}
+
+// #321: IN gets a clear OR-fallback suggestion since the multi-
+// value membership operator isn't implemented yet.
+func TestParse_UnsupportedOperator_IN_Hint(t *testing.T) {
+	tokens := tokenize("MATCH (n) WHERE n.kind IN ['Function','Method'] RETURN n.name")
+	p := &parser{tokens: tokens}
+	_, err := p.parseQuery()
+	if err == nil {
+		t.Fatal("expected parse error for IN")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "IN") {
+		t.Errorf("error %q must mention IN", msg)
+	}
+	if !strings.Contains(msg, "OR") {
+		t.Errorf("error %q must suggest the OR-of-equality fallback", msg)
 	}
 }

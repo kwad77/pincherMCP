@@ -519,6 +519,10 @@ func operatorHint(op string) (string, bool) {
 		return "ENDS WITH is not supported; use =~ '.*foo$' instead", true
 	case "MATCHES":
 		return "use =~ for regex match", true
+	case "IN":
+		// #321: IN multi-value membership isn't implemented yet —
+		// the OR-of-equalities pattern is the documented workaround.
+		return "IN is not supported; combine equality conditions with OR: 'n.kind = \"Function\" OR n.kind = \"Method\"'", true
 	}
 	return "", false
 }
