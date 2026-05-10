@@ -333,6 +333,119 @@ func TestStatsCLI_TextOutput_LanguagesSectionAbsentWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestStatsCLI_TextOutput_RetriesSection (#241) pins the RETRIES
+// section: when at least one query-shaped call has been recorded, the
+// section appears with the four counter rows + retry-rate. Sorted
+// after LANGUAGES, before PROJECTS.
+func TestStatsCLI_TextOutput_RetriesSection(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.RecordSessionWithMetrics("s1", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0, "",
+		db.QueryMetrics{QueriesTotal: 100, QueriesZeroResult: 18, QueriesRetriedSucceeded: 14, TokensBurnedOnFailures: 4200}); err != nil {
+		t.Fatalf("RecordSessionWithMetrics: %v", err)
+	}
+
+	report, _ := buildStatsReport(store, dir)
+	out := formatStatsText(report)
+
+	if !strings.Contains(out, "RETRIES") {
+		t.Errorf("RETRIES header missing from output:\n%s", out)
+	}
+	for _, label := range []string{"Total queries:", "Zero-result:", "Retry rate:", "Recovered:", "Tokens burned:"} {
+		if !strings.Contains(out, label) {
+			t.Errorf("retries label %q missing from output:\n%s", label, out)
+		}
+	}
+	if !strings.Contains(out, "18.0%") {
+		t.Errorf("retry rate 18.0%% missing from output:\n%s", out)
+	}
+	if !strings.Contains(out, "4,200") {
+		t.Errorf("commified tokens-burned 4,200 missing from output:\n%s", out)
+	}
+
+	// Box still closes — every line same rune-width.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	expectedWidth := len([]rune(lines[0]))
+	for i, ln := range lines {
+		if got := len([]rune(ln)); got != expectedWidth {
+			t.Errorf("line %d width = %d runes, want %d (RETRIES insert broke box alignment):\n%s",
+				i, got, expectedWidth, out)
+		}
+	}
+}
+
+// TestStatsCLI_TextOutput_RetriesSectionAbsentWhenZero (#241) pins
+// the noise-free output property: a session with zero query-shaped
+// calls renders without a RETRIES section. We don't want to add a
+// "Retry rate: 0.0%" row to every healthy project's stats.
+func TestStatsCLI_TextOutput_RetriesSectionAbsentWhenZero(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.RecordSession("legacy", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0, ""); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	report, _ := buildStatsReport(store, dir)
+	out := formatStatsText(report)
+	if strings.Contains(out, "RETRIES") {
+		t.Errorf("RETRIES header rendered despite zero query-shaped calls:\n%s", out)
+	}
+}
+
+// TestStatsCLI_JSONShape_QueryMetrics pins the JSON shape: v17 binaries
+// always emit the `query_metrics` block under `all_time`. Dashboards
+// can render the retry-rate diagnostic without a feature-detection
+// dance, and the field set is stable for shell pipelines.
+func TestStatsCLI_JSONShape_QueryMetrics(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.RecordSessionWithMetrics("s1", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0, "",
+		db.QueryMetrics{QueriesTotal: 50, QueriesZeroResult: 5, QueriesRetriedSucceeded: 4, TokensBurnedOnFailures: 1000}); err != nil {
+		t.Fatalf("RecordSessionWithMetrics: %v", err)
+	}
+	report, err := buildStatsReport(store, dir)
+	if err != nil {
+		t.Fatalf("buildStatsReport: %v", err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(encoded, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v\n%s", err, encoded)
+	}
+	at, ok := parsed["all_time"].(map[string]any)
+	if !ok {
+		t.Fatalf("all_time is not an object:\n%s", encoded)
+	}
+	qm, ok := at["query_metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("query_metrics missing or not an object:\n%s", encoded)
+	}
+	if got := qm["queries_total"]; got != float64(50) {
+		t.Errorf("queries_total = %v, want 50", got)
+	}
+	if got := qm["queries_zero_result"]; got != float64(5) {
+		t.Errorf("queries_zero_result = %v, want 5", got)
+	}
+	if got := qm["retry_rate"]; got != 0.1 {
+		t.Errorf("retry_rate = %v, want 0.1 (5/50)", got)
+	}
+}
+
 // TestStatsCLI_JSONShape_CallsByLanguage pins the JSON shape: when
 // per-language data is present, `all_time.calls_by_language` is a
 // flat string→int map. Dashboards and shell pipelines depend on this

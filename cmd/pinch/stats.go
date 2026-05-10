@@ -128,6 +128,23 @@ type AllTimeSavings struct {
 	// works with most" as a one-line check. Empty map when no session
 	// has recorded language data yet.
 	CallsByLanguage map[string]int64 `json:"calls_by_language,omitempty"`
+	// QueryMetrics carries cumulative query-failure / retry counters
+	// (#241). Always present on v17+ binaries; pre-v17 sessions
+	// contribute zero on every field. Surfaces in `pincher stats` as a
+	// RETRIES section that's only rendered when QueriesTotal > 0 — keeps
+	// the output noise-free on healthy projects.
+	QueryMetrics QueryMetricsReport `json:"query_metrics"`
+}
+
+// QueryMetricsReport mirrors db.QueryMetrics with JSON tags suited for
+// the `pincher stats --json` shape. Surfaces the four counters plus a
+// derived RetryRate so consumers don't have to recompute.
+type QueryMetricsReport struct {
+	QueriesTotal            int64   `json:"queries_total"`
+	QueriesZeroResult       int64   `json:"queries_zero_result"`
+	QueriesRetriedSucceeded int64   `json:"queries_retried_succeeded"`
+	TokensBurnedOnFailures  int64   `json:"tokens_burned_on_failures"`
+	RetryRate               float64 `json:"retry_rate"` // queries_zero_result / queries_total, 0 when no queries
 }
 
 // ProjectStats is a per-project file/symbol/edge breakdown.
@@ -168,6 +185,15 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 		callsByLang = nil
 	}
 
+	// queryMetrics is also best-effort: a stale binary running against
+	// a pre-v17 DB will get a zero-value struct here (the COALESCE in
+	// the SQL handles missing rows; only a transient query failure
+	// would error). Don't fail the whole report on a diagnostic.
+	qm, err := store.GetAllTimeQueryMetrics()
+	if err != nil {
+		qm = db.QueryMetrics{}
+	}
+
 	projects, err := store.ListProjects()
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -184,6 +210,11 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 		})
 	}
 
+	var retryRate float64
+	if qm.QueriesTotal > 0 {
+		retryRate = float64(qm.QueriesZeroResult) / float64(qm.QueriesTotal)
+	}
+
 	return &StatsReport{
 		DataDir:  dir,
 		DBSizeKB: dbFileSizeKB(dir),
@@ -193,6 +224,13 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 			TokensSaved:     tokensSaved,
 			CostAvoided:     costAvoided,
 			CallsByLanguage: callsByLang,
+			QueryMetrics: QueryMetricsReport{
+				QueriesTotal:            qm.QueriesTotal,
+				QueriesZeroResult:       qm.QueriesZeroResult,
+				QueriesRetriedSucceeded: qm.QueriesRetriedSucceeded,
+				TokensBurnedOnFailures:  qm.TokensBurnedOnFailures,
+				RetryRate:               retryRate,
+			},
 		},
 		Projects: projOut,
 	}, nil
@@ -271,6 +309,23 @@ func formatStatsText(r *StatsReport) string {
 		}
 	}
 	languagesEnd := len(rows)
+
+	// RETRIES rows (#241): query-failure / retry-rate counters surfaced
+	// only when at least one query-shaped call has been recorded. On a
+	// healthy project with low retry rate the whole section is omitted
+	// to avoid noise; on a misaligned-default project the high
+	// retry-rate row jumps out as a "your threshold is wrong" signal.
+	if r.AllTime.QueryMetrics.QueriesTotal > 0 {
+		qm := r.AllTime.QueryMetrics
+		rows = append(rows,
+			row{"Total queries:", commify(qm.QueriesTotal)},
+			row{"Zero-result:", commify(qm.QueriesZeroResult)},
+			row{"Retry rate:", fmt.Sprintf("%.1f%%", qm.RetryRate*100)},
+			row{"Recovered:", commify(qm.QueriesRetriedSucceeded)},
+			row{"Tokens burned:", commify(qm.TokensBurnedOnFailures)},
+		)
+	}
+	retriesEnd := len(rows)
 
 	for _, p := range r.Projects {
 		// Two-line project rendering: name on line 1, count value on line 2.
@@ -363,10 +418,18 @@ func formatStatsText(r *StatsReport) string {
 		}
 	}
 
+	if languagesEnd < retriesEnd {
+		b.WriteString(sep)
+		b.WriteString(header("RETRIES"))
+		for i := languagesEnd; i < retriesEnd; i++ {
+			b.WriteString(line(rows[i].label, rows[i].value))
+		}
+	}
+
 	if len(r.Projects) > 0 {
 		b.WriteString(sep)
 		b.WriteString(header("PROJECTS"))
-		for i := languagesEnd; i < len(rows); i++ {
+		for i := retriesEnd; i < len(rows); i++ {
 			b.WriteString(line(rows[i].label, rows[i].value))
 		}
 	}

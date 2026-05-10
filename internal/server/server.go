@@ -145,6 +145,29 @@ type Server struct {
 	// deletes, and we don't want a hot lock under high call volume.
 	statsCallsByLanguage sync.Map
 
+	// Query-failure / retry-rate counters (#241). Incremented from
+	// jsonResultWithMeta only when the tool is "query-shaped"
+	// (search/query/trace/neighborhood) — admin tools like list,
+	// schema, architecture either always succeed or don't have a
+	// meaningful result count.
+	statsQueriesTotal            int64
+	statsQueriesZeroResult       int64
+	statsQueriesRetriedSucceeded int64
+	statsTokensBurned            int64
+
+	// lastZeroQuery holds the most-recent zero-result tool call's
+	// (tool, normalized-query) pair within this session. When the very
+	// next call uses the same tool with the same primary query string
+	// and returns ≥1 result, we credit it as a successful retry —
+	// "agent learned and recovered." Cleared on any non-zero result so
+	// that an unrelated successful call between two zero-result calls
+	// doesn't fool the counter.
+	lastZero struct {
+		mu        sync.Mutex
+		tool      string
+		queryHash string
+	}
+
 	// mcpConnected is set to 1 when an MCP client fires onInit.
 	// Sessions are only flushed to DB when an MCP client is connected — this
 	// prevents the HTTP-only dashboard process from recording its own tool
@@ -255,7 +278,13 @@ func (s *Server) flushSession() {
 		httpURL = "http://" + displayAddr(httpURL) + s.basePath
 		httpPID = os.Getpid()
 	}
-	if err := s.store.RecordSession(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID, s.snapshotCallsByLanguage()); err != nil {
+	qm := db.QueryMetrics{
+		QueriesTotal:            atomic.LoadInt64(&s.statsQueriesTotal),
+		QueriesZeroResult:       atomic.LoadInt64(&s.statsQueriesZeroResult),
+		QueriesRetriedSucceeded: atomic.LoadInt64(&s.statsQueriesRetriedSucceeded),
+		TokensBurnedOnFailures:  atomic.LoadInt64(&s.statsTokensBurned),
+	}
+	if err := s.store.RecordSessionWithMetrics(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID, s.snapshotCallsByLanguage(), qm); err != nil {
 		slog.Warn("pincher.session.flush.err", "err", err)
 	}
 }
@@ -321,6 +350,99 @@ func (s *Server) recordCallLanguage(lang string) {
 // the FIRST language seen as the call's "primary language" — adequate
 // for bypass detection where any signal beats none.
 var languageRE = regexp.MustCompile(`"language"\s*:\s*"([^"]+)"`)
+
+// queryShapedTools is the set of MCP tools whose responses carry a
+// meaningful `count` field that should feed retry-rate diagnostics
+// (#241). Admin/orientation tools (architecture, list, schema, health,
+// stats, guide, adr, fetch, index, symbol, symbols, context, changes)
+// are excluded — either they always succeed, don't have a count, or
+// their "zero result" shape isn't a friction signal worth tracking.
+var queryShapedTools = map[string]bool{
+	"search":       true,
+	"query":        true,
+	"trace":        true,
+	"neighborhood": true,
+}
+
+// primaryQueryArg returns the argument that uniquely identifies a
+// query-shaped tool call, used as the retry-detection key (#241). The
+// retry signal is "agent re-issued the same logical query with a
+// loosened threshold and got results"; the discriminator is the query
+// text itself, not the tuning knobs (min_confidence, limit, kind
+// filter) that the retry usually changes.
+func primaryQueryArg(tool string, args map[string]any) string {
+	switch tool {
+	case "search":
+		if q, ok := args["query"].(string); ok {
+			return q
+		}
+	case "query":
+		if q, ok := args["pinchql"].(string); ok {
+			return q
+		}
+		if q, ok := args["cypher"].(string); ok {
+			return q
+		}
+	case "trace":
+		if q, ok := args["name"].(string); ok {
+			return q
+		}
+		if q, ok := args["id"].(string); ok {
+			return q
+		}
+	case "neighborhood":
+		if q, ok := args["id"].(string); ok {
+			return q
+		}
+	}
+	return ""
+}
+
+// recordQueryMetrics updates the v17 query-failure counters (#241).
+// Called from jsonResultWithMeta after the response is marshalled so
+// tokensUsed is known. Tools outside queryShapedTools no-op. The
+// retry-detection rule: if THIS call returns ≥1 results AND the
+// previous query-shaped call within the same session was a zero
+// result on (sameTool, sameQuery), credit the recovery; otherwise
+// just track the zero-result counter and burned-tokens accumulator.
+func (s *Server) recordQueryMetrics(tool string, args map[string]any, data map[string]any, tokensUsed int) {
+	if !queryShapedTools[tool] {
+		return
+	}
+	var count int
+	switch v := data["count"].(type) {
+	case int:
+		count = v
+	case int64:
+		count = int(v)
+	case float64:
+		count = int(v)
+	}
+	q := primaryQueryArg(tool, args)
+
+	atomic.AddInt64(&s.statsQueriesTotal, 1)
+
+	s.lastZero.mu.Lock()
+	prevTool := s.lastZero.tool
+	prevHash := s.lastZero.queryHash
+	if count == 0 {
+		s.lastZero.tool = tool
+		s.lastZero.queryHash = q
+	} else {
+		s.lastZero.tool = ""
+		s.lastZero.queryHash = ""
+	}
+	s.lastZero.mu.Unlock()
+
+	if count == 0 {
+		atomic.AddInt64(&s.statsQueriesZeroResult, 1)
+		atomic.AddInt64(&s.statsTokensBurned, int64(tokensUsed))
+		return
+	}
+	if prevTool == tool && prevHash == q && q != "" {
+		atomic.AddInt64(&s.statsQueriesRetriedSucceeded, 1)
+	}
+}
 
 // MCPServer returns the underlying *mcp.Server.
 func (s *Server) MCPServer() *mcp.Server { return s.mcp }
@@ -3710,6 +3832,10 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	if m := languageRE.FindSubmatch(b); len(m) > 1 {
 		s.recordCallLanguage(string(m[1]))
 	}
+
+	// Query-failure / retry-rate counters (#241). Only the four
+	// query-shaped tools contribute; everything else is a no-op.
+	s.recordQueryMetrics(tool, args, data, tokensUsed)
 
 	// First call of a new session: flush immediately so the dashboard sees
 	// the session within milliseconds rather than waiting for the 10s ticker.

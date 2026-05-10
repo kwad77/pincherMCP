@@ -430,6 +430,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ListSlowQueries":         true,
 	"GetAllTimeSavings":         true,
 	"GetAllTimeCallsByLanguage": true,
+	"GetAllTimeQueryMetrics":    true,
 	"GetSessions":               true,
 	"GetLatestHTTPSession":      true,
 	"ResolveStaleID":          true,
@@ -458,6 +459,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"SetADR":                   true,
 	"DeleteADR":                true,
 	"RecordSession":            true,
+	"RecordSessionWithMetrics": true,
 	"ResetSessions":            true,
 	"RecordExtractionFailure":  true,
 	"ClearExtractionFailures":  true,
@@ -2740,6 +2742,75 @@ func TestGetAllTimeCallsByLanguage_MalformedJSONSkipped(t *testing.T) {
 	want := map[string]int64{"Go": 5}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("malformed-row aggregate mismatch:\n  got  %v\n  want %v", got, want)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetAllTimeQueryMetrics (#241)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Empty database returns a zero-value QueryMetrics — no rows, no
+// counters. Pre-v17 sessions sum to zero; ensure the aggregator
+// doesn't error on the bare schema either.
+func TestGetAllTimeQueryMetrics_Empty(t *testing.T) {
+	s := newTestStore(t)
+	got, err := s.GetAllTimeQueryMetrics()
+	if err != nil {
+		t.Fatalf("GetAllTimeQueryMetrics on empty DB: %v", err)
+	}
+	want := QueryMetrics{}
+	if got != want {
+		t.Errorf("empty aggregate = %+v, want %+v", got, want)
+	}
+}
+
+// Multiple sessions with v17 metrics sum across rows. This is the
+// load-bearing aggregate path that `pincher stats` consumes.
+func TestGetAllTimeQueryMetrics_SumsAcrossSessions(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RecordSessionWithMetrics("a", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0, "",
+		QueryMetrics{QueriesTotal: 10, QueriesZeroResult: 3, QueriesRetriedSucceeded: 2, TokensBurnedOnFailures: 600}); err != nil {
+		t.Fatalf("RecordSessionWithMetrics a: %v", err)
+	}
+	if err := s.RecordSessionWithMetrics("b", time.Unix(2, 0), 7, 70, 700, 0.07, "", 0, "",
+		QueryMetrics{QueriesTotal: 4, QueriesZeroResult: 1, QueriesRetriedSucceeded: 1, TokensBurnedOnFailures: 200}); err != nil {
+		t.Fatalf("RecordSessionWithMetrics b: %v", err)
+	}
+	got, err := s.GetAllTimeQueryMetrics()
+	if err != nil {
+		t.Fatalf("GetAllTimeQueryMetrics: %v", err)
+	}
+	want := QueryMetrics{
+		QueriesTotal:            14,
+		QueriesZeroResult:       4,
+		QueriesRetriedSucceeded: 3,
+		TokensBurnedOnFailures:  800,
+	}
+	if got != want {
+		t.Errorf("aggregate mismatch:\n  got  %+v\n  want %+v", got, want)
+	}
+}
+
+// Pre-v17 sessions (recorded via RecordSession with no metrics) hold
+// zero on every counter; mixing them with v17 sessions must not
+// corrupt the aggregate. Defensive against the upgrade path where a
+// long-running database carries a mix of pre-v17 and v17 rows.
+func TestGetAllTimeQueryMetrics_PreV17RowsContributeZero(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RecordSession("legacy", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0, ""); err != nil {
+		t.Fatalf("RecordSession legacy: %v", err)
+	}
+	if err := s.RecordSessionWithMetrics("modern", time.Unix(2, 0), 5, 50, 500, 0.05, "", 0, "",
+		QueryMetrics{QueriesTotal: 10, QueriesZeroResult: 2, QueriesRetriedSucceeded: 1, TokensBurnedOnFailures: 400}); err != nil {
+		t.Fatalf("RecordSessionWithMetrics modern: %v", err)
+	}
+	got, err := s.GetAllTimeQueryMetrics()
+	if err != nil {
+		t.Fatalf("GetAllTimeQueryMetrics: %v", err)
+	}
+	want := QueryMetrics{QueriesTotal: 10, QueriesZeroResult: 2, QueriesRetriedSucceeded: 1, TokensBurnedOnFailures: 400}
+	if got != want {
+		t.Errorf("mixed aggregate mismatch:\n  got  %+v\n  want %+v", got, want)
 	}
 }
 

@@ -858,6 +858,23 @@ END;`,
 	// doc-rewrite session" — bypass detection that closes the
 	// adoption-priming feedback loop.
 	`ALTER TABLE sessions ADD COLUMN calls_by_language TEXT`,
+
+	// v16 → v17: query-failure / retry-rate counters on sessions (#241).
+	// queries_total counts every query-shaped tool call (search, query,
+	// trace, neighborhood). queries_zero_result counts those that
+	// returned 0 results. queries_retried_succeeded counts the cases
+	// where a zero-result call was followed by the same tool with
+	// equivalent args (modulo confidence/limit knobs) returning ≥1
+	// result — i.e. the agent learned, retried, and recovered.
+	// tokens_burned_on_failures sums tokens_used across the zero-result
+	// calls. Surfaced in `pincher stats` so users can see "Retry rate:
+	// 18%" and act (lower default min_confidence in CLAUDE.md, or file
+	// an extractor issue), instead of paying retry tokens forever
+	// without aggregate visibility.
+	`ALTER TABLE sessions ADD COLUMN queries_total            INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE sessions ADD COLUMN queries_zero_result      INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE sessions ADD COLUMN queries_retried_succeeded INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE sessions ADD COLUMN tokens_burned_on_failures INTEGER NOT NULL DEFAULT 0`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -2869,6 +2886,16 @@ func (s *Store) DeleteADR(projectID, key string) error {
 // is bound for this session — the row will still be queryable as a
 // pure-MCP session with no http_url advertised.
 func (s *Store) RecordSession(sessionID string, startedAt time.Time, calls, tokensUsed, tokensSaved int64, costAvoided float64, httpURL string, httpPID int, callsByLanguage string) error {
+	return s.RecordSessionWithMetrics(sessionID, startedAt, calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID, callsByLanguage, QueryMetrics{})
+}
+
+// RecordSessionWithMetrics is the v17 variant of RecordSession that
+// also persists query-failure / retry-rate counters (#241). The
+// no-metrics RecordSession wrapper is preserved so existing callers
+// (every test that doesn't care about retry stats) keep working
+// without a sweeping refactor; only the production flusher path
+// needs the new fields populated.
+func (s *Store) RecordSessionWithMetrics(sessionID string, startedAt time.Time, calls, tokensUsed, tokensSaved int64, costAvoided float64, httpURL string, httpPID int, callsByLanguage string, qm QueryMetrics) error {
 	// callsByLanguage is JSON-encoded {"Go":25,"Markdown":0,...} (#240).
 	// Empty string stored as SQL NULL so pre-v15 rows render distinct
 	// from "this session genuinely had no per-language data" (which
@@ -2878,24 +2905,59 @@ func (s *Store) RecordSession(sessionID string, startedAt time.Time, calls, toke
 		clbl = callsByLanguage
 	}
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions(session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided, http_url, http_pid, calls_by_language)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO sessions(
+			session_id, started_at, last_seen, calls, tokens_used, tokens_saved,
+			cost_avoided, http_url, http_pid, calls_by_language,
+			queries_total, queries_zero_result, queries_retried_succeeded, tokens_burned_on_failures)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, startedAt.Unix(), time.Now().Unix(), calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID, clbl,
+		qm.QueriesTotal, qm.QueriesZeroResult, qm.QueriesRetriedSucceeded, qm.TokensBurnedOnFailures,
 	)
 	return err
 }
 
+// QueryMetrics carries the v17 query-failure / retry-rate counters
+// flushed onto every sessions row (#241). Pre-v17 rows hold zero on
+// every counter — agents that haven't been instrumented yet stay
+// invisible but don't break the aggregate.
+type QueryMetrics struct {
+	// QueriesTotal counts every query-shaped tool call (search, query,
+	// trace, neighborhood). Other tools (architecture, list, schema)
+	// are admin/orientation calls and don't return a count, so they
+	// don't influence retry-rate signals.
+	QueriesTotal int64
+
+	// QueriesZeroResult counts the subset of QueriesTotal where the
+	// response contained 0 results. The diagnosis surface (#165)
+	// already tells the agent how to retry; this counter aggregates
+	// the cumulative cost of those retries so users can decide if
+	// their default threshold is mistuned for their workflow.
+	QueriesZeroResult int64
+
+	// QueriesRetriedSucceeded counts the subset of zero-result calls
+	// that were immediately followed by an equivalent retry (same
+	// tool, same query string, lower min_confidence or otherwise
+	// loosened) returning ≥1 result. Lets users distinguish
+	// "agent learned and recovered" from "agent gave up" friction.
+	QueriesRetriedSucceeded int64
+
+	// TokensBurnedOnFailures sums tokens_used across the zero-result
+	// calls. This is pure overhead — tokens the agent paid for a
+	// response that ultimately required a retry to be useful.
+	TokensBurnedOnFailures int64
+}
+
 // SessionRow holds per-session stats for historical display.
 type SessionRow struct {
-	SessionID       string
-	StartedAt       time.Time
-	LastSeen        time.Time
-	Calls           int64
-	TokensUsed      int64
-	TokensSaved     int64
-	CostAvoided     float64
-	HTTPURL         string
-	HTTPPID         int
+	SessionID   string
+	StartedAt   time.Time
+	LastSeen    time.Time
+	Calls       int64
+	TokensUsed  int64
+	TokensSaved int64
+	CostAvoided float64
+	HTTPURL     string
+	HTTPPID     int
 	// CallsByLanguage is the JSON-encoded language→count map persisted
 	// per session (#240). Empty string when the row pre-dates v15 or
 	// no per-language data was recorded. Callers parse via
@@ -2903,12 +2965,17 @@ type SessionRow struct {
 	// (additional fields beyond a flat int map can land without a
 	// SessionRow struct change).
 	CallsByLanguage string
+	// QueryMetrics carries the v17 query-failure counters (#241).
+	// Pre-v17 rows hold zero on every field.
+	QueryMetrics QueryMetrics
 }
 
 // GetSessions returns all recorded sessions ordered by start time descending.
 // Limit ≤ 0 returns all rows.
 func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
-	q := `SELECT session_id, started_at, last_seen, calls, tokens_used, tokens_saved, cost_avoided, http_url, http_pid, calls_by_language
+	q := `SELECT session_id, started_at, last_seen, calls, tokens_used, tokens_saved,
+	             cost_avoided, http_url, http_pid, calls_by_language,
+	             queries_total, queries_zero_result, queries_retried_succeeded, tokens_burned_on_failures
 	      FROM sessions ORDER BY started_at DESC`
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
@@ -2923,7 +2990,8 @@ func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
 		var r SessionRow
 		var startedUnix, lastSeenUnix int64
 		var clbl sql.NullString
-		if err := rows.Scan(&r.SessionID, &startedUnix, &lastSeenUnix, &r.Calls, &r.TokensUsed, &r.TokensSaved, &r.CostAvoided, &r.HTTPURL, &r.HTTPPID, &clbl); err != nil {
+		if err := rows.Scan(&r.SessionID, &startedUnix, &lastSeenUnix, &r.Calls, &r.TokensUsed, &r.TokensSaved, &r.CostAvoided, &r.HTTPURL, &r.HTTPPID, &clbl,
+			&r.QueryMetrics.QueriesTotal, &r.QueryMetrics.QueriesZeroResult, &r.QueryMetrics.QueriesRetriedSucceeded, &r.QueryMetrics.TokensBurnedOnFailures); err != nil {
 			return nil, err
 		}
 		r.StartedAt = time.Unix(startedUnix, 0)
@@ -2934,6 +3002,24 @@ func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// GetAllTimeQueryMetrics returns the cumulative query-failure /
+// retry-rate counters across every session (#241). Pre-v17 rows
+// contribute zero to every field; the aggregate is conservative:
+// "of every query that ever happened on a v17+ binary, this many
+// returned zero results, this many were retried successfully, and
+// this many tokens were burned on the zero-result attempts."
+func (s *Store) GetAllTimeQueryMetrics() (QueryMetrics, error) {
+	var qm QueryMetrics
+	err := s.db.QueryRow(
+		`SELECT COALESCE(SUM(queries_total),0),
+		        COALESCE(SUM(queries_zero_result),0),
+		        COALESCE(SUM(queries_retried_succeeded),0),
+		        COALESCE(SUM(tokens_burned_on_failures),0)
+		 FROM sessions`,
+	).Scan(&qm.QueriesTotal, &qm.QueriesZeroResult, &qm.QueriesRetriedSucceeded, &qm.TokensBurnedOnFailures)
+	return qm, err
 }
 
 // GetLatestHTTPSession returns the most recently-flushed session row that
