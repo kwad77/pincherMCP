@@ -978,6 +978,32 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 	return len(edges)
 }
 
+// resolveMethodByName is the #285 receiver-method fallback. Looks up
+// every project symbol with the given short name; returns the ID
+// only when exactly one is of kind=Method. Multiple matches are
+// ambiguous (different types each defining the same method name —
+// `Close`, `Run`, `String`); without receiver-type info we can't
+// pick correctly, so we drop the edge rather than guess. Zero
+// matches naturally returns "".
+func resolveMethodByName(store *db.Store, projectID, name string) string {
+	syms, err := store.GetSymbolsByName(projectID, name, 16)
+	if err != nil {
+		return ""
+	}
+	var only string
+	for _, s := range syms {
+		if s.Kind != "Method" {
+			continue
+		}
+		if only != "" {
+			// Ambiguous — multiple Method symbols share this name.
+			return ""
+		}
+		only = s.ID
+	}
+	return only
+}
+
 // resolveCalls converts deferred Go CALLS edges into concrete db.Edge rows
 // by matching FromQN and ToName against the project's symbol table. ToName
 // values like "db.Open" resolve via exact qualified-name match; bare
@@ -1009,6 +1035,9 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		return syms[0].ID
 	}
 
+	// methodCache: receiver-method fallback lookups (#285). Empty
+	// string means "tried, no unique match" so we don't re-query.
+	methodCache := make(map[string]string)
 	nameCache := make(map[string]string)
 	lookupName := func(name string) string {
 		if name == "" {
@@ -1039,6 +1068,28 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		toID := lookupQN(e.ToName)
 		if toID == "" && !strings.Contains(e.ToName, ".") {
 			toID = lookupName(e.ToName)
+		}
+		// #285: receiver-method calls (e.g. `idx.Index(...)`) produce
+		// ToName="idx.Index" which never matches a real qualified name
+		// (the Method's QN is `index.*Indexer.Index`). Without type
+		// info we can't compute the canonical QN. As a pragmatic
+		// fallback: when ToName looks like "receiver.Method" and QN
+		// lookup failed, look up a Method symbol whose plain name
+		// matches the trailing component. Filtered to Method kind
+		// (so `time.Now()` doesn't accidentally bind to a project
+		// Function named `Now`); resolved unambiguously when there's
+		// exactly one matching Method in the project.
+		if toID == "" {
+			if i := strings.LastIndex(e.ToName, "."); i > 0 && i < len(e.ToName)-1 {
+				trailing := e.ToName[i+1:]
+				if id, ok := methodCache[trailing]; ok {
+					toID = id
+				} else {
+					id := resolveMethodByName(idx.store, projectID, trailing)
+					methodCache[trailing] = id
+					toID = id
+				}
+			}
 		}
 		if toID == "" || fromID == toID {
 			continue
