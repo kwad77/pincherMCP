@@ -1,6 +1,6 @@
 # docs/
 
-Source for the [pincherMCP landing page](https://kwad77.github.io/pincherMCP/).
+Source for the [pincherMCP landing page](https://kwad77.github.io/pincher/).
 
 Single-file, zero-dependency static HTML. Edit `index.html`, push, GitHub
 Pages redeploys in ~30 seconds.

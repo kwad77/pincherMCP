@@ -49,7 +49,33 @@ minors.
   one-time settling cost, not steady-state lag. Implementation in
   `internal/server/server.go` `StartSessionFlusher`.
 
+### Fixed
+- **`pincher update` standalone-mode GitHub URL** — the
+  `updateGitHubRepo` constant in `cmd/pinch/update.go` still pointed
+  at the pre-rename `pincherMCP` slug. Calls were succeeding only via
+  GitHub's repo-rename redirect, which would break the day someone
+  deletes the redirecting alias. Bumped to the canonical `pincher`.
+  Functional bug; thanks to the post-rename audit for catching it.
+
 ### Documentation
+- **Post-rename audit** — fixed remaining stale references after the
+  v0.5.0 `kwad77/pincherMCP` → `kwad77/pincher` repo rename:
+  - `ghcr.io/kwad77/pinchermcp:latest` → `ghcr.io/kwad77/pincher:latest`
+    in `docs/REFERENCE.md`, `packaging/README.md`, `RELEASING.md`. The
+    release workflow has always built `ghcr.io/${GITHUB_REPOSITORY,,}`
+    so the actual image since v0.5.1 has been `kwad77/pincher`; the
+    docs were the only thing still pointing at the old name.
+  - `https://kwad77.github.io/pincherMCP/` → `…/pincher/` in
+    `docs/index.html` (og:url, og:image, twitter:image meta tags) and
+    `docs/README.md`.
+  - The `pincherMCP` brand name itself is preserved everywhere it's
+    used as a product name (banner alt text, version output,
+    REFERENCE.md title, doctor banner, ADR records). The data
+    directory (`%APPDATA%\pincherMCP\`, `~/.local/share/pincherMCP/`,
+    `~/Library/Application Support/pincherMCP/`) is also unchanged
+    so existing user DBs survive the rename. Same for the launchd
+    plist filename (`com.pinchermcp.pincher.plist`) — preserves
+    install compatibility.
 - **YAML/JSON sequence-rename ID instability decided as won't-fix** for
   v0.7.0 (#205). REFERENCE.md, CLAUDE.md, and README's known-limitations
   sections rewritten with the full rationale: a content-hash ID scheme

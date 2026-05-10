@@ -64,7 +64,7 @@ docker run -d --name pincher \
   -p 8080:8080 \
   -e PINCHER_HTTP_ADDR=:8080 \
   -e PINCHER_HTTP_KEY=$(openssl rand -hex 16) \
-  ghcr.io/kwad77/pinchermcp:latest
+  ghcr.io/kwad77/pincher:latest
 ```
 
 ## Configuration knobs

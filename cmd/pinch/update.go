@@ -17,7 +17,7 @@ import (
 
 const (
 	updateGitHubOwner = "kwad77"
-	updateGitHubRepo  = "pincherMCP"
+	updateGitHubRepo  = "pincher" // post-#198 repo rename. The old kwad77/pincherMCP redirects, but the canonical path is `pincher`.
 	updateModulePath  = "github.com/kwad77/pincher"
 	updateGoInstall   = "github.com/kwad77/pincher/cmd/pinch@latest"
 )

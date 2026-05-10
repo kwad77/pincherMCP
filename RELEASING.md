@@ -85,7 +85,7 @@ image, and publishes the GitHub Release with auto-generated artifacts.
 ### 4. Verify artifacts
 
 - GitHub Releases page shows the new version with binaries + SHA256SUMS.
-- `ghcr.io/kwad77/pinchermcp:X.Y.Z` and `:latest` resolve.
+- `ghcr.io/kwad77/pincher:X.Y.Z` and `:latest` resolve.
 - Homebrew formula update PR auto-opens (the `homebrew-auto-bump`
   workflow runs on tag push).
 

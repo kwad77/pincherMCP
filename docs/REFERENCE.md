@@ -768,7 +768,7 @@ Each release tier names a theme and the issues that close it. Issue numbers link
 - HTTP REST surface frozen — `POST /v1/{tool}`, basepath/trust-proxy/rate-limit/SSRF behaviours all locked.
 - `SECURITY.md` — documented threat model.
 - Pre-built binaries on every release tag (Linux/macOS/Windows × amd64/arm64).
-- Docker image — `ghcr.io/kwad77/pinchermcp:latest`.
+- Docker image — `ghcr.io/kwad77/pincher:latest`.
 
 ### Out-of-scope until real demand
 
