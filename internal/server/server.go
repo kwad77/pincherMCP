@@ -1494,8 +1494,13 @@ func (s *Server) registerTools() {
 	// 11. list
 	s.addTool(&mcp.Tool{
 		Name:        "list",
-		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every project pincher knows about.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every active project pincher knows about. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false` for the legacy unfiltered shape, `include_dead=true` to surface stale-on-disk rows for cleanup, or `limit=N` to cap output cost.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{
+			"active":{"type":"boolean","description":"Filter to projects indexed within active_within_days. Default true."},
+			"active_within_days":{"type":"integer","description":"Activity window for active=true. Default 14."},
+			"include_dead":{"type":"boolean","description":"Include projects whose on-disk path no longer exists. Default false."},
+			"limit":{"type":"integer","description":"Max rows returned (0 = unlimited). Default 0; set to bound output token cost on large project lists."}
+		}}`),
 	}, s.handleList)
 
 	// 12. adr
@@ -3095,8 +3100,49 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if err != nil {
 		return errResult(fmt.Sprintf("list error: %v", err)), nil
 	}
+
+	// #274 args: active filter (default true) + limit + include_dead.
+	// Defaults are tuned for the typical "agent calls list to orient"
+	// case: drop dead-on-disk paths, limit to recent activity, cap
+	// output token cost. Set include_dead=true or active=false for
+	// the legacy unfiltered shape.
+	activeOnly := true
+	if v, ok := args["active"].(bool); ok {
+		activeOnly = v
+	}
+	includeDead := false
+	if v, ok := args["include_dead"].(bool); ok {
+		includeDead = v
+	}
+	limit := 0
+	if v, ok := args["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+	}
+	// Default activity threshold: 14 days. Configurable per-call via
+	// `active_within_days` for users who want the broader view.
+	activeWithinDays := 14
+	if v, ok := args["active_within_days"].(float64); ok && v > 0 {
+		activeWithinDays = int(v)
+	}
+	cutoff := time.Now().Add(-time.Duration(activeWithinDays) * 24 * time.Hour)
+
 	var rows []map[string]any
+	dropped := 0
 	for _, p := range projects {
+		// Drop dead-on-disk paths unless the caller explicitly
+		// opts back in. Cheap (one os.Stat per project); on a
+		// dev machine with 100+ stale worktrees this is the
+		// load-bearing token-cost reduction.
+		if !includeDead {
+			if _, err := os.Stat(p.Path); os.IsNotExist(err) {
+				dropped++
+				continue
+			}
+		}
+		if activeOnly && p.IndexedAt.Before(cutoff) {
+			dropped++
+			continue
+		}
 		rows = append(rows, map[string]any{
 			"id":         p.ID,
 			"name":       p.Name,
@@ -3106,20 +3152,36 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			"edges":      p.EdgeCount,
 			"indexed_at": p.IndexedAt.Format(time.RFC3339),
 		})
+		if limit > 0 && len(rows) >= limit {
+			break
+		}
 	}
-	data := map[string]any{"projects": rows, "count": len(rows)}
+
+	data := map[string]any{"projects": rows, "count": len(rows), "filtered_out": dropped}
 	// Empty-state guidance — first-contact agents (fresh install,
 	// no projects yet) need to know the next step is `index`. A bare
 	// `count: 0` is silent failure: the index is real and queryable,
 	// just empty.
 	if len(rows) == 0 {
-		data["_meta"] = map[string]any{
+		meta := map[string]any{
 			"diagnosis": "no projects indexed yet — pincher's symbol store is empty",
 			"next_steps": []map[string]string{
 				{"tool": "index", "args": `{"path":"/path/to/your/project"}`,
 					"why": "index a repo to populate the symbol store; subsequent `search`/`context`/`trace` calls require at least one indexed project"},
 			},
 		}
+		if dropped > 0 {
+			// Filtered-empty rather than truly-empty: tell the agent
+			// how to surface the suppressed rows.
+			meta["diagnosis"] = fmt.Sprintf("no active projects in the last %d days (%d filtered out as stale or dead-on-disk)", activeWithinDays, dropped)
+			meta["next_steps"] = []map[string]string{
+				{"tool": "list", "args": `{"active":false}`,
+					"why": "include projects whose last index is older than the activity window"},
+				{"tool": "list", "args": `{"include_dead":true}`,
+					"why": "include projects whose on-disk path no longer exists (stale DB rows)"},
+			}
+		}
+		data["_meta"] = meta
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
