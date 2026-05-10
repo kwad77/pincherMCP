@@ -3141,7 +3141,10 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 	// `seen` dedupe so a test reached via multiple changed symbols gets
 	// its overlap counted, not collapsed into the first path. Used to
 	// produce the tests_to_run array sorted by overlap descending.
-	var impacted []map[string]any
+	// #330: pre-allocate as zero-len so the JSON field is always [], never
+	// null. A nil slice marshals to null, forcing every consumer to
+	// null-check; same fix shape as #328 on health.extraction_coverage.
+	impacted := []map[string]any{}
 	seen := make(map[string]bool)
 	testHits := make(map[string]map[string]bool) // test sym ID → set of changed sym IDs that reach it
 	testSyms := make(map[string]db.Symbol)       // test sym ID → the symbol (for output projection)
@@ -3209,7 +3212,8 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 	}
 
-	var changedSymNames []map[string]any
+	// #330: zero-len init so the JSON field is [] when no symbols changed.
+	changedSymNames := []map[string]any{}
 	for _, sym := range changedSymbols {
 		changedSymNames = append(changedSymNames, map[string]any{
 			"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "file_path": sym.FilePath,
