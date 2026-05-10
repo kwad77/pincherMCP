@@ -1548,12 +1548,13 @@ func (s *Server) registerTools() {
 	// 11. list
 	s.addTool(&mcp.Tool{
 		Name:        "list",
-		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every active project pincher knows about. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false` for the legacy unfiltered shape, `include_dead=true` to surface stale-on-disk rows for cleanup, or `limit=N` to cap output cost.",
+		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false`/`include_dead=true` to widen the filter, `limit=0` for the legacy unbounded dump.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{
 			"active":{"type":"boolean","description":"Filter to projects indexed within active_within_days. Default true."},
 			"active_within_days":{"type":"integer","description":"Activity window for active=true. Default 14."},
 			"include_dead":{"type":"boolean","description":"Include projects whose on-disk path no longer exists. Default false."},
-			"limit":{"type":"integer","description":"Max rows returned (0 = unlimited). Default 0; set to bound output token cost on large project lists."}
+			"limit":{"type":"integer","description":"Max rows returned per page. Default 50. Pass 0 for legacy unbounded behaviour."},
+			"offset":{"type":"integer","description":"Skip the first N rows (default 0). Use the value from _meta.next_steps to walk pages."}
 		}}`),
 	}, s.handleList)
 
@@ -3331,9 +3332,25 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if v, ok := args["include_dead"].(bool); ok {
 		includeDead = v
 	}
-	limit := 0
-	if v, ok := args["limit"].(float64); ok && v > 0 {
-		limit = int(v)
+	// #301: pagination. Pre-fix `limit=0` meant "all rows", which on
+	// dev machines with 100+ indexed projects (worktree fan-out from
+	// adjacent tools) returned a 10K-token response for what's almost
+	// always a yes/no orientation lookup. Default to 50; the caller
+	// can ask for more via explicit `limit`.
+	limit := 50
+	if v, ok := args["limit"].(float64); ok {
+		if v > 0 {
+			limit = int(v)
+		} else {
+			// limit=0 (or negative) was the legacy "all rows" sentinel —
+			// preserve it so existing scripts still work without hitting
+			// the new default cap.
+			limit = -1 // sentinel: no cap
+		}
+	}
+	offset := 0
+	if v, ok := args["offset"].(float64); ok && v > 0 {
+		offset = int(v)
 	}
 	// Default activity threshold: 14 days. Configurable per-call via
 	// `active_within_days` for users who want the broader view.
@@ -3343,7 +3360,10 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	}
 	cutoff := time.Now().Add(-time.Duration(activeWithinDays) * 24 * time.Hour)
 
-	var rows []map[string]any
+	// Filter first, paginate after — `count` reports the post-filter
+	// total so the caller can decide whether the next page is worth
+	// fetching.
+	var filtered []map[string]any
 	dropped := 0
 	for _, p := range projects {
 		// Drop dead-on-disk paths unless the caller explicitly
@@ -3360,7 +3380,7 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			dropped++
 			continue
 		}
-		rows = append(rows, map[string]any{
+		filtered = append(filtered, map[string]any{
 			"id":         p.ID,
 			"name":       p.Name,
 			"path":       p.Path,
@@ -3369,17 +3389,52 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			"edges":      p.EdgeCount,
 			"indexed_at": p.IndexedAt.Format(time.RFC3339),
 		})
-		if limit > 0 && len(rows) >= limit {
-			break
+	}
+	total := len(filtered)
+
+	// Apply pagination window. `limit=-1` is the legacy "all rows" path
+	// from above; keep it skipping the cap so existing scripts stay
+	// stable.
+	pageStart := offset
+	if pageStart > total {
+		pageStart = total
+	}
+	pageEnd := total
+	if limit >= 0 {
+		pageEnd = pageStart + limit
+		if pageEnd > total {
+			pageEnd = total
 		}
 	}
+	rows := filtered[pageStart:pageEnd]
 
-	data := map[string]any{"projects": rows, "count": len(rows), "filtered_out": dropped}
+	data := map[string]any{
+		"projects":     rows,
+		"count":        total,
+		"filtered_out": dropped,
+		"page": map[string]any{
+			"limit":    limit,
+			"offset":   offset,
+			"returned": len(rows),
+		},
+	}
+	// Surface next page when the response is partial.
+	if limit >= 0 && pageEnd < total {
+		data["_meta"] = map[string]any{
+			"next_steps": []map[string]string{
+				{
+					"tool": "list",
+					"args": fmt.Sprintf(`{"limit":%d,"offset":%d}`, limit, pageEnd),
+					"why":  fmt.Sprintf("%d total projects after filters; you've seen %d-%d. Page to see the rest.", total, pageStart+1, pageEnd),
+				},
+			},
+		}
+	}
 	// Empty-state guidance — first-contact agents (fresh install,
 	// no projects yet) need to know the next step is `index`. A bare
 	// `count: 0` is silent failure: the index is real and queryable,
 	// just empty.
-	if len(rows) == 0 {
+	if total == 0 {
 		meta := map[string]any{
 			"diagnosis": "no projects indexed yet — pincher's symbol store is empty",
 			"next_steps": []map[string]string{
