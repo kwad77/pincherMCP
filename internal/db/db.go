@@ -1577,7 +1577,16 @@ type Edge struct {
 
 // Project summarises an indexed repository.
 type Project struct {
-	ID        string
+	// ID is the canonical join key. Lowercased on case-insensitive
+	// filesystems (Windows NTFS, macOS APFS) via CanonicalProjectPath
+	// so symlink + casing variants of the same physical directory
+	// dedup to one row. Use this for project lookups and joins (#277).
+	ID string
+	// Path is the display + filesystem-operation value. Original
+	// casing preserved so callers can concatenate it with relative
+	// paths and have file operations work on case-sensitive volumes.
+	// On case-insensitive filesystems, Path may differ in casing
+	// from ID — that's intentional, not a bug (#277).
 	Path      string
 	Name      string
 	IndexedAt time.Time
