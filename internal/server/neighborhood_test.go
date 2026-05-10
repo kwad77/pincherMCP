@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -221,6 +223,71 @@ func TestHandleNeighborhood_LoneSymbolReturnsEmpty(t *testing.T) {
 	neighbors, ok := body["neighbors"].([]any)
 	if !ok || neighbors == nil {
 		t.Errorf("neighbors field should be empty array, not nil/missing: %v", body["neighbors"])
+	}
+}
+
+// include_source=true reads each neighbor's body via the byte-offset
+// path. Covers readSymbolSourceForNeighbor end-to-end with a real
+// on-disk file — the slice-by-byte-range round-trip plus the CRLF
+// normalization at the tail. Without this case, the source-fetch
+// branch is unexercised and that whole helper sits at 0% coverage.
+func TestHandleNeighborhood_IncludeSourceReadsBodies(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	projectID := "with-source"
+
+	root := t.TempDir()
+	// Two functions back-to-back. Byte offsets are exact so the
+	// byte-offset reader returns each body verbatim.
+	bodyA := "func A() { return }\n"
+	bodyB := "func B() { return }\n"
+	src := bodyA + bodyB
+	mainPath := filepath.Join(root, "main.go")
+	if err := os.WriteFile(mainPath, []byte(src), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store.UpsertProject(db.Project{
+		ID: projectID, Path: root, Name: projectID, IndexedAt: time.Now(),
+	})
+	srv.sessionID = projectID
+	srv.sessionRoot = root
+
+	aStart := 0
+	aEnd := len(bodyA)
+	bStart := aEnd
+	bEnd := bStart + len(bodyB)
+	if err := store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "ws::main.A#Function", ProjectID: projectID, FilePath: "main.go", Name: "A",
+			QualifiedName: "main.A", Kind: "Function", Language: "Go",
+			StartByte: aStart, EndByte: aEnd, StartLine: 1, EndLine: 1,
+			Signature: "func A()", IsExported: true, ExtractionConfidence: 1.0},
+		{ID: "ws::main.B#Function", ProjectID: projectID, FilePath: "main.go", Name: "B",
+			QualifiedName: "main.B", Kind: "Function", Language: "Go",
+			StartByte: bStart, EndByte: bEnd, StartLine: 2, EndLine: 2,
+			Signature: "func B()", IsExported: true, ExtractionConfidence: 1.0},
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
+		"id":             "ws::main.A#Function",
+		"include_source": true,
+	}))
+	if err != nil {
+		t.Fatalf("handleNeighborhood: %v", err)
+	}
+	body := decode(t, result)
+	neighbors, _ := body["neighbors"].([]any)
+	if len(neighbors) != 1 {
+		t.Fatalf("len(neighbors) = %d, want 1 (B only — A is the seed)", len(neighbors))
+	}
+	entry, _ := neighbors[0].(map[string]any)
+	gotSource, _ := entry["source"].(string)
+	if gotSource == "" {
+		t.Fatalf("source missing on include_source=true response: %v", entry)
+	}
+	if !strings.Contains(gotSource, "func B()") {
+		t.Errorf("source = %q, expected to contain B's body", gotSource)
 	}
 }
 
