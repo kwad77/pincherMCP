@@ -7,6 +7,19 @@ minors.
 
 ## [Unreleased]
 
+### Changed
+- **Coverage gate 84% → 85%** (#221). The remaining path-to-85%
+  identified in #200's close (network-bound update paths at 0%
+  coverage) closed by splitting `downloadAndSwap` into a tiny
+  os.Executable-resolving outer + an `downloadAndInstallAt(out, url,
+  exePath)` inner that's exercised against `httptest.Server`, plus a
+  `goInstallRunner` package-level indirection so `runGoInstall`'s exec
+  call can be unit-tested without shelling out. Local Linux measures
+  85.2% post-#221; the 0.2pt headroom over the 85.0 floor leaves
+  margin for OS-specific branches that don't fire on Linux. The
+  separately-tracked `main()` bootstrap refactor remains future work
+  (deferred — current 75% on cmd/pinch is enough for the gate).
+
 ### Fixed
 - **`pincher web` auto-start fails on Windows** (#232). The detached
   child spawned by `web_windows.go startDetached` had no inherited

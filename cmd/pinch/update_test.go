@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -512,3 +513,159 @@ func TestUpdateCLI_DryRunStandalone(t *testing.T) {
 		t.Fatalf("expected standalone or in-repo banner; got:\n%s", out)
 	}
 }
+
+// TestDownloadAndInstallAt_Success covers the happy path: downloads
+// content from an httptest.Server, atomically replaces a temp "exe"
+// file, and prints the install path. Exercises the platform-specific
+// Windows-only `.old` move-aside branch via the post-install state.
+func TestDownloadAndInstallAt_Success(t *testing.T) {
+	body := []byte("#!/bin/sh\necho fake binary\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	exePath := filepath.Join(dir, "fake-pincher")
+	if runtime.GOOS == "windows" {
+		exePath += ".exe"
+	}
+	// Pre-existing target so the Windows .old branch fires.
+	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("seed exePath: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := downloadAndInstallAt(&buf, srv.URL, exePath); err != nil {
+		t.Fatalf("downloadAndInstallAt: %v", err)
+	}
+
+	got, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("read installed: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Errorf("installed bytes mismatch\nwant: %q\ngot:  %q", body, got)
+	}
+	if !strings.Contains(buf.String(), "downloading") || !strings.Contains(buf.String(), "installed") {
+		t.Errorf("expected progress + install line; got:\n%s", buf.String())
+	}
+	// Windows: pre-existing exePath should now be .old next to it.
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(exePath + ".old"); err != nil {
+			t.Errorf("expected %s.old after Windows install; got %v", exePath, err)
+		}
+	}
+}
+
+// TestDownloadAndInstallAt_Non200 covers the error path when the
+// server returns a non-OK status — the function must not write a
+// partial binary and must surface the status code.
+func TestDownloadAndInstallAt_Non200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	exePath := filepath.Join(dir, "fake-pincher")
+	var buf bytes.Buffer
+	err := downloadAndInstallAt(&buf, srv.URL, exePath)
+	if err == nil {
+		t.Fatalf("expected error on 404, got nil; out: %s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("expected status code in error, got: %v", err)
+	}
+	if _, statErr := os.Stat(exePath); !os.IsNotExist(statErr) {
+		t.Errorf("expected no exePath written on 404, got stat err: %v", statErr)
+	}
+}
+
+// TestDownloadAndInstallAt_TransportError covers a broken URL — the
+// function must report a download error without leaving a temp file
+// behind (defer os.Remove cleans up).
+func TestDownloadAndInstallAt_TransportError(t *testing.T) {
+	dir := t.TempDir()
+	exePath := filepath.Join(dir, "fake-pincher")
+	var buf bytes.Buffer
+	// Bind a free port and immediately close so connect fails.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	err := downloadAndInstallAt(&buf, url, exePath)
+	if err == nil {
+		t.Fatalf("expected transport error, got nil")
+	}
+	if !strings.Contains(err.Error(), "download") {
+		t.Errorf("expected 'download' wrap in err: %v", err)
+	}
+	// No leftover .tmp files in dir.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "pincher-update-") {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
+// TestRunGoInstall_RunnerInvoked covers the happy-ish path: with `go`
+// on PATH, runGoInstall prints the diagnostic line and dispatches to
+// goInstallRunner with the canonical target. We override the runner
+// to assert the dispatch shape without actually shelling out to
+// `go install` (which has network deps and would write to GOBIN).
+func TestRunGoInstall_RunnerInvoked(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH (env without Go toolchain)")
+	}
+
+	original := goInstallRunner
+	defer func() { goInstallRunner = original }()
+
+	var captured string
+	goInstallRunner = func(out io.Writer, target string) error {
+		captured = target
+		return nil
+	}
+
+	var buf bytes.Buffer
+	if err := runGoInstall(&buf); err != nil {
+		t.Fatalf("runGoInstall: %v", err)
+	}
+	if captured != updateGoInstall {
+		t.Errorf("runner target = %q, want %q", captured, updateGoInstall)
+	}
+	if !strings.Contains(buf.String(), "go install") {
+		t.Errorf("expected 'go install' in diagnostic; got: %s", buf.String())
+	}
+}
+
+// TestRunGoInstall_RunnerError covers error propagation: a runner
+// failure surfaces verbatim.
+func TestRunGoInstall_RunnerError(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+
+	original := goInstallRunner
+	defer func() { goInstallRunner = original }()
+
+	wantErr := errFakeInstall
+	goInstallRunner = func(out io.Writer, target string) error {
+		return wantErr
+	}
+
+	var buf bytes.Buffer
+	err := runGoInstall(&buf)
+	if err != wantErr {
+		t.Errorf("runGoInstall err = %v, want %v", err, wantErr)
+	}
+}
+
+var errFakeInstall = &fakeErr{msg: "fake install failure"}
+
+type fakeErr struct{ msg string }
+
+func (e *fakeErr) Error() string { return e.msg }
