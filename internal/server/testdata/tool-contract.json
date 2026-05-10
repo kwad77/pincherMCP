@@ -188,7 +188,7 @@
   },
   {
     "name": "list",
-    "description": "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false`/`include_dead=true` to widen the filter, `limit=0` for the legacy unbounded dump.",
+    "description": "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false`/`include_dead=true` to widen the filter, `limit=0` for the legacy unbounded dump, `prune_dead=true` to physically remove dead-on-disk projects from the store.",
     "input_schema": {
       "properties": {
         "active": {
@@ -210,6 +210,10 @@
         "offset": {
           "description": "Skip the first N rows (default 0). Use the value from _meta.next_steps to walk pages.",
           "type": "integer"
+        },
+        "prune_dead": {
+          "description": "Permanently delete projects whose on-disk path no longer exists. Default false. Pruned ids returned in the pruned field. Set include_dead=true instead when you want to *see* dead rows, not delete them.",
+          "type": "boolean"
         }
       },
       "type": "object"

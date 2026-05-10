@@ -1609,11 +1609,12 @@ func (s *Server) registerTools() {
 	// 11. list
 	s.addTool(&mcp.Tool{
 		Name:        "list",
-		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false`/`include_dead=true` to widen the filter, `limit=0` for the legacy unbounded dump.",
+		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false`/`include_dead=true` to widen the filter, `limit=0` for the legacy unbounded dump, `prune_dead=true` to physically remove dead-on-disk projects from the store.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{
 			"active":{"type":"boolean","description":"Filter to projects indexed within active_within_days. Default true."},
 			"active_within_days":{"type":"integer","description":"Activity window for active=true. Default 14."},
 			"include_dead":{"type":"boolean","description":"Include projects whose on-disk path no longer exists. Default false."},
+			"prune_dead":{"type":"boolean","description":"Permanently delete projects whose on-disk path no longer exists. Default false. Pruned ids returned in the pruned field. Set include_dead=true instead when you want to *see* dead rows, not delete them."},
 			"limit":{"type":"integer","description":"Max rows returned per page. Default 50. Pass 0 for legacy unbounded behaviour."},
 			"offset":{"type":"integer","description":"Skip the first N rows (default 0). Use the value from _meta.next_steps to walk pages."}
 		}}`),
@@ -3411,6 +3412,14 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if v, ok := args["include_dead"].(bool); ok {
 		includeDead = v
 	}
+	// #302: explicit prune flag. When true (and only when true), the
+	// dead-on-disk projects we'd otherwise just hide are physically
+	// removed from the store. include_dead=true short-circuits the
+	// prune (caller asked to *see* them, not delete them).
+	pruneDead := false
+	if v, ok := args["prune_dead"].(bool); ok {
+		pruneDead = v
+	}
 	// #301: pagination. Pre-fix `limit=0` meant "all rows", which on
 	// dev machines with 100+ indexed projects (worktree fan-out from
 	// adjacent tools) returned a 10K-token response for what's almost
@@ -3444,6 +3453,7 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	// fetching.
 	var filtered []map[string]any
 	dropped := 0
+	var pruned []string // #302: ids of dead-on-disk projects we deleted
 	for _, p := range projects {
 		// Drop dead-on-disk paths unless the caller explicitly
 		// opts back in. Cheap (one os.Stat per project); on a
@@ -3452,6 +3462,15 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		if !includeDead {
 			if _, err := os.Stat(p.Path); os.IsNotExist(err) {
 				dropped++
+				if pruneDead {
+					// #302: delete the row so it doesn't keep
+					// appearing in subsequent list calls. Failure
+					// to delete is non-fatal — we still hide it
+					// and let the next call try again.
+					if delErr := s.store.DeleteProject(p.ID); delErr == nil {
+						pruned = append(pruned, p.ID)
+					}
+				}
 				continue
 			}
 		}
@@ -3496,6 +3515,15 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			"offset":   offset,
 			"returned": len(rows),
 		},
+	}
+	// #302: surface what got pruned (only when the caller asked).
+	// Empty list when nothing was deletable; non-nil when prune_dead
+	// was set so the caller can confirm deletion happened.
+	if pruneDead {
+		if pruned == nil {
+			pruned = []string{} // empty array, not null, when nothing pruned
+		}
+		data["pruned"] = pruned
 	}
 	// Surface next page when the response is partial.
 	if limit >= 0 && pageEnd < total {
