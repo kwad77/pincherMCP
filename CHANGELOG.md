@@ -8,6 +8,16 @@ minors.
 ## [Unreleased]
 
 ### Added
+- **`$PINCHER_DATA_DIR` environment variable** — when set, `db.DataDir()`
+  returns the env var's value verbatim instead of the platform default
+  (`%APPDATA%\pincherMCP\` / `~/Library/Application Support/pincherMCP/`
+  / `$XDG_DATA_HOME/pincherMCP/`). Lets a dev shell pin its pincher
+  binary to a separate data dir from the user's stable install — dev
+  migrations can never taint the stable DB. `--data-dir` flag still
+  takes precedence (every CLI subcommand checks the flag first, falls
+  back to `DataDir()` only if empty), so scripted callers that always
+  pass `--data-dir` are unaffected. The fix is in `db.DataDir()` so it
+  applies uniformly to every subcommand without per-callsite changes.
 - **XML extractor** (#101). Pure-Go via stdlib `encoding/xml`, confidence
   1.0. Emits one `Setting` symbol per element with a hierarchical
   dotted-path qualified name (`config.database.host`); attributes become

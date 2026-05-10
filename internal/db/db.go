@@ -70,8 +70,25 @@ type Store struct {
 	Path string
 }
 
-// DataDir returns the platform data directory for pincherMCP.
+// DataDir returns the platform data directory for pincherMCP, honouring
+// $PINCHER_DATA_DIR if set so dev binaries can be pinned to a separate
+// dir from the user's stable install. Order:
+//
+//  1. $PINCHER_DATA_DIR — used verbatim, no `pincherMCP` suffix appended
+//     (the env var IS the full directory path).
+//  2. Platform default — `%APPDATA%\pincherMCP\` on Windows,
+//     `~/Library/Application Support/pincherMCP/` on macOS,
+//     `$XDG_DATA_HOME/pincherMCP/` (fallback `~/.local/share/pincherMCP/`)
+//     on Linux.
+//
+// `--data-dir` CLI flags still override both — the flag is checked first,
+// and only if empty does the caller fall back to DataDir(). This lets the
+// env var be a session-wide default for dev shells without forcing it on
+// scripted callers that always pass `--data-dir` explicitly.
 func DataDir() (string, error) {
+	if env := strings.TrimSpace(os.Getenv("PINCHER_DATA_DIR")); env != "" {
+		return env, os.MkdirAll(env, 0o700)
+	}
 	var base string
 	switch runtime.GOOS {
 	case "windows":
