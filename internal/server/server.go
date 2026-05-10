@@ -850,7 +850,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
 			return
 		}
-		var rows []map[string]any
+		// #334: zero-len init so HTTP /v1/sessions returns "sessions":[] (not null) when no sessions exist.
+		rows := []map[string]any{}
 		for _, sess := range sessions {
 			rows = append(rows, map[string]any{
 				"session_id":   sess.SessionID,
@@ -2314,7 +2315,8 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	const snippetReadCap = 2048
 
 	allFields := map[string]any{}
-	var rows []map[string]any
+	// #334: zero-len init so search returns "results":[] (not null) when zero hits.
+	rows := []map[string]any{}
 	for _, r := range results {
 		allFields["id"] = r.Symbol.ID
 		allFields["name"] = r.Symbol.Name
@@ -3595,8 +3597,9 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 
 	// Filter first, paginate after — `count` reports the post-filter
 	// total so the caller can decide whether the next page is worth
-	// fetching.
-	var filtered []map[string]any
+	// fetching. #334: zero-len init so list returns "projects":[] (not
+	// null) when the store has no projects.
+	filtered := []map[string]any{}
 	dropped := 0
 	var pruned []string // #302: ids of dead-on-disk projects we deleted
 	for _, p := range projects {
