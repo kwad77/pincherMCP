@@ -58,10 +58,10 @@ func TestStatsCLI_BuildReport_WithSessions(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.RecordSession("s1", time.Unix(1, 0), 10, 100, 1000, 0.5, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 10, 100, 1000, 0.5, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession s1: %v", err)
 	}
-	if err := store.RecordSession("s2", time.Unix(3, 0), 5, 50, 500, 0.25, "", 0); err != nil {
+	if err := store.RecordSession("s2", time.Unix(3, 0), 5, 50, 500, 0.25, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession s2: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestStatsCLI_TextOutput_ContainsExpectedSections(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if err := store.RecordSession("s1", time.Unix(1, 0), 100, 1000, 10000, 1.2345, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 100, 1000, 10000, 1.2345, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestStatsCLI_TextOutput_BoxAlignmentWithWideContent(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 	// Seed a project whose value-line width forces dynamic resizing.
@@ -217,7 +217,7 @@ func TestStatsCLI_TextOutput_NoProjectsStillRenders(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if err := store.RecordSession("s1", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 5, 50, 500, 0.05, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestStatsCLI_TextOutput_PathologicalLengthHitsCap(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 	// Project name 90 chars + huge counts → natural value width would
@@ -306,7 +306,7 @@ func TestStatsCLI_Reset_DeletesAllSessions(t *testing.T) {
 
 	for i, id := range []string{"s1", "s2", "s3"} {
 		if err := store.RecordSession(id, time.Unix(int64(i), 0),
-			int64(10*(i+1)), 100, 1000, 0.1, "", 0); err != nil {
+			int64(10*(i+1)), 100, 1000, 0.1, "", 0, ""); err != nil {
 			t.Fatalf("RecordSession %s: %v", id, err)
 		}
 	}
@@ -348,7 +348,7 @@ func TestRunStatsCLI_FlagDispatch_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := store.RecordSession("s1", time.Unix(1, 0), 7, 70, 700, 0.21, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 7, 70, 700, 0.21, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 	store.Close() // runStatsCLI opens its own handle.
@@ -388,7 +388,7 @@ func TestRunStatsCLI_ResetJSON_ShapeIsPinned(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	for i, id := range []string{"s1", "s2"} {
-		if err := store.RecordSession(id, time.Unix(int64(i), 0), 1, 1, 1, 0.1, "", 0); err != nil {
+		if err := store.RecordSession(id, time.Unix(int64(i), 0), 1, 1, 1, 0.1, "", 0, ""); err != nil {
 			t.Fatalf("RecordSession %s: %v", id, err)
 		}
 	}
@@ -422,7 +422,7 @@ func TestRunStatsCLI_ResetText_PrintsRowCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 1, 1, 0.1, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 	store.Close()
@@ -500,7 +500,7 @@ func TestStatsCLI_Reset_PreservesSymbols(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("BulkUpsertSymbols: %v", err)
 	}
-	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 0, 0, 0, "", 0); err != nil {
+	if err := store.RecordSession("s1", time.Unix(1, 0), 1, 0, 0, 0, "", 0, ""); err != nil {
 		t.Fatalf("RecordSession: %v", err)
 	}
 
