@@ -1621,13 +1621,15 @@ func (s *Server) registerTools() {
 	// 17. neighborhood
 	s.addTool(&mcp.Tool{
 		Name:        "neighborhood",
-		Description: "**Use for in-file refactor planning** — given a seed symbol ID, returns every symbol in the same file (signatures + line ranges) ordered by source position. One round-trip vs N `symbol` calls or one whole-file `Read`. Default response excludes `source`; pass `include_source=true` to also fetch each neighbor's body. Best for sub-1k-LOC files where the agent needs to see siblings to coordinate a multi-symbol edit.",
+		Description: "**Use for in-file refactor planning** — given a seed symbol ID, returns every symbol in the same file (signatures + line ranges) ordered by source position. One round-trip vs N `symbol` calls or one whole-file `Read`. Paginated: defaults to 50 neighbors per call (limit/offset), with the next page surfaced in `_meta.next_steps` when the file has more. Default response excludes `source`; pass `include_source=true` to also fetch each neighbor's body.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Stable symbol ID of the seed. The neighborhood is every symbol that shares its file."},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"include_source":{"type":"boolean","description":"If true, also fetch each neighbor's source body via the byte-offset path. Default false (signatures only — much cheaper)."},
-				"include_self":{"type":"boolean","description":"If true, include the seed symbol itself in the neighbors list. Default false (caller already has it)."}
+				"include_self":{"type":"boolean","description":"If true, include the seed symbol itself in the neighbors list. Default false (caller already has it)."},
+				"limit":{"type":"integer","description":"Maximum neighbors to return (default 50). Files with more symbols paginate via _meta.next_steps."},
+				"offset":{"type":"integer","description":"Skip the first N neighbors (default 0). Use the value from _meta.next_steps to walk the file."}
 			}
 		}`),
 	}, s.handleNeighborhood)
