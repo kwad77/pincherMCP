@@ -43,8 +43,23 @@ import (
 	"github.com/kwad77/pincher/internal/index"
 )
 
-// sessionFlushInterval controls how often in-memory session stats are persisted to SQLite.
+// sessionFlushInterval controls how often in-memory session stats are
+// persisted to SQLite when this process has no HTTP-dashboard peer.
+// 10s keeps the steady-state write rate low.
 const sessionFlushInterval = 10 * time.Second
+
+// sessionFlushFast is the accelerated flush cadence used when this
+// process detects an HTTP-dashboard peer (another pincher process
+// advertising an http_url row in the sessions table). Dropping to 1s
+// closes the two-process staleness window the dashboard would otherwise
+// surface (#204). The fast cadence only kicks in when calls > 0, so
+// idle stdio processes don't churn writes.
+const sessionFlushFast = 1 * time.Second
+
+// httpPeerStaleAfter is the max age of an HTTP peer row before we
+// stop trusting it as evidence of a live dashboard. 30s is generously
+// above the slow flush cadence so the peer signal won't oscillate.
+const httpPeerStaleAfter = 30 * time.Second
 
 // Server is the pincherMCP MCP server.
 type Server struct {
@@ -150,11 +165,21 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	return s
 }
 
-// StartSessionFlusher launches a background goroutine that persists session
-// stats to SQLite every sessionFlushInterval. Call this after New().
+// StartSessionFlusher launches a background goroutine that persists
+// session stats to SQLite. The cadence adapts (#204): when an HTTP
+// dashboard peer process is detected (another pincher advertising an
+// http_url row in the sessions table within httpPeerStaleAfter), the
+// ticker drops to sessionFlushFast (1 s) so dashboard updates lag the
+// stdio process by ≤1 s instead of ≤10 s. Otherwise the ticker holds
+// at sessionFlushInterval (10 s).
+//
+// Detection happens after every flush, so the cadence transitions
+// land at most one slow-tick (10 s) after the peer appears or
+// disappears. That's a one-time settling cost, not steady-state lag.
 func (s *Server) StartSessionFlusher(ctx context.Context) {
 	go func() {
-		t := time.NewTicker(sessionFlushInterval)
+		current := sessionFlushInterval
+		t := time.NewTicker(current)
 		defer t.Stop()
 		for {
 			select {
@@ -163,9 +188,37 @@ func (s *Server) StartSessionFlusher(ctx context.Context) {
 				return
 			case <-t.C:
 				s.flushSession()
+				wanted := sessionFlushInterval
+				if s.hasHTTPPeer() {
+					wanted = sessionFlushFast
+				}
+				if wanted != current {
+					t.Reset(wanted)
+					current = wanted
+				}
 			}
 		}
 	}()
+}
+
+// hasHTTPPeer reports whether another pincher process has flushed an
+// http_url-bearing sessions row within httpPeerStaleAfter. Used by the
+// adaptive session flusher (#204) to drop to sub-second cadence when a
+// dashboard is active. Failures and empty results return false so a
+// query glitch never strands the cadence at fast (which would amplify
+// write load on long-running daily DBs).
+func (s *Server) hasHTTPPeer() bool {
+	myPID := os.Getpid()
+	cutoff := time.Now().Add(-httpPeerStaleAfter).Unix()
+	var found int
+	err := s.store.RO().QueryRow(
+		`SELECT 1 FROM sessions
+		 WHERE http_url != '' AND http_pid > 0 AND http_pid != ?
+		   AND last_seen >= ?
+		 LIMIT 1`,
+		myPID, cutoff,
+	).Scan(&found)
+	return err == nil && found == 1
 }
 
 // flushSession persists current in-memory session stats to the sessions table.

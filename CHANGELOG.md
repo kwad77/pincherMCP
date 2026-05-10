@@ -19,6 +19,16 @@ minors.
   not Cypher" rationale block. `internal/cypher/` package keeps its
   filesystem name for git-blame continuity (the user-facing rename
   doesn't require an internal-name churn).
+- **Two-process stats lag dropped from ≤10s to ≤1s** when an HTTP
+  dashboard peer is detected (#204). The session flusher now adapts
+  its cadence: 10s steady-state when running solo (no dashboard), 1s
+  when another pincher process has flushed an `http_url` sessions
+  row within 30s. The peer query filters by `http_pid != self`, so
+  the same process running stdio + HTTP doesn't ping-pong its own
+  flusher. Detection happens after every flush, so transitions land
+  at most one slow-tick after the peer appears or disappears — a
+  one-time settling cost, not steady-state lag. Implementation in
+  `internal/server/server.go` `StartSessionFlusher`.
 
 ### Documentation
 - **YAML/JSON sequence-rename ID instability decided as won't-fix** for
