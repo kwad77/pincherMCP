@@ -51,6 +51,13 @@ type Indexer struct {
 	// recorded as "file_too_large" extraction failures and skipped without
 	// being read into memory. Zero or negative means "no cap".
 	maxFileSize int64
+
+	// binaryVersion is stamped on each project at index time so health
+	// can detect when an old indexer's CALLS data needs to be refreshed
+	// against newer resolution rules (#304). Empty until SetBinaryVersion
+	// is called — pre-existing rows then keep their stored version
+	// rather than getting overwritten with "".
+	binaryVersion string
 }
 
 // New creates a new Indexer with the default per-file size cap.
@@ -60,6 +67,14 @@ func New(store *db.Store) *Indexer {
 		active:      make(map[string]bool),
 		maxFileSize: DefaultMaxFileSize,
 	}
+}
+
+// SetBinaryVersion records the running binary's version so it can be
+// stamped on projects at index time (#304). Callers (cmd/pinch/main.go,
+// the MCP server) plumb their build-time `version` here. Safe to call
+// before or after `New`; idempotent.
+func (idx *Indexer) SetBinaryVersion(v string) {
+	idx.binaryVersion = v
 }
 
 // SetMaxFileSize overrides the per-file size cap. Pass 0 (or negative) to
@@ -157,12 +172,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 
 	start := time.Now()
 
-	// Ensure project record exists
+	// Ensure project record exists. #304: stamp the running binary
+	// version so health can detect drift later — empty when the
+	// caller didn't plumb SetBinaryVersion.
 	if err := idx.store.UpsertProject(db.Project{
-		ID:        projectID,
-		Path:      absPath,
-		Name:      projectName,
-		IndexedAt: start,
+		ID:            projectID,
+		Path:          absPath,
+		Name:          projectName,
+		IndexedAt:     start,
+		BinaryVersion: idx.binaryVersion,
 	}); err != nil {
 		return nil, fmt.Errorf("upsert project: %w", err)
 	}
@@ -476,13 +494,14 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// File count: total files walked this run + skipped (unchanged) files.
 	dbFiles := totalFiles + totalSkipped
 	if err := idx.store.UpsertProject(db.Project{
-		ID:        projectID,
-		Path:      absPath,
-		Name:      projectName,
-		IndexedAt: start,
-		FileCount: dbFiles,
-		SymCount:  dbSyms,
-		EdgeCount: dbEdges,
+		ID:            projectID,
+		Path:          absPath,
+		Name:          projectName,
+		IndexedAt:     start,
+		FileCount:     dbFiles,
+		SymCount:      dbSyms,
+		EdgeCount:     dbEdges,
+		BinaryVersion: idx.binaryVersion,
 	}); err != nil {
 		slog.Warn("pincher.index.update_project.err", "err", err)
 	}

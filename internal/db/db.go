@@ -875,6 +875,17 @@ END;`,
 	 ALTER TABLE sessions ADD COLUMN queries_zero_result      INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE sessions ADD COLUMN queries_retried_succeeded INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE sessions ADD COLUMN tokens_burned_on_failures INTEGER NOT NULL DEFAULT 0`,
+
+	// v17 → v18: capture the binary version that produced each
+	// project's index data (#304). When the running server version
+	// differs from the project's stored version, the CALLS edges
+	// (and other resolution-dependent fields) may reflect older
+	// rules — e.g. data indexed before #285 lacks receiver-method
+	// resolution. health surfaces this as a re-index recommendation
+	// so trace doesn't silently return wrong "0 callers" results.
+	// Empty string on rows that pre-date this migration; rendered
+	// as "indexed by unknown binary version".
+	`ALTER TABLE projects ADD COLUMN binary_version TEXT NOT NULL DEFAULT ''`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -1602,6 +1613,12 @@ type Project struct {
 	// before v15. Non-nil = exact value, compare against the running
 	// binary's max-known schema version.
 	SchemaVersionAtIndex *int `json:"schema_version_at_index,omitempty"`
+	// BinaryVersion is the indexer binary version that produced this
+	// project's index data (#304, schema v18). Empty when the row
+	// pre-dates the column or was inserted by a binary that didn't
+	// stamp it. health uses this to surface re-index recommendations
+	// when extraction or call-resolution rules have evolved.
+	BinaryVersion string `json:"binary_version,omitempty"`
 }
 
 // SearchResult is a FTS5 match returned by SearchSymbols.
@@ -1622,14 +1639,15 @@ type SearchResult struct {
 func (s *Store) UpsertProject(p Project) error {
 	currentSchema := len(schemaMigrations) + 1
 	_, err := s.db.Exec(`
-		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index)
-		VALUES (?,?,?,?,?,?,?,?)
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version)
+		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
 			file_count=excluded.file_count, sym_count=excluded.sym_count, edge_count=excluded.edge_count,
-			schema_version_at_index=excluded.schema_version_at_index`,
+			schema_version_at_index=excluded.schema_version_at_index,
+			binary_version=excluded.binary_version`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		p.FileCount, p.SymCount, p.EdgeCount, currentSchema,
+		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, p.BinaryVersion,
 	)
 	return err
 }
@@ -1650,7 +1668,7 @@ func (s *Store) UpdateProjectCounts(projectID string, files, syms, edges int) er
 func (s *Store) ListProjects() ([]Project, error) {
 	// Reader pool (#51).
 	rows, err := s.ro.Query(
-		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index FROM projects ORDER BY name`)
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1660,13 +1678,17 @@ func (s *Store) ListProjects() ([]Project, error) {
 		var p Project
 		var ts int64
 		var schemaVer sql.NullInt64
-		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer); err != nil {
+		var binVer sql.NullString
+		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer); err != nil {
 			return nil, err
 		}
 		p.IndexedAt = time.Unix(ts, 0)
 		if schemaVer.Valid {
 			v := int(schemaVer.Int64)
 			p.SchemaVersionAtIndex = &v
+		}
+		if binVer.Valid {
+			p.BinaryVersion = binVer.String
 		}
 		out = append(out, p)
 	}
@@ -1732,11 +1754,12 @@ func pathContains(parent, child string) bool {
 func (s *Store) GetProject(id string) (*Project, error) {
 	// Reader pool (#51).
 	row := s.ro.QueryRow(
-		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index FROM projects WHERE id=?`, id)
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version FROM projects WHERE id=?`, id)
 	var p Project
 	var ts int64
 	var schemaVer sql.NullInt64
-	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer); err == sql.ErrNoRows {
+	var binVer sql.NullString
+	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
@@ -1745,6 +1768,9 @@ func (s *Store) GetProject(id string) (*Project, error) {
 	if schemaVer.Valid {
 		v := int(schemaVer.Int64)
 		p.SchemaVersionAtIndex = &v
+	}
+	if binVer.Valid {
+		p.BinaryVersion = binVer.String
 	}
 	return &p, nil
 }
