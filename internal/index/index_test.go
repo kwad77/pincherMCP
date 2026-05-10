@@ -516,6 +516,91 @@ func TestHasChanges_NonExistentDir(t *testing.T) {
 	}
 }
 
+// #377: pre-fix the watcher's hasChanges only inspected p.Path's
+// top-level entries via os.ReadDir. For real projects (where source
+// lives under internal/, src/, lib/, …) edits in subdirectories were
+// silently invisible — the watcher would never trigger a re-index,
+// and `search` returned stale results until an explicit `index` call.
+// Repros pincher-repo's exact shape: top level has README/Makefile/
+// go.mod, all Go source under internal/.
+func TestHasChanges_NestedFileEdit(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+	dir := t.TempDir()
+	// Top-level files mirror a typical Go project — no source at root.
+	writeFile(t, dir, "README.md", "# project\n")
+	writeFile(t, dir, "go.mod", "module x\n")
+	// The source file is one level deep — the actual bug surface.
+	writeFile(t, dir, "internal/cypher/engine.go", "package cypher\n")
+
+	p := db.Project{
+		ID: "proj", Path: dir, Name: "proj",
+		IndexedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if !idx.hasChanges(p) {
+		t.Error("hasChanges should return true when a nested source file is newer than IndexedAt; pre-#377 the recursive walk was missing entirely")
+	}
+}
+
+// Skipped directories (vendor, node_modules, .git, …) must not trigger
+// re-indexing — vendored deps and .git internals churn constantly but
+// the indexer ignores them, so the watcher should too. Otherwise the
+// watcher would re-fire continuously on git operations (HEAD updates,
+// FETCH_HEAD writes during background fetches).
+func TestHasChanges_SkipsVendorAndDotGit(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+	dir := t.TempDir()
+	// Old, indexable source — establishes the baseline (no changes).
+	writeFile(t, dir, "internal/svc.go", "package svc\n")
+	if err := os.Chtimes(filepath.Join(dir, "internal/svc.go"),
+		time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	// Newer file under a skipped directory — would falsely trigger
+	// without isSkippedDir.
+	writeFile(t, dir, "vendor/foo/bar.go", "package bar\n")
+	writeFile(t, dir, ".git/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, dir, "node_modules/pkg/index.js", "module.exports={}\n")
+
+	p := db.Project{
+		ID: "proj", Path: dir, Name: "proj",
+		IndexedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if idx.hasChanges(p) {
+		t.Error("hasChanges should return false when only files under skipped dirs are newer; vendored/git churn must not trigger re-index")
+	}
+}
+
+// Early exit: hasChanges should bail on the first newer file rather
+// than walking the entire tree. Functional check — pin behaviour by
+// confirming that a newer file in any position triggers true even
+// when many older files exist.
+func TestHasChanges_EarlyExitOnFirstNewerFile(t *testing.T) {
+	_, store := newTestIndexer(t)
+	idx := New(store)
+	dir := t.TempDir()
+	// 50 older files distributed across nested dirs.
+	old := time.Now().Add(-48 * time.Hour)
+	for i := 0; i < 50; i++ {
+		path := writeFile(t, dir, "pkg"+string(rune('a'+(i%5)))+"/file"+string(rune('0'+(i%10)))+".go",
+			"package x\n")
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+	}
+	// One newer file deep in the tree.
+	writeFile(t, dir, "deep/nested/sub/dir/touched.go", "package x\n")
+
+	p := db.Project{
+		ID: "proj", Path: dir, Name: "proj",
+		IndexedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if !idx.hasChanges(p) {
+		t.Error("hasChanges should detect the one newer file even amongst 50 older ones across nested dirs")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch
 // ─────────────────────────────────────────────────────────────────────────────

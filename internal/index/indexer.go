@@ -713,32 +713,53 @@ func (idx *Indexer) anyActive() bool {
 
 // hasChanges checks if any source file in the project has changed since last index.
 // Uses a fast mtime check before doing the full xxh3 hash comparison.
+// hasChanges reports whether any indexable file under p.Path has been
+// modified since the last index run. Returns true on the first newer
+// file (early exit), so the cost on a clean tree is one stat per file
+// + one readdir per directory.
+//
+// #377: pre-fix this only inspected p.Path's top-level entries via
+// os.ReadDir, so edits to anything in a subdirectory (e.g. internal/
+// or src/) were silently ignored. The watcher would then never trigger
+// a re-index, and `search` returned stale results until an explicit
+// `index` call. The fix walks recursively, sharing the indexer's
+// skipped-dirs set so vendor/.git/node_modules don't dominate the walk.
 func (idx *Indexer) hasChanges(p db.Project) bool {
-	// Quick stat check on a sample of files
-	entries, err := os.ReadDir(p.Path)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if skip, _ := ast.ShouldSkip(e.Name()); skip {
-			continue
-		}
-		if !ast.IsSourceFile(e.Name()) && !ast.MayHaveShebang(e.Name()) {
-			continue
-		}
-		info, err := e.Info()
+	var changed bool
+	_ = filepath.WalkDir(p.Path, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			continue
+			// Permission denied / path vanished mid-walk — skip and keep going.
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
-		// If any file is newer than the last index time, trigger re-index
+		if d.IsDir() {
+			// Don't recurse into the project root if it itself matches
+			// (root has "" as base name and shouldn't be skipped).
+			if path != p.Path && isSkippedDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if skip, _ := ast.ShouldSkip(name); skip {
+			return nil
+		}
+		if !ast.IsSourceFile(name) && !ast.MayHaveShebang(name) {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
 		if info.ModTime().After(p.IndexedAt) {
-			return true
+			changed = true
+			return filepath.SkipAll
 		}
-	}
-	return false
+		return nil
+	})
+	return changed
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
