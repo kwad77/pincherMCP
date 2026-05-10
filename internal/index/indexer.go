@@ -202,7 +202,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			slog.Debug("pincher.index.blocked", "path", path, "reason", reason)
 			continue
 		}
-		if !ast.IsSourceFile(path) {
+		if !ast.IsSourceFile(path) && !ast.MayHaveShebang(path) {
 			continue
 		}
 
@@ -256,7 +256,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		go func(path, relPath, hash string, content []byte) {
 			defer func() { prog.FilesDone.Add(1); wg.Done() }()
 
-			lang := ast.DetectLanguage(path)
+			lang := ast.DetectLanguageFromContent(path, content)
 			if lang == "" {
 				return
 			}
@@ -659,7 +659,7 @@ func (idx *Indexer) hasChanges(p db.Project) bool {
 		if skip, _ := ast.ShouldSkip(e.Name()); skip {
 			continue
 		}
-		if !ast.IsSourceFile(e.Name()) {
+		if !ast.IsSourceFile(e.Name()) && !ast.MayHaveShebang(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
