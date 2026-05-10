@@ -171,6 +171,7 @@ func main() {
 	// Build indexer with the configured per-file cap (#111).
 	idx := index.New(store)
 	idx.SetMaxFileSize(int64(*maxFileMB) * 1024 * 1024)
+	idx.SetBinaryVersion(version) // #304: stamp on every project at index time
 
 	// Build MCP server with all 15 tools
 	srv := server.New(store, idx, version)
@@ -328,6 +329,7 @@ func runIndexCLI(args []string) {
 
 	idx := index.New(store)
 	idx.SetMaxFileSize(int64(*maxFileMB) * 1024 * 1024)
+	idx.SetBinaryVersion(version) // #304
 
 	// Warn when the target is nested under an already-indexed project
 	// (#235). Silent stderr output preserves scriptability — the actual

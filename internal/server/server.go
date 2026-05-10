@@ -3815,8 +3815,33 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 			"indexed_at":        report.Project.IndexedAt.Format(time.RFC3339),
 			"staleness_human":   report.StalenessHuman,
 			"staleness_seconds": report.StalenessSecs,
+			"binary_version":    report.Project.BinaryVersion, // #304
 		}
 		data["extraction_coverage"] = report.Coverage
+
+		// #304: index-vs-binary version drift. The CALLS edges and
+		// other resolution-dependent fields are only as good as the
+		// binary that produced them. When the running server's
+		// version doesn't match the project's stored version, surface
+		// a re-index recommendation so trace doesn't silently return
+		// 0-hop "no callers" results from pre-fix data. Empty
+		// stored version is rendered as "unknown" — the row pre-dates
+		// the v18 migration so we can't compare; we recommend
+		// re-index unconditionally for those.
+		if report.Project.BinaryVersion != s.version {
+			data["index_drift"] = true
+			detail := fmt.Sprintf(
+				"project indexed by binary_version=%q; running server is %q. Some CALLS/resolution edges may reflect older rules — re-index to refresh.",
+				report.Project.BinaryVersion, s.version,
+			)
+			if report.Project.BinaryVersion == "" {
+				detail = fmt.Sprintf(
+					"project indexed before v18 migration (binary_version unknown); running server is %q. Re-index to refresh resolution-dependent edges.",
+					s.version,
+				)
+			}
+			data["index_drift_message"] = detail
+		}
 	}
 
 	// #276: surface next-step hints from health so an agent has the
@@ -3824,6 +3849,15 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// Only emitted when the report carries an actionable signal:
 	// stale index, low-confidence language, or no project resolved.
 	steps := suggestHealthNextSteps(report)
+	// #304: drift step prepended (most actionable) when binary_version
+	// disagrees with the running server.
+	if drift, _ := data["index_drift"].(bool); drift && report.Project != nil {
+		steps = append([]map[string]string{{
+			"tool": "index",
+			"args": nextStepArgs(map[string]any{"path": report.Project.Path, "force": true}),
+			"why":  "binary_version drift — re-index to refresh resolution-dependent edges so trace results stay accurate",
+		}}, steps...)
+	}
 	if len(steps) > 0 {
 		data["_meta"] = map[string]any{"next_steps": steps}
 	}
