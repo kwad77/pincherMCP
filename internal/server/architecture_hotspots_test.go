@@ -179,6 +179,176 @@ func TestHandleArchitecture_IncludeTestsTrue_SurfacesTestHotspots(t *testing.T) 
 	}
 }
 
+// #380: hotspots filter out non-code kinds (Variable, Setting, Section).
+// Pure helper — pin the kind decisions so a future tweak doesn't
+// silently let JS-script `var result` accumulators back into the list.
+func TestIsHotspotKind(t *testing.T) {
+	cases := []struct {
+		kind string
+		want bool
+	}{
+		// Code surfaces — yes.
+		{"Function", true},
+		{"Method", true},
+		{"Class", true},
+		{"Interface", true},
+		{"Type", true},
+		{"Module", true},
+		// Data / config / docs — no, even when their in-degree is high.
+		{"Variable", false},
+		{"Local", false},
+		{"Setting", false},
+		{"Section", false},
+		{"Document", false},
+		{"Heading", false},
+		// Terraform-specific — not code-as-target either.
+		{"Resource", false},
+		{"DataSource", false},
+		{"Output", false},
+		{"Provider", false},
+		{"Block", false},
+		// Unknown / typo — conservative no.
+		{"", false},
+		{"function", false}, // case-sensitive intentionally
+		{"FunctionDecl", false},
+	}
+	for _, c := range cases {
+		t.Run(c.kind, func(t *testing.T) {
+			if got := isHotspotKind(c.kind); got != c.want {
+				t.Errorf("isHotspotKind(%q) = %v, want %v", c.kind, got, c.want)
+			}
+		})
+	}
+}
+
+// End-to-end: seed a project where the highest in-degree symbol is a
+// Variable (mirroring the real-world repro: `plugin/scripts/install.js`'s
+// `var result` accumulator dominated pincher-repo's hotspots before
+// #380). The Variable must NOT appear in hotspots; the lower-ranked
+// Function must.
+func TestHandleArchitecture_HotspotsExcludeVariableKind(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p380v"
+	store.UpsertProject(db.Project{ID: "p380v", Path: "/tmp/p380v", Name: "p380v", IndexedAt: time.Now()})
+
+	syms := []db.Symbol{
+		// The polluting Variable — high in-degree from accumulator reads.
+		{ID: "s::scripts.install.result#Variable", ProjectID: "p380v",
+			FilePath: "plugin/scripts/install.js",
+			Name:     "result", QualifiedName: "scripts.install.result",
+			Kind: "Variable", Language: "JavaScript", ExtractionConfidence: 1},
+		// The legitimate Function — lower in-degree, but the only hotspot
+		// the agent should orient around.
+		{ID: "s::pkg.RealHotspot#Function", ProjectID: "p380v",
+			FilePath: "internal/svc/svc.go",
+			Name:     "RealHotspot", QualifiedName: "pkg.RealHotspot",
+			Kind: "Function", Language: "Go", ExtractionConfidence: 1},
+	}
+	for i := 0; i < 8; i++ {
+		syms = append(syms, db.Symbol{
+			ID: "s::caller" + string(rune('0'+i)) + "#Function",
+			ProjectID: "p380v", FilePath: "plugin/scripts/install.js",
+			Name: "caller" + string(rune('0'+i)),
+			QualifiedName: "scripts.install.caller" + string(rune('0'+i)),
+			Kind: "Function", Language: "JavaScript", ExtractionConfidence: 1,
+		})
+	}
+	if err := store.BulkUpsertSymbols(syms); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+	// 8 callers all reference the Variable; only 2 reference the Function.
+	// Without the kind filter, the Variable wins on raw count.
+	var edges []db.Edge
+	for i := 0; i < 8; i++ {
+		edges = append(edges, db.Edge{
+			ProjectID: "p380v",
+			FromID:    "s::caller" + string(rune('0'+i)) + "#Function",
+			ToID:      "s::scripts.install.result#Variable",
+			Kind:      "READS", Confidence: 1,
+		})
+	}
+	for i := 0; i < 2; i++ {
+		edges = append(edges, db.Edge{
+			ProjectID: "p380v",
+			FromID:    "s::caller" + string(rune('0'+i)) + "#Function",
+			ToID:      "s::pkg.RealHotspot#Function",
+			Kind:      "CALLS", Confidence: 1,
+		})
+	}
+	if err := store.BulkUpsertEdges(edges); err != nil {
+		t.Fatalf("BulkUpsertEdges: %v", err)
+	}
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("handleArchitecture: %v", err)
+	}
+	body := decode(t, result)
+	hotspots, _ := body["hotspots"].([]any)
+	for _, h := range hotspots {
+		entry, _ := h.(map[string]any)
+		kind, _ := entry["kind"].(string)
+		if !isHotspotKind(kind) {
+			t.Errorf("hotspot with non-code kind %q leaked through filter: %v", kind, entry)
+		}
+	}
+}
+
+// include_tests=true still applies the kind filter (#380). The legacy
+// option only opts back into test-file hotspots; it does NOT also let
+// Variables / Settings back in — that would bring back the JS-script
+// accumulator pollution.
+func TestHandleArchitecture_IncludeTestsTrue_StillFiltersNonCodeKinds(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p380vt"
+	store.UpsertProject(db.Project{ID: "p380vt", Path: "/tmp/p380vt", Name: "p380vt", IndexedAt: time.Now()})
+
+	syms := []db.Symbol{
+		{ID: "s::scripts.result#Variable", ProjectID: "p380vt",
+			FilePath: "plugin/scripts/install.js",
+			Name:     "result", QualifiedName: "scripts.result",
+			Kind: "Variable", Language: "JavaScript", ExtractionConfidence: 1},
+		{ID: "s::pkg.testHelper#Function", ProjectID: "p380vt",
+			FilePath: "internal/server/server_test.go",
+			Name:     "testHelper", QualifiedName: "pkg.testHelper",
+			Kind: "Function", Language: "Go", ExtractionConfidence: 1},
+		{ID: "s::caller#Function", ProjectID: "p380vt",
+			FilePath: "internal/svc/svc.go",
+			Name:     "caller", QualifiedName: "pkg.caller",
+			Kind: "Function", Language: "Go", ExtractionConfidence: 1},
+	}
+	if err := store.BulkUpsertSymbols(syms); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+	if err := store.BulkUpsertEdges([]db.Edge{
+		{ProjectID: "p380vt", FromID: "s::caller#Function",
+			ToID: "s::scripts.result#Variable", Kind: "READS", Confidence: 1},
+		{ProjectID: "p380vt", FromID: "s::caller#Function",
+			ToID: "s::pkg.testHelper#Function", Kind: "CALLS", Confidence: 1},
+	}); err != nil {
+		t.Fatalf("BulkUpsertEdges: %v", err)
+	}
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{
+		"include_tests": true,
+	}))
+	if err != nil {
+		t.Fatalf("handleArchitecture: %v", err)
+	}
+	body := decode(t, result)
+	hotspots, _ := body["hotspots"].([]any)
+	if len(hotspots) == 0 {
+		t.Fatal("include_tests=true should surface the test-file Function helper")
+	}
+	for _, h := range hotspots {
+		entry, _ := h.(map[string]any)
+		kind, _ := entry["kind"].(string)
+		if !isHotspotKind(kind) {
+			t.Errorf("include_tests=true must NOT bring back non-code kinds; got %q: %v", kind, entry)
+		}
+	}
+}
+
 // #306: Project struct uses snake_case JSON keys.
 func TestProject_JSONUsesSnakeCase(t *testing.T) {
 	p := db.Project{
