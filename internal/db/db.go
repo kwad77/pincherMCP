@@ -2971,6 +2971,38 @@ func (s *Store) GetAllTimeSavings() (calls, tokensUsed, tokensSaved int64, costA
 	return
 }
 
+// GetAllTimeCallsByLanguage returns the cumulative per-language call
+// counts across every session that recorded the v16 calls_by_language
+// column (#240). Sessions with NULL or unparseable JSON are skipped
+// silently — a single corrupt row should not blank out the diagnostic
+// for every other session. Returns an empty (non-nil) map when no
+// session has ever recorded language data.
+func (s *Store) GetAllTimeCallsByLanguage() (map[string]int64, error) {
+	rows, err := s.db.Query(`SELECT calls_by_language FROM sessions WHERE calls_by_language IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	totals := make(map[string]int64)
+	for rows.Next() {
+		var raw sql.NullString
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		if !raw.Valid || raw.String == "" {
+			continue
+		}
+		var per map[string]int64
+		if err := json.Unmarshal([]byte(raw.String), &per); err != nil {
+			continue
+		}
+		for lang, n := range per {
+			totals[lang] += n
+		}
+	}
+	return totals, rows.Err()
+}
+
 // ResetSessions wipes every row from the sessions table and returns the
 // number of rows deleted. Used by `pincher stats --reset` to clear the
 // adoption-priming counters (cost avoided, tokens saved, call counts)
