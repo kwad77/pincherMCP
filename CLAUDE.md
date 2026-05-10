@@ -4,140 +4,106 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Pincher Usage Policy
 
-This project ships pincherMCP — its own product — and dogfoods it. AI agents working in this repo should prefer pincher tools over `Read`/`Grep`/`Glob` for any code-navigation task. Use the workflow below; fall back to direct file ops only when pincher returns no useful result or you specifically need to read a non-code file.
+This project ships pincherMCP — its own product — and dogfoods it. Prefer pincher tools over `Read`/`Grep`/`Glob` for any code-navigation task.
 
-| Goal | Pincher tool | Notes |
-|---|---|---|
-| **Don't know which tool to call?** | `guide` | Pass a free-form task ("fix login retry bug"); returns 2-3 recommended next calls. |
-| Orient in an unfamiliar area | `architecture` | Once at the start of unfamiliar work; entry points + hotspots + language breakdown. |
-| Find code by symbol or keyword | `search` | Use **before** `Grep`. Supports kind/language/corpus filters and BM25 ranking. |
-| Read one symbol's source | `symbol` | O(1) byte-offset seek, never re-parses. Use when you have the ID from `search`. |
-| Read several symbols at once | `symbols` (batch) | Use **instead of** repeated `symbol` calls. One round-trip via the IN-clause query (#129). |
-| Inspect a function before editing | `context` | Returns the symbol plus its direct imports — minimal token cost. |
-| See what calls a function | `trace` | BFS with risk labels. Use **before** Grep'ing for callers. |
-| Pre-edit / pre-commit safety check | `changes` | Maps git diff to symbols + blast-radius. Run **before** finalizing edits. |
-| Persistent project memory | `adr` | Store decisions, conventions, gotchas; survives sessions. |
-| Diagnose extraction quality | `health` | Per-language coverage, parser identity, slow queries. |
+**Workflow:** `architecture` (orient) → `search` (find) → `context` or `symbol` (read) → `trace` (impact) → edit → `changes` (verify before push).
 
-### Workflow shape
+**Fall back to `Read`/`Grep` when:**
+- Pincher returns no result (rare for code; common for config/text files).
+- You need exact-byte inspection (whitespace audits).
+- The file isn't indexable (binaries, large lockfiles).
+- You're authoring a new file.
+- **The pincher freshness check fires** (see below).
 
-For new work:
-1. `architecture` to orient.
-2. `search` for the relevant symbol.
-3. `context` (or `symbol`) to read it.
-4. `trace` if behaviour change is risky.
-5. Edit + verify.
-6. `changes` before declaring done.
+If `mcp__pincher__*` tools aren't in the registry at session start, surface a one-line warning before the first response and fall back to `Read`/`Grep`.
 
-For bug-fix work, skip `architecture` if the area is familiar; otherwise start the same way.
+### Pincher freshness check (this repo specifically)
 
-### When to fall back to Read/Grep
-
-- Pincher returns no result for the query (rare for code; common for raw text in non-code files).
-- You need exact-byte file inspection (e.g., reviewing whitespace).
-- The file isn't indexable (binary blobs, large lockfiles — pincher deliberately skips these).
-- You're authoring a new file that doesn't exist yet.
-
-If you're about to read a file end-to-end with `Read`, ask yourself: would `context` (symbol + its imports) answer my question with fewer tokens? Usually yes.
+This is pincher's own repo, so the running MCP server is frequently stale relative to master. **Once per session, call `health`. If `running_binary_version` differs from the project's `schema_version_at_index` for `sessionRoot`, treat byte-offset tools (`symbol`, `context`, `neighborhood with include_source=true`) as untrusted — bytes may point at the wrong span. Discovery tools (`search`, `query`, `trace`, `changes`) stay reliable.** Use `Read` for the untrusted reads until the binary is rebuilt and `/mcp` reconnects.
 
 ## Release process
 
-See **issue #193** for the live roadmap. Versioning policy:
-
-- **Minor** (`0.X.0`) — features, schema migrations, new CLI surface. Cut when a coherent batch is ready.
-- **Patch** (`0.X.Y`) — bug fixes only. No features, no schema changes. Cut on demand.
+- **Minor** (`0.X.0`) — features, schema migrations, new CLI surface.
+- **Patch** (`0.X.Y`) — bug fixes only. No features, no schema changes.
 - **Major** — reserved for 1.0+.
 
-**Every PR must be assigned to a milestone at PR-create time.** Milestones live at https://github.com/kwad77/pincher/milestones — pick the one whose scope matches the change. If unsure, default to the next milestone (currently `v0.5.0`); don't leave a PR unassigned. The milestone page is the live release burndown — a release ships when its milestone hits 100% closed.
+**Every PR must be assigned to a milestone at PR-create time.** Milestones live at https://github.com/kwad77/pincher/milestones. Default to the next milestone (currently `v0.10.0`); don't leave a PR unassigned. A release ships when its milestone hits 100% closed.
 
 ```bash
-gh pr create --milestone v0.5.0 ...
-# Or after the fact:
-gh issue edit <PR#> --milestone v0.5.0
+gh pr create --milestone v0.10.0 ...
+gh issue edit <PR#> --milestone v0.10.0  # after the fact
 ```
 
-## Build & Test Commands
+## CI conventions
+
+- **Always-ignore advisory job:** `Benchmark regression (advisory)` runs with `continue-on-error: true` and fails on most PRs (variance on shared runners). **Do not re-check, do not re-run, do not block on it** unless this PR intentionally changes a hot path.
+- **Real gates:** `Test (mac/ubuntu/windows)`, `Coverage`, `Corpus snapshot`, `Benchmark smoke`. Merge requires all four green.
+- **Wakeup timing:** Windows test queues 4–7 min behind ubuntu/mac. When polling CI, schedule a 270s wakeup (not 60s) — fits inside the 5-min cache TTL twice.
+
+## Repo-specific test gates
+
+These fail when changes elsewhere don't update them in lockstep:
+
+- **New exported `*Store` method (`db.go`):** classify in `readerRoutedStoreMethods` or `writerRoutedStoreMethods` (`db_test.go`), or `TestStore_AllExportedMethodsClassified` fails.
+- **Schema migration changes:** bump `schema_version` in 5 corpus snapshot files. `make corpus-snapshot-update` regenerates them; on Windows where `make` may be unavailable, `sed -i 's/"schema_version": N/"schema_version": N+1/' testdata/corpus/*.snapshot.json`.
+- **Tool-contract changes (descriptions, InputSchema):** regenerate via `go test ./internal/server -run TestToolContract -update-tool-contract`.
+- **New language extractor:** update `ast/registry.go` self-registration AND `db/corpus.go` `ClassifyCorpus` AND the v9 SQL trigger WHERE clauses. `TestClassifyCorpus_MatchesSQLTriggerRouting` is the gate.
+
+## JSON response invariants
+
+- **All slice fields in tool responses must be allocated as `[]T{}`, never `var x []T`.** A nil slice marshals to `null`; consumers iterating without a null-check break. Six bugs of this class fixed in v0.9.0 (#328/#330/#332/#334/#338/#330). The pattern keeps recurring.
+- Map fields are fine — `make(map[K]V)` is non-nil.
+- Informal lint: `grep -n "var \w\+ \[\]map\[string\]" internal/server/` should return nothing once a handler is response-stable.
+
+## Idioms
+
+- **Logging:** `slog` everywhere. `log.Printf` will silence under bench `TestMain` and corrupt baselines.
+- **Reader pool:** pure SELECT methods use `s.ro.Query`/`s.ro.QueryContext`; writes use `s.db.Exec`. Routing is enforced by the classification gate.
+- **Symbol IDs:** always build via `db.MakeSymbolID(file, qn, kind)`. Never string-concat.
+- **`InputSchema: json.RawMessage(\`...\`)` raw-string gotcha:** backticks inside the description terminate the string. Use plain text or rewrite without — bit #293 and #302.
+
+## Build & Test
 
 ```bash
-# Build the binary
+# Build
 go build -o pincher.exe ./cmd/pinch/     # Windows
 go build -o pincher ./cmd/pinch/         # Linux/macOS
 
-# Run all tests
+# Test
 go test ./...
+go test ./... -coverprofile=cover.out && go tool cover -func=cover.out | grep "^total"
+go test ./internal/db/ -run TestGraphStats_WithData -v   # single test
+go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n   # coverage gaps
 
-# Run tests with coverage
-go test ./... -coverprofile=cover.out
-go tool cover -func=cover.out | grep "^total"
+# Pinned-corpus snapshots (#33)
+make corpus-test                  # verify; runs in CI as Corpus snapshot
+make corpus-snapshot-update       # regenerate after intentional changes
 
-# Run a single test
-go test ./internal/db/ -run TestGraphStats_WithData -v
+# Performance benchmarks (#50)
+make bench                        # local feedback
+make bench-index | make bench-server   # narrow scope
+make corpus-bench                 # gate vs committed baseline (advisory in CI)
+make corpus-bench-update          # regen baselines (intentional perf changes only)
 
-# Run tests for one package
-go test ./internal/server/ -v
-
-# View per-function coverage gaps
-go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n
-
-# Pinned-corpus snapshot tests (#33)
-make corpus-test                  # verify each pinned corpus matches its snapshot
-make corpus-snapshot-update       # regenerate snapshots after intentional changes
-
-# Pinned-corpus performance benchmarks (#50)
-make bench                        # quick local feedback at 1s per-bench (no gate)
-make bench BENCHTIME=3s           # longer run for stable numbers
-make bench-index                  # only internal/index benchmarks
-make bench-server                 # only internal/server benchmarks
-make corpus-bench                 # run + gate vs committed baseline (ns +20%, allocs +30%)
-make corpus-bench-update          # regenerate baseline (intentional perf changes only)
-
-# Diagnostic surface (#42)
-pincher doctor                    # human-readable health report
-pincher doctor --json             # structured output for CI / dashboard
-pincher --slow-query-ms 50        # opt-in slow-query capture (also via env)
-
-# FTS5 escape hatch (#33 prerequisite for #32)
-pincher rebuild-fts               # drop + recreate the symbols_fts index from canonical symbols
-pincher rebuild-fts --quiet       # row count only — pipe-friendly
-
-# Stats observability + admin
-pincher stats                     # human-readable: all-time savings + per-project file/symbol/edge counts
-pincher stats --json              # machine-readable JSON (pipeable to jq, dashboards, monitors)
-pincher stats --reset             # wipe sessions table; symbol/edge/project data untouched. Back up first via --json
+# Diagnostics & admin
+pincher doctor [--json]
+pincher rebuild-fts [--quiet]
+pincher stats [--json] [--reset]
 ```
 
-**After any schema change** (adding a column to `db.go`), rebuild `pincher.exe` and reconnect via `/mcp` in Claude Code so the binary serving MCP requests picks up the new schema.
+**After any schema change** rebuild `pincher.exe` and reconnect via `/mcp` so the running MCP picks up the new schema.
 
 ### Pinned-corpus snapshot policy (#33)
 
-`testdata/corpus/<name>/` holds small hand-crafted corpora. `<name>.snapshot.json` is the committed expected output of `pincher index --json-summary <corpus>`. Counts (symbols, edges, files, kinds, average confidence) are exact-match. Noisy fields (`db_size_kb`, `duration_ms`) are stripped before comparison; tolerance bands for those land with the CI integration PR.
+`testdata/corpus/<name>/` holds small hand-crafted corpora. `<name>.snapshot.json` is the committed expected output of `pincher index --json-summary`. Counts (symbols, edges, files, kinds, average confidence) are exact-match. Noisy fields (`db_size_kb`, `duration_ms`) are stripped.
 
-Two redundant gates run the diff:
-- `make corpus-test` (uses `jq` — preferred for local dev)
-- `TestCorpusSnapshot_*` in `cmd/pinch/snapshot_test.go` (pure Go — runs as part of `go test ./...`, works on platforms without `jq`)
+Two redundant gates: `make corpus-test` (jq) and `TestCorpusSnapshot_*` (pure Go). The JSON diff IS the rationale; review it in PRs.
 
-When future PRs intentionally change extraction behaviour, run `make corpus-snapshot-update`. The resulting JSON diff IS the rationale; review it in the PR. Negative-assertion fields (when added) are NOT auto-regenerated — they require explicit code-review approval to change.
+**`extraction_failures_by_reason` cross-cutting gate:** every snapshot pins a per-corpus map of failure reasons → counts. Healthy corpora show `{}`. A PR that bumps any count from 0 to N is a regression by default — fix the bug, don't update the baseline. Caught #69, #74, #79, #80 before they reached real corpora.
 
-**`extraction_failures_by_reason` (cross-cutting QN-collision gate)**: every snapshot pins a per-corpus map of extraction-failure reasons → counts. Healthy corpora show `{}`. A future PR that introduces a `qualified_name_collision` or `byte_range_negative` pattern in any pinned corpus surfaces the new non-zero count in the snapshot diff at PR time. This gate would have caught #69, #74, #79, and #80 before nbarari hit them on a real corpus. The shape is auto-regenerated by `make corpus-snapshot-update` like the rest, but a PR that bumps a count from 0 to N is a regression by default — reviewers should treat any snapshot diff that adds a non-zero failure entry as a bug to fix, not a baseline to update.
+### Bench gating (#50)
 
-### Performance benchmarks (#50)
-
-`testdata/bench/<package>.bench.txt` holds the committed `go test -bench` output for `internal/index` and `internal/server`, captured at `-benchtime=2s -benchmem`. The comparator (`cmd/benchcmp/`) parses both files and gates on:
-
-- `ns/op` increase > **20%** — fail (wall-clock noise floor on shared CI)
-- `allocs/op` increase > **30%** — fail (alloc count is more deterministic than wall-clock)
-- Benchmark in baseline missing from actual — fail (someone disabled it)
-- Benchmark in actual missing from baseline — fail (forces baseline update for new benches)
-
-GOMAXPROCS suffix (`-N`) is stripped before matching, so a 4-core baseline aligns with an 8-core actual.
-
-Two flows:
-- `make corpus-bench` — run + gate vs committed baseline (used by CI)
-- `make corpus-bench-update` — regenerate baselines (intentional perf-affecting changes only)
-
-CI gating is **advisory** in phase 1 (`continue-on-error: true` on the `bench-regression` job) because the baselines were captured on developer hardware and runner variance hasn't been characterised yet. Hard gating lands once we either re-baseline on CI hardware or widen thresholds.
-
-`internal/index/bench_setup_test.go` and `internal/server/bench_setup_test.go` install a `TestMain` that silences `slog` during benchmarks so `INFO pincher.indexed` log lines don't interleave with bench output and corrupt the captured baseline.
+`testdata/bench/<package>.bench.txt` holds committed `go test -bench` output captured at `-benchtime=2s -benchmem`. Comparator (`cmd/benchcmp/`) gates on `ns/op +20%` and `allocs/op +30%`. Phase 1: `continue-on-error: true` — see CI conventions above.
 
 ## Architecture
 
@@ -145,69 +111,46 @@ CI gating is **advisory** in phase 1 (`continue-on-error: true` on the `bench-re
 
 ```
 cmd/pinch/main.go          ← sole entry point (MCP server + optional HTTP + `pincher index` CLI)
-  → db.Open()              open/migrate SQLite (schema v9)
+  → db.Open()              open/migrate SQLite
   → index.New()            create indexer (holds *db.Store)
   → server.New()           create MCP server (holds *db.Store + *index.Indexer)
-  → srv.StartSessionFlusher() background goroutine: flushes session stats to DB every 10s
-  → idx.Watch()            background goroutine: polls projects for file changes
-  → [--http :PORT]         optional HTTP server for platform-agnostic REST access
-  → mcp.StdioTransport     JSON-RPC 2.0 over stdin/stdout (Claude Code)
+  → srv.StartSessionFlusher()  flush session stats to DB every 10s
+  → idx.Watch()            poll projects for file changes
+  → [--http :PORT]         optional REST gateway
+  → mcp.StdioTransport     JSON-RPC 2.0 over stdin/stdout
 ```
 
 ### Three-layer storage (single `symbols` table serves all three)
 
 | Layer | Mechanism | Query path |
 |---|---|---|
-| 1 — Byte-offset retrieval | `start_byte` / `end_byte` on every symbol | `GetSymbol` → `ReadSymbolSource` = 1 SQL + 1 `os.File.Seek` + 1 `Read` |
-| 2 — Knowledge graph | `symbols` rows + `edges` table | Cypher → SQL via `cypher/engine.go` |
+| 1 — Byte-offset retrieval | `start_byte` / `end_byte` per symbol | `GetSymbol` → `ReadSymbolSource` = 1 SQL + 1 `os.File.Seek` + 1 `Read` |
+| 2 — Knowledge graph | `symbols` rows + `edges` table | pinchQL → SQL via `cypher/engine.go` |
 | 3 — FTS5 full-text search | `symbols_fts` virtual table + 3 triggers | `SearchSymbols` via BM25 |
 
-All three indexes are populated in a single `ast.Extract()` call per file during indexing.
+All three populated in a single `ast.Extract()` call per file during indexing.
 
 ### Package responsibilities
 
-- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Schema migrations live in `schemaMigrations` (a `[]string` slice — append to add a migration; version is auto-derived from slice length). Current schema: **v17** (v15 = `projects.schema_version_at_index` for staleness detection #236; v16 = `sessions.calls_by_language` JSON map for per-language call attribution #240; v17 = `sessions.queries_total` / `queries_zero_result` / `queries_retried_succeeded` / `tokens_burned_on_failures` for query-failure / retry-rate diagnostics #241). `symSelectFrom` is the canonical SELECT column list used by all symbol queries; update it and all scan functions together when adding columns.
+- **`internal/db/db.go`** — SQLite store. Schema lives here as a `schema` const. Migrations in `schemaMigrations` slice — append to add. Current schema: **v18** (v15 = `schema_version_at_index`; v16 = `calls_by_language`; v17 = query-failure metrics; v18 = `projects.binary_version` for drift detection #304). `symSelectFrom` is the canonical SELECT column list — update it and all scan functions together when adding columns.
 
-- **`internal/db/corpus.go`** — `ClassifyCorpus(language, kind)` returns `code` / `config` / `docs`. **PARITY INVARIANT**: this Go function and the v9 SQL trigger WHERE clauses encode the same routing rules. Drift between them produces split-result bugs. `TestClassifyCorpus_MatchesSQLTriggerRouting` is the gate — it inserts one symbol per corpus and asserts the SQL trigger routed it to the same vtab the Go function names. Adding a new language without updating both fails CI.
+- **`internal/db/corpus.go`** — `ClassifyCorpus(language, kind)` returns `code` / `config` / `docs`. **PARITY INVARIANT:** Go function and v9 SQL trigger WHERE clauses encode the same routing. `TestClassifyCorpus_MatchesSQLTriggerRouting` is the gate.
 
-- **`internal/ast/extractor.go`** — Multi-language symbol extraction. `Extract(source, language, relPath)` dispatches via the `Extractor` interface in `registry.go` and stamps `ExtractionConfidence` on each symbol. Parser-backed (1.0): Go via `go/ast`, YAML/JSON via `gopkg.in/yaml.v3` Node tree (one `Setting` symbol per key with dotted-path qualified name like `services.web.image`; emits Ansible-aware `RENDERS` edges for `template: src:` patterns when relPath matches Ansible task/playbook conventions — #71 phase 1), HCL/Terraform via `github.com/hashicorp/hcl/v2/hclsyntax` (covers `.tf` and `.tfvars`, recurses into nested blocks), TOML via `github.com/BurntSushi/toml` for parseability gating + structural source-walking for byte ranges (covers `.toml`; emits one `Setting` per section header and per key assignment with dotted qualified names like `dependencies.serde`, `[[items]]` array-of-tables indexed as `items.0`/`items.1`, multi-line strings/arrays span their full body), Bash via `mvdan.cc/sh/v3/syntax`, Markdown via `github.com/yuin/goldmark` (one `Section` symbol per heading with hierarchical dotted-path qualified name; covers `.md`, `.markdown`, `.mdx`, `.mdc`), Jinja2 via `github.com/nikolalohinski/gonja` parser (covers `.j2`, `.jinja`, `.jinja2`; emits `Function` for `{% macro %}`, `Block` for `{% block %}`, `Setting` for `{% set %}`, IMPORTS edges for `{% extends/include/import %}`; 2-second per-file parse timeout to bound gonja lexer hangs on truncated input). Stable regex (0.85): Python, JS/TS/JSX/TSX, Rust, Java. Approximate regex (0.70): Ruby, PHP, C/C++, C#, Kotlin, Swift. Stub (0.0, detected but not parsed): Scala, Lua, Zig, Elixir, Haskell, Dart, R.
+- **`internal/ast/extractor.go`** — Multi-language symbol extraction. Parser-backed (1.0): Go, YAML/JSON, HCL/Terraform, TOML, Bash, Markdown, Jinja2. Stable regex (0.85): Python, JS/TS/JSX/TSX, Rust, Java. Approximate regex (0.70): Ruby, PHP, C/C++, C#, Kotlin, Swift. Stub (0.0): Scala, Lua, Zig, Elixir, Haskell, Dart, R.
 
-- **`internal/ast/registry.go`** — `Extractor` interface + per-language registry. Each extractor self-registers in `init()`, declaring its `Languages()` and `Extensions()`; `DetectLanguage` and `IsSourceFile` consult the resulting maps. Adding a new language is one file: implement `Extractor`, call `Register(...)`.
+- **`internal/ast/registry.go`** — `Extractor` interface + per-language registry. Each extractor self-registers in `init()`.
 
-- **`internal/ast/blocklist.go`** — `ShouldSkip(path) (bool, reason)` filters lockfiles (`package-lock.json`, `yarn.lock`, etc.), minified bundles (`*.min.js`), and source maps (`*.map`) before extraction. Belt-and-suspenders relative to gocodewalker's `.gitignore` respect — committed lockfiles still get filtered. `IndexResult.Blocked` reports the count.
+- **`internal/ast/blocklist.go`** — `ShouldSkip(path)` filters lockfiles, minified bundles, source maps before extraction. Belt-and-suspenders relative to `gocodewalker`'s `.gitignore` respect.
 
-- **`internal/cypher/engine.go`** — Cypher-to-SQL translation. Pipeline: `tokenize` → `parseQuery` → `run`. Three query paths: `runNodeScan` (no edge), `runJoinQuery` (single-hop, SQL JOIN), `runBFS` (variable-length, Go BFS loop). `symRow` struct and all SELECT queries must stay in sync with `db.go`'s `Symbol` fields — both have `extraction_confidence`.
+- **`internal/cypher/engine.go`** — pinchQL-to-SQL translation. `tokenize` → `parseQuery` → `run`. Three paths: `runNodeScan` (no edge), `runJoinQuery` (single-hop SQL JOIN), `runBFS` (variable-length Go BFS). `symRow` and SELECT queries must stay in sync with `db.go`'s `Symbol`.
 
-- **`internal/index/indexer.go`** — Indexing pipeline. `Index()` walks files concurrently (goroutine per file, `sync.WaitGroup`), hashes with xxh3, skips unchanged files, calls `ast.Extract`, converts to `db.Symbol`/`db.Edge`, flushes in batches. Per-file goroutine calls `DeleteSymbolsForFile` before re-extraction so removed symbols don't leak (cascades to edges). Per-project mutex (`idx.active` map + `idx.mu`) prevents concurrent index of the same project within one process; `acquireProjectLock` (a filesystem lockfile under `<dataDir>/locks/`) prevents concurrent index across processes, with stale-holder reclaim. After all per-file goroutines finish, `resolveImports` and `resolveCalls` run a deferred project-wide pass against the now-complete symbol table — this is what makes Go cross-file `CALLS` and `IMPORTS` edges resolve. `Watch()` polls all projects every 2s (active) or 30s (idle), and short-circuits via `anyActive()` when any `Index()` is in flight (no busy CPU during catch-up phases). On re-index, detects file moves by matching `(qualified_name, kind)` across projects and records redirects in `symbol_moves`. Tail of `Index()` invokes `store.Optimize()` and `store.CheckpointTruncate()` to keep WAL bounded.
+- **`internal/index/indexer.go`** — Indexing pipeline. Concurrent per-file goroutines, xxh3 hash skip, batch flush. Per-file `DeleteSymbolsForFile` before re-extraction. Per-project mutex + cross-process `acquireProjectLock`. Tail GC pass (#326): files no longer on disk get their symbols + file_hash row pruned. After `wg.Wait`, `resolveImports` / `resolveCalls` / `resolveReads` run project-wide for cross-file Go edges. `Watch()` polls 2s active / 30s idle.
 
-- **`internal/index/lockfile.go`** — Cross-process project lockfile. `acquireProjectLock(dataDir, projectID)` writes `<dataDir>/locks/<hash>.lock` with `O_EXCL`; payload carries holder PID and start time. Reclaim path covers stale (>24h), dead-PID, and corrupt-payload cases.
+- **`internal/index/lockfile.go`** — Cross-process project lockfile with PID liveness + 24h stale reclaim.
 
-- **`cmd/pinch/bloat_trap.go`** — `isBloatTrap(absPath, hookMode) (bool, reason)` refuses indexing the filesystem root (detected via `filepath.Dir(abs) == abs` so `/` on Unix and `C:\` on Windows both match) and the user's home directory in any mode. In hook mode, additionally requires at least one project marker (`.git`, `go.mod`, `package.json`, `pyproject.toml`, `Cargo.toml`, `Gemfile`, `pom.xml`, `build.gradle`/`.kts`, `Makefile`, `CMakeLists.txt`, `.hg`, `.svn`) — guards against a SessionStart hook firing from an arbitrary cwd. Both the `pincher index` CLI subcommand and the MCP `index` tool path go through this guard before walking.
+- **`cmd/pinch/bloat_trap.go`** — `isBloatTrap(absPath, hookMode)` refuses fs root and `$HOME`; in hook mode also requires a project marker (`.git`, `go.mod`, `package.json`, etc.).
 
-- **`internal/server/server.go`** — MCP server + HTTP REST gateway. All 14 tools registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps the result in a `_meta` envelope and atomically increments session stats. `StartSessionFlusher()` flushes those stats to the `sessions` table every 10s. Token savings are estimated via `savedVsFileSizes()` (uses real `os.Stat` file sizes for search/trace) and `savedVsFullRead()` (uses `avgFileSize=20000` for other tools) — baseline is "agent reads whole file", not just the symbol. The HTTP stats endpoint falls back to DB totals when no live MCP session exists (e.g. HTTP-only dashboard process). `ServeHTTP` / `ListenAndServeHTTP` expose all tools as `POST /v1/{tool}` plus `DELETE /v1/projects` for project removal. `sessionID`/`sessionRoot` are set once via `sessionOnce` from the MCP roots list. The `cypher.Executor` is initialised with `ProjectID` so all three query paths (node scan, JOIN, BFS) are scoped to the resolved project.
-
-### The 18 MCP tools
-
-| # | Tool | Purpose |
-|---|---|---|
-| 1 | `index` | Index a repo (incremental by default; `force=true` to re-parse all) |
-| 2 | `symbol` | Retrieve source by stable ID via O(1) byte-offset seek |
-| 3 | `symbols` | Batch retrieve multiple symbols in one call |
-| 4 | `context` | Symbol + its direct imports as a minimal-token bundle |
-| 5 | `search` | FTS5 BM25 full-text search (wildcards, phrases, kind/language/fields filters) |
-| 6 | `query` | pinchQL graph queries — Cypher-shaped subset (node scan, single-hop JOIN, BFS). Parameter: `pinchql` (legacy alias `cypher` accepted for one release). |
-| 7 | `trace` | BFS call-path trace with CRITICAL/HIGH/MEDIUM/LOW risk labels |
-| 8 | `changes` | Git diff → affected symbols → blast radius BFS |
-| 9 | `architecture` | High-level orientation: languages, entry points, hotspot functions |
-| 10 | `schema` | Graph schema: node/edge kind counts |
-| 11 | `list` | All indexed projects with stats |
-| 12 | `adr` | Architecture Decision Records: persistent key/value project knowledge |
-| 13 | `health` | Schema version, index staleness, per-language extraction coverage |
-| 14 | `stats` | Session savings summary: tokens used/saved, cost avoided, call count |
-| 15 | `fetch` | Fetch a URL, extract text, store as a searchable `Document` symbol in the knowledge base (512 KB body cap, 32 KB stored). Retrieve later via `search kind:Document` or `symbol`. |
-| 16 | `guide` | Free-form task → 2-3 recommended next pincher tool calls. Starter tool to remove decision friction at session start. |
-| 17 | `neighborhood` | Same-file siblings of a seed symbol — signatures + line ranges in one round-trip. |
-| 18 | `init` | Seed an editor's pincher usage policy file (claude / cursor / windsurf / aider / detect / all). Dry-run by default; `write=true` mutates. continue target rejected (always-global, escapes project_path). |
+- **`internal/server/server.go`** — MCP server + HTTP REST gateway. All tools registered in `registerTools()`. Every handler calls `jsonResultWithMeta()` which wraps result in `_meta` and atomically increments session stats. `StartSessionFlusher` flushes every 10s. `cypher.Executor` is initialised with `ProjectID` so all query paths are scoped.
 
 ### Symbol ID format
 
@@ -216,48 +159,41 @@ All three indexes are populated in a single `ast.Extract()` call per file during
 e.g. "internal/db/db.go::db.Open#Function"
 ```
 
-IDs are stable across re-indexing as long as file path and qualified name don't change. Built by `db.MakeSymbolID()`. If a file moves, `handleSymbol` automatically resolves stale IDs via `store.ResolveStaleID()` → `symbol_moves` table.
+IDs are stable across re-indexing as long as file path and qualified name don't change. Built by `db.MakeSymbolID()`. File moves resolve via `symbol_moves` table.
 
 ### Schema migration pattern
 
-To add a schema change:
-1. Append a SQL string to `schemaMigrations` in `db.go`
-2. Update the `Symbol` struct field, `symSelectFrom` const, and all scan functions (`scanOneSymbol`, `scanSymbolRowsRow`, `scanSymbolRow`) together
-3. Update `cypher/engine.go`'s `symRow` struct and all SELECT queries there too
-4. Update `ast/extractor.go`'s `ExtractedSymbol` struct and `indexer.go`'s symbol construction if the field originates in extraction
+1. Append a SQL string to `schemaMigrations` in `db.go`.
+2. Update the `Symbol` struct field, `symSelectFrom` const, and all scan functions (`scanOneSymbol`, `scanSymbolRowsRow`, `scanSymbolRow`) together.
+3. Update `cypher/engine.go`'s `symRow` struct and SELECT queries.
+4. Update `ast/extractor.go`'s `ExtractedSymbol` and `indexer.go`'s symbol construction if the field originates in extraction.
+5. Bump `schema_version` in 5 corpus snapshot files.
 
 ### Key invariants
 
-- `db.SetMaxOpenConns(1)` — SQLite is single-writer; all writes are serialized at the connection pool level
-- WAL mode + `_busy_timeout=5000` — readers never block writers; a 5s retry window prevents immediate failures during index
-- WAL bounding: `journal_size_limit=256 MiB` (set in `Open()`) plus `store.CheckpointTruncate()` at every `Index()` tail. An earlier branch tried `wal_autocheckpoint=100` for the same purpose and measured 14.5× slowdown on heavy single-writer indexing — reverted to the SQLite default of 1000 pages; the cap-plus-tail-truncate path is what holds.
-- Cross-process project lock: `internal/index/lockfile.go` serializes concurrent indexers across binaries on the same data directory. Stale lockfiles are reclaimed via PID liveness check + 24h timeout + corrupt-payload guard.
-- Stale-symbol cleanup: every per-file goroutine calls `DeleteSymbolsForFile(projectID, relPath)` before re-extraction. The DELETE cascades to edges with either endpoint in the file, so removing a symbol also clears inbound CALLS edges that resolved to it via `resolveCalls`. Hash-skip short-circuits unchanged files at the parent level so the DELETE only fires for actually-changed content.
-- Go cross-file resolution: `resolveImports` and `resolveCalls` run a project-wide pass after all per-file goroutines complete, producing real cross-file CALLS/IMPORTS edges. Scoped to Go (extractor at confidence 1.0); regex-extracted languages keep per-file resolution to avoid false positives.
-- FTS5 triggers (`sym_fts_insert`, `sym_fts_delete`, `sym_fts_update`) auto-sync the `symbols_fts` virtual table; never manually sync it.
-- The generated `symbol_id` column on `symbols` (v6 migration) mirrors `id` to satisfy FTS5's content-lookup column-name parity. Read-only by definition (`GENERATED ALWAYS … VIRTUAL`); never written to directly.
-- `flushBuffers` is called when the in-memory batch reaches 500 symbols or 1000 edges to bound memory during large index runs.
-- Bloat-trap and blocklist are belt-and-suspenders: gocodewalker's `.gitignore` respect is the first line of defense; `IsBloatTrap` refuses obvious dead-end paths before walking; `ShouldSkip` filters individual files (lockfiles, minified, source maps) that ARE committed.
-- Symlink safety relies on `gocodewalker`'s default behavior (v1.5.1, audited #41 item 3): symlinks are reported as paths but NOT recursed into. A `vendor/external -> /etc` symlink inside a project does NOT cause `/etc` to be walked. Pinned by tests in `internal/index/symlink_safety_test.go` so a future gocodewalker upgrade that flips the default to "follow symlinks" surfaces immediately. The bloat-trap separately resolves symlinks in the user-supplied root path via `filepath.EvalSymlinks` so `pincher index ~/myproject-symlink-to-home` is refused.
+- `db.SetMaxOpenConns(1)` — SQLite is single-writer; writes serialize at the connection pool level.
+- WAL mode + `_busy_timeout=5000` — readers don't block writers.
+- WAL bounding: `journal_size_limit=256 MiB` plus `CheckpointTruncate()` at every `Index()` tail. (`wal_autocheckpoint=100` was tried and reverted — 14.5× slowdown on heavy single-writer indexing.)
+- Cross-process project lock serializes concurrent indexers.
+- Stale-symbol cleanup on every per-file goroutine; tail-pass GC for files removed from disk (#326).
+- Go cross-file resolution scoped to confidence-1.0 extractors; regex-extracted languages keep per-file resolution.
+- FTS5 triggers auto-sync the virtual tables; never sync manually.
+- `flushBuffers` fires at 500 symbols or 1000 edges to bound memory.
+- Symlink safety relies on `gocodewalker`'s default (v1.5.1, audited #41 item 3): symlinks are reported as paths, NOT recursed. Pinned by `internal/index/symlink_safety_test.go`.
 
 ## Dependencies
 
-- `github.com/modelcontextprotocol/go-sdk v1.4.0` — MCP server framework (JSON-RPC 2.0 over stdio)
-- `modernc.org/sqlite` — Pure-Go SQLite (no CGO required)
-- `github.com/boyter/gocodewalker` — File walker that respects `.gitignore`
-- `github.com/zeebo/xxh3` — Fast content hashing for incremental indexing
-- `gopkg.in/yaml.v3` — YAML/JSON Node tree parsing for the `Setting` extractor (JSON is parsed via the same library since JSON is a YAML 1.2 subset)
-- `github.com/BurntSushi/toml` — TOML parser used as a parseability gate by the TOML extractor; symbol byte ranges come from a structural source-walk that mirrors how keys would be referenced in TOML's own grammar
-- `github.com/tiktoken-go/tokenizer` — cl100k_base BPE tokenizer for real (not approximate) token-savings accounting
+- `github.com/modelcontextprotocol/go-sdk v1.4.0` — MCP framework
+- `modernc.org/sqlite` — pure-Go SQLite (no CGO)
+- `github.com/boyter/gocodewalker` — `.gitignore`-respecting walker
+- `github.com/zeebo/xxh3` — fast content hashing
+- `gopkg.in/yaml.v3`, `github.com/BurntSushi/toml`, `github.com/hashicorp/hcl/v2`, `mvdan.cc/sh/v3`, `github.com/yuin/goldmark`, `github.com/nikolalohinski/gonja` — language parsers
+- `github.com/tiktoken-go/tokenizer` — cl100k_base BPE for token-savings accounting
 
-## Known Architectural Limitations (tracked, not yet fixed)
+## Known Architectural Limitations
 
-- **Regex gap**: ~13 non-Go languages still use regex extraction (~80% accuracy). Go, YAML/JSON, HCL/Terraform, and Bash are parser-backed at confidence 1.0. `extraction_confidence` surfaces this to callers. Full fix for the rest = per-language pure-Go AST libraries (no tree-sitter / no CGO), tracked in the extractor refactor plan.
-- **YAML/JSON sequence-rename ID instability** (#205, decided as won't-fix for v0.7.0): Inserting an item at index 0 of a YAML sequence renames every downstream symbol's qualified name (`tasks.0.name` → `tasks.1.name`). Move detection via `(qualified_name, kind)` matching catches some of this but not deterministically — the qualified names changed, so the match key doesn't match either. The "IDs stable across re-indexing" invariant has caveats for sequence-heavy YAML. **User-facing implications**: `pincher changes` shows a sequence reorder as N deletes + N adds; ADRs/scripts storing a symbol id break when a new item lands at index 0. Workaround for stored references: search by name rather than id. Full content-hash-ID fix is v0.8/v1.1 territory — the blast radius is mostly Ansible/k8s manifests which are typically searched via `corpus=config` BM25 anyway, where the qualified-name churn is invisible to FTS5.
-- **Single-user SQLite**: Concurrent processes are now safely serialized via `internal/index/lockfile.go`, but the `sessions` table and symbol store are still local-only. For team/enterprise shared indexes, a server mode with a shared DB path or a PostgreSQL backend is needed.
-- **Per-corpus FTS5 split** (✅ #32 complete): Three corpus-specific vtabs (`symbols_code_fts` / `symbols_config_fts` / `symbols_docs_fts`) populate alongside legacy `symbols_fts` via v9 triggers. `SearchSymbolsByCorpus` / the MCP `search` tool's `corpus=` parameter routes queries to a specific index. **Default is now `code`** (since part 3) — pincher is a code-intelligence tool, code is the right default. Use `corpus=config` for YAML/JSON/HCL/TOML Settings, `corpus=docs` for Markdown / fetched Documents. The legacy `corpus=all` value is **deprecated** as of #106 — it's no longer in the public InputSchema enum, but the handler soft-redirects to `code` with a warning to keep existing scripts working. Schema-level removal (drop `symbols_fts` table + the three v9 sym_fts_insert/delete/update triggers) is tracked at #106 and will land in a v11 migration after human review of the migration body. Tests for non-code search MUST pass an explicit corpus — see `internal/index/hcl_integration_test.go` for the pattern.
-- **Per-symbol extraction_confidence (✅ #34 complete)**: Phases 1-4 of #34 made `extraction_confidence` a per-symbol score composing BaseExtractor + KindBaseline + PathPenalty + IdentBonus + GeneratedPen, clamped to `[0, 1]`. Tables live in `internal/ast/confidence.go`. The MCP `search` / `query` / `trace` tools accept a `min_confidence` parameter; **`search` defaults to 0.71** (post-#112 calibration; the original 0.70 default was a no-op because the score floor on real corpora landed at exactly 0.70 from README/CHANGELOG H1 Sections), filtering bottom-floor cases by default. Callers explicitly pass `min_confidence=0.0` to surface every symbol. Every response carries `_meta.confidence_distribution` (4-bucket histogram). The `health` tool reports per-(language, kind) avg/p10/p50. The static blocklist in `internal/ast/blocklist.go` is preserved as a hard pre-filter for files like `*.min.js` whose extraction would be wasted work; per-symbol scoring handles the gradient (vendor/, README, generated markers). The earlier-design `BreadthPenalty` and `LeafPenalty` signals were removed in #119 — they would have needed structural info wired through every extractor for marginal benefit on real corpora; the existing four signals carry the quality gradient.
-- **No corpus-level regression test**: Each PR's manual smoke tests aren't committed, so the index-quality gates we'd want (lockfile Settings == 0, cross-file CALLS edge count, BM25 score for code identifiers) aren't enforced in CI. Tracked at #33 (pinned-corpus snapshot tests with positive AND negative assertions).
-- **HTTP auth**: The `--http` REST API supports optional bearer token auth via `--http-key <token>`. Without it the API is open; for production deployment put it behind a reverse proxy or always set `--http-key`. With `--basepath` and `--trust-proxy`, pincher fronts cleanly behind nginx-style reverse proxies.
-- **Two-process stats gap**: The MCP stdio process and the HTTP dashboard process are separate. Stats are shared via the `sessions` SQLite table (flushed every 10s). The dashboard shows all-time totals from DB when it has no live MCP session.
-- **`symbols` batch cap**: `maxBatchSymbols = 100` — the batch symbols tool rejects requests with more than 100 IDs.
+- **Regex gap:** ~13 non-Go languages still regex-extract (~80% accuracy). Tracked in #266 (JS AST), #268 (multi-language AST roadmap).
+- **YAML/JSON sequence-rename ID instability** (#205, won't-fix for v0.7.0): inserting at index 0 renames every downstream symbol's QN. Workaround: search by name rather than id. Full content-hash-ID fix is v0.8/v1.1+ territory.
+- **Single-user SQLite:** symbols + sessions are local-only. Team mode would need a server with shared DB or PostgreSQL backend.
+- **HTTP auth:** `--http` supports optional `--http-key <token>` bearer auth. Without it, the API is open — front behind a reverse proxy or set the key for production.
+- **`symbols` batch cap:** `maxBatchSymbols = 100`.
