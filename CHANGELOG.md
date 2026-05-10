@@ -8,6 +8,17 @@ minors.
 ## [Unreleased]
 
 ### Documentation
+- **YAML/JSON sequence-rename ID instability decided as won't-fix** for
+  v0.7.0 (#205). REFERENCE.md, CLAUDE.md, and README's known-limitations
+  sections rewritten with the full rationale: a content-hash ID scheme
+  (deterministic across reorders) is real engineering work — symbol-ID
+  format change, migration path, full re-index of every existing DB —
+  for a problem whose blast radius is mostly Ansible/k8s manifests,
+  which are typically searched via `corpus=config` BM25 anyway, where
+  qualified-name churn is invisible to FTS5. Practical workarounds
+  documented (search by name rather than storing the id; prefer
+  named-list YAML where the schema allows). Revisit trigger: real
+  complaints with reproducible churn — v0.8/v1.1 territory.
 - **Bench-regression gate decided to stay advisory** (#207). Variance
   data captured at `testdata/bench/variance-ci-2026-05-09.md` (N=10)
   shows 20 of 21 benchmarks at <10% CV but one I/O-bound outlier at
