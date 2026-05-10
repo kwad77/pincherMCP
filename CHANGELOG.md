@@ -8,6 +8,35 @@ minors.
 ## [Unreleased]
 
 ### Added
+- **Supervisor liveness probe + circuit breaker (S2).** Builds on S1's
+  `pincher supervised`. Adds two protections against pathological
+  inner states:
+  - **Liveness probe.** Every 30s (configurable via
+    `Supervisor.ProbeInterval`), the supervisor sends a
+    JSON-RPC `tools/list` to the inner with a sentinel `id`
+    (`__pincher_supervisor_probe_<n>`). The inner→client pump now
+    reads stdout line-by-line and intercepts probe responses (so
+    they never reach the client). If the response doesn't arrive
+    within 5s (configurable), the supervisor kills the inner —
+    triggering the existing EOF→respawn flow. Catches "process is
+    alive but stuck" cases that EOF-only respawn misses.
+  - **Circuit breaker.** Restart timestamps go into a windowed ring
+    buffer (default: 5 restarts within 60s). When the threshold is
+    exceeded, `Run()` returns a clear error rather than hot-looping
+    forever — useful when the underlying issue (corrupt DB, missing
+    dep, persistent crash) can't be fixed by restarting.
+  - **Bonus fix (real bug, not just a test fix):** when the
+    supervisor decides to shut down internally (breaker tripped,
+    unrecoverable respawn), `pumpClientToInner` was blocked on
+    `Read(client.Stdin)` which context cancellation can't interrupt.
+    Run now closes Stdin (when it's a Closer — os.Stdin, pipes, etc.)
+    and drains the pump with a 2s timeout. Without this, supervisor
+    self-shutdown could hang forever waiting on a client that wasn't
+    talking.
+
+  Four new tests cover probe-sent-and-answered, probe-timeout-kills-
+  inner, breaker-trips-and-returns-error, and recordRestart's age-out.
+
 - **`pincher supervised` subcommand (S1).** Runs an inner pincher MCP
   server with auto-respawn + initialize-replay, so the MCP client
   (Claude Code, Codex, etc.) sees an unbroken stdio session even when

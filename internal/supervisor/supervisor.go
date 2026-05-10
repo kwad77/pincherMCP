@@ -43,8 +43,24 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+)
+
+const (
+	// probeIDPrefix tags the JSON-RPC `id` field on supervisor-internal
+	// liveness probes so the inner→client pump can recognize the
+	// matching response and swallow it (don't leak probe responses to
+	// the client).
+	probeIDPrefix = "__pincher_supervisor_probe_"
+
+	// Defaults for liveness/circuit-breaker tunables. Tests override.
+	defaultProbeInterval = 30 * time.Second
+	defaultProbeTimeout  = 5 * time.Second
+	defaultMaxRestarts   = 5
+	defaultRestartWindow = 60 * time.Second
 )
 
 // Supervisor wraps an inner pincher process with auto-respawn semantics.
@@ -76,14 +92,60 @@ type Supervisor struct {
 	// which exec's BinaryPath with InnerArgs and Env.
 	spawnFn func() (*innerProc, error)
 
+	// ProbeInterval / ProbeTimeout / MaxRestarts / RestartWindow tune
+	// the S2 liveness + circuit-breaker behavior. Zero values mean
+	// "use the default constant". Tests override with short values
+	// (~50ms intervals) to keep runtime low.
+	ProbeInterval time.Duration
+	ProbeTimeout  time.Duration
+	MaxRestarts   int
+	RestartWindow time.Duration
+
 	mu              sync.RWMutex
 	inner           *innerProc
 	initLine        []byte
 	initializedLine []byte
 
+	// pendingProbe captures the timestamp at which the most recent
+	// liveness probe was sent to the inner. Cleared (atomic.Pointer
+	// to nil) when a matching response arrives. The probe goroutine
+	// schedules a timeout-kill that fires only if the same probe is
+	// still pending — recording the sentAt on the timer closure
+	// detects "this probe got stuck" vs "a later probe replaced it."
+	pendingProbe atomic.Pointer[probeState]
+
+	probeIDCounter atomic.Int64
+
+	// Restart history for circuit-breaker. Bounded ring of timestamps
+	// of the last few restarts; entries older than RestartWindow are
+	// trimmed at each recordRestart() call.
+	restartHistoryMu sync.Mutex
+	restartHistory   []time.Time
+
 	// Restarts is incremented every time the inner exits and is
 	// successfully respawned. Read by tests + future health surface.
 	Restarts atomic.Int32
+
+	// ProbesSent counts liveness probes dispatched. Useful for tests
+	// asserting the goroutine is running.
+	ProbesSent atomic.Int64
+
+	// ProbesAnswered counts probes whose response was intercepted on
+	// inner→client. Should track ProbesSent in steady state.
+	ProbesAnswered atomic.Int64
+
+	// ProbesTimedOut counts probes that fired the timeout-kill.
+	// Non-zero in steady state suggests a flapping inner.
+	ProbesTimedOut atomic.Int64
+}
+
+// probeState is the pendingProbe payload — the time the probe went
+// out, and the sentinel ID we expect on the response. Stored as an
+// atomic.Pointer so the timeout closure can compare against the
+// in-flight probe identity (rather than just an opaque flag).
+type probeState struct {
+	id     string
+	sentAt time.Time
 }
 
 // innerProc bundles a running inner process with the pipes we own.
@@ -150,6 +212,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	go func() { clientDone <- s.pumpClientToInner(pumpCtx) }()
 	go func() { innerDone <- s.pumpInnerToClient(pumpCtx) }()
+	go s.probeLoop(pumpCtx) // S2: liveness probe; exits on ctx cancel
 
 	// Either pump terminating ends the supervisor:
 	//   - clientToInner returning means the client closed stdin →
@@ -174,16 +237,37 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 
 	cancel()           // signal pumps to stop respawning / reading
-	s.shutdownInner()  // close pipes so any in-flight Copy / Read returns
+	s.shutdownInner()  // close inner pipes so any in-flight Copy / Read returns
 
-	// Drain only the pump(s) we haven't already received from. The
-	// select above consumed at most one channel; reading from an
-	// already-drained buffered channel here would block on empty.
+	// pumpClientToInner is blocked on Read(client.Stdin) — context
+	// cancellation alone won't unblock that. If the caller's Stdin
+	// is a Closer (os.Stdin, *io.PipeReader, *os.File all are), close
+	// it so the pump's Read returns EOF and the goroutine exits. We
+	// don't track ownership; closing an already-closed reader is a
+	// safe no-op for these types.
+	if c, ok := s.Stdin.(io.Closer); ok {
+		_ = c.Close()
+	}
+
+	// Drain only the pump(s) we haven't already received from. Bounded
+	// timeout protects against a client.Stdin that doesn't honor Close
+	// (a non-stdlib io.Reader where Close is no-op or absent) — a leak
+	// of one goroutine is better than a hung supervisor.
+	drainTimeout := time.After(2 * time.Second)
 	if !clientPumpClosed {
-		<-clientDone
+		select {
+		case <-clientDone:
+		case <-drainTimeout:
+			slog.Warn("supervisor.client_pump_drain_timeout",
+				"hint", "stdin reader not honoring Close()")
+		}
 	}
 	if !innerPumpClosed {
-		<-innerDone
+		select {
+		case <-innerDone:
+		case <-drainTimeout:
+			slog.Warn("supervisor.inner_pump_drain_timeout")
+		}
 	}
 	return runErr
 }
@@ -239,7 +323,11 @@ func (s *Supervisor) pumpInnerToClient(ctx context.Context) error {
 			return nil
 		}
 
-		_, _ = io.Copy(s.Stdout, in.stdout)
+		// Read inner stdout line-by-line so we can intercept liveness
+		// probe responses (S2). Probe responses carry an ID matching
+		// probeIDPrefix and must NOT reach the client. All other lines
+		// pass through verbatim.
+		s.forwardInnerStdoutWithProbeFilter(in.stdout)
 
 		// Reap the inner so we have its exit code for logging. cmd
 		// is nil in tests where the inner is a stdio pair without a
@@ -266,7 +354,194 @@ func (s *Supervisor) pumpInnerToClient(ctx context.Context) error {
 			return fmt.Errorf("respawn after inner exit: %w", err)
 		}
 		s.Restarts.Add(1)
+		// S2 circuit breaker: if we've respawned too many times in a
+		// short window, stop trying. The inner is in a bad state we
+		// can't recover from by restarting (corrupt DB, missing
+		// dependency, persistent crash). Surfacing as a Run() error
+		// is more useful than a hot loop.
+		if err := s.recordRestart(); err != nil {
+			return err
+		}
 	}
+}
+
+// forwardInnerStdoutWithProbeFilter reads inner stdout line-by-line.
+// Lines matching a pending liveness probe's ID are consumed silently
+// (clearing the pending state); every other line is written verbatim
+// to the client stdout. Returns when the inner closes its stdout —
+// the caller's loop handles respawn from there.
+func (s *Supervisor) forwardInnerStdoutWithProbeFilter(stdout io.Reader) {
+	r := bufio.NewReader(stdout)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			if s.consumeIfProbeResponse(line) {
+				s.ProbesAnswered.Add(1)
+			} else {
+				_, _ = s.Stdout.Write(line)
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// consumeIfProbeResponse parses just the JSON-RPC `id` field, checks
+// for the supervisor's sentinel prefix, and clears the pending probe
+// state if matched. Returns true when the line was a probe response
+// (caller should NOT forward to client) and false otherwise.
+func (s *Supervisor) consumeIfProbeResponse(line []byte) bool {
+	var head struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(line, &head); err != nil {
+		return false
+	}
+	if len(head.ID) == 0 {
+		return false
+	}
+	// IDs may be either string or number per JSON-RPC. Probe IDs are
+	// always quoted strings starting with probeIDPrefix.
+	var id string
+	if err := json.Unmarshal(head.ID, &id); err != nil {
+		return false
+	}
+	if !strings.HasPrefix(id, probeIDPrefix) {
+		return false
+	}
+	// Match — clear pending probe state. The pendingProbe pointer
+	// might already be nil if the timeout closure fired first; that
+	// race is benign (response arrived after timeout-kill, ignore).
+	s.pendingProbe.Store(nil)
+	return true
+}
+
+// probeLoop sends a periodic JSON-RPC `tools/list` to the inner with a
+// supervisor-internal ID prefix. The matching response is intercepted
+// in forwardInnerStdoutWithProbeFilter (so the client never sees it).
+// If a probe is still pending after probeTimeout, kill the inner — the
+// existing inner-exit path then triggers respawn.
+func (s *Supervisor) probeLoop(ctx context.Context) {
+	interval := s.ProbeInterval
+	if interval == 0 {
+		interval = defaultProbeInterval
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.sendProbe()
+		}
+	}
+}
+
+// sendProbe writes a sentinel-id JSON-RPC request to the inner. Records
+// the probe state for the timeout watcher; the response (when it
+// arrives) clears it.
+//
+// Don't probe if a probe is already pending — that would obscure the
+// timeout signal (we'd have multiple in-flight probes and lose the
+// "is THIS one stuck?" semantic). The previous probe's timeout will
+// fire on its own.
+func (s *Supervisor) sendProbe() {
+	if s.pendingProbe.Load() != nil {
+		// A probe is already in flight; skip this tick.
+		return
+	}
+
+	id := fmt.Sprintf("%s%d", probeIDPrefix, s.probeIDCounter.Add(1))
+	now := time.Now()
+	state := &probeState{id: id, sentAt: now}
+	s.pendingProbe.Store(state)
+
+	// JSON-RPC `tools/list` is a no-op-ish request — pincher answers
+	// with the registered tool set, which is cheap and reliable.
+	payload := fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"method":"tools/list","params":{}}`+"\n", id)
+	if err := s.writeToInner([]byte(payload)); err != nil {
+		// Inner pipe broken; the inner-side pump will respawn. Clear
+		// the pending state so we don't trip the timeout incorrectly.
+		s.pendingProbe.CompareAndSwap(state, nil)
+		return
+	}
+	s.ProbesSent.Add(1)
+
+	// Schedule the timeout-kill. The closure compares pendingProbe
+	// against the captured state pointer, so a probe answered before
+	// timeout (which clears pendingProbe) AND a later probe replacing
+	// this one both correctly bypass the kill.
+	timeout := s.ProbeTimeout
+	if timeout == 0 {
+		timeout = defaultProbeTimeout
+	}
+	time.AfterFunc(timeout, func() {
+		if s.pendingProbe.CompareAndSwap(state, nil) {
+			// We were the in-flight probe; nothing answered us in
+			// the timeout window. Treat the inner as hung.
+			s.ProbesTimedOut.Add(1)
+			slog.Warn("supervisor.probe_timeout",
+				"id", id,
+				"sent_at", now,
+				"timeout", timeout,
+				"action", "killing_inner")
+			s.killInner()
+		}
+	})
+}
+
+// killInner sends SIGKILL (or Windows equivalent) to the current inner
+// process. The pump's Read on stdout will then return EOF, and the
+// existing respawn path takes over.
+func (s *Supervisor) killInner() {
+	s.mu.RLock()
+	in := s.inner
+	s.mu.RUnlock()
+	if in == nil || in.cmd == nil || in.cmd.Process == nil {
+		return
+	}
+	_ = in.cmd.Process.Kill()
+}
+
+// recordRestart appends now to the restart history, trims entries
+// older than RestartWindow, and returns a circuit-breaker error if
+// the count exceeds MaxRestarts.
+//
+// The history slice is small (≤ MaxRestarts+1 elements at any time),
+// so allocating per-call is cheap.
+func (s *Supervisor) recordRestart() error {
+	max := s.MaxRestarts
+	if max == 0 {
+		max = defaultMaxRestarts
+	}
+	window := s.RestartWindow
+	if window == 0 {
+		window = defaultRestartWindow
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-window)
+
+	s.restartHistoryMu.Lock()
+	defer s.restartHistoryMu.Unlock()
+
+	// Trim aged entries before appending so the slice doesn't grow
+	// unbounded in long-running sessions with sparse restarts.
+	keep := s.restartHistory[:0]
+	for _, t := range s.restartHistory {
+		if t.After(cutoff) {
+			keep = append(keep, t)
+		}
+	}
+	keep = append(keep, now)
+	s.restartHistory = keep
+
+	if len(keep) > max {
+		return fmt.Errorf("supervisor: %d restarts within %s — circuit breaker tripped, refusing to respawn further", len(keep), window)
+	}
+	return nil
 }
 
 // maybeCaptureInit parses just enough of an inbound JSON-RPC line to
