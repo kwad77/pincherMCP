@@ -1033,19 +1033,103 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 	}
 
 	if hasCount {
-		// Aggregate
-		total := len(allRows)
-		row := map[string]any{}
+		// #348: implicit GROUP BY when mixing non-aggregate columns with COUNT.
+		// Standard Cypher/SQL semantics — `RETURN n.kind, COUNT(n)` should
+		// group by n.kind and emit one row per kind, not collapse to a single
+		// total row that silently drops the n.kind column. Pre-fix path treated
+		// the presence of any COUNT as "single-row total" regardless of the
+		// projection shape.
+		var groupVars []returnVar
+		var aggVars []returnVar
 		for _, rv := range q.returnVars {
 			if rv.fn == "COUNT" {
+				aggVars = append(aggVars, rv)
+			} else {
+				groupVars = append(groupVars, rv)
+			}
+		}
+
+		// No group-by columns → existing single-row total path. Backward
+		// compatible: `RETURN COUNT(n)` still returns one row.
+		if len(groupVars) == 0 {
+			total := len(allRows)
+			row := map[string]any{}
+			for _, rv := range aggVars {
 				col := rv.alias
 				if col == "" {
 					col = "COUNT(" + rv.variable + ")"
 				}
 				row[col] = total
 			}
+			return &Result{Columns: cols, Rows: []map[string]any{row}, Total: 1}, nil
 		}
-		return &Result{Columns: cols, Rows: []map[string]any{row}, Total: 1}, nil
+
+		// Group rows by the tuple of group-var values. The key is fmt.Sprint
+		// of the tuple — the same approach `q.distinct` uses for row dedup
+		// (line 1071), so behaviour is consistent.
+		type groupBucket struct {
+			values map[string]any
+			count  int
+		}
+		groups := map[string]*groupBucket{}
+		var groupOrder []string // preserve first-seen order so unORDERed output is deterministic
+		for _, row := range allRows {
+			values := map[string]any{}
+			for _, rv := range groupVars {
+				key := rv.variable
+				if rv.property != "" {
+					key = rv.variable + "." + rv.property
+				}
+				outCol := key
+				if rv.alias != "" {
+					outCol = rv.alias
+				}
+				values[outCol] = row[key]
+			}
+			groupKey := fmt.Sprint(values)
+			b, ok := groups[groupKey]
+			if !ok {
+				b = &groupBucket{values: values}
+				groups[groupKey] = b
+				groupOrder = append(groupOrder, groupKey)
+			}
+			b.count++
+		}
+
+		// Emit one row per group, with each agg's count.
+		grouped := make([]map[string]any, 0, len(groups))
+		for _, gk := range groupOrder {
+			b := groups[gk]
+			out := make(map[string]any, len(groupVars)+len(aggVars))
+			for k, v := range b.values {
+				out[k] = v
+			}
+			for _, rv := range aggVars {
+				col := rv.alias
+				if col == "" {
+					col = "COUNT(" + rv.variable + ")"
+				}
+				out[col] = b.count
+			}
+			grouped = append(grouped, out)
+		}
+
+		// ORDER BY + LIMIT apply to grouped rows (not the underlying scan).
+		// Mirrors the non-aggregate path below.
+		if q.orderBy != "" {
+			desc := q.orderDir == "DESC"
+			sort.SliceStable(grouped, func(i, j int) bool {
+				return cypherLessThan(grouped[i][q.orderBy], grouped[j][q.orderBy], desc)
+			})
+		}
+		limit := q.limit
+		if limit <= 0 {
+			limit = 200
+		}
+		if len(grouped) > limit {
+			grouped = grouped[:limit]
+		}
+		return &Result{Columns: cols, Rows: grouped, Total: len(grouped)}, nil
 	}
 
 	// Project rows

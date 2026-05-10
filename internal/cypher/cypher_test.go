@@ -633,6 +633,83 @@ func TestNodeScan_IsNotNull_SQLPushdown(t *testing.T) {
 	}
 }
 
+// #348: implicit GROUP BY when mixing non-aggregate column with COUNT.
+// Pre-fix, this collapsed every result to a single row with the
+// non-aggregate column dropped. Now it groups by the non-aggregate.
+func TestAggregation_ImplicitGroupBy_KindHistogram(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "f1", "Alpha", "Function", "Go")
+	insertSym(t, db, "f2", "Beta", "Function", "Go")
+	insertSym(t, db, "f3", "Gamma", "Function", "Go")
+	insertSym(t, db, "m1", "DoIt", "Method", "Go")
+	insertSym(t, db, "m2", "DoOther", "Method", "Go")
+	insertSym(t, db, "c1", "Widget", "Class", "Go")
+
+	r := exec(t, db, "MATCH (n) RETURN n.kind, COUNT(n) ORDER BY COUNT(n) DESC")
+	if r.Total != 3 {
+		t.Fatalf("expected 3 groups (Function, Method, Class), got %d (%v)", r.Total, r.Rows)
+	}
+	// First row: Function with count 3.
+	first := r.Rows[0]
+	if first["n.kind"] != "Function" {
+		t.Errorf("first group kind = %v, want Function", first["n.kind"])
+	}
+	count, _ := first["COUNT(n)"].(int)
+	if count == 0 {
+		// May come back as int64 or float64 depending on JSON path.
+		if cf, ok := first["COUNT(n)"].(float64); ok {
+			count = int(cf)
+		}
+	}
+	if count != 3 {
+		t.Errorf("first group count = %v, want 3", first["COUNT(n)"])
+	}
+	// Counts must sum to total seeded rows.
+	var sum int
+	for _, row := range r.Rows {
+		switch v := row["COUNT(n)"].(type) {
+		case int:
+			sum += v
+		case int64:
+			sum += int(v)
+		case float64:
+			sum += int(v)
+		}
+	}
+	if sum != 6 {
+		t.Errorf("counts sum to %d, want 6 (total seeded rows)", sum)
+	}
+}
+
+// #348: backward compatibility — RETURN COUNT(n) with no group var
+// still returns one row with the total.
+func TestAggregation_NoGroupBy_BackwardCompat(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "f1", "Alpha", "Function", "Go")
+	insertSym(t, db, "f2", "Beta", "Function", "Go")
+	insertSym(t, db, "f3", "Gamma", "Function", "Go")
+
+	r := exec(t, db, "MATCH (n) RETURN COUNT(n)")
+	if r.Total != 1 {
+		t.Fatalf("expected 1 row for ungrouped COUNT, got %d", r.Total)
+	}
+	row := r.Rows[0]
+	switch v := row["COUNT(n)"].(type) {
+	case int:
+		if v != 3 {
+			t.Errorf("count = %d, want 3", v)
+		}
+	case float64:
+		if int(v) != 3 {
+			t.Errorf("count = %v, want 3", v)
+		}
+	default:
+		t.Errorf("unexpected count type %T (%v)", v, v)
+	}
+}
+
 // #340: ENDS WITH on file_path filters by extension.
 func TestNodeScan_EndsWith_FilePath(t *testing.T) {
 	db := newTestDB(t)
