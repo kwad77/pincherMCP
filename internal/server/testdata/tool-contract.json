@@ -184,9 +184,26 @@
   },
   {
     "name": "list",
-    "description": "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every project pincher knows about.",
+    "description": "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for every active project pincher knows about. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false` for the legacy unfiltered shape, `include_dead=true` to surface stale-on-disk rows for cleanup, or `limit=N` to cap output cost.",
     "input_schema": {
-      "properties": {},
+      "properties": {
+        "active": {
+          "description": "Filter to projects indexed within active_within_days. Default true.",
+          "type": "boolean"
+        },
+        "active_within_days": {
+          "description": "Activity window for active=true. Default 14.",
+          "type": "integer"
+        },
+        "include_dead": {
+          "description": "Include projects whose on-disk path no longer exists. Default false.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Max rows returned (0 = unlimited). Default 0; set to bound output token cost on large project lists.",
+          "type": "integer"
+        }
+      },
       "type": "object"
     }
   },

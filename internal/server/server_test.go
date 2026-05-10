@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -199,8 +200,12 @@ func TestHandleList_Empty(t *testing.T) {
 
 func TestHandleList_WithProjects(t *testing.T) {
 	srv, store, _ := newTestServer(t)
-	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "proj1", IndexedAt: time.Now()})
-	store.UpsertProject(db.Project{ID: "p2", Path: "/p2", Name: "proj2", IndexedAt: time.Now()})
+	// On-disk paths required since #274 made the default `list` filter
+	// drop dead-on-disk rows. Use t.TempDir so the paths actually exist.
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	store.UpsertProject(db.Project{ID: "p1", Path: dir1, Name: "proj1", IndexedAt: time.Now()})
+	store.UpsertProject(db.Project{ID: "p2", Path: dir2, Name: "proj2", IndexedAt: time.Now()})
 
 	result, err := srv.handleList(context.Background(), makeReq(nil))
 	if err != nil {
@@ -216,6 +221,79 @@ func TestHandleList_WithProjects(t *testing.T) {
 		if _, hasDiag := meta["diagnosis"]; hasDiag {
 			t.Errorf("non-empty list must not carry empty-state diagnosis, got: %v", meta["diagnosis"])
 		}
+	}
+}
+
+// TestHandleList_FiltersDeadAndStale (#274) pins the new default
+// behavior: dead-on-disk paths drop out, stale (>14d) projects drop
+// out, and `filtered_out` reports the suppression count so the agent
+// can choose to surface them via include_dead/active=false.
+func TestHandleList_FiltersDeadAndStale(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	live := t.TempDir()
+	store.UpsertProject(db.Project{ID: "live", Path: live, Name: "live", IndexedAt: time.Now()})
+	store.UpsertProject(db.Project{ID: "dead", Path: filepath.Join(t.TempDir(), "removed-after-index"), Name: "dead", IndexedAt: time.Now()})
+	store.UpsertProject(db.Project{ID: "stale", Path: t.TempDir(), Name: "stale", IndexedAt: time.Now().Add(-30 * 24 * time.Hour)})
+
+	result, err := srv.handleList(context.Background(), makeReq(nil))
+	if err != nil {
+		t.Fatalf("handleList: %v", err)
+	}
+	m := decode(t, result)
+	if got := m["count"].(float64); got != 1 {
+		t.Errorf("count = %v, want 1 (only live should pass default filter)", got)
+	}
+	if got := m["filtered_out"].(float64); got != 2 {
+		t.Errorf("filtered_out = %v, want 2 (dead + stale)", got)
+	}
+}
+
+// include_dead=true surfaces dead-on-disk paths (cleanup workflow).
+func TestHandleList_IncludeDead(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	store.UpsertProject(db.Project{
+		ID: "ghost", Path: filepath.Join(t.TempDir(), "ghost-path-never-existed"),
+		Name: "ghost", IndexedAt: time.Now(),
+	})
+	result, err := srv.handleList(context.Background(), makeReq(map[string]any{"include_dead": true}))
+	if err != nil {
+		t.Fatalf("handleList: %v", err)
+	}
+	m := decode(t, result)
+	if got := m["count"].(float64); got != 1 {
+		t.Errorf("count = %v, want 1 with include_dead=true", got)
+	}
+}
+
+// active=false bypasses the staleness window.
+func TestHandleList_ActiveFalse(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	old := t.TempDir()
+	store.UpsertProject(db.Project{ID: "old", Path: old, Name: "old", IndexedAt: time.Now().Add(-100 * 24 * time.Hour)})
+	result, err := srv.handleList(context.Background(), makeReq(map[string]any{"active": false}))
+	if err != nil {
+		t.Fatalf("handleList: %v", err)
+	}
+	m := decode(t, result)
+	if got := m["count"].(float64); got != 1 {
+		t.Errorf("count = %v, want 1 with active=false", got)
+	}
+}
+
+// limit caps the result set.
+func TestHandleList_LimitCaps(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	for i := 0; i < 5; i++ {
+		dir := t.TempDir()
+		store.UpsertProject(db.Project{ID: fmt.Sprintf("p%d", i), Path: dir, Name: fmt.Sprintf("p%d", i), IndexedAt: time.Now()})
+	}
+	result, err := srv.handleList(context.Background(), makeReq(map[string]any{"limit": 2}))
+	if err != nil {
+		t.Fatalf("handleList: %v", err)
+	}
+	m := decode(t, result)
+	if got := m["count"].(float64); got != 2 {
+		t.Errorf("count = %v, want 2 (limit cap)", got)
 	}
 }
 
