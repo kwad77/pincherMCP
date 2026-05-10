@@ -229,3 +229,170 @@ func hasEdge(edges []db.Edge, otherEndID, kind string) bool {
 	}
 	return false
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WRITES edges (#247 #3 follow-up)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// fixtureWritesPatterns covers every WRITES-emitting AST shape:
+//   - Pure write `=`         → WRITES only
+//   - Read-then-write `+= /= = X+1` → WRITES + READS (compound, OR
+//                                       same-name-on-both-sides)
+//   - IncDecStmt             → WRITES only
+//   - Short var decl `:=`    → neither (introduces local, not a write)
+const fixtureWritesPatterns = `package pkg
+
+var Counter int
+var Cache map[string]int
+var Limit int
+
+// PureWrite assigns to Cache; no read of Cache.
+func PureWrite() {
+	Cache = make(map[string]int)
+}
+
+// ReadAndWrite reads + writes Counter (compound expr).
+func ReadAndWrite() {
+	Counter = Counter + 1
+}
+
+// IncOnly increments Counter — should emit WRITES via IncDecStmt.
+func IncOnly() {
+	Counter++
+}
+
+// LocalOnly uses :=, which introduces a local; the package-level
+// Counter must NOT see a WRITES edge from this function.
+func LocalOnly() {
+	Counter := 99
+	_ = Counter
+}
+
+// ReadOnly reads Limit; no write to it.
+func ReadOnly() int {
+	return Limit
+}
+`
+
+func TestIndex_WritesEdges_PureWriteEmitsOnlyWrites(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/file.go", fixtureWritesPatterns)
+	pid := db.ProjectIDFromPath(dir)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	_ = pid
+
+	purewriteID := db.MakeSymbolID("pkg/file.go", "pkg.PureWrite", "Function")
+	cacheID := db.MakeSymbolID("pkg/file.go", "pkg.Cache", "Variable")
+
+	outbound, err := store.EdgesFrom(purewriteID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom PureWrite: %v", err)
+	}
+	if !hasEdge(outbound, cacheID, "WRITES") {
+		t.Errorf("PureWrite must emit WRITES → Cache:\n  outbound: %v", outbound)
+	}
+	for _, e := range outbound {
+		if e.ToID == cacheID && e.Kind == "READS" {
+			t.Errorf("PureWrite emitted spurious READS → Cache (LHS-only assign should not be a read): %v", e)
+		}
+	}
+}
+
+func TestIndex_WritesEdges_CompoundProducesBothKinds(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/file.go", fixtureWritesPatterns)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	rwID := db.MakeSymbolID("pkg/file.go", "pkg.ReadAndWrite", "Function")
+	counterID := db.MakeSymbolID("pkg/file.go", "pkg.Counter", "Variable")
+
+	outbound, err := store.EdgesFrom(rwID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom ReadAndWrite: %v", err)
+	}
+	if !hasEdge(outbound, counterID, "READS") {
+		t.Errorf("ReadAndWrite must emit READS → Counter (RHS reference):\n  outbound: %v", outbound)
+	}
+	if !hasEdge(outbound, counterID, "WRITES") {
+		t.Errorf("ReadAndWrite must emit WRITES → Counter (LHS assignment):\n  outbound: %v", outbound)
+	}
+}
+
+func TestIndex_WritesEdges_IncDecStmtEmitsWrites(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/file.go", fixtureWritesPatterns)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	incID := db.MakeSymbolID("pkg/file.go", "pkg.IncOnly", "Function")
+	counterID := db.MakeSymbolID("pkg/file.go", "pkg.Counter", "Variable")
+
+	outbound, err := store.EdgesFrom(incID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom IncOnly: %v", err)
+	}
+	if !hasEdge(outbound, counterID, "WRITES") {
+		t.Errorf("Counter++ must emit WRITES → Counter:\n  outbound: %v", outbound)
+	}
+}
+
+// Short-var-decls (`:=`) introduce locals. The package-level Counter
+// must NOT see WRITES from a function that locally shadows the name.
+// Without this gate, refactors that rename Counter would mis-target
+// `LocalOnly` even though it has no relation to the package var.
+func TestIndex_WritesEdges_ShortVarDeclSkipsWrites(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/file.go", fixtureWritesPatterns)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	localID := db.MakeSymbolID("pkg/file.go", "pkg.LocalOnly", "Function")
+	counterID := db.MakeSymbolID("pkg/file.go", "pkg.Counter", "Variable")
+
+	outbound, err := store.EdgesFrom(localID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom LocalOnly: %v", err)
+	}
+	for _, e := range outbound {
+		if e.ToID == counterID && e.Kind == "WRITES" {
+			t.Errorf("short-var-decl `Counter := 99` produced a spurious WRITES → package-level Counter: %v", e)
+		}
+	}
+}
+
+// Pure read functions still get the READS edge (regression gate
+// against the WRITES extension breaking the original READS path).
+func TestIndex_WritesEdges_ReadOnlyKeepsReadsBehaviour(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/file.go", fixtureWritesPatterns)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	roID := db.MakeSymbolID("pkg/file.go", "pkg.ReadOnly", "Function")
+	limitID := db.MakeSymbolID("pkg/file.go", "pkg.Limit", "Variable")
+
+	outbound, err := store.EdgesFrom(roID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom ReadOnly: %v", err)
+	}
+	if !hasEdge(outbound, limitID, "READS") {
+		t.Errorf("ReadOnly must still emit READS → Limit (WRITES split must not regress READS):\n  outbound: %v", outbound)
+	}
+	for _, e := range outbound {
+		if e.ToID == limitID && e.Kind == "WRITES" {
+			t.Errorf("ReadOnly emitted spurious WRITES → Limit (no assignment in body): %v", e)
+		}
+	}
+}
