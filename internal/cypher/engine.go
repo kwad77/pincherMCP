@@ -82,13 +82,153 @@ func inPlaceholders(n int) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type queryAST struct {
-	patterns   []pattern   // MATCH clauses
-	conditions []condition // WHERE clauses
+	patterns []pattern // MATCH clauses
+	// conditions is the flat representation of WHERE, populated only when
+	// the parsed tree is a left-leaning AND/OR chain of leaves. Reading
+	// code that needs to introspect WHERE one-condition-at-a-time (or
+	// drive SQL pushdown) uses this. Empty for paren-grouped queries —
+	// callers fall through to `where` for those.
+	conditions []condition
+	// where is the canonical tree representation of WHERE (#362). Always
+	// populated when WHERE is present. Required for queries with parens
+	// or `NOT (...)` where flat ordering can't express the semantics.
+	where      whereExpr
 	returnVars []returnVar // RETURN items
 	orderBy    string
 	orderDir   string // ASC | DESC
 	limit      int
 	distinct   bool
+}
+
+// whereExpr is the recursive-descent parse tree for WHERE clauses.
+// Three shapes — condExpr (leaf), binaryExpr (AND/OR), notExpr
+// (group NOT). Single-condition NOT keeps using condition.negated
+// to match the pre-#362 leaf-NOT semantics from #354.
+type whereExpr interface {
+	eval(row map[string]any, reCache map[string]*regexp.Regexp) bool
+}
+
+type condExpr struct{ c condition }
+
+func (e condExpr) eval(row map[string]any, reCache map[string]*regexp.Regexp) bool {
+	r := evalCondition(row, e.c, reCache)
+	if e.c.negated {
+		r = !r
+	}
+	return r
+}
+
+type binaryExpr struct {
+	op          string // "AND" | "OR"
+	left, right whereExpr
+}
+
+func (e binaryExpr) eval(row map[string]any, reCache map[string]*regexp.Regexp) bool {
+	if e.op == "OR" {
+		return e.left.eval(row, reCache) || e.right.eval(row, reCache)
+	}
+	return e.left.eval(row, reCache) && e.right.eval(row, reCache)
+}
+
+type notExpr struct{ inner whereExpr }
+
+func (e notExpr) eval(row map[string]any, reCache map[string]*regexp.Regexp) bool {
+	return !e.inner.eval(row, reCache)
+}
+
+// matchesWhere returns true if w matches row (or w is nil — no WHERE).
+func matchesWhere(row map[string]any, w whereExpr, reCache map[string]*regexp.Regexp) bool {
+	if w == nil {
+		return true
+	}
+	return w.eval(row, reCache)
+}
+
+// flattenWhere returns the leaves in source order with connectors stamped
+// per #358 semantics, iff the tree is a left-leaning AND/OR chain of
+// condExpr leaves (no parens-induced asymmetric tree, no notExpr group).
+// Returns nil otherwise. The boolean signals whether the flat list is
+// authoritative; callers that need a non-flat tree fall back to
+// queryAST.where.
+func flattenWhere(w whereExpr) []condition {
+	var leaves []condition
+	var connectors []string
+	if !collectFlatLeaves(w, &leaves, &connectors) {
+		return nil
+	}
+	out := make([]condition, len(leaves))
+	for i, l := range leaves {
+		out[i] = l
+		if i == 0 {
+			out[i].connector = ""
+		} else {
+			out[i].connector = connectors[i-1]
+		}
+	}
+	return out
+}
+
+func collectFlatLeaves(w whereExpr, leaves *[]condition, connectors *[]string) bool {
+	switch e := w.(type) {
+	case condExpr:
+		*leaves = append(*leaves, e.c)
+		return true
+	case binaryExpr:
+		// Left-leaning shape: left can be a chain, right must be a leaf.
+		if !collectFlatLeaves(e.left, leaves, connectors) {
+			return false
+		}
+		rc, ok := e.right.(condExpr)
+		if !ok {
+			return false
+		}
+		*leaves = append(*leaves, rc.c)
+		*connectors = append(*connectors, e.op)
+		return true
+	}
+	return false // notExpr (or future shapes) — non-flat by definition
+}
+
+// pushdownAllowed reports whether SQL pushdown is safe for this WHERE.
+// Pushdown emits AND-joined WHERE clauses; anything richer (OR, group,
+// NOT-group) must be evaluated in Go via matchesWhere. The gate is
+// stricter than the old conditionsHaveOr — it also catches NOT-groups
+// and asymmetric trees from parens.
+func pushdownAllowed(q *queryAST) bool {
+	return whereIsAndChainOfLeaves(q.where)
+}
+
+func whereIsAndChainOfLeaves(w whereExpr) bool {
+	if w == nil {
+		return true
+	}
+	switch e := w.(type) {
+	case condExpr:
+		return true
+	case binaryExpr:
+		if e.op != "AND" {
+			return false
+		}
+		if _, ok := e.right.(condExpr); !ok {
+			return false
+		}
+		return whereIsAndChainOfLeaves(e.left)
+	}
+	return false
+}
+
+// andChainFromConds builds a left-leaning AND tree from a flat slice of
+// conditions. Used to wrap the post-pushdown leftover leaves so the row
+// loop can use a single matchesWhere call regardless of pushdown mode.
+func andChainFromConds(conds []condition) whereExpr {
+	if len(conds) == 0 {
+		return nil
+	}
+	var w whereExpr = condExpr{c: conds[0]}
+	for _, c := range conds[1:] {
+		w = binaryExpr{op: "AND", left: w, right: condExpr{c: c}}
+	}
+	return w
 }
 
 type pattern struct {
@@ -272,11 +412,25 @@ func (p *parser) parseQuery() (*queryAST, error) {
 
 		case "WHERE":
 			p.next()
-			conds, err := p.parseConditions()
+			where, err := p.parseWhere()
 			if err != nil {
 				return nil, err
 			}
-			q.conditions = append(q.conditions, conds...)
+			// Multiple WHERE clauses (one per MATCH) AND together.
+			if q.where == nil {
+				q.where = where
+			} else {
+				q.where = binaryExpr{op: "AND", left: q.where, right: where}
+			}
+			// Populate q.conditions when the tree is a left-leaning AND/OR
+			// chain — back-compat with code paths and tests that read the
+			// flat representation. Paren-grouped queries leave it empty;
+			// those callers must use q.where.
+			if flat := flattenWhere(q.where); flat != nil {
+				q.conditions = flat
+			} else {
+				q.conditions = nil
+			}
 
 		case "RETURN":
 			p.next()
@@ -414,40 +568,88 @@ func (p *parser) parseProps() map[string]string {
 	return props
 }
 
-func (p *parser) parseConditions() ([]condition, error) {
-	var conds []condition
-	// Pending connector stamped on the next-parsed condition. First
-	// condition has no connector (it's the start of the chain); each
-	// subsequent gets the AND/OR token that preceded it. Pre-fix this
-	// connector was discarded, silently converting every OR to AND (#358).
-	pendingConnector := ""
-	for {
-		c, err := p.parseOneCondition()
+// parseWhere parses a WHERE clause and returns the recursive-descent tree
+// (#362). Grammar:
+//
+//	or:     and ('OR' and)*
+//	and:    factor ('AND' factor)*
+//	factor: 'NOT'? ('(' or ')' | leafCondition)
+//
+// Left-recursion in or/and means flat queries (no parens) produce
+// left-leaning trees that flattenWhere can collapse back to []condition
+// for back-compat with the pre-#362 q.conditions code paths.
+func (p *parser) parseWhere() (whereExpr, error) {
+	return p.parseOrExpr()
+}
+
+func (p *parser) parseOrExpr() (whereExpr, error) {
+	left, err := p.parseAndExpr()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().value == "OR" {
+		p.next()
+		right, err := p.parseAndExpr()
 		if err != nil {
 			return nil, err
 		}
-		c.connector = pendingConnector
-		conds = append(conds, c)
-		next := p.peek().value
-		if next != "AND" && next != "OR" {
-			break
-		}
-		p.next() // consume AND/OR
-		pendingConnector = next
+		left = binaryExpr{op: "OR", left: left, right: right}
 	}
-	return conds, nil
+	return left, nil
+}
+
+func (p *parser) parseAndExpr() (whereExpr, error) {
+	left, err := p.parseFactor()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().value == "AND" {
+		p.next()
+		right, err := p.parseFactor()
+		if err != nil {
+			return nil, err
+		}
+		left = binaryExpr{op: "AND", left: left, right: right}
+	}
+	return left, nil
+}
+
+// parseFactor handles a single boolean atom: an optional NOT, then either
+// a parenthesized sub-expression or a leaf condition. The two NOT shapes
+// are distinguished by the next token after NOT:
+//   - `NOT (` → group NOT; wraps the parsed sub-expression in notExpr.
+//   - `NOT <ident>` → leaf NOT; flags condition.negated for #354 behaviour.
+func (p *parser) parseFactor() (whereExpr, error) {
+	negated := false
+	if p.peek().value == "NOT" {
+		p.next()
+		negated = true
+	}
+	if p.peek().value == "(" {
+		p.next()
+		inner, err := p.parseOrExpr()
+		if err != nil {
+			return nil, err
+		}
+		if p.peek().value != ")" {
+			return nil, fmt.Errorf("expected ')' after WHERE sub-expression, got %q", p.peek().value)
+		}
+		p.next()
+		if negated {
+			return notExpr{inner: inner}, nil
+		}
+		return inner, nil
+	}
+	c, err := p.parseOneCondition()
+	if err != nil {
+		return nil, err
+	}
+	c.negated = negated
+	return condExpr{c: c}, nil
 }
 
 func (p *parser) parseOneCondition() (condition, error) {
 	c := condition{}
-
-	// #354: WHERE NOT n.x = ... — consume NOT prefix and flag the
-	// condition for negation. Single-condition prefix only; compound
-	// `NOT (a OR b)` requires paren-aware parsing that's out of scope.
-	if p.peek().value == "NOT" {
-		p.next()
-		c.negated = true
-	}
 
 	varTok := p.next()
 	c.variable = varTok.value
@@ -702,23 +904,30 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 		}
 	}
 
-	// Push down simple WHERE conditions
+	// Push down simple WHERE conditions. #358 + #362: pushdown is only
+	// safe when the WHERE tree is a pure AND chain of leaves — anything
+	// richer (OR, paren-grouped, NOT-group) goes through Go evaluation
+	// against q.where so boolean composition is honoured exactly.
+	canPush := pushdownAllowed(q)
 	var unpushed []condition
-	// #358: SQL pushdown emits AND-joined WHERE clauses; if any condition
-	// has an OR connector, all conditions must go through Go evaluation
-	// (which handles boolean composition correctly). Otherwise an OR
-	// condition would silently push to SQL as AND, recreating the bug.
-	hasOr := conditionsHaveOr(q.conditions)
-	for _, c := range q.conditions {
-		if c.variable != pat.fromVar {
-			continue
+	if canPush {
+		for _, c := range q.conditions {
+			if c.variable != pat.fromVar {
+				continue
+			}
+			col := cypherPropToCol(c.property)
+			if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH" || c.op == "IS NULL" || c.op == "IS NOT NULL") {
+				appendWhereOp(&sqlQ, &args, "", col, c)
+			} else {
+				unpushed = append(unpushed, c)
+			}
 		}
-		col := cypherPropToCol(c.property)
-		if !hasOr && col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH" || c.op == "IS NULL" || c.op == "IS NOT NULL") {
-			appendWhereOp(&sqlQ, &args, "", col, c)
-		} else {
-			unpushed = append(unpushed, c)
-		}
+	}
+	var filter whereExpr
+	if canPush {
+		filter = andChainFromConds(unpushed)
+	} else {
+		filter = q.where
 	}
 
 	// #308: skip the SQL LIMIT when the query is aggregating
@@ -746,8 +955,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 			return nil, err
 		}
 		m := symRowToMap(pat.fromVar, n)
-		// Apply unpushed conditions in Go
-		if !matchesConditionsWithCache(m, unpushed, reCache) {
+		if !matchesWhere(m, filter, reCache) {
 			continue
 		}
 		nodes = append(nodes, m)
@@ -757,19 +965,6 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 	}
 
 	return buildResult(nodes, q)
-}
-
-// conditionsHaveOr reports whether any condition is OR-joined to the
-// previous one. SQL pushdown emits AND-joined WHERE clauses; if any
-// connector is OR, all conditions must be evaluated in Go to honor
-// boolean composition (#358).
-func conditionsHaveOr(conds []condition) bool {
-	for _, c := range conds {
-		if c.connector == "OR" {
-			return true
-		}
-	}
-	return false
 }
 
 // hasAggregation reports whether any RETURN variable in q is an
@@ -827,23 +1022,33 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 		args = append(args, pat.toKind)
 	}
 
-	// Push down WHERE conditions
+	// Push down WHERE conditions. #358 + #362: tree-aware pushdown gate —
+	// only AND-chains-of-leaves push to SQL; richer trees are fully
+	// evaluated in Go via q.where (see runNodeScan for rationale).
+	canPush := pushdownAllowed(q)
 	var unpushed []condition
-	hasOr := conditionsHaveOr(q.conditions)
-	for _, c := range q.conditions {
-		tableAlias := "a"
-		if c.variable == pat.toVar {
-			tableAlias = "b"
-		} else if c.variable != pat.fromVar {
-			unpushed = append(unpushed, c)
-			continue
+	if canPush {
+		for _, c := range q.conditions {
+			tableAlias := "a"
+			if c.variable == pat.toVar {
+				tableAlias = "b"
+			} else if c.variable != pat.fromVar {
+				unpushed = append(unpushed, c)
+				continue
+			}
+			col := cypherPropToCol(c.property)
+			if col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH" || c.op == "IS NULL" || c.op == "IS NOT NULL") {
+				appendWhereOp(&sqlQ, &args, tableAlias+".", col, c)
+			} else {
+				unpushed = append(unpushed, c)
+			}
 		}
-		col := cypherPropToCol(c.property)
-		if !hasOr && col != "" && (c.op == "=" || c.op == "CONTAINS" || c.op == "STARTS WITH" || c.op == "ENDS WITH" || c.op == "IS NULL" || c.op == "IS NOT NULL") {
-			appendWhereOp(&sqlQ, &args, tableAlias+".", col, c)
-		} else {
-			unpushed = append(unpushed, c)
-		}
+	}
+	var filter whereExpr
+	if canPush {
+		filter = andChainFromConds(unpushed)
+	} else {
+		filter = q.where
 	}
 
 	// #308: same skip-when-aggregating treatment as runNodeScan.
@@ -876,7 +1081,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 			m[pat.edgeVar+".kind"] = edgeKind
 			m[pat.edgeVar+".confidence"] = conf
 		}
-		if !matchesConditionsWithCache(m, unpushed, reCache) {
+		if !matchesWhere(m, filter, reCache) {
 			continue
 		}
 		resultRows = append(resultRows, m)
@@ -913,14 +1118,21 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 		startQ += " AND kind=?"
 		startArgs = append(startArgs, pat.fromKind)
 	}
-	for _, c := range q.conditions {
-		if c.variable != pat.fromVar {
-			continue
-		}
-		col := cypherPropToCol(c.property)
-		if col != "" && c.op == "=" {
-			startQ += " AND " + col + "=?"
-			startArgs = append(startArgs, c.value)
+	// Start-node prefilter pushes fromVar equalities into SQL. Only safe
+	// when pushdownAllowed(q) — otherwise an OR or paren-grouped WHERE
+	// could incorrectly exclude valid start nodes (e.g.
+	// `WHERE a.name='X' OR a.name='Y'` flat-pushed as ANDed equalities
+	// returns zero start nodes). q.where still drives the per-row match.
+	if pushdownAllowed(q) {
+		for _, c := range q.conditions {
+			if c.variable != pat.fromVar {
+				continue
+			}
+			col := cypherPropToCol(c.property)
+			if col != "" && c.op == "=" {
+				startQ += " AND " + col + "=?"
+				startArgs = append(startArgs, c.value)
+			}
 		}
 	}
 	startQ += " LIMIT 100"
@@ -967,7 +1179,7 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 				m[k] = v
 			}
 			m["_hop"] = hop.depth
-			if !matchesConditionsWithCache(m, q.conditions, reCache) {
+			if !matchesWhere(m, q.where, reCache) {
 				continue
 			}
 			resultRows = append(resultRows, m)
@@ -1413,10 +1625,11 @@ func cypherPropToCol(prop string) string {
 	}
 }
 
-// matchesConditions applies remaining (non-SQL-pushed) conditions in Go,
-// supporting regex (=~) and numeric comparisons.
-// reCache is an optional map for caching compiled regexes across calls to
-// avoid recompiling the same pattern for every row.
+// matchesConditions evaluates a flat []condition slice — kept as a
+// helper for tests that drive operator semantics directly. The live
+// row-evaluation path is matchesWhere over the queryAST.where tree
+// (#362); this helper covers the same ground for the AND/OR-only
+// flat shape (where flattenWhere succeeds).
 func matchesConditions(row map[string]any, conds []condition) bool {
 	return matchesConditionsWithCache(row, conds, nil)
 }
@@ -1425,9 +1638,10 @@ func matchesConditionsWithCache(row map[string]any, conds []condition, reCache m
 	if len(conds) == 0 {
 		return true
 	}
-	// #358: walk left-to-right honouring AND/OR connectors. No operator
-	// precedence (paren parsing not yet implemented), so `a OR b AND c`
-	// evaluates as `(a OR b) AND c`. Document this as a known limitation.
+	// Walks left-to-right honouring #358 AND/OR connectors. The tree
+	// path (matchesWhere over queryAST.where) handles paren grouping
+	// and group-NOT; this helper still gives the same answer when the
+	// tree was a left-leaning flat chain (which flattenWhere checks).
 	result := evalCondition(row, conds[0], reCache)
 	if conds[0].negated {
 		result = !result
