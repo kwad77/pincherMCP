@@ -2055,7 +2055,14 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if minConfidence > 0 {
 		fetchLimit = limit * 4
 	}
-	results, err := s.store.SearchSymbolsByCorpus(projectID, query, kind, language, corpus, fetchLimit)
+	// #289: FTS5 treats `.` and `-` as syntactic; bare dotted identifiers
+	// like `os.Stat` produce raw "fts5: syntax error" messages that don't
+	// help the caller. Auto-quote tokens containing those characters so
+	// the natural identifier query just works. Explicit FTS5 syntax
+	// (already-quoted phrases, `auth*` prefix, `name:value` column-prefix,
+	// boolean operators) is preserved.
+	ftsQuery := sanitizeFTS5Query(query)
+	results, err := s.store.SearchSymbolsByCorpus(projectID, ftsQuery, kind, language, corpus, fetchLimit)
 	if err != nil {
 		return errResult(fmt.Sprintf("search error: %v", err)), nil
 	}
@@ -2072,7 +2079,7 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	fellthroughTo := ""
 	if corpus == "" && len(results) == 0 {
 		for _, fb := range []string{db.CorpusConfig, db.CorpusDocs} {
-			fbResults, fbErr := s.store.SearchSymbolsByCorpus(projectID, query, kind, language, fb, fetchLimit)
+			fbResults, fbErr := s.store.SearchSymbolsByCorpus(projectID, ftsQuery, kind, language, fb, fetchLimit)
 			if fbErr != nil {
 				return errResult(fmt.Sprintf("search error (fallthrough %s): %v", fb, fbErr)), nil
 			}
@@ -2342,6 +2349,75 @@ func verifyEmptySearchCause(
 	// diagnosis. This covers spelling errors, wrong project, and
 	// symbols that genuinely don't exist in the index.
 	return "", nil, false
+}
+
+// sanitizeFTS5Query auto-quotes whitespace-separated tokens that
+// contain characters FTS5 treats as syntactic (`.`, `-`). Without this,
+// natural identifier queries like `os.Stat` or `my-component` raise a
+// raw "fts5: syntax error" the caller can't recover from without
+// learning FTS5 quoting (#289).
+//
+// The function is intentionally conservative — it only wraps a token
+// when an alphanumeric character sits on both sides of the special
+// char (`os.Stat`, `my-component`). That preserves:
+//   - Explicit quoted phrases ("login flow") — early return on the
+//     first `"` so anything quoted is passed through verbatim.
+//   - Wildcards (`auth*`, `os.Stat*` becomes `"os.Stat"*`).
+//   - Column-prefix syntax (`name:value`, `kind:Function` — the colon
+//     is FTS5-legitimate, only `.` and `-` get wrapped).
+//   - Boolean operators (AND, OR, NOT) — those are bare keywords with
+//     no special chars, so they don't match the wrap predicate.
+//   - Already-correct queries with no special chars (most identifier
+//     searches).
+func sanitizeFTS5Query(q string) string {
+	if q == "" {
+		return q
+	}
+	// If the user explicitly used FTS5 quoting, bail out — anything
+	// inside quotes was their choice and we shouldn't second-guess it.
+	if strings.Contains(q, `"`) {
+		return q
+	}
+	tokens := strings.Fields(q)
+	for i, tok := range tokens {
+		tokens[i] = wrapTokenIfNeeded(tok)
+	}
+	return strings.Join(tokens, " ")
+}
+
+// wrapTokenIfNeeded returns tok wrapped in FTS5 phrase quotes if it
+// contains a `.` or `-` between alphanumerics. Strips a trailing `*`
+// before testing and re-adds it so prefix queries (`os.Stat*`) keep
+// working. Returns tok unchanged otherwise.
+func wrapTokenIfNeeded(tok string) string {
+	suffix := ""
+	core := tok
+	if strings.HasSuffix(core, "*") {
+		core = core[:len(core)-1]
+		suffix = "*"
+	}
+	if !needsQuoting(core) {
+		return tok
+	}
+	return `"` + core + `"` + suffix
+}
+
+func needsQuoting(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	for i := 1; i < len(s)-1; i++ {
+		if s[i] == '.' || s[i] == '-' {
+			if isAlphanum(s[i-1]) && isAlphanum(s[i+1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isAlphanum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 // defaultMinConfidenceFor picks the right min_confidence default for a
