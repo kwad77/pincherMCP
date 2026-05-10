@@ -1248,7 +1248,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name; ambiguous names fall back to the first match (use `changes` if you have an exact symbol ID instead).",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name; ambiguous names fall back to the first match (use `changes` if you have an exact symbol ID instead). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix).",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["name"],"properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder')"},
@@ -1256,7 +1256,8 @@ func (s *Server) registerTools() {
 				"direction":{"type":"string","enum":["outbound","inbound","both"],"description":"outbound=what it calls, inbound=what calls it. Default: both"},
 				"depth":{"type":"integer","description":"BFS depth 1-5 (default 3)"},
 				"risk":{"type":"boolean","description":"Add CRITICAL/HIGH/MEDIUM/LOW risk labels (default true)"},
-				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.0 (no filter). Hops whose target symbol scores below the threshold are excluded from the result."}
+				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.0 (no filter). Hops whose target symbol scores below the threshold are excluded from the result."},
+				"kinds":{"type":"string","description":"Comma-separated list of edge kinds to traverse (e.g. 'CALLS' or 'READS,WRITES'). Default: CALLS-family (CALLS,HTTP_CALLS,ASYNC_CALLS) — covers the typical 'who calls this' use case. Pass READS / WRITES (Go vars only, see #264/#265) to follow data-flow edges. Whitespace and case-insensitive."}
 			}
 		}`),
 	}, s.handleTrace)
@@ -2133,6 +2134,21 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	addRisk := boolArgDefault(args, "risk", true)
 	minConfidence := floatArg(args, "min_confidence", 0.0)
 
+	// kinds: comma-separated list of edge kinds to traverse (e.g.
+	// "CALLS" or "READS,WRITES"). Empty/missing = default (CALLS
+	// family). Whitespace and case differences are tolerated so a
+	// caller passing "reads, writes" matches the same as "READS,WRITES".
+	kindsArg := str(args, "kinds")
+	var edgeKinds []string
+	if kindsArg != "" {
+		for _, k := range strings.Split(kindsArg, ",") {
+			k = strings.ToUpper(strings.TrimSpace(k))
+			if k != "" {
+				edgeKinds = append(edgeKinds, k)
+			}
+		}
+	}
+
 	projectID, errRes := s.mustProject(args)
 	if errRes != nil {
 		return errRes, nil
@@ -2150,7 +2166,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if len(starts) == 0 {
 		return errResult(fmt.Sprintf("symbol %q not found in project", name)), nil
 	}
-	hops, err := s.indexer.TraceByID(ctx, projectID, starts[0].ID, direction, depth, addRisk)
+	hops, err := s.indexer.TraceByID(ctx, projectID, starts[0].ID, direction, depth, addRisk, edgeKinds...)
 	if err != nil {
 		return errResult(fmt.Sprintf("trace error: %v", err)), nil
 	}

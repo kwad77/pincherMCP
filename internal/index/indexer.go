@@ -697,12 +697,18 @@ func (idx *Indexer) Trace(ctx context.Context, projectID, name string, direction
 // projectID scopes the BFS traversal to a single project's edges (#7).
 // Pass "" to opt into legacy cross-project traversal (rare; useful only
 // when the caller is intentionally exploring an inter-project edge).
-func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, direction string, maxDepth int, addRisk bool) ([]Hop, error) {
+func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, direction string, maxDepth int, addRisk bool, edgeKinds ...string) ([]Hop, error) {
 	if maxDepth <= 0 || maxDepth > 5 {
 		maxDepth = 3
 	}
 
-	edgeKinds := []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
+	// Default edge kinds when caller doesn't specify (preserves the
+	// original behaviour for the 4 existing call sites). New callers
+	// pass their own list — e.g. ["READS", "WRITES"] to follow var
+	// refs only, or ["CALLS", "READS"] to mix.
+	if len(edgeKinds) == 0 {
+		edgeKinds = []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
+	}
 
 	// Single CTE traversal per direction (max 2 SQL calls total for "both").
 	// Project-scoped (#7): the recursive edge join restricts to the
