@@ -399,6 +399,55 @@ func isDeveloperScratchPath(filePath string) bool {
 	return false
 }
 
+// sortTraceCandidates ranks symbols for trace's name-resolution
+// heuristic (#319). Callers expect `trace name="main"` to land on
+// the binary's actual entry function, not a scratch file's
+// `package main` declaration. Order:
+//   1. Non-scratch + non-test files first.
+//   2. Callable kinds first (Function, Method, Class, Interface,
+//      Type) — these can actually have CALLS edges so the trace
+//      will yield hops. Module / Setting / Section / Document
+//      can't, so they're least preferred.
+//   3. Stable on the existing order from GetSymbolsByName when
+//      tied — that order is alphabetic by file_path.
+func sortTraceCandidates(syms []db.Symbol) {
+	kindRank := func(k string) int {
+		switch k {
+		case "Function":
+			return 0
+		case "Method":
+			return 1
+		case "Class", "Interface", "Type", "Enum", "Trait":
+			return 2
+		case "Variable":
+			return 3
+		default:
+			// Module, Setting, Section, Document, Block, Resource,
+			// Output, Local, Provider — none carry CALLS edges.
+			return 99
+		}
+	}
+	pathRank := func(p string) int {
+		// scratch and test files rank below production. Two buckets:
+		// scratch (worst, dev pollution) and test (still legitimate
+		// but secondary).
+		if isDeveloperScratchPath(p) {
+			return 2
+		}
+		if isTestFile(p) {
+			return 1
+		}
+		return 0
+	}
+	sort.SliceStable(syms, func(i, j int) bool {
+		pi, pj := pathRank(syms[i].FilePath), pathRank(syms[j].FilePath)
+		if pi != pj {
+			return pi < pj
+		}
+		return kindRank(syms[i].Kind) < kindRank(syms[j].Kind)
+	})
+}
+
 // isTestFile reports whether file_path looks like a test file across
 // the languages pincher indexes (#305). Used by handleArchitecture
 // to keep hotspots focused on production code; pass `include_tests=true`
@@ -2913,6 +2962,14 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if len(starts) == 0 {
 		return errResult(fmt.Sprintf("symbol %q not found in project", name)), nil
 	}
+	// #319: rank candidates so the picked target is the most useful
+	// trace seed. Precedence:
+	//   1. Non-scratch, non-test files first (scratch_*.go, *_test.go)
+	//   2. Callable kinds first (Function, Method) — Modules/Settings
+	//      can match a name but they have no CALLS edges, so tracing
+	//      them returns 0 hops and looks like a real empty result.
+	//   3. Stable order from GetSymbolsByName for everything else.
+	sortTraceCandidates(starts)
 	hops, err := s.indexer.TraceByID(ctx, projectID, starts[0].ID, direction, depth, addRisk, edgeKinds...)
 	if err != nil {
 		return errResult(fmt.Sprintf("trace error: %v", err)), nil
