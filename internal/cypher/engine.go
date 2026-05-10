@@ -427,22 +427,22 @@ func (p *parser) parseOneCondition() (condition, error) {
 	switch p.peek().value {
 	case "=", "<>", ">", "<", ">=", "<=":
 		c.op = p.next().value
-		c.value = p.next().value
+		c.value = normalizeConditionValue(p.next())
 	case "=~":
 		c.op = p.next().value
-		c.value = p.next().value
+		c.value = normalizeConditionValue(p.next())
 		if _, err := regexp.Compile(c.value); err != nil {
 			return c, fmt.Errorf("invalid regex pattern %q: %w", c.value, err)
 		}
 	case "CONTAINS":
 		p.next()
 		c.op = "CONTAINS"
-		c.value = p.next().value
+		c.value = normalizeConditionValue(p.next())
 	case "STARTS":
 		p.next()
 		p.skip("WITH")
 		c.op = "STARTS WITH"
-		c.value = p.next().value
+		c.value = normalizeConditionValue(p.next())
 	case "!":
 		// Detect `!=` (two-char op the tokenizer doesn't fuse) so the hint
 		// catches the SQL-muscle-memory case before the generic fallback.
@@ -501,6 +501,29 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 		}
 	}
 	return vars, nil
+}
+
+// normalizeConditionValue lowercases the token value for boolean and
+// null keywords so equality compares correctly against Go-formatted
+// row values (#323). The tokenizer uppercases all keywords for parser
+// convenience (so MATCH/WHERE/RETURN can be matched without case
+// folding), but TRUE/FALSE/NULL are *literal values* — when they
+// flow through to matchesConditions they're compared against
+// `fmt.Sprint(boolValue)` which Go formats as lowercase. Without
+// this normalisation, `WHERE n.is_exported = true` always returned
+// 0 rows because `"true" != "TRUE"`.
+//
+// Non-keyword tokens (strings, identifiers, numbers) pass through
+// unchanged — only the three known boolean/null literals get the
+// case-fold.
+func normalizeConditionValue(tok token) string {
+	if tok.kind == "KEYWORD" {
+		switch tok.value {
+		case "TRUE", "FALSE", "NULL":
+			return strings.ToLower(tok.value)
+		}
+	}
+	return tok.value
 }
 
 // operatorHint maps common-mistake operator tokens to a one-line nudge
