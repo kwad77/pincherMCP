@@ -33,9 +33,13 @@
   },
   {
     "name": "architecture",
-    "description": "**Call once at the start of unfamiliar work** to orient. Returns language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Much cheaper than reading files to understand the structure.",
+    "description": "**Call once at the start of unfamiliar work** to orient. Returns language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Hotspots default to production code only (test helpers are filtered); pass include_tests=true to surface them too. Much cheaper than reading files to understand the structure.",
     "input_schema": {
       "properties": {
+        "include_tests": {
+          "description": "If true, include hotspots from test files (*_test.go, *.spec.ts, etc.). Default false — test helpers like newTestServer dominate raw call counts but aren't useful for orientation.",
+          "type": "boolean"
+        },
         "project": {
           "type": "string"
         }

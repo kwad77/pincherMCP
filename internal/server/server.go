@@ -398,6 +398,66 @@ func isDeveloperScratchPath(filePath string) bool {
 	return false
 }
 
+// isTestFile reports whether file_path looks like a test file across
+// the languages pincher indexes (#305). Used by handleArchitecture
+// to keep hotspots focused on production code; pass `include_tests=true`
+// to opt back into the legacy mixed list.
+//
+// Recognised conventions:
+//   - Go:        `_test.go`
+//   - JS/TS:     `*.test.{js,ts,tsx,jsx,mjs,cjs}`, `*.spec.{js,ts,tsx,jsx}`
+//   - Python:    `test_*.py`, `*_test.py`, `tests/` directory
+//   - Ruby:      `*_spec.rb`, `*_test.rb`, `spec/` / `test/` directories
+//   - Rust:      `tests/` directory (cargo convention; in-file `#[test]` is unfilterable here)
+//   - Java/Kotlin/Scala: `*Test.{java,kt,scala}`, `*Spec.{java,kt,scala}`
+//   - Generic:   anything in a `__tests__/` (Jest) or `test/` directory
+//
+// The check works on both `/`- and `\`-separated paths so Windows-
+// indexed projects don't slip through.
+func isTestFile(filePath string) bool {
+	low := strings.ToLower(filePath)
+	// Normalise so the directory checks work regardless of OS path style.
+	low = strings.ReplaceAll(low, `\`, `/`)
+	base := low
+	if i := strings.LastIndex(low, "/"); i >= 0 {
+		base = low[i+1:]
+	}
+
+	// Directory-based test conventions.
+	for _, dir := range []string{"/__tests__/", "/tests/", "/test/", "/spec/"} {
+		if strings.Contains(low, dir) {
+			return true
+		}
+	}
+	// Top-level (no directory prefix) — also catch `tests/...` etc.
+	for _, prefix := range []string{"__tests__/", "tests/", "test/", "spec/"} {
+		if strings.HasPrefix(low, prefix) {
+			return true
+		}
+	}
+
+	// Filename suffixes.
+	suffixes := []string{
+		"_test.go",
+		"_test.py", "_spec.rb", "_test.rb",
+		".test.js", ".test.ts", ".test.tsx", ".test.jsx",
+		".test.mjs", ".test.cjs",
+		".spec.js", ".spec.ts", ".spec.tsx", ".spec.jsx",
+		"test.java", "test.kt", "test.scala",
+		"spec.java", "spec.kt", "spec.scala",
+	}
+	for _, sfx := range suffixes {
+		if strings.HasSuffix(base, sfx) {
+			return true
+		}
+	}
+	// Python `test_*.py` prefix.
+	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
+		return true
+	}
+	return false
+}
+
 // languageRE matches the first occurrence of `"language":"X"` in a
 // marshalled response payload. JSON guarantees a single quoting style,
 // so this is safe to scan against the rendered payload (#240). Picks
@@ -1526,10 +1586,11 @@ func (s *Server) registerTools() {
 	// 9. architecture
 	s.addTool(&mcp.Tool{
 		Name:        "architecture",
-		Description: "**Call once at the start of unfamiliar work** to orient. Returns language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Much cheaper than reading files to understand the structure.",
+		Description: "**Call once at the start of unfamiliar work** to orient. Returns language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Hotspots default to production code only (test helpers are filtered); pass include_tests=true to surface them too. Much cheaper than reading files to understand the structure.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
-				"project":{"type":"string"}
+				"project":{"type":"string"},
+				"include_tests":{"type":"boolean","description":"If true, include hotspots from test files (*_test.go, *.spec.ts, etc.). Default false — test helpers like newTestServer dominate raw call counts but aren't useful for orientation."}
 			}
 		}`),
 	}, s.handleArchitecture)
@@ -3200,13 +3261,31 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 		_ = epRows.Err()
 	}
 
-	// Hotspots (most-called)
-	hotspots, _ := s.store.GetHotspots(projectID, 10)
+	// Hotspots (most-called). #305: by default exclude test files —
+	// test helpers (`newTestServer`, `makeReq`, `decode`) have huge
+	// in-degree because every test imports them, but they're not
+	// signal for "what's the most important code in this project?"
+	// Fetch ~5x more than we want and post-filter so the top-N stays
+	// at the intended size after dropping tests.
+	includeTests := boolArg(args, "include_tests")
+	hotspotFetchLimit := 50
+	if includeTests {
+		hotspotFetchLimit = 10 // legacy path — no filter, no over-fetch
+	}
+	rawHotspots, _ := s.store.GetHotspots(projectID, hotspotFetchLimit)
+	var hotspots []db.Symbol
 	var hotspotMaps []map[string]any
-	for _, h := range hotspots {
+	for _, h := range rawHotspots {
+		if !includeTests && isTestFile(h.FilePath) {
+			continue
+		}
+		hotspots = append(hotspots, h)
 		hotspotMaps = append(hotspotMaps, map[string]any{
 			"name": h.Name, "kind": h.Kind, "file_path": h.FilePath,
 		})
+		if len(hotspotMaps) >= 10 {
+			break
+		}
 	}
 
 	// Graph stats

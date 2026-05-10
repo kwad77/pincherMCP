@@ -1581,18 +1581,18 @@ type Project struct {
 	// filesystems (Windows NTFS, macOS APFS) via CanonicalProjectPath
 	// so symlink + casing variants of the same physical directory
 	// dedup to one row. Use this for project lookups and joins (#277).
-	ID string
+	ID string `json:"id"`
 	// Path is the display + filesystem-operation value. Original
 	// casing preserved so callers can concatenate it with relative
 	// paths and have file operations work on case-sensitive volumes.
 	// On case-insensitive filesystems, Path may differ in casing
 	// from ID — that's intentional, not a bug (#277).
-	Path      string
-	Name      string
-	IndexedAt time.Time
-	FileCount int
-	SymCount  int
-	EdgeCount int
+	Path      string    `json:"path"`
+	Name      string    `json:"name"`
+	IndexedAt time.Time `json:"indexed_at"`
+	FileCount int       `json:"file_count"`
+	SymCount  int       `json:"symbol_count"`
+	EdgeCount int       `json:"edge_count"`
 	// SchemaVersionAtIndex is the schema_version_at_index column added in
 	// v15 (#236). Surfaces "this project was last indexed against schema
 	// vN" so pincher list / doctor can flag projects that predate later
@@ -1601,7 +1601,7 @@ type Project struct {
 	// rendered as "stale (unknown)" because it was definitely indexed
 	// before v15. Non-nil = exact value, compare against the running
 	// binary's max-known schema version.
-	SchemaVersionAtIndex *int
+	SchemaVersionAtIndex *int `json:"schema_version_at_index,omitempty"`
 }
 
 // SearchResult is a FTS5 match returned by SearchSymbols.
