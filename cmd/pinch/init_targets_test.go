@@ -208,7 +208,7 @@ func TestWindsurf_PreservesExistingContent(t *testing.T) {
 }
 
 func TestAider_GlobalIsRejected(t *testing.T) {
-	if _, err := aiderInitTarget.pathFn(true); err == nil {
+	if _, err := aiderInitTarget.pathFn(t.TempDir(), true); err == nil {
 		t.Error("aider --global should error (not yet implemented)")
 	}
 }
@@ -287,7 +287,7 @@ func TestContinue_MalformedJSONReturnsError(t *testing.T) {
 func TestCursorPathFn_RelativeToCwd(t *testing.T) {
 	tmp := t.TempDir()
 	withCWD(t, tmp)
-	got, err := cursorInitTarget.pathFn(false)
+	got, err := cursorInitTarget.pathFn(tmp, false)
 	if err != nil {
 		t.Fatalf("pathFn: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestResolveTargets(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := resolveTargets(c.input)
+			got, err := resolveTargets(c.input, t.TempDir())
 			if c.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got nil")
@@ -385,7 +385,7 @@ func TestRunInitTarget_WritesAndIsIdempotent(t *testing.T) {
 	withCWD(t, tmp)
 
 	var buf strings.Builder
-	if err := runInitTarget(&buf, cursorInitTarget, false, false); err != nil {
+	if err := runInitTarget(&buf, cursorInitTarget, tmp, false, false); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(tmp, ".cursor", "rules", "pincher.mdc"))
@@ -398,7 +398,7 @@ func TestRunInitTarget_WritesAndIsIdempotent(t *testing.T) {
 	first := string(got)
 
 	// Re-run; content should match exactly.
-	if err := runInitTarget(&buf, cursorInitTarget, false, false); err != nil {
+	if err := runInitTarget(&buf, cursorInitTarget, tmp, false, false); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	got2, _ := os.ReadFile(filepath.Join(tmp, ".cursor", "rules", "pincher.mdc"))
@@ -412,7 +412,7 @@ func TestRunInitTarget_DryRunDoesNotWrite(t *testing.T) {
 	withCWD(t, tmp)
 
 	var buf strings.Builder
-	if err := runInitTarget(&buf, windsurfInitTarget, false, true); err != nil {
+	if err := runInitTarget(&buf, windsurfInitTarget, tmp, false, true); err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); !os.IsNotExist(err) {
@@ -431,7 +431,7 @@ func TestRunInitTarget_GlobalIgnoredForUnsupportedTargets(t *testing.T) {
 	var buf strings.Builder
 	// windsurf has supportsGlobal=false; passing global=true should
 	// silently fall back to project-local rather than erroring.
-	if err := runInitTarget(&buf, windsurfInitTarget, true, false); err != nil {
+	if err := runInitTarget(&buf, windsurfInitTarget, tmp, true, false); err != nil {
 		t.Fatalf("windsurf with --global should not error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); err != nil {
@@ -444,7 +444,7 @@ func TestRunInitTarget_ContinueAlwaysGlobal(t *testing.T) {
 	withHome(t, tmp)
 
 	var buf strings.Builder
-	if err := runInitTarget(&buf, continueInitTarget, false, false); err != nil {
+	if err := runInitTarget(&buf, continueInitTarget, tmp, false, false); err != nil {
 		t.Fatalf("continue: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(tmp, ".continue", "config.json"))
