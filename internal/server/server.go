@@ -1798,6 +1798,12 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
+	// rawPreConfidenceCount is the result count BEFORE the min_confidence
+	// post-filter (#246). Used by the empty-result diagnosis verifier:
+	// if the raw count was > 0 but post-filter is 0, min_confidence is
+	// the verified cause — no need to re-run any query.
+	rawPreConfidenceCount := len(results)
+
 	// Apply the threshold AFTER fetch; FTS5 BM25 ordering is preserved.
 	if minConfidence > 0 {
 		filtered := results[:0]
@@ -1913,8 +1919,27 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		// best-guess diagnosis + concrete recovery suggestions so the
 		// agent doesn't have to guess from a bare `count: 0`. Mirrors
 		// handleIndex's empty-state diagnosis (#147).
-		meta["diagnosis"] = diagnoseEmptySearch(query, kind, language, corpus, minConfidence)
-		meta["next_steps"] = suggestEmptySearchNextSteps(query, kind, language, minConfidence)
+		//
+		// #246: prefer a *verified* cause when available. The verifier
+		// re-runs relaxed queries (drops kind / language / corpus one
+		// at a time) and reports which filter, when removed, surfaces
+		// results. Only falls back to the static diagnosis when no
+		// single relaxation helps — that path covers spelling errors
+		// and "wrong project" cases that no in-query tweak fixes.
+		relax := func(q, k, lang, corp string) (int, error) {
+			r, err := s.store.SearchSymbolsByCorpus(projectID, q, k, lang, corp, 1)
+			if err != nil {
+				return 0, err
+			}
+			return len(r), nil
+		}
+		if cause, steps, ok := verifyEmptySearchCause(query, kind, language, corpus, minConfidence, rawPreConfidenceCount, relax); ok {
+			meta["diagnosis"] = cause
+			meta["next_steps"] = steps
+		} else {
+			meta["diagnosis"] = diagnoseEmptySearch(query, kind, language, corpus, minConfidence)
+			meta["next_steps"] = suggestEmptySearchNextSteps(query, kind, language, minConfidence)
+		}
 	}
 	data := map[string]any{
 		"results": rows,
@@ -1923,6 +1948,114 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"_meta":   meta,
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
+}
+
+// emptySearchRelaxer probes how a search would behave with one or more
+// filters relaxed. Returns (count, err) for the relaxed query against
+// the same project. Injected from handleSearch so the verifier stays
+// unit-testable; tests pass a deterministic fake to assert behavior
+// without spinning up a real DB.
+type emptySearchRelaxer func(query, kind, language, corpus string) (int, error)
+
+// verifyEmptySearchCause returns a *verified* zero-result diagnosis
+// when one filter is provably responsible — i.e. dropping that filter
+// surfaces results. Falls through to the static `diagnoseEmptySearch`
+// (ok=false return) when no single relaxation helps; that path covers
+// spelling, wrong project, and genuinely-absent symbols.
+//
+// Order of probing (matches the existing diagnosis priority but each
+// step is *verified* rather than *guessed* — #246):
+//  1. min_confidence (no extra query needed; rawCount > 0 == verified)
+//  2. kind (re-run without kind)
+//  3. language (re-run without language)
+//  4. corpus (re-run with default code corpus)
+//  5. multiple filters together — try dropping the kind+language pair
+//
+// Each probe runs against the same project. Probe failures are silent;
+// the caller falls back to the static diagnosis when ok=false. Cost:
+// at most one FTS5 query per set filter, only on the zero-result path.
+func verifyEmptySearchCause(
+	query, kind, language, corpus string,
+	minConfidence float64,
+	rawPreConfidenceCount int,
+	relax emptySearchRelaxer,
+) (cause string, nextSteps []map[string]string, ok bool) {
+	// Step 1 — min_confidence is verifiable without any extra query: if
+	// the raw FTS5 result set was non-empty but the confidence post-
+	// filter dropped everything, the threshold is provably the cause.
+	if minConfidence > 0 && rawPreConfidenceCount > 0 {
+		cause = fmt.Sprintf(
+			"%d match(es) returned by FTS5 but every result scored below min_confidence ≥ %.2f — drop the threshold to surface them",
+			rawPreConfidenceCount, minConfidence,
+		)
+		nextSteps = []map[string]string{
+			{
+				"tool": "search",
+				"args": fmt.Sprintf(`{"query":"%s","min_confidence":0.0}`, query),
+				"why":  "verified: relaxing the confidence threshold surfaces the results",
+			},
+		}
+		return cause, nextSteps, true
+	}
+
+	// Step 2-4 — single-filter relaxations. Try the most specific filter
+	// first (kind narrows hardest), then language, then corpus.
+	if kind != "" {
+		if n, err := relax(query, "", language, corpus); err == nil && n > 0 {
+			return fmt.Sprintf(
+					"%d match(es) exist for %q but kind=%q excludes them — drop the kind filter",
+					n, query, kind,
+				), []map[string]string{{
+					"tool": "search",
+					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"why":  fmt.Sprintf("verified: dropping kind=%q surfaces %d match(es)", kind, n),
+				}}, true
+		}
+	}
+	if language != "" {
+		if n, err := relax(query, kind, "", corpus); err == nil && n > 0 {
+			return fmt.Sprintf(
+					"%d match(es) exist for %q but language=%q excludes them — drop the language filter",
+					n, query, language,
+				), []map[string]string{{
+					"tool": "search",
+					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"why":  fmt.Sprintf("verified: dropping language=%q surfaces %d match(es)", language, n),
+				}}, true
+		}
+	}
+	if corpus != "" && corpus != "code" {
+		if n, err := relax(query, kind, language, "code"); err == nil && n > 0 {
+			return fmt.Sprintf(
+					"%d match(es) exist for %q in corpus=code but corpus=%q excludes them — switch to the default corpus",
+					n, query, corpus,
+				), []map[string]string{{
+					"tool": "search",
+					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"why":  fmt.Sprintf("verified: corpus=code (the default) has %d match(es)", n),
+				}}, true
+		}
+	}
+
+	// Step 5 — pair-drop fallback. Two filters together can mask results
+	// neither alone hides; try kind+language together when both are set.
+	if kind != "" && language != "" {
+		if n, err := relax(query, "", "", corpus); err == nil && n > 0 {
+			return fmt.Sprintf(
+					"%d match(es) exist for %q but kind=%q AND language=%q together exclude them — drop both filters",
+					n, query, kind, language,
+				), []map[string]string{{
+					"tool": "search",
+					"args": fmt.Sprintf(`{"query":"%s"}`, query),
+					"why":  fmt.Sprintf("verified: dropping kind+language together surfaces %d match(es)", n),
+				}}, true
+		}
+	}
+
+	// No relaxation surfaced results — caller falls back to static
+	// diagnosis. This covers spelling errors, wrong project, and
+	// symbols that genuinely don't exist in the index.
+	return "", nil, false
 }
 
 // diagnoseEmptySearch returns a one-line explanation of the most likely
