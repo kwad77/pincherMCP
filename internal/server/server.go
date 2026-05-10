@@ -1913,7 +1913,7 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// suggestions are the workflow rules from CLAUDE.md, applied to the
 	// concrete top-1 result.
 	if len(results) > 0 {
-		meta["next_steps"] = suggestNextSteps(results[0].Symbol)
+		meta["next_steps"] = suggestNextStepsForResults(results)
 	} else {
 		// Zero results, even after corpus fallthrough. Surface a
 		// best-guess diagnosis + concrete recovery suggestions so the
@@ -2157,6 +2157,69 @@ func suggestNextSteps(top db.Symbol) []map[string]string {
 				"why": "fetch the full source for this kind"},
 		}
 	}
+}
+
+// suggestNextStepsForResults tailors the per-kind suggestions from
+// suggestNextSteps to the *shape* of the result set (#247 #2). The
+// pre-fix per-kind path always emitted the same template-shaped
+// suggestions regardless of how many results came back or how they
+// were distributed across files; the _meta payload was 30%+ of the
+// response by size with low signal per byte.
+//
+// Tailoring rules — verified, not guessed:
+//
+//  1. Many results spread across many files (>10 results across >5
+//     files) → prepend `architecture` so the agent orients before
+//     drilling into a single hit.
+//  2. Single high-confidence result (count==1, conf >= 0.9) → trim
+//     redundant secondary suggestions. The agent already has the
+//     unique answer; the second step (e.g. trace on a Function with
+//     one definition) is noise the agent can call themselves if they
+//     decide they need it.
+//
+// Anything else falls through to the existing per-kind suggestions.
+// Conservative by design — the bar for *adding* a suggestion is
+// "the result shape strongly indicates the agent will benefit"; the
+// bar for *removing* a suggestion is "the kept one is sufficient".
+func suggestNextStepsForResults(results []db.SearchResult) []map[string]string {
+	if len(results) == 0 {
+		return nil
+	}
+	top := results[0].Symbol
+
+	fileSet := make(map[string]bool, len(results))
+	for _, r := range results {
+		fileSet[r.Symbol.FilePath] = true
+	}
+	fileCount := len(fileSet)
+
+	// Shape 1: many results spread across many files. Orient before drilling.
+	if len(results) > 10 && fileCount > 5 {
+		base := suggestNextSteps(top)
+		out := make([]map[string]string, 0, len(base)+1)
+		out = append(out, map[string]string{
+			"tool": "architecture",
+			"args": "{}",
+			"why":  fmt.Sprintf("results span %d files — orient first before drilling into one match", fileCount),
+		})
+		// Keep the top per-kind suggestion only; trim the secondary so
+		// the architecture suggestion doesn't get crowded out.
+		if len(base) > 0 {
+			out = append(out, base[0])
+		}
+		return out
+	}
+
+	// Shape 2: single high-confidence result. Trim secondary suggestions.
+	if len(results) == 1 && top.ExtractionConfidence >= 0.9 {
+		base := suggestNextSteps(top)
+		if len(base) > 1 {
+			return base[:1]
+		}
+		return base
+	}
+
+	return suggestNextSteps(top)
 }
 
 func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
