@@ -7,6 +7,33 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- **Bidirectional binary-version drift detection (F1).** The existing
+  `index_drift` flag in `health` only catches one direction (newer
+  server on older-indexed project — informational). The reverse case —
+  an older pincher binary running against a project a newer binary
+  already touched — was silent until now, even though it can produce
+  inconsistent results when the older binary's extraction logic differs
+  from what produced the stored symbols. Two-way fix:
+  - `index` (and other write-class tools) refuse cleanly with a
+    diagnostic naming both versions when the project was stamped by a
+    newer binary. Prevents older parsing logic from rewriting data the
+    newer binary correctly produced.
+  - Read-class tools (search, architecture as the high-traffic
+    starters; more handlers to follow) attach a
+    `_meta.binary_version_warning` so agents can see the inconsistency
+    and decide whether to trust the result. Reads continue (refusing
+    would be too aggressive for the once-per-upgrade window every user
+    hits).
+  - Drift detection is no-op when either side is dev/unstamped or
+    unparseable — the bias is conservative against false positives.
+  - Normalization strips git-describe and `-dirty` suffixes so dirty
+    builds of a release don't falsely flag drift against the same
+    release.
+  Implementation in `internal/server/drift.go` (140 lines including
+  comments + 11 tests). Mostly relevant during version transitions and
+  multi-process scenarios where two pincher binaries share a DB.
+
 ### Fixed
 - **Single-source versioning + CI gate.** Local builds via bare `go build` had
   a hardcoded `var version = "0.6.0"` fallback, so `pincher --version` lied

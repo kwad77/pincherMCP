@@ -1789,6 +1789,18 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	force := boolArg(args, "force")
 
+	// F1: refuse re-index when the existing project was stamped by a
+	// newer pincher binary. Running our older parsing logic over a
+	// project a newer binary already understood would silently
+	// reintroduce extraction regressions the newer one fixed. The
+	// resolution is "upgrade pincher", not "let the older binary
+	// rewrite the data".
+	if existingID := db.ProjectIDFromPath(path); existingID != "" {
+		if err := s.checkDriftForWrite(existingID); err != nil {
+			return errResult(err.Error()), nil
+		}
+	}
+
 	result, err := s.indexer.Index(ctx, path, force)
 	if err != nil {
 		return errResult(fmt.Sprintf("index error: %v", err)), nil
@@ -2495,6 +2507,10 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"query":   query,
 		"_meta":   meta,
 	}
+	// F1: surface binary-version drift on read-class tools so the agent
+	// knows results may reflect older parsing logic than what indexed
+	// the project. No-op when versions match or either is dev/unstamped.
+	s.attachDriftWarning(data, projectID)
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
 }
 
@@ -3661,6 +3677,9 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// `tokens_used` (the response payload size) is still tracked via
 	// jsonResultWithMeta — users see exactly what this call cost; they
 	// just no longer see fictional savings.
+	//
+	// F1: drift warning, same rationale as handleSearch.
+	s.attachDriftWarning(data, projectID)
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
 
