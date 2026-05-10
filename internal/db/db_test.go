@@ -76,6 +76,37 @@ func TestDataDir(t *testing.T) {
 	}
 }
 
+// TestDataDir_PincherDataDirEnv covers the env-var override that lets a
+// dev shell pin pincher to a separate data dir from the user's stable
+// install (so dev migrations can't taint the stable DB). The env var
+// is the full path — no `pincherMCP` suffix appended — to match how
+// `--data-dir` already works.
+func TestDataDir_PincherDataDirEnv(t *testing.T) {
+	want := t.TempDir()
+	t.Setenv("PINCHER_DATA_DIR", want)
+	got, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	if got != want {
+		t.Errorf("DataDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDataDir_EmptyEnvIsIgnored covers the trim-then-empty case: an
+// unset or whitespace-only PINCHER_DATA_DIR must NOT short-circuit to
+// the empty string. Falls through to the platform default.
+func TestDataDir_EmptyEnvIsIgnored(t *testing.T) {
+	t.Setenv("PINCHER_DATA_DIR", "   ")
+	got, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	if got == "" || got == "   " {
+		t.Errorf("DataDir() with whitespace env = %q, want platform default", got)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Open / migrate
 // ─────────────────────────────────────────────────────────────────────────────
