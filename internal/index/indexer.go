@@ -697,14 +697,19 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				slog.Debug("pincher.watcher.reindex",
 					"project", p.Name,
 					"changed_files", len(changed))
-				// #427: re-extract the referencers of every changed file
-				// too. DeleteSymbolsForFile(F) inside Index() cascade-
-				// deletes edges INTO F. Without forcing the referencing
-				// files through extraction again, their deferred CALLS /
-				// IMPORTS / READS edges aren't re-collected and the
-				// cross-file edges into F never get rebuilt. Clearing
-				// their file_hash rows is enough — the next walk sees the
-				// hash mismatch and re-extracts them.
+				// #427 (partial): clear file_hash on direct referencers
+				// of any changed file so they re-extract and their
+				// deferred CALLS / IMPORTS / READS feed resolveCalls
+				// again. Handles one hop — known limitation: a
+				// referencer that itself has incoming edges from
+				// elsewhere drops those edges when DeleteSymbolsForFile
+				// cascades, and they aren't recovered unless the
+				// upstream-of-referencer files also re-extract. The
+				// transitive expansion needed for full correctness
+				// converges on "every file with a cross-file edge" for
+				// typical Go projects, so the right long-term fix is
+				// persisted-deferred-edges (Option 3 from the issue
+				// analysis) rather than recursive hash invalidation.
 				idx.invalidateReferencers(p, changed)
 				go func(p db.Project) {
 					if _, err := idx.Index(ctx, p.Path, false); err != nil {
