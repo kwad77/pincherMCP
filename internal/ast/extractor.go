@@ -76,6 +76,15 @@ type ExtractedSymbol struct {
 	// Embedded fields (no name in source) are keyed by their type's
 	// last segment (e.g. `sync.Mutex` → key "Mutex").
 	Fields map[string]string
+	// InterfaceMethods is populated for Interface symbols: the names
+	// of methods the interface declares (e.g. ["eval"] for
+	// `type whereExpr interface { eval(...) bool }`). Used by the
+	// #493 cheap heuristic to mark project-internal methods that
+	// satisfy an interface as not-dead — without this, every
+	// concrete `eval` would be flagged dead_code because the only
+	// caller goes through interface dispatch and the static graph
+	// can't see it.
+	InterfaceMethods []string
 }
 
 // ExtractedEdge is a raw call/import relationship found during extraction.
@@ -566,6 +575,7 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 			endPos := fset.Position(sp.End())
 			kind := "Type"
 			var fields map[string]string
+			var ifaceMethods []string
 			switch t := sp.Type.(type) {
 			case *ast.StructType:
 				kind = "Class"
@@ -574,22 +584,28 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 				fields = extractGoStructFields(t)
 			case *ast.InterfaceType:
 				kind = "Interface"
+				// #493: capture interface method names so dead_code
+				// can mark project-internal methods that satisfy an
+				// interface as not-dead. Cheap heuristic — name match
+				// only, no full method-set comparison.
+				ifaceMethods = extractGoInterfaceMethods(t)
 			}
 			doc := ""
 			if d.Doc != nil {
 				doc = strings.TrimSpace(d.Doc.Text())
 			}
 			syms = append(syms, ExtractedSymbol{
-				Name:          sp.Name.Name,
-				QualifiedName: pkg + "." + sp.Name.Name,
-				Kind:          kind,
-				StartByte:     startPos.Offset,
-				EndByte:       endPos.Offset,
-				StartLine:     startPos.Line,
-				EndLine:       endPos.Line,
-				Docstring:     doc,
-				IsExported:    ast.IsExported(sp.Name.Name),
-				Fields:        fields,
+				Name:             sp.Name.Name,
+				QualifiedName:    pkg + "." + sp.Name.Name,
+				Kind:             kind,
+				StartByte:        startPos.Offset,
+				EndByte:          endPos.Offset,
+				StartLine:        startPos.Line,
+				EndLine:          endPos.Line,
+				Docstring:        doc,
+				IsExported:       ast.IsExported(sp.Name.Name),
+				Fields:           fields,
+				InterfaceMethods: ifaceMethods,
 			})
 		case *ast.ValueSpec:
 			// #247 #3: package-level `var` and `const` declarations as
@@ -897,6 +913,44 @@ func extractGoStructFields(st *ast.StructType) map[string]string {
 		return nil
 	}
 	return fields
+}
+
+// extractGoInterfaceMethods walks an interface type's method list and
+// returns the names of declared methods (#493). Skips embedded
+// interfaces (those have no name in source — they're another type
+// expression) since the cheap heuristic is name-match only and the
+// embedded interface's methods get captured when *that* interface is
+// extracted in its own TypeSpec. Returns nil for empty interfaces so
+// the symbol's JSON shape stays clean.
+func extractGoInterfaceMethods(it *ast.InterfaceType) []string {
+	if it == nil || it.Methods == nil || len(it.Methods.List) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(it.Methods.List))
+	for _, f := range it.Methods.List {
+		if f == nil {
+			continue
+		}
+		// Embedded interface (`io.Reader`): no Names; skip.
+		if len(f.Names) == 0 {
+			continue
+		}
+		// Method element: f.Type is *ast.FuncType, f.Names has one
+		// entry holding the method's name.
+		if _, isFunc := f.Type.(*ast.FuncType); !isFunc {
+			continue
+		}
+		for _, name := range f.Names {
+			if name == nil || name.Name == "" || name.Name == "_" {
+				continue
+			}
+			names = append(names, name.Name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 // embeddedFieldName returns the field name an embedded struct field
