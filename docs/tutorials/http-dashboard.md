@@ -98,8 +98,7 @@ curl -s http://localhost:7777/v1/search \
   "_meta": {
     "tokens_used": 312,
     "tokens_saved": 14500,
-    "latency_ms": 2,
-    "cost_avoided": "$0.0435"
+    "latency_ms": 2
   }
 }
 ```

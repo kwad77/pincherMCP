@@ -293,10 +293,15 @@ func TestHandleSearch_MetaConfidenceDistribution(t *testing.T) {
 		t.Errorf("distribution sum %d != result count %d", sum, len(rows))
 	}
 	// Standard meta fields must also be present (merge invariant).
-	for _, k := range []string{"tokens_used", "tokens_saved", "latency_ms", "cost_avoided"} {
+	// cost_avoided was dropped (#476 SAVINGS_HONESTY) — we don't know the
+	// user's model or pricing, so $-figures are no longer surfaced.
+	for _, k := range []string{"tokens_used", "tokens_saved", "latency_ms"} {
 		if _, ok := meta[k]; !ok {
 			t.Errorf("standard meta field %q missing", k)
 		}
+	}
+	if _, present := meta["cost_avoided"]; present {
+		t.Errorf("cost_avoided must NOT be in _meta — removed in #476 SAVINGS_HONESTY")
 	}
 }
 

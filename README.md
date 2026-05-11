@@ -22,7 +22,7 @@ Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
 
 pincherMCP is a single Go binary that indexes a codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — and exposes all three through **20 MCP tools** or an HTTP REST API.
 
-Every tool response includes a `_meta` envelope with real BPE token counts (cl100k_base — exact for Claude and OpenAI families, approximate for Gemini/Llama), latency, and cost avoided:
+Every tool response includes a `_meta` envelope with real BPE token counts (cl100k_base — exact for Claude and OpenAI families, approximate for Gemini/Llama) and latency:
 
 ```json
 {
@@ -31,8 +31,7 @@ Every tool response includes a `_meta` envelope with real BPE token counts (cl10
   "_meta": {
     "tokens_used":  312,
     "tokens_saved": 14500,
-    "latency_ms":   2,
-    "cost_avoided": "$0.0435"
+    "latency_ms":   2
   }
 }
 ```
@@ -205,7 +204,6 @@ The `stats` tool renders a session summary directly in chat:
 │  Without pincher:   ~45,200 tokens         │
 │  With pincher:        1,200 tokens         │
 │  Saved:             ~44,000 tokens   37x   │
-│  Cost avoided:        $0.1320              │
 │  Avg latency:         2 ms                 │
 └────────────────────────────────────────────┘
 ```

@@ -31,8 +31,8 @@ func TestStatsCLI_BuildReport_Empty(t *testing.T) {
 	if report.AllTime.Calls != 0 {
 		t.Errorf("calls = %d, want 0 on empty DB", report.AllTime.Calls)
 	}
-	if report.AllTime.CostAvoided != 0 {
-		t.Errorf("cost_avoided = %v, want 0 on empty DB", report.AllTime.CostAvoided)
+	if report.AllTime.TokensSaved != 0 {
+		t.Errorf("tokens_saved = %v, want 0 on empty DB", report.AllTime.TokensSaved)
 	}
 	if report.Projects == nil {
 		t.Error("projects slice is nil; want non-nil empty slice for stable JSON shape")
@@ -76,8 +76,8 @@ func TestStatsCLI_BuildReport_WithSessions(t *testing.T) {
 	if got, want := report.AllTime.TokensSaved, int64(1500); got != want {
 		t.Errorf("tokens_saved = %d, want %d", got, want)
 	}
-	if got, want := report.AllTime.CostAvoided, 0.75; got != want {
-		t.Errorf("cost_avoided = %v, want %v", got, want)
+	if got, want := report.AllTime.TokensUsed, int64(150); got != want {
+		t.Errorf("tokens_used = %d, want %d", got, want)
 	}
 }
 
@@ -115,10 +115,13 @@ func TestStatsCLI_JSONShape_IsValidJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("all_time is not an object:\n%s", encoded)
 	}
-	for _, key := range []string{"calls", "tokens_used", "tokens_saved", "cost_avoided"} {
+	for _, key := range []string{"calls", "tokens_used", "tokens_saved"} {
 		if _, ok := at[key]; !ok {
 			t.Errorf("all_time missing key %q:\n%s", key, encoded)
 		}
+	}
+	if _, present := at["cost_avoided"]; present {
+		t.Errorf("all_time must NOT carry cost_avoided — removed in #476 SAVINGS_HONESTY")
 	}
 }
 
@@ -140,9 +143,15 @@ func TestStatsCLI_TextOutput_ContainsExpectedSections(t *testing.T) {
 	report, _ := buildStatsReport(store, dir)
 	out := formatStatsText(report)
 
-	for _, want := range []string{"ALL-TIME", "STORAGE", "Tool calls:", "Cost avoided:", "$1.2345"} {
+	for _, want := range []string{"ALL-TIME", "STORAGE", "Tool calls:", "Tokens saved:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text output missing %q:\n%s", want, out)
+		}
+	}
+	// #476 SAVINGS_HONESTY: no $-figures in the human-readable output.
+	for _, banned := range []string{"Cost avoided:", "$1.2345", "$"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("text output contains banned token %q (removed in #476 SAVINGS_HONESTY):\n%s", banned, out)
 		}
 	}
 }

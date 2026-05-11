@@ -7,12 +7,13 @@
 //	  "_meta": {
 //	    "tokens_used":  450,
 //	    "tokens_saved": 12300,
-//	    "latency_ms":   3,
-//	    "cost_avoided": "$0.0012"
+//	    "latency_ms":   3
 //	  }
 //	}
 //
-// This lets agents track context consumption and remaining budget.
+// This lets agents track context consumption and remaining budget. There is
+// no $-cost field: we don't know the user's model or pricing (#476
+// SAVINGS_HONESTY), so a hardcoded dollar baseline would be a guess.
 package server
 
 import (
@@ -395,7 +396,10 @@ func (s *Server) flushSession() {
 	}
 	tokensUsed := atomic.LoadInt64(&s.statsTokensUsed)
 	tokensSaved := atomic.LoadInt64(&s.statsTokensSaved)
-	costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
+	// cost_avoided is deprecated (#476 SAVINGS_HONESTY follow-up): we don't
+	// know the user's model or pricing, so any $-figure is a guess.
+	// Persist 0 to keep the DB column stable; readers no longer display it.
+	const costAvoided = 0.0
 	httpPID := 0
 	if httpURL != "" {
 		httpURL = "http://" + displayAddr(httpURL) + s.basePath
@@ -977,22 +981,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if rows, err := s.store.GetSessions(1); err == nil && len(rows) > 0 {
 			r0 := rows[0]
 			sess = map[string]any{
-				"calls":              r0.Calls,
-				"tokens_used":        r0.TokensUsed,
-				"tokens_saved":       r0.TokensSaved,
-				"total_cost_avoided": fmt.Sprintf("$%.4f", r0.CostAvoided),
-				"started_at":         r0.StartedAt.Format(time.RFC3339),
-				"last_seen":          r0.LastSeen.Format(time.RFC3339),
+				"calls":        r0.Calls,
+				"tokens_used":  r0.TokensUsed,
+				"tokens_saved": r0.TokensSaved,
+				"started_at":   r0.StartedAt.Format(time.RFC3339),
+				"last_seen":    r0.LastSeen.Format(time.RFC3339),
 			}
 		}
-		// All-time cumulative
+		// All-time cumulative. No $-figures (#476 SAVINGS_HONESTY).
 		var allTime map[string]any
-		if atCalls, atUsed, atSaved, atCost, err := s.store.GetAllTimeSavings(); err == nil {
+		if atCalls, atUsed, atSaved, _, err := s.store.GetAllTimeSavings(); err == nil {
 			allTime = map[string]any{
-				"calls":              atCalls,
-				"tokens_used":        atUsed,
-				"tokens_saved":       atSaved,
-				"total_cost_avoided": fmt.Sprintf("$%.4f", atCost),
+				"calls":        atCalls,
+				"tokens_used":  atUsed,
+				"tokens_saved": atSaved,
 			}
 		}
 		// Session-scoped project ID, if a root has been detected. The
@@ -1023,7 +1025,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"calls":        sess.Calls,
 				"tokens_used":  sess.TokensUsed,
 				"tokens_saved": sess.TokensSaved,
-				"cost_avoided": fmt.Sprintf("$%.4f", sess.CostAvoided),
 			})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"sessions": rows})
@@ -1936,7 +1937,7 @@ func (s *Server) registerTools() {
 	// 14. stats
 	s.addTool(&mcp.Tool{
 		Name:        "stats",
-		Description: "**Use to track context-budget savings** for the current session and all-time. Returns tokens used, tokens saved (vs reading whole files), cost avoided, call count, plus per-project index size (files, symbols, edges). Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `tokens_saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
+		Description: "**Use to track context-budget savings** for the current session and all-time. Returns tokens used, tokens saved (vs reading whole files), call count, plus per-project index size (files, symbols, edges). Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `tokens_saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project to include in index size breakdown. Defaults to session project."}
@@ -4932,7 +4933,6 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	tokensUsed := atomic.LoadInt64(&s.statsTokensUsed)
 	tokensSaved := atomic.LoadInt64(&s.statsTokensSaved)
 	totalLatency := atomic.LoadInt64(&s.statsLatencyMS)
-	totalCostAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
 
 	avgLatency := int64(0)
 	if calls > 0 {
@@ -4950,12 +4950,12 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			calls = r.Calls
 			tokensUsed = r.TokensUsed
 			tokensSaved = r.TokensSaved
-			totalCostAvoided = r.CostAvoided
 		}
 	}
 
-	// All-time savings summed across every persisted session.
-	atCalls, atUsed, atSaved, atCost, _ := s.store.GetAllTimeSavings()
+	// All-time savings summed across every persisted session. No $-figures
+	// (#476 SAVINGS_HONESTY): we don't know the user's model or pricing.
+	atCalls, atUsed, atSaved, _, _ := s.store.GetAllTimeSavings()
 
 	// Optional session project — populated when a root has been detected.
 	var proj *db.Project
@@ -5010,7 +5010,6 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	b.WriteString(line("Without pincher:", "~"+commify(baseline)+" tokens"))
 	b.WriteString(line("With pincher:", commify(tokensUsed)+" tokens"))
 	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+ratio))
-	b.WriteString(line("Cost avoided:", fmt.Sprintf("$%.4f", totalCostAvoided)))
 	b.WriteString(line("Avg latency:", fmt.Sprintf("%d ms", avgLatency)))
 
 	// ALL-TIME section — only render when the DB has data (otherwise it's
@@ -5021,7 +5020,6 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		b.WriteString(line("Tool calls:", commify(atCalls)))
 		b.WriteString(line("Tokens used:", commify(atUsed)))
 		b.WriteString(line("Tokens saved:", "~"+commify(atSaved)))
-		b.WriteString(line("Cost avoided:", fmt.Sprintf("$%.4f", atCost)))
 	}
 
 	// PROJECT section — visible whenever a session project is set.
@@ -5397,7 +5395,7 @@ var domainConcepts = []struct {
 		why:      "FTS5 lives in the symbols_fts virtual table + 3 sync triggers (internal/db/db.go) — never sync manually, the triggers handle it",
 	},
 	{
-		patterns: []string{"session stats", "token saving", "tokens_used", "cost_avoided"},
+		patterns: []string{"session stats", "token saving", "tokens_used", "tokens_saved"},
 		tool:     "search",
 		args:     `{"query":"jsonResultWithMeta"}`,
 		why:      "every tool response wraps via jsonResultWithMeta which atomically increments session stats — read it before adding a new tool",
@@ -5863,9 +5861,6 @@ func extractTextFromHTML(raw string) (title, text string) {
 // _meta envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
-// baseCostPer1M is the approximate cost per 1M tokens for Claude Sonnet (USD).
-const baseCostPer1M = 3.0
-
 // avgFileSize is the estimated chars in a typical source file an agent would
 // have to read to locate a symbol without pincherMCP. Real files in this repo
 // average ~33KB; 20KB is a conservative cross-language estimate.
@@ -5947,9 +5942,6 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	b, _ := json.Marshal(data)
 	tokensUsed := db.ApproxTokens(string(b))
 
-	// Cost avoided by not sending tokensSaved tokens to the model
-	costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
-
 	// Merge into any pre-existing `_meta` rather than overwriting, so handlers
 	// can attach handler-specific fields (e.g. `confidence_distribution` from
 	// #34 Phase 3) before calling.
@@ -5960,15 +5952,16 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	meta["tokens_used"] = tokensUsed
 	meta["tokens_saved"] = tokensSaved
 	meta["latency_ms"] = latency
-	meta["cost_avoided"] = fmt.Sprintf("$%.4f", costAvoided)
+	// No cost_avoided / $-figures: we don't know the user's model or their
+	// pricing. Tokens are concrete and defensible; dollars are a guess.
 	// Human-readable savings line. Trains agents + users that pincher is
 	// cheaper than reading files; a one-liner per response is the most
 	// effective place to surface it (per #138/#139/#140 adoption thread).
 	// Suppressed when nothing was saved (admin tools like list/health/stats
 	// where the comparison "vs reading files" doesn't apply).
 	if tokensSaved > 0 {
-		meta["savings"] = fmt.Sprintf("saved ~%s tokens vs reading files (used %s, %dms, %s)",
-			humanInt(tokensSaved), humanInt(tokensUsed), latency, meta["cost_avoided"])
+		meta["savings"] = fmt.Sprintf("saved ~%s tokens vs reading files (used %s, %dms)",
+			humanInt(tokensSaved), humanInt(tokensUsed), latency)
 	}
 	data["_meta"] = meta
 
@@ -6023,7 +6016,6 @@ func (s *Server) textResultWithMeta(text string, start time.Time, tool string, a
 	latency := time.Since(start).Milliseconds()
 	s.maybeRecordSlowQuery(tool, args, latency)
 	tokensUsed := db.ApproxTokens(text)
-	costAvoided := float64(tokensSaved) / 1_000_000.0 * baseCostPer1M
 
 	newCalls := atomic.AddInt64(&s.statsCalls, 1)
 	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
@@ -6035,7 +6027,8 @@ func (s *Server) textResultWithMeta(text string, start time.Time, tool string, a
 	}
 
 	// Append a compact meta line so callers still see accounting info.
-	full := text + fmt.Sprintf("\n  tokens used %-6d  latency %d ms  cost avoided $%.4f\n", tokensUsed, latency, costAvoided)
+	// No $-figures (#476 SAVINGS_HONESTY): we don't know the user's model.
+	full := text + fmt.Sprintf("\n  tokens used %-6d  tokens saved %-6d  latency %d ms\n", tokensUsed, tokensSaved, latency)
 	result := &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: full}},
 	}

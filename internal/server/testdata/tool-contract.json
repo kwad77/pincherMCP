@@ -384,7 +384,7 @@
   },
   {
     "name": "stats",
-    "description": "**Use to track context-budget savings** for the current session and all-time. Returns tokens used, tokens saved (vs reading whole files), cost avoided, call count, plus per-project index size (files, symbols, edges). Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `tokens_saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
+    "description": "**Use to track context-budget savings** for the current session and all-time. Returns tokens used, tokens saved (vs reading whole files), call count, plus per-project index size (files, symbols, edges). Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `tokens_saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
     "input_schema": {
       "properties": {
         "project": {

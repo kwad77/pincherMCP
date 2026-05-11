@@ -93,8 +93,7 @@ Behind the scenes Claude Code now calls `mcp__pincher__search` (BM25 over the FT
 "_meta": {
   "tokens_used":  312,
   "tokens_saved": 14500,
-  "latency_ms":   2,
-  "cost_avoided": "$0.0435"
+  "latency_ms":   2
 }
 ```
 
@@ -112,7 +111,6 @@ Output:
 │  Tool calls:         128                   │
 │  Tokens used:      9,120                   │
 │  Tokens saved:   612,400                   │
-│  Cost avoided:     $1.8372                 │
 └────────────────────────────────────────────┘
 
 PROJECT                          FILES       SYMBOLS     EDGES       PATH

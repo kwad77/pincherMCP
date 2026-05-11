@@ -41,7 +41,7 @@ func runStatsCLI(args []string) {
 	reset := fs.Bool("reset", false, "Wipe the sessions table (clears all-time totals); symbol / edge / project data is unaffected")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher stats [--json] [--reset] [--data-dir DIR]")
-		fmt.Fprintln(os.Stderr, "  Prints persisted session savings (cost avoided, tokens saved, call count)")
+		fmt.Fprintln(os.Stderr, "  Prints persisted session savings (tokens saved, call count)")
 		fmt.Fprintln(os.Stderr, "  plus per-project file/symbol/edge counts. --reset wipes session history")
 		fmt.Fprintln(os.Stderr, "  without touching symbol data; back up first via `--json > file.json`.")
 		fs.PrintDefaults()
@@ -118,10 +118,9 @@ type StatsReport struct {
 
 // AllTimeSavings is the sum across every persisted session row.
 type AllTimeSavings struct {
-	Calls       int64   `json:"calls"`
-	TokensUsed  int64   `json:"tokens_used"`
-	TokensSaved int64   `json:"tokens_saved"`
-	CostAvoided float64 `json:"cost_avoided"`
+	Calls       int64 `json:"calls"`
+	TokensUsed  int64 `json:"tokens_used"`
+	TokensSaved int64 `json:"tokens_saved"`
 	// CallsByLanguage is the per-language call tally summed across every
 	// recorded session that carried the v16 calls_by_language column
 	// (#240). Surfaces "is the agent calling pincher on the file types it
@@ -172,7 +171,7 @@ type ProjectStats struct {
 }
 
 func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
-	calls, tokensUsed, tokensSaved, costAvoided, err := store.GetAllTimeSavings()
+	calls, tokensUsed, tokensSaved, _, err := store.GetAllTimeSavings()
 	if err != nil {
 		return nil, fmt.Errorf("all-time savings: %w", err)
 	}
@@ -222,7 +221,6 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 			Calls:           calls,
 			TokensUsed:      tokensUsed,
 			TokensSaved:     tokensSaved,
-			CostAvoided:     costAvoided,
 			CallsByLanguage: callsByLang,
 			QueryMetrics: QueryMetricsReport{
 				QueriesTotal:            qm.QueriesTotal,
@@ -275,7 +273,6 @@ func formatStatsText(r *StatsReport) string {
 		row{"Tool calls:", commify(r.AllTime.Calls)},
 		row{"Tokens used:", commify(r.AllTime.TokensUsed)},
 		row{"Tokens saved:", "~" + commify(r.AllTime.TokensSaved)},
-		row{"Cost avoided:", fmt.Sprintf("$%.4f", r.AllTime.CostAvoided)},
 	)
 	allTimeEnd := len(rows)
 

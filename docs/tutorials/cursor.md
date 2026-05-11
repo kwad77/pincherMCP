@@ -102,7 +102,6 @@ pincher stats
 │  Tool calls:         54                    │
 │  Tokens used:      3,840                   │
 │  Tokens saved:   217,600                   │
-│  Cost avoided:     $0.6528                 │
 └────────────────────────────────────────────┘
 ```
 

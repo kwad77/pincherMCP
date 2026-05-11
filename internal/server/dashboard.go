@@ -590,12 +590,10 @@ async function load() {
       document.getElementById('session-cards').innerHTML =
         statCard('Tool Calls', fmt(s.calls||0), 'blue', sessAge, '') +
         statCard('Tokens Saved', fmt(s.tokens_saved||0), 'green', 'vs reading full files', 'green') +
-        statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed', 'purple') +
-        statCard('Cost Avoided', s.total_cost_avoided||'$0.0000', 'orange', 'estimated savings', 'orange');
+        statCard('Tokens Used', fmt(s.tokens_used||0), 'purple', 'context consumed', 'purple');
       document.getElementById('alltime-cards').innerHTML = (a.calls||0) > 0 ?
         statCard('Total Calls', fmt(a.calls||0), 'blue', 'all sessions', '') +
         statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
-        statCard('Total Cost Avoided', a.total_cost_avoided||'$0.0000', 'orange', 'provable ROI', 'orange') +
         statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple') :
         '<div class="empty">No sessions recorded yet.</div>';
     }
@@ -943,14 +941,13 @@ async function loadSessions() {
     const sessions=data.sessions||[];
     if(!sessions.length){wrap.innerHTML='<div class="empty">No sessions recorded yet.</div>';return;}
     // Running totals for a footer row so users see the cumulative number
-    // without reaching for a spreadsheet. Cost parsed from "$X.YYYY" strings.
-    const parseDollar=s=>parseFloat(String(s).replace(/[^0-9.]/g,''))||0;
+    // without reaching for a spreadsheet. No cost column — we don't know
+    // the user's model or pricing (#476 SAVINGS_HONESTY).
     const totalCalls=sessions.reduce((a,s)=>a+(s.calls||0),0);
     const totalSaved=sessions.reduce((a,s)=>a+(s.tokens_saved||0),0);
     const totalUsed=sessions.reduce((a,s)=>a+(s.tokens_used||0),0);
-    const totalCost=sessions.reduce((a,s)=>a+parseDollar(s.cost_avoided),0);
     wrap.innerHTML='<table class="sessions-table"><thead><tr>'+
-      '<th>Started</th><th>Last Seen</th><th>Calls</th><th>Tokens Saved</th><th>Tokens Used</th><th>Cost Avoided</th>'+
+      '<th>Started</th><th>Last Seen</th><th>Calls</th><th>Tokens Saved</th><th>Tokens Used</th>'+
       '</tr></thead><tbody>'+
       sessions.map(s=>
         '<tr>'+
@@ -959,7 +956,6 @@ async function loadSessions() {
         '<td>'+fmt(s.calls||0)+'</td>'+
         '<td style="color:var(--green)">'+fmt(s.tokens_saved||0)+'</td>'+
         '<td>'+fmt(s.tokens_used||0)+'</td>'+
-        '<td style="color:var(--orange)">'+esc(s.cost_avoided||'$0.0000')+'</td>'+
         '</tr>'
       ).join('')+
       '</tbody><tfoot><tr class="sessions-total">'+
@@ -967,7 +963,6 @@ async function loadSessions() {
       '<td>'+fmt(totalCalls)+'</td>'+
       '<td style="color:var(--green)">'+fmt(totalSaved)+'</td>'+
       '<td>'+fmt(totalUsed)+'</td>'+
-      '<td style="color:var(--orange)">$'+totalCost.toFixed(4)+'</td>'+
       '</tr></tfoot></table>';
   } catch(e) { wrap.innerHTML='<div class="error">Failed to load sessions: '+esc(e.message)+'</div>'; }
 }
@@ -980,27 +975,22 @@ async function loadProjection() {
     const data=await fetch('/v1/sessions').then(r=>r.json());
     const sessions=data.sessions||[];
     if(sessions.length<2){el.innerHTML='';return;}
-    // Parse cost strings like "$0.1234"
-    const parseDollar=s=>parseFloat(String(s).replace(/[^0-9.]/g,''))||0;
-    const totalCost=sessions.reduce((a,s)=>a+parseDollar(s.cost_avoided),0);
     const totalSaved=sessions.reduce((a,s)=>a+(s.tokens_saved||0),0);
     const totalCalls=sessions.reduce((a,s)=>a+(s.calls||0),0);
     // Date range from oldest to newest
     const dates=sessions.map(s=>new Date(s.started_at)).filter(d=>!isNaN(d));
-    if(!dates.length||totalCost===0){el.innerHTML='';return;}
+    if(!dates.length||totalSaved===0){el.innerHTML='';return;}
     const oldest=Math.min(...dates.map(d=>d.getTime()));
     const newest=Math.max(...dates.map(d=>d.getTime()));
     const days=Math.max((newest-oldest)/86400000, 1);
-    const monthlyRate=(totalCost/days)*30;
-    const dailyRate=totalCost/days;
-    const rateStr=monthlyRate<0.01?('<$0.01/mo'):'$'+monthlyRate.toFixed(2)+'/mo';
-    const dailyStr=dailyRate<0.001?('<$0.01/day'):'$'+dailyRate.toFixed(3)+'/day';
+    const dailyTokens=Math.round(totalSaved/days);
+    const monthlyTokens=Math.round(dailyTokens*30);
     el.innerHTML='<div class="proj-banner">'+
       '<div class="proj-banner-icon">\ud83d\udcc8</div>'+
       '<div class="proj-banner-body">'+
         '<div class="proj-banner-title">Projected Savings Rate</div>'+
-        '<div class="proj-banner-rate">~'+rateStr+'</div>'+
-        '<div class="proj-banner-sub">Based on '+sessions.length+' sessions over '+Math.round(days)+' days \u00b7 '+dailyStr+' avg</div>'+
+        '<div class="proj-banner-rate">~'+fmt(monthlyTokens)+' tokens/mo</div>'+
+        '<div class="proj-banner-sub">Based on '+sessions.length+' sessions over '+Math.round(days)+' days \u00b7 ~'+fmt(dailyTokens)+' tokens/day</div>'+
       '</div>'+
       '<div class="proj-banner-pills">'+
         '<div class="proj-banner-pill">'+fmt(totalSaved)+' tokens saved</div>'+
