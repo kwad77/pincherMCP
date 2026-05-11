@@ -7,6 +7,57 @@ minors.
 
 ## [Unreleased]
 
+## [v0.14.0] — 2026-05-10 — Token-savings + performance focus
+
+Headline: every read tool now supports `fields` projection so callers can
+strip unused keys, the symbol→symbol round trip avoids re-resolving the
+project on each call, the reader pool warms up in parallel, and `trace`
+auto-trims to the smallest depth with ≥5 hops instead of always returning
+the requested depth. Two correctness fixes shipped from the post-v0.13
+dogfood pass — both surfaced live mid-investigation.
+
+### Added
+- **`fields` parameter on `symbol`, `symbols`, `context`, `trace`,
+  `changes` ([#400](https://github.com/kwad77/pincher/issues/400) /
+  [#409](https://github.com/kwad77/pincher/pull/409)).** Comma-separated
+  allow-list of response keys; skipping `source` avoids the byte-offset
+  disk read entirely. Typical caller savings: 60-90% per response when
+  the agent only needs IDs or signatures.
+
+- **Project-ID resolution cache + reader-pool warmup
+  ([#401](https://github.com/kwad77/pincher/issues/401) /
+  [#405](https://github.com/kwad77/pincher/pull/405)).** Per-`sessionRoot`
+  TTL cache eliminates the `projectFromArgs` SQL hop on every tool call;
+  the reader pool's connections `Ping` in parallel at server start so
+  the first concurrent batch doesn't serialize on connection setup.
+
+- **Adaptive trace depth
+  ([#402](https://github.com/kwad77/pincher/issues/402) /
+  [#406](https://github.com/kwad77/pincher/pull/406)).** When `depth`
+  is omitted, `trace` starts at the requested ceiling and auto-trims
+  to the smallest depth that surfaces ≥5 hops. Surfaces
+  `depth_used`/`depth_requested`/`auto_deepened` in `_meta` so the
+  caller can see what happened. Explicit `depth=N` still pins the
+  depth as before.
+
+### Fixed
+- **`changes.changed_files` emits `[]` not `null` on empty diff
+  ([#408](https://github.com/kwad77/pincher/issues/408) /
+  [#411](https://github.com/kwad77/pincher/pull/411)).** Same nil-slice
+  class as #328 / #330 / #332 / #334 / #338 — `parseGitDiffFiles` now
+  initialises with `[]string{}` so consumers iterating without a
+  null-check don't break.
+
+- **Receiver-method call resolution stops over-binding to stdlib calls
+  ([#410](https://github.com/kwad77/pincher/issues/410) /
+  [#413](https://github.com/kwad77/pincher/pull/413)).** The #285
+  receiver-method fallback bound *any* `pkg.Name(...)` call to a
+  local method named `Name` when only one such method existed in the
+  index. In pincher-repo this meant `strings.Index(...)` calls were
+  silently bound to `*Indexer.Index`, polluting `trace` BFS results.
+  New stoplist of ~70 stdlib package names skips the fallback when
+  the receiver is recognized as stdlib.
+
 ## [v0.13.0] — 2026-05-10 — JS AST + tool surface expansion + dogfood-driven precision
 
 Headline: a pure-Go JavaScript AST extractor lands behind a feature flag,
