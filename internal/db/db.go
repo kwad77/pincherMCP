@@ -946,6 +946,27 @@ END;`,
 	);
 	CREATE INDEX IF NOT EXISTS idx_pending_edges_project_kind ON pending_edges(project_id, kind);
 	CREATE INDEX IF NOT EXISTS idx_pending_edges_from_file ON pending_edges(project_id, from_file);`,
+
+	// v19 → v20: edges.source — tag each row with its origin so the
+	// indexer can atomically replace resolve-pass output without
+	// nuking per-file edges (#475). Two values:
+	//   - 'per_file'     — written by the per-file extractor goroutine
+	//                      (both endpoints resolved in nameToID).
+	//                      Cascade-deleted when the source file gets
+	//                      DeleteSymbolsForFile'd.
+	//   - 'resolve_pass' — written by resolveCalls/Imports/Reads at
+	//                      the tail of Index(). DELETE'd in bulk
+	//                      before each resolve pass and re-INSERTed
+	//                      fresh; current rules ALWAYS win.
+	//
+	// Existing rows default to 'per_file' on migration. This means
+	// pre-v20 stale resolve-pass edges (e.g. #465 polymorphic-method
+	// leak) aren't auto-cleaned by this migration alone — recommended
+	// migration is one final `pincher index <path> --force` after
+	// upgrading to v0.18. Future rule changes converge automatically
+	// thereafter.
+	`ALTER TABLE edges ADD COLUMN source TEXT NOT NULL DEFAULT 'per_file';
+	CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(project_id, kind, source);`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -1644,6 +1665,14 @@ type Edge struct {
 	Kind       string
 	Confidence float64
 	Properties map[string]any
+	// Source is the origin marker added in schema v20 (#475). One of:
+	//   - "per_file"     (default; per-file extractor goroutine output)
+	//   - "resolve_pass" (resolveCalls / resolveImports / resolveReads)
+	// BulkUpsertEdges treats empty as "per_file" so older callers keep
+	// working unchanged. The indexer's tail-resolve passes set
+	// "resolve_pass" so a project-wide DELETE-then-INSERT can atomically
+	// replace cross-file output without nuking per-file edges.
+	Source string
 }
 
 // Project summarises an indexed repository.
@@ -2446,15 +2475,17 @@ func (s *Store) SearchSymbolsByCorpus(projectID, query, kind, language, corpus s
 // Edge operations (Knowledge Graph — Layer 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// BulkUpsertEdges inserts edges, ignoring duplicates.
+// BulkUpsertEdges inserts edges, ignoring duplicates. Empty Source
+// is normalized to "per_file" — the default for the per-file extractor
+// path. The resolve-pass callers set "resolve_pass" explicitly (#475).
 func (s *Store) BulkUpsertEdges(edges []Edge) error {
 	if len(edges) == 0 {
 		return nil
 	}
 	return s.withTx(func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(`
-		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties)
-		VALUES (?,?,?,?,?,?)`)
+		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source)
+		VALUES (?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
@@ -2466,11 +2497,29 @@ func (s *Store) BulkUpsertEdges(edges []Edge) error {
 				b, _ := json.Marshal(e.Properties)
 				propsJSON = string(b)
 			}
-			if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON)); err != nil {
+			source := e.Source
+			if source == "" {
+				source = "per_file"
+			}
+			if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source); err != nil {
 				return err
 			}
 		}
 		return nil
+	})
+}
+
+// DeleteEdgesByKindAndSource removes all edges of a given kind+source
+// for a project. Used by resolveCalls/resolveImports/resolveReads
+// (#475) to atomically clear the prior pass's output before re-running
+// resolution with current rules. Per-file edges are not touched.
+func (s *Store) DeleteEdgesByKindAndSource(projectID, kind, source string) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`DELETE FROM edges WHERE project_id=? AND kind=? AND source=?`,
+			projectID, kind, source,
+		)
+		return err
 	})
 }
 

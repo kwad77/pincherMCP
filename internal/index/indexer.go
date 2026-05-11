@@ -1159,9 +1159,14 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 			ToID:       toID,
 			Kind:       "IMPORTS",
 			Confidence: e.Confidence,
+			Source:     "resolve_pass",
 		})
 	}
 
+	// #475: atomic replace of the prior resolve pass's IMPORTS edges.
+	if err := idx.store.DeleteEdgesByKindAndSource(projectID, "IMPORTS", "resolve_pass"); err != nil {
+		slog.Warn("pincher.imports.delete_prior.err", "err", err)
+	}
 	if len(edges) == 0 {
 		return 0
 	}
@@ -1469,9 +1474,17 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 			ToID:       toID,
 			Kind:       "CALLS",
 			Confidence: e.Confidence,
+			Source:     "resolve_pass",
 		})
 	}
 
+	// #475: atomic replace of the prior resolve pass's CALLS edges so
+	// rule changes (e.g. the #465 polymorphic-method blocklist) converge
+	// without --force on every incremental re-index. Per-file CALLS
+	// edges keep their cascade-on-delete model.
+	if err := idx.store.DeleteEdgesByKindAndSource(projectID, "CALLS", "resolve_pass"); err != nil {
+		slog.Warn("pincher.calls.delete_prior.err", "err", err)
+	}
 	if len(edges) == 0 {
 		return 0
 	}
@@ -1628,9 +1641,17 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 			ToID:       to.id,
 			Kind:       kind,
 			Confidence: e.Confidence,
+			Source:     "resolve_pass",
 		})
 	}
 
+	// #475: atomic replace of the prior resolve pass's READS + WRITES.
+	// Both kinds share the read-pass output, so wipe both before insert.
+	for _, k := range []string{"READS", "WRITES"} {
+		if err := idx.store.DeleteEdgesByKindAndSource(projectID, k, "resolve_pass"); err != nil {
+			slog.Warn("pincher.reads.delete_prior.err", "kind", k, "err", err)
+		}
+	}
 	if len(edges) == 0 {
 		return 0
 	}
