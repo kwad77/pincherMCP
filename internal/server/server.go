@@ -2657,6 +2657,16 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if strings.Count(query, `"`)%2 != 0 {
 		return errResult(`unbalanced quote in query — phrase queries need a matched pair, e.g. query="login flow". To match a literal quote character, drop the surrounding quotes.`), nil
 	}
+	// #509: catch regex meta-patterns (".*", ".+", ".?") before they
+	// leak past the #424 sanitizer to FTS5 as raw "syntax error near
+	// '.'". The narrow check fires only on the "anything-wildcard"
+	// signature — single `.` (e.g. `os.Stat`) is rescued by the
+	// per-token sanitizer, and `auth*` is a valid FTS5 prefix wildcard.
+	if seq := firstFTS5IncompatibleRegexChar(query); seq != "" {
+		return errResult(fmt.Sprintf(
+			"query contains regex sequence %q that FTS5 doesn't understand. For pattern matching use the `query` tool: MATCH (n:Function) WHERE n.name =~ '%s' RETURN n.name. Or search a literal keyword instead.",
+			seq, query)), nil
+	}
 	projectArg := str(args, "project")
 	kind := str(args, "kind")
 	language := str(args, "language")
@@ -6659,6 +6669,48 @@ func runGitDiff(root, scope string) (string, error) {
 		}
 	}
 	return string(out), nil
+}
+
+// firstFTS5IncompatibleRegexChar returns a description of the first
+// regex META-PATTERN in q that the existing #424 FTS5 sanitizer can't
+// rescue. Returns "" when the query is safe. Pre-flight gate for
+// #509 — the agent's natural reach for "match a pattern" is regex,
+// and certain regex sequences leak past sanitization to FTS5 as raw
+// "syntax error near".
+//
+// What's checked (narrow on purpose):
+//   - `.*` / `.+` / `.?` — the "anything" / "one+" / "optional"
+//     wildcards that are the unmistakable signature of a regex query
+//     and never appear in a literal identifier.
+//
+// What's NOT checked:
+//   - Single `.` — handled by sanitizeFTS5Query (wraps `os.Stat` etc.)
+//   - `(` `)` `[` `]` `{` `}` `?` `!` — sanitizeFTS5Query wraps these.
+//   - `*` alone — FTS5 supports it as a prefix wildcard (`auth*`).
+//   - Anything inside a quoted phrase ("...") — caller's choice.
+//
+// This narrowness avoids breaking the dotted-identifier and prefix-
+// wildcard cases pinned by `TestHandleSearch_DottedIdentifier_DoesNotError`
+// and the docs-corpus wildcard test.
+func firstFTS5IncompatibleRegexChar(q string) string {
+	inQuote := false
+	for i := 0; i < len(q)-1; i++ {
+		c := q[i]
+		if c == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if inQuote {
+			continue
+		}
+		if c == '.' {
+			next := q[i+1]
+			if next == '*' || next == '+' || next == '?' {
+				return string([]byte{c, next})
+			}
+		}
+	}
+	return ""
 }
 
 // validateGitRefName rejects branch names that could confuse `git`

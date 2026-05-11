@@ -7,6 +7,19 @@ minors.
 
 ## [Unreleased]
 
+### Fixed
+- **search: regex meta-pattern (".*", ".+", ".?") in query rejected
+  with redirect to `query` tool ([#509](https://github.com/kwad77/pincher/issues/509)).**
+  Pre-fix, `search query="handle.*Changes"` leaked `SQL logic error:
+  fts5: syntax error near "."` — the agent typed a regex (natural
+  reach for "match a pattern") and got a raw FTS5 error. Same family
+  as #489 (unbalanced quote → raw leak). Now: pre-flight detects the
+  unmistakable regex meta-patterns `.*` / `.+` / `.?` and returns a
+  friendly error pointing at the right tool: `query` with pinchQL
+  `WHERE n.name =~ 'pattern'`. Narrow on purpose — single `.` (e.g.
+  `db.Open`) and prefix wildcards (`auth*`) continue to work,
+  rescued by the existing #424 sanitizer.
+
 ### Changed
 - **list: filtered_out lump-sum split into per-reason breakdown
   ([#505](https://github.com/kwad77/pincher/issues/505)).** Pre-fix,
