@@ -1186,6 +1186,66 @@ func isStdlibReceiver(name string) bool {
 	return false
 }
 
+// isPolymorphicInterfaceMethodName reports whether `name` looks like a
+// method name that overwhelmingly resolves to a stdlib interface in
+// real Go code. Companion to isStdlibReceiver (#410): that filter caught
+// `strings.Index(...)`-style calls where the receiver itself is a known
+// stdlib package. This filter catches the harder case of
+// `localVar.PolymorphicMethod(...)` where the receiver is a variable
+// whose type happens to be from stdlib — the receiver name doesn't
+// reveal the stdlib origin but the method name does. #465: dogfood
+// surfaced `*bytesCollector.String` as a top-3 architecture hotspot
+// because every `.String()` call in the project (`time.Time.String`,
+// `*url.URL.String`, `bytes.Buffer.String`, ...) was binding to the
+// single project-local Method with that name.
+//
+// Under-counting cost: a project that genuinely calls its own
+// `String()` Method *as a receiver-method call from another package*
+// loses that edge. Direct-QN-match calls from within the same package
+// still resolve through the QN path, not this fallback.
+func isPolymorphicInterfaceMethodName(name string) bool {
+	switch name {
+	// fmt.Stringer / error
+	case "String", "Error", "GoString":
+		return true
+	// io interfaces
+	case "Read", "Write", "Close", "Seek", "ReadAt", "WriteAt",
+		"ReadFrom", "WriteTo", "ReadByte", "WriteByte",
+		"ReadString", "WriteString", "ReadRune", "WriteRune",
+		"UnreadByte", "UnreadRune":
+		return true
+	// sync.Locker family
+	case "Lock", "Unlock", "RLock", "RUnlock", "TryLock":
+		return true
+	// sort.Interface
+	case "Len", "Less", "Swap":
+		return true
+	// http.Handler / net interfaces
+	case "ServeHTTP":
+		return true
+	// encoding interfaces — common JSON/text/binary marshalers
+	case "MarshalJSON", "UnmarshalJSON",
+		"MarshalText", "UnmarshalText",
+		"MarshalBinary", "UnmarshalBinary",
+		"MarshalYAML", "UnmarshalYAML":
+		return true
+	// fmt.Formatter / fmt.Scanner
+	case "Format", "Scan":
+		return true
+	// time.Time methods that pair with common local-var names
+	// (deadline.Add, expiry.Sub, ts.Now, etc.)
+	case "Now", "Add", "Sub", "Before", "After", "Equal":
+		return true
+	// context.Context
+	case "Deadline", "Done", "Err", "Value":
+		return true
+	// errors.Is / errors.As / errors.Unwrap target methods
+	case "Is", "As", "Unwrap":
+		return true
+	}
+	return false
+}
+
 // resolveMethodByName is the #285 receiver-method fallback. Looks up
 // every project symbol with the given short name; returns the ID
 // only when exactly one is of kind=Method. Multiple matches are
@@ -1323,7 +1383,16 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 				// (the proper fix), this stoplist catches the most
 				// common false-positive sources surfaced during
 				// pincher-repo's own dogfood pass.
-				if !isStdlibReceiver(receiver) {
+				// #465: skip when the trailing method name is a
+				// polymorphic interface method (String, Error, Read,
+				// Write, Lock, ...). isStdlibReceiver caught the case
+				// where the receiver itself is a stdlib package; this
+				// catches the harder case of `localVar.Method(...)`
+				// where the receiver name doesn't reveal stdlib origin
+				// but the method name does — every `.String()` in the
+				// project was binding to the single local Method named
+				// String.
+				if !isStdlibReceiver(receiver) && !isPolymorphicInterfaceMethodName(trailing) {
 					if id, ok := methodCache[trailing]; ok {
 						toID = id
 					} else {

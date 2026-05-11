@@ -8,6 +8,26 @@ minors.
 ## [Unreleased]
 
 ### Fixed
+- **`trace` and `architecture` attributed every `.String()` (and other
+  polymorphic-interface) call in the project to the single local
+  Method with that name
+  ([#465](https://github.com/kwad77/pincher/issues/465)).** On
+  pincher-repo, `trace name="String" inbound` returned 30 spurious
+  "callers" — `formatStats`, `runUpdateCLI`, `markdownSlug`, etc. —
+  none of which reach the lone `*bytesCollector.String` Method.
+  They're calling `time.Time.String`, `bytes.Buffer.String`,
+  `*url.URL.String`, etc. The receiver-method fallback (#285) saw
+  ToName="localVar.String" → QN miss → 1 project Method named String →
+  bind. #410's `isStdlibReceiver` only blocked the case where the
+  receiver itself was a stdlib package; this fix adds the parallel
+  `isPolymorphicInterfaceMethodName` blocklist for `String`, `Error`,
+  `Read`, `Write`, `Close`, `Lock`, `Unlock`, `Len`, `Less`, `Swap`,
+  `ServeHTTP`, `MarshalJSON`/`UnmarshalJSON`, etc. — method names
+  that overwhelmingly resolve to stdlib interfaces in real Go. The
+  blocklist drops genuine cross-package calls to local `String()`
+  methods too; documented under-counting trade-off, no better fix
+  without receiver-type tracking (#423).
+
 - **Variable-length BFS timed out at 10s when only the end-target had a
   predicate ([#426](https://github.com/kwad77/pincher/issues/426)).**
   `MATCH (a)-[:CALLS*1..3]->(b) WHERE b.name="X"` enumerated up to 100
