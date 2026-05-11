@@ -1694,14 +1694,20 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		return 0
 	}
 
-	// QN cache: maps the qualified name to (id, language, isVariable).
+	// QN cache: maps the qualified name to (id, language, kind-class).
 	// language is needed for #436 — same-language scoping prevents Go
 	// references to common identifiers (`path`, `result`, `fs`) from
 	// binding to JS / Python locals that happen to share the name.
+	// isFunc is added for #565 — a READS-pass identifier that resolves
+	// to a Function/Method (not a Variable) is a function-value binding
+	// (e.g. `s.spawnFn = s.defaultSpawn`, `T{Handler: someFn}`); we
+	// emit a CALLS edge for it instead of dropping, so dead_code stops
+	// flagging the bound function as unreachable.
 	type lookup struct {
-		id    string
-		lang  string
-		isVar bool
+		id     string
+		lang   string
+		isVar  bool
+		isFunc bool
 	}
 	qnCache := make(map[string]lookup)
 	lookupQN := func(qn string) lookup {
@@ -1728,7 +1734,13 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 				canonical = i
 			}
 		}
-		v := lookup{id: syms[canonical].ID, lang: syms[canonical].Language, isVar: syms[canonical].Kind == "Variable"}
+		k := syms[canonical].Kind
+		v := lookup{
+			id:     syms[canonical].ID,
+			lang:   syms[canonical].Language,
+			isVar:  k == "Variable",
+			isFunc: k == "Function" || k == "Method",
+		}
 		qnCache[qn] = v
 		return v
 	}
@@ -1752,7 +1764,9 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 			return lookup{}
 		}
 		// #436: only match symbols of the same language as the source.
-		// Variable matches preferred within that scoped set.
+		// Variable matches preferred within that scoped set; Function/
+		// Method matches recorded for #565 function-value-binding edges
+		// when no Variable is found.
 		var v lookup
 		for _, s := range syms {
 			if lang != "" && s.Language != lang {
@@ -1763,17 +1777,47 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 				break
 			}
 			if v.id == "" {
-				v = lookup{id: s.ID, lang: s.Language, isVar: false}
+				isFn := s.Kind == "Function" || s.Kind == "Method"
+				v = lookup{id: s.ID, lang: s.Language, isVar: false, isFunc: isFn}
 			}
 		}
 		nameCache[k] = v
 		return v
 	}
 
+	// #487 (resolveReads variant): when multiple files share a FromQN
+	// (the `package main` cmd/* fan-out shape), prefer the symbol whose
+	// file_path matches the candidate's FromFile so cross-file binding
+	// edges attribute to the right caller. Fall back to project-wide
+	// pickCanonical when FromFile is empty or doesn't match. Same
+	// shape as resolveCalls's lookupFromQN.
+	lookupFromQN := func(qn, fromFile string) lookup {
+		base := lookupQN(qn)
+		if base.id == "" || fromFile == "" {
+			return base
+		}
+		syms, err := idx.store.GetSymbolsByQN(projectID, qn)
+		if err != nil || len(syms) == 0 {
+			return base
+		}
+		for _, s := range syms {
+			if s.FilePath == fromFile {
+				k := s.Kind
+				return lookup{
+					id:     s.ID,
+					lang:   s.Language,
+					isVar:  k == "Variable",
+					isFunc: k == "Function" || k == "Method",
+				}
+			}
+		}
+		return base
+	}
+
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
 	for _, e := range pending {
-		from := lookupQN(e.FromQN)
+		from := lookupFromQN(e.FromQN, e.FromFile)
 		fromID := from.id
 		if fromID == "" && !strings.Contains(e.FromQN, ".") {
 			// From-side name lookup — no language scope yet (we're
@@ -1794,10 +1838,70 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		// QN matches across languages can happen for short namespace
 		// segments (`util`, `index`) that look identical when lifted
 		// to the qualified-name table.
-		if to.id == "" || !to.isVar || fromID == to.id {
+		if to.id == "" || fromID == to.id {
 			continue
 		}
 		if from.lang != "" && to.lang != "" && from.lang != to.lang {
+			continue
+		}
+		// #565: when the READS-pass target resolves to a Function or
+		// Method (not a Variable), the source AST node was a function
+		// value reference — `s.spawnFn = s.defaultSpawn`,
+		// `T{Handler: someFn}`, struct-literal callback fields. The
+		// existing extractGoCalls path emits a CALLS edge only when
+		// the identifier appears as the call subject `(`; bare
+		// references don't produce one. So the target stays
+		// unreachable in the call graph and dead_code false-positives
+		// it. Convert here: emit a CALLS edge with confidence 0.4
+		// (lower than direct CALLS at 0.7 since this is a binding,
+		// not an invocation — the call happens later through the
+		// binding). Existing extractGoCalls CALLS edges win the
+		// UNIQUE constraint dedup, so direct calls keep their
+		// confidence. Net effect: dead_code stops flagging methods
+		// and functions whose only "caller" is a binding expression.
+		if to.isFunc {
+			// Apply the same polymorphic-method blocklist that
+			// resolveCalls uses (#465). Without this, every read of an
+			// identifier whose name happens to be a polymorphic method
+			// (`String`, `Read`, `Close`, `Write`, etc.) — including
+			// when it's the call-subject of a stdlib type's method
+			// invocation like `b.String()` — would false-bind to a
+			// project-internal Method of that name. Same blocklist
+			// keeps the rule symmetric across both passes.
+			//
+			// Extract the trailing component for the polymorphic
+			// check, since e.ToName is whatever extractGoReads
+			// emitted (always a bare name for the Ident-walk path).
+			candName := e.ToName
+			if i := strings.LastIndex(candName, "."); i > 0 && i < len(candName)-1 {
+				candName = candName[i+1:]
+			}
+			if isPolymorphicInterfaceMethodName(candName) {
+				continue
+			}
+			key := fromID + "\x00" + to.id + "\x00CALLS"
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			edges = append(edges, db.Edge{
+				ProjectID:  projectID,
+				FromID:     fromID,
+				ToID:       to.id,
+				Kind:       "CALLS",
+				Confidence: 0.4,
+				// Distinct source tag so resolveCalls's resolve_pass
+				// CALLS aren't wiped by this pass's atomic replace.
+				// Both pass-tags satisfy dead_code's any-inbound-edge
+				// check; trace + query treat them identically.
+				Source: "binding_pass",
+			})
+			continue
+		}
+		// Variable target → READS / WRITES edge. Anything else (Class,
+		// Interface, Type, etc.) was a stray identifier reference —
+		// drop.
+		if !to.isVar {
 			continue
 		}
 		// Dedupe key includes the edge kind so a function that BOTH
@@ -1830,6 +1934,13 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		if err := idx.store.DeleteEdgesByKindAndSource(projectID, k, "resolve_pass"); err != nil {
 			slog.Warn("pincher.reads.delete_prior.err", "kind", k, "err", err)
 		}
+	}
+	// #565: separate atomic replace for function-value-binding CALLS
+	// edges (source='binding_pass'). Distinct from resolveCalls's
+	// resolve_pass CALLS so this delete doesn't nuke the direct-call
+	// graph. Per-file CALLS (source='per_file') are also untouched.
+	if err := idx.store.DeleteEdgesByKindAndSource(projectID, "CALLS", "binding_pass"); err != nil {
+		slog.Warn("pincher.binding.delete_prior.err", "err", err)
 	}
 	if len(edges) == 0 {
 		return 0
