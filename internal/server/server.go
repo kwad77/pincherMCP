@@ -1947,6 +1947,48 @@ func (s *Server) registerTools() {
 // Tool handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// diagnoseEmptyIndex explains why a zero-symbol index result happened.
+// Returns nil when result.Symbols > 0 (no diagnosis needed). The branches are
+// ordered most-specific-first; #425 split the legacy "files processed but no
+// symbols" bucket into a benign incremental case (symbol-neutral edits) vs the
+// genuine extractor-missing case so callers can act on the difference.
+func diagnoseEmptyIndex(result *index.IndexResult, force bool) map[string]any {
+	if result == nil || result.Symbols != 0 {
+		return nil
+	}
+	switch {
+	case result.Files == 0 && result.Blocked == 0 && result.Skipped == 0:
+		return map[string]any{
+			"diagnosis": "no indexable source files found at this path",
+			"hint":      "verify the path is a project root (contains code in a recognised language) or check `pincher health` for indexing failures",
+		}
+	case result.Files == 0 && result.Blocked > 0:
+		return map[string]any{
+			"diagnosis": fmt.Sprintf("all %d files were blocked by ast.ShouldSkip (lockfiles, minified bundles, source maps)", result.Blocked),
+			"hint":      "expected for vendor-only or build-artifact-only directories; index a parent directory if your sources are nested elsewhere",
+		}
+	case result.Files == 0 && result.Skipped > 0 && !force:
+		return map[string]any{
+			"diagnosis": fmt.Sprintf("incremental index — all %d files unchanged since last run", result.Skipped),
+			"hint":      "this is the expected fast path. Pass `force=true` if you suspect index corruption.",
+		}
+	case result.Files > 0 && result.Skipped > 0:
+		// #425: incremental re-index where some files were reprocessed but
+		// the edits were symbol-neutral (comments, whitespace, body changes
+		// that didn't add/remove declarations). Not a bug — distinguish
+		// from the genuine extractor-missing case below.
+		return map[string]any{
+			"diagnosis": fmt.Sprintf("incremental re-index: %d files unchanged, %d reprocessed without new or removed symbols", result.Skipped, result.Files),
+			"hint":      "no action needed — symbol-neutral edits (comments, whitespace, body-only changes) produce zero net symbol delta",
+		}
+	default:
+		return map[string]any{
+			"diagnosis": "files were processed but no symbols extracted",
+			"hint":      "language detection may be missing extension support; check `pincher health` per-language coverage",
+		}
+	}
+}
+
 func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
@@ -1998,29 +2040,8 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// from the counts (no source files vs all blocked vs all unchanged).
 	// Trustworthy + explainable: the user gets a clear diagnostic instead
 	// of a silent zero. Skipped on healthy non-zero runs.
-	if result.Symbols == 0 {
-		switch {
-		case result.Files == 0 && result.Blocked == 0 && result.Skipped == 0:
-			data["_meta"] = map[string]any{
-				"diagnosis": "no indexable source files found at this path",
-				"hint":      "verify the path is a project root (contains code in a recognised language) or check `pincher health` for indexing failures",
-			}
-		case result.Files == 0 && result.Blocked > 0:
-			data["_meta"] = map[string]any{
-				"diagnosis": fmt.Sprintf("all %d files were blocked by ast.ShouldSkip (lockfiles, minified bundles, source maps)", result.Blocked),
-				"hint":      "expected for vendor-only or build-artifact-only directories; index a parent directory if your sources are nested elsewhere",
-			}
-		case result.Files == 0 && result.Skipped > 0 && !force:
-			data["_meta"] = map[string]any{
-				"diagnosis": fmt.Sprintf("incremental index — all %d files unchanged since last run", result.Skipped),
-				"hint":      "this is the expected fast path. Pass `force=true` if you suspect index corruption.",
-			}
-		default:
-			data["_meta"] = map[string]any{
-				"diagnosis": "files were processed but no symbols extracted",
-				"hint":      "language detection may be missing extension support; check `pincher health` per-language coverage",
-			}
-		}
+	if meta := diagnoseEmptyIndex(result, force); meta != nil {
+		data["_meta"] = meta
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }

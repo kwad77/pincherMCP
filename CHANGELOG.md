@@ -7,6 +7,18 @@ minors.
 
 ## [Unreleased]
 
+### Fixed
+- **`index` diagnosis conflated benign symbol-neutral re-indexes with
+  extractor bugs ([#425](https://github.com/kwad77/pincher/issues/425)).**
+  When `skipped > 0 AND files > 0 AND symbols == 0` — the normal case where
+  an incremental run reprocesses files whose edits didn't add/remove
+  declarations (comments, whitespace, body-only changes) — the diagnosis
+  read "files were processed but no symbols extracted" and pointed at
+  language-detection. Agents that followed that hint chased a non-bug.
+  Diagnosis now splits the three zero-symbol cases at the source:
+  incremental-symbol-neutral, all-unchanged-cached, and extractor-missing
+  each get distinct text + hint.
+
 ## [v0.15.6] — 2026-05-11 — dogfood-driven hygiene patches
 
 Patch — seven fixes from a continuous dogfood loop. Each one came
