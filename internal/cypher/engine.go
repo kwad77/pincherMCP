@@ -1613,8 +1613,16 @@ func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
 }
 
 // cypherPropToCol maps a Cypher property name to a SQL column name.
+// Returning "" suppresses SQL pushdown — the condition then falls back
+// to in-Go evaluation against the row map. #412: that fallback was
+// silently undercounting `WHERE n.id="X"` queries because the SQL scan
+// LIMIT (#308 — `e.maxRows()*2`) cut the row set BEFORE the in-Go
+// id filter could reject non-matching edges. Adding `id` here pushes
+// the filter to SQL where the LIMIT becomes irrelevant.
 func cypherPropToCol(prop string) string {
 	switch prop {
+	case "id":
+		return "id"
 	case "name":
 		return "name"
 	case "qualified_name", "qn":
