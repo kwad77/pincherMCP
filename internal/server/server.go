@@ -5132,6 +5132,7 @@ const (
 	shapeFind       guideShape = "find"       // find/where is — search-leaning (#284)
 	shapeTraceIn    guideShape = "trace_in"   // who calls / what calls — trace inbound (#284)
 	shapeTraceOut   guideShape = "trace_out"  // what does X call — trace outbound (#284)
+	shapeAudit      guideShape = "audit"      // structural audit (#467) — undocumented/untested/dead-code surveys
 	shapeUnknown    guideShape = "unknown"    // fallback
 )
 
@@ -5188,6 +5189,14 @@ func classifyTaskShape(task string) guideShape {
 		// then routed those tasks to a generic architecture+search
 		// recommendation instead of the deeper context-read flow.
 		return shapeUnderstand
+	// #467: structural-audit shapes — "find undocumented exported APIs",
+	// "list functions with no docstring", etc. The right tool is
+	// `query` with a pinchQL predicate (n.docstring IS NULL,
+	// n.is_test=true, etc.), not BM25 search of the literal phrase.
+	// Must come before shapeFind so "find undocumented" doesn't fall
+	// through to a useless `search query="undocumented"`.
+	case contains("undocumented", "no docstring", "missing docstring", "missing comment", "without docstring", "without comment"):
+		return shapeAudit
 	// #284: search-shape questions explicitly mention finding/locating.
 	// Below the trace cases so "who calls X" doesn't grab "find" if it
 	// happens to appear in the task ("find out who calls X").
@@ -5358,6 +5367,21 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 				"why": "BM25 search using the discriminating phrase from your task"},
 			{"tool": "context", "args": `{"id":"<from-search>"}`,
 				"why": "read the top hit with its imports — usually answers \"what is this?\" without opening any file"},
+		}
+	case shapeAudit:
+		// #467: docstring-aware audit. Routed here for tasks like
+		// "find undocumented exported functions". The canonical
+		// answer is pinchQL — BM25 search of "undocumented" returns
+		// nothing useful. is_exported / docstring properties live in
+		// the row map post-#438.
+		auditQuery := nextStepArgs(map[string]any{
+			"pinchql": `MATCH (n:Function) WHERE n.docstring IS NULL AND n.is_exported=true RETURN n.name, n.file_path LIMIT 50`,
+		})
+		return []map[string]string{
+			{"tool": "query", "args": auditQuery,
+				"why": "structural audit — pinchQL filters on docstring/is_exported directly. BM25 search of the literal phrase wouldn't surface anything"},
+			{"tool": "context", "args": `{"id":"<from-query>"}`,
+				"why": "read each candidate's surrounding context to confirm it warrants a docstring"},
 		}
 	case shapeTraceIn:
 		return []map[string]string{
