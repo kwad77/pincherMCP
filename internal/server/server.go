@@ -1198,16 +1198,50 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the right base URL.
 func (s *Server) openAPISpec(r *http.Request) map[string]any {
 	prefix := s.effectivePrefix(r)
-	tools := []string{"index", "symbol", "symbols", "context", "search", "query", "trace", "changes", "architecture", "schema", "list", "adr", "health", "stats", "fetch"}
+	// #558 Phase 1: build the path list dynamically from s.handlers.
+	// Pre-fix this was a hardcoded slice that drifted every time a new
+	// MCP tool was added — dead_code, guide, neighborhood, init were
+	// invisible to OpenAPI consumers (Postman imports, copilots) even
+	// though they're reachable via the generic /v1/<tool> dispatcher.
+	// Iteration is over sorted names so the spec is deterministic
+	// across requests and builds (otherwise map iteration order would
+	// flip the output every fetch and break HTTP caching).
+	names := make([]string, 0, len(s.handlers))
+	for name := range s.handlers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	paths := map[string]any{}
-	for _, t := range tools {
+	for _, t := range names {
+		// Pull description + input schema from the registered mcp.Tool
+		// so the OpenAPI spec mirrors what the agent sees in tools/list.
+		// Keeps documentation in lockstep with behavior — no second
+		// source of truth to maintain.
+		summary := "Call the " + t + " tool"
+		var requestSchema any = map[string]any{"type": "object"}
+		if tool := s.tools[t]; tool != nil {
+			if tool.Description != "" {
+				summary = tool.Description
+			}
+			// InputSchema is typed as `any` on mcp.Tool but every
+			// addTool site passes json.RawMessage. Type-assert and
+			// re-parse so the OpenAPI consumer gets a real schema
+			// (properties, required, enum) instead of the bare
+			// {type: object} placeholder.
+			if raw, ok := tool.InputSchema.(json.RawMessage); ok && len(raw) > 0 {
+				var parsed any
+				if err := json.Unmarshal(raw, &parsed); err == nil {
+					requestSchema = parsed
+				}
+			}
+		}
 		paths[prefix+"/v1/"+t] = map[string]any{
 			"post": map[string]any{
 				"operationId": t,
-				"summary":     "Call the " + t + " tool",
+				"summary":     summary,
 				"requestBody": map[string]any{
 					"required": true,
-					"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}},
+					"content":  map[string]any{"application/json": map[string]any{"schema": requestSchema}},
 				},
 				"responses": map[string]any{
 					"200": map[string]any{"description": "Tool result", "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}},
