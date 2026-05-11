@@ -90,6 +90,16 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	}
 	if res != nil {
 		res.Warnings = append(res.Warnings, warnings...)
+		// #501: when the result set is empty AND the query filters on
+		// an enum-shaped property (kind / language) with a value not
+		// in the project, suggest valid values. Same failure-as-pedagogy
+		// shape as #473 extended one layer down: not the property NAME
+		// but the property VALUE. Skipped on non-empty results because
+		// "you found rows AND we have a complaint about your filter"
+		// would be noise — the agent isn't confused.
+		if res.Total == 0 {
+			res.Warnings = append(res.Warnings, e.collectUnknownEnumValueWarnings(ctx, q)...)
+		}
 	}
 	return res, nil
 }
@@ -170,6 +180,161 @@ func collectUnknownPropertyWarnings(q *queryAST) []string {
 			n, strings.Join(knownPropertyList, ", ")))
 	}
 	return out
+}
+
+// enumValuedProperties is the set of cypher property names whose values
+// come from a finite, project-discoverable set. When a 0-row query
+// filters on one of these with `=`, the engine looks up actual distinct
+// values in the project and suggests them in a warning (#501).
+//
+// Limited to columns that are themselves a closed vocabulary on the
+// symbols table (kind, language). corpus is computed by ClassifyCorpus
+// at runtime, not stored as a column, and isn't a cypher property anyway.
+var enumValuedProperties = map[string]bool{
+	"kind":     true,
+	"label":    true, // alias for kind in cypherPropToCol
+	"language": true,
+}
+
+// collectUnknownEnumValueWarnings finds equality filters on enum-shaped
+// properties whose values don't exist in the project's symbols table,
+// and emits one warning per (property, value) pair. Called only when
+// the query returned zero rows — non-empty results are taken as proof
+// the filter value was at least one observed value.
+//
+// Each unique (property, value) becomes at most one DB query
+// (`SELECT DISTINCT col FROM symbols WHERE project_id=?`); on a typical
+// corpus the result is a 5-15-row list cached implicitly by SQLite.
+func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *queryAST) []string {
+	if e == nil || e.DB == nil || q == nil {
+		return nil
+	}
+	type probe struct{ prop, value string }
+	probes := map[probe]bool{}
+	consider := func(c condition) {
+		if c.op != "=" || c.value == "" {
+			return
+		}
+		if !enumValuedProperties[c.property] {
+			return
+		}
+		col := cypherPropToCol(c.property)
+		if col == "" {
+			return
+		}
+		probes[probe{prop: col, value: c.value}] = true
+	}
+	for _, c := range q.conditions {
+		consider(c)
+	}
+	var walk func(w whereExpr)
+	walk = func(w whereExpr) {
+		switch x := w.(type) {
+		case condExpr:
+			consider(x.c)
+		case binaryExpr:
+			walk(x.left)
+			walk(x.right)
+		case notExpr:
+			walk(x.inner)
+		}
+	}
+	walk(q.where)
+
+	// MATCH pattern labels: `MATCH (n:Funtion)` is a typo'd kind that
+	// behaves like `WHERE n.kind = 'Funtion'` — same silent-zero,
+	// same pedagogy needed. fromKind/toKind feed the same `kind`
+	// column, so probe them under the same enum machinery.
+	for _, pat := range q.patterns {
+		if pat.fromKind != "" {
+			probes[probe{prop: "kind", value: pat.fromKind}] = true
+		}
+		if pat.toKind != "" {
+			probes[probe{prop: "kind", value: pat.toKind}] = true
+		}
+	}
+
+	if len(probes) == 0 {
+		return nil
+	}
+	// Deterministic order for tests + readable warnings.
+	keys := make([]probe, 0, len(probes))
+	for p := range probes {
+		keys = append(keys, p)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].prop != keys[j].prop {
+			return keys[i].prop < keys[j].prop
+		}
+		return keys[i].value < keys[j].value
+	})
+
+	out := []string{}
+	for _, p := range keys {
+		known := e.distinctSymbolsColumn(ctx, p.prop)
+		if known == nil {
+			continue
+		}
+		if containsString(known, p.value) {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"WHERE %s = %q matched no symbols. Known %s values in this project: %s. (typo? wrong property — e.g. did you mean name = %q?)",
+			p.prop, p.value, p.prop, strings.Join(known, ", "), p.value,
+		))
+	}
+	return out
+}
+
+// distinctSymbolsColumn returns the project-scoped distinct values of
+// a single column on the symbols table. col MUST be one of the
+// hard-coded enum properties — it is interpolated unquoted into the
+// SQL, so any caller that bypasses enumValuedProperties has supplied
+// an injection vector. enumValuedProperties is a closed set so the
+// guard is a structural invariant, not a runtime check.
+//
+// Cross-project (AllowAllProjects=true, ProjectID="") path drops the
+// project_id filter — preserves parity with the rest of the engine.
+//
+// Returns nil on any DB error; callers treat nil as "skip the warning,
+// don't false-positive on transient failures."
+func (e *Executor) distinctSymbolsColumn(ctx context.Context, col string) []string {
+	var rows *sql.Rows
+	var err error
+	if e.ProjectID != "" {
+		rows, err = e.DB.QueryContext(ctx,
+			"SELECT DISTINCT "+col+" FROM symbols WHERE project_id=? AND "+col+" != '' ORDER BY "+col,
+			e.ProjectID)
+	} else {
+		rows, err = e.DB.QueryContext(ctx,
+			"SELECT DISTINCT "+col+" FROM symbols WHERE "+col+" != '' ORDER BY "+col)
+	}
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// containsString — pre-Go-1.21 generic shim; engine.go already targets
+// the toolchain default in this repo (1.21+ has slices.Contains) but
+// the cypher package's import surface is intentionally narrow, so a
+// 5-line helper is cheaper than pulling in `slices`.
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // symCols is the canonical SELECT column list for the symbols table.

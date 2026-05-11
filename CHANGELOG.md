@@ -31,6 +31,18 @@ minors.
   arg allow-lists are computed once from the registered InputSchema
   on first call. Adds zero overhead when args are valid (pure map
   lookups).
+- **query: empty-result diagnosis extends to enum-shaped property
+  values ([#501](https://github.com/kwad77/pincher/issues/501)).**
+  Pre-fix, `WHERE n.kind = 'init'` silently returned 0 rows because
+  `'init'` isn't in the kind enum (`init` is a name, not a kind).
+  Same failure shape as #473 one layer down: not the property name
+  but the property VALUE. Now: when a query returns 0 rows AND filters
+  on `kind` / `language` (alias `label` included) with `=`, the engine
+  queries the project's distinct values for that column and surfaces a
+  warning naming the offender + listing the actually-observed values.
+  Cost: at most one cheap `SELECT DISTINCT` per probe per 0-row query;
+  zero cost on non-empty results (the diagnostic is gated on
+  `Total == 0` to keep noise out of healthy responses).
 - **changes: blast radius now intersects diff hunks with symbol line
   ranges ([#502](https://github.com/kwad77/pincher/issues/502)).**
   Pre-fix, every symbol in any changed file was treated as "changed"
