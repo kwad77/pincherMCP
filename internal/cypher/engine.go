@@ -766,12 +766,20 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 		rv := returnVar{}
 		t := p.peek()
 
-		// COUNT(var)
-		if t.value == "COUNT" {
+		// Aggregation: COUNT(var), or AVG/MIN/MAX/SUM(var.property).
+		// COUNT keeps the count-rows-only shape (no property); the
+		// numeric aggregators take a column reference because their
+		// value depends on which property to summarise (#432).
+		if isAggFn(t.value) {
+			fn := strings.ToUpper(t.value)
 			p.next()
 			p.skip("(")
-			rv.fn = "COUNT"
+			rv.fn = fn
 			rv.variable = p.next().value
+			if p.peek().value == "." {
+				p.next()
+				rv.property = p.next().value
+			}
 			p.skip(")")
 		} else {
 			rv.variable = p.next().value
@@ -1041,11 +1049,103 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 // safety LIMIT (#308).
 func hasAggregation(q *queryAST) bool {
 	for _, rv := range q.returnVars {
-		if rv.fn == "COUNT" {
+		if rv.fn != "" {
 			return true
 		}
 	}
 	return false
+}
+
+// isAggFn reports whether tok is an aggregator function name. The
+// tokenizer uppercases known KEYWORD entries (COUNT) but leaves
+// IDENT-shaped function names case-sensitive — accept either form
+// so RETURN avg(n.complexity) and RETURN AVG(n.complexity) both
+// parse (#432).
+func isAggFn(tok string) bool {
+	switch strings.ToUpper(tok) {
+	case "COUNT", "AVG", "MIN", "MAX", "SUM":
+		return true
+	}
+	return false
+}
+
+// aggColName returns the output column name for an aggregator
+// projection — alias if the user wrote AS, otherwise the canonical
+// `FN(var.prop)` shape mirroring the source.
+func aggColName(rv returnVar) string {
+	if rv.alias != "" {
+		return rv.alias
+	}
+	col := rv.variable
+	if rv.property != "" {
+		col = rv.variable + "." + rv.property
+	}
+	return rv.fn + "(" + col + ")"
+}
+
+// computeAgg evaluates rv.fn over the given row set. COUNT counts
+// rows (matches Cypher / SQL semantics). AVG / MIN / MAX / SUM
+// extract rv.variable.rv.property and parse as float64. Non-numeric
+// rows skip silently (mirrors SQLite behaviour). Returns nil when
+// the row set is empty for AVG / MIN / MAX (SQL-style NULL); SUM
+// returns 0.0 over an empty set, COUNT returns 0.
+func computeAgg(rows []map[string]any, rv returnVar) any {
+	if rv.fn == "COUNT" {
+		return len(rows)
+	}
+	key := rv.variable
+	if rv.property != "" {
+		key = rv.variable + "." + rv.property
+	}
+	var nums []float64
+	for _, row := range rows {
+		raw, ok := row[key]
+		if !ok || raw == nil {
+			continue
+		}
+		f, err := strconv.ParseFloat(fmt.Sprint(raw), 64)
+		if err != nil {
+			continue
+		}
+		nums = append(nums, f)
+	}
+	if len(nums) == 0 {
+		if rv.fn == "SUM" {
+			return 0.0
+		}
+		return nil
+	}
+	switch rv.fn {
+	case "SUM":
+		var s float64
+		for _, n := range nums {
+			s += n
+		}
+		return s
+	case "AVG":
+		var s float64
+		for _, n := range nums {
+			s += n
+		}
+		return s / float64(len(nums))
+	case "MIN":
+		m := nums[0]
+		for _, n := range nums[1:] {
+			if n < m {
+				m = n
+			}
+		}
+		return m
+	case "MAX":
+		m := nums[0]
+		for _, n := range nums[1:] {
+			if n > m {
+				m = n
+			}
+		}
+		return m
+	}
+	return nil
 }
 
 // runJoinQuery handles: MATCH (a:Kind)-[:EDGE]->(b:Kind) WHERE ... RETURN ...
@@ -1351,15 +1451,11 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 	// Project RETURN columns
 	var cols []string
-	hasCount := false
+	hasAgg := false
 	for _, rv := range q.returnVars {
-		if rv.fn == "COUNT" {
-			col := rv.alias
-			if col == "" {
-				col = "COUNT(" + rv.variable + ")"
-			}
-			cols = append(cols, col)
-			hasCount = true
+		if rv.fn != "" {
+			cols = append(cols, aggColName(rv))
+			hasAgg = true
 		} else {
 			col := rv.variable
 			if rv.property != "" {
@@ -1384,24 +1480,25 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 		}
 	}
 
-	if hasCount {
+	if hasAgg {
 		// #348: implicit GROUP BY when mixing non-aggregate columns with COUNT.
 		// Standard Cypher/SQL semantics — `RETURN n.kind, COUNT(n)` should
 		// group by n.kind and emit one row per kind, not collapse to a single
 		// total row that silently drops the n.kind column. Pre-fix path treated
 		// the presence of any COUNT as "single-row total" regardless of the
 		// projection shape.
+		// #432 extends the same pattern to AVG/MIN/MAX/SUM.
 		var groupVars []returnVar
 		var aggVars []returnVar
 		for _, rv := range q.returnVars {
-			if rv.fn == "COUNT" {
+			if rv.fn != "" {
 				aggVars = append(aggVars, rv)
 			} else {
 				groupVars = append(groupVars, rv)
 			}
 		}
 
-		// No group-by columns → existing single-row total path. Backward
+		// No group-by columns → single-row aggregate path. Backward
 		// compatible: `RETURN COUNT(n)` still returns one row.
 		if len(groupVars) == 0 {
 			// #360: explicit LIMIT 0 short-circuits even the
@@ -1411,14 +1508,9 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 			if q.limit == 0 {
 				return &Result{Columns: cols, Rows: []map[string]any{}, Total: 0}, nil
 			}
-			total := len(allRows)
 			row := map[string]any{}
 			for _, rv := range aggVars {
-				col := rv.alias
-				if col == "" {
-					col = "COUNT(" + rv.variable + ")"
-				}
-				row[col] = total
+				row[aggColName(rv)] = computeAgg(allRows, rv)
 			}
 			return &Result{Columns: cols, Rows: []map[string]any{row}, Total: 1}, nil
 		}
@@ -1428,7 +1520,7 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 		// (line 1071), so behaviour is consistent.
 		type groupBucket struct {
 			values map[string]any
-			count  int
+			rows   []map[string]any
 		}
 		groups := map[string]*groupBucket{}
 		var groupOrder []string // preserve first-seen order so unORDERed output is deterministic
@@ -1452,10 +1544,11 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 				groups[groupKey] = b
 				groupOrder = append(groupOrder, groupKey)
 			}
-			b.count++
+			b.rows = append(b.rows, row)
 		}
 
-		// Emit one row per group, with each agg's count.
+		// Emit one row per group, with each agg evaluated on the
+		// group's rows.
 		grouped := make([]map[string]any, 0, len(groups))
 		for _, gk := range groupOrder {
 			b := groups[gk]
@@ -1464,11 +1557,7 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 				out[k] = v
 			}
 			for _, rv := range aggVars {
-				col := rv.alias
-				if col == "" {
-					col = "COUNT(" + rv.variable + ")"
-				}
-				out[col] = b.count
+				out[aggColName(rv)] = computeAgg(b.rows, rv)
 			}
 			grouped = append(grouped, out)
 		}
