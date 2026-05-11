@@ -7,6 +7,58 @@ minors.
 
 ## [Unreleased]
 
+## [v0.15.0] — 2026-05-10 — Autoresearcher dogfood loop enablers
+
+Headline: three precision wins that make the autoresearcher dogfood loop
+actually productive — supervised mode now refreshes the client's tool
+registry live after binary swaps, pinchQL filters by symbol id without
+silently undercounting, and `guide` knows when the task references a
+pincher-domain concept and points at the actual file/symbol instead of
+generic search recommendations.
+
+### Added
+- **`guide` task-shape-aware recommendations + concept dictionary
+  ([#397](https://github.com/kwad77/pincher/issues/397) /
+  [#417](https://github.com/kwad77/pincher/pull/417)).** Three deepening
+  improvements:
+  - "why does X" / "why is X" / "why are X" / "why do X" route to
+    `shapeUnderstand` instead of falling through to `shapeUnknown` and
+    the generic architecture+search recommendation.
+  - Acronym tie-break in hint extraction: when run lengths and total
+    chars tie, runs with all-caps tokens (INI, MCP, FTS5, BPE) win.
+    "add support for INI file parsing" returned hint=`parsing` pre-fix;
+    now returns `INI`.
+  - 9-pattern domain-concept dictionary maps task substrings to
+    concept-aware starter recommendations: "MCP tool" → `search registerTools`,
+    "schema migration" → `search schemaMigrations`, "language extractor"
+    → `search registerExtractor`, etc. The shape-default workflow follows.
+
+### Fixed
+- **Supervisor emits `notifications/tools/list_changed` after respawn
+  ([#407](https://github.com/kwad77/pincher/issues/407) /
+  [#416](https://github.com/kwad77/pincher/pull/416)).** When
+  `PINCHER_AUTO_RESTART_ON_DRIFT=1` swaps the binary on disk and the
+  supervisor respawns the inner, the new binary may have added or
+  removed tools — but the client's tool registry was captured at
+  handshake time. The supervisor now pushes the MCP-spec
+  `notifications/tools/list_changed` notification after respawn settles
+  so clients re-issue `tools/list` and pick up the new surface live.
+  Unblocks the in-session dogfood workflow for any release that adds
+  a tool — previously only augmentations to existing tools (new args,
+  new defaults) survived an in-session binary swap; *new* tools needed
+  a fresh session.
+
+- **pinchQL `WHERE n.id="X"` pushes to SQL instead of post-filtering
+  ([#412](https://github.com/kwad77/pincher/issues/412) /
+  [#415](https://github.com/kwad77/pincher/pull/415)).**
+  `cypherPropToCol` didn't map `id` to a column, so any WHERE predicate
+  on `id` was post-filtered in Go. The SQL scan still applied `LIMIT
+  e.maxRows()*2`, dropping matching rows past the cut. Two queries that
+  should have returned the same inbound-edge count returned different
+  totals depending on scan order. Fix maps `id` to the SQL `id` column
+  so SQLite uses the primary-key index AND the LIMIT only applies to
+  rows that already match.
+
 ## [v0.14.0] — 2026-05-10 — Token-savings + performance focus
 
 Headline: every read tool now supports `fields` projection so callers can
