@@ -4907,7 +4907,12 @@ func classifyTaskShape(task string) guideShape {
 			return shapeTraceOut
 		}
 		return shapeUnderstand
-	case contains("understand", "explain", "how does", "what is", "explore", "learn", "orient"):
+	case contains("understand", "explain", "how does", "what is", "explore", "learn", "orient",
+		"why does", "why is", "why are", "why do"):
+		// #397: "why does X" is the canonical "explain this" phrasing
+		// and was previously falling through to shapeUnknown — guide
+		// then routed those tasks to a generic architecture+search
+		// recommendation instead of the deeper context-read flow.
 		return shapeUnderstand
 	// #284: search-shape questions explicitly mention finding/locating.
 	// Below the trace cases so "who calls X" doesn't grab "find" if it
@@ -4925,6 +4930,95 @@ func classifyTaskShape(task string) guideShape {
 		}
 		return shapeUnknown
 	}
+}
+
+// domainConcept maps a substring pattern in a task description to a
+// concept-aware starter recommendation that supersedes the generic
+// shape-default first tool. The list is ordered: first match wins.
+// All keys are lowercase; the matcher lowercases the task before
+// looking. #397.
+//
+// The intent: when a user says "add a new MCP tool" or "schema
+// migration", the guide should jump straight to the file/symbol
+// where that concept lives, instead of generic "search for similar
+// existing code". One concrete pointer is worth ten generic tool
+// suggestions.
+var domainConcepts = []struct {
+	patterns []string
+	tool     string
+	args     string
+	why      string
+}{
+	{
+		patterns: []string{"mcp tool", "tool registration", "addtool", "registertools", "registertool", "tools/list", "tools/call", "tool surface"},
+		tool:     "search",
+		args:     `{"query":"registerTools"}`,
+		why:      "MCP tools are registered in registerTools (internal/server/server.go); read that to see the registration pattern + InputSchema shape",
+	},
+	{
+		patterns: []string{"schema migration", "schema change", "add a column", "schema bump", "schemamigrations"},
+		tool:     "search",
+		args:     `{"query":"schemaMigrations"}`,
+		why:      "schema migrations live in the schemaMigrations slice in internal/db/db.go — append to add one; see CLAUDE.md for the 5-file checklist (corpus snapshots etc.)",
+	},
+	{
+		patterns: []string{"new language", "new extractor", "language extractor", "ast extractor", "regex extractor", "extractor candidate"},
+		tool:     "search",
+		args:     `{"query":"registerExtractor"}`,
+		why:      "extractors self-register in init() — see internal/ast/registry.go for the Extractor interface; existing extractors are the template",
+	},
+	{
+		patterns: []string{"git diff", "blast radius", "changed_files", "scope=base", "compare branches"},
+		tool:     "search",
+		args:     `{"query":"runGitDiff"}`,
+		why:      "git diff handling lives in runGitDiff / parseGitDiffFiles (internal/server/server.go) — that's where scope=base:<branch> dispatches",
+	},
+	{
+		patterns: []string{"supervisor", "respawn", "supervised mode", "auto-restart", "auto_restart", "init replay", "tools/list_changed"},
+		tool:     "search",
+		args:     `{"query":"Supervisor"}`,
+		why:      "the supervisor lives in internal/supervisor/supervisor.go — Supervisor type, respawn(), and the pump goroutines are the surface area",
+	},
+	{
+		patterns: []string{"pinchql", "cypher engine", "match (a)", "where pushdown", "edge filter"},
+		tool:     "search",
+		args:     `{"query":"runJoinQuery"}`,
+		why:      "pinchQL routing splits between runNodeScan / runJoinQuery / runBFS in internal/cypher/engine.go — Execute() is the dispatcher",
+	},
+	{
+		patterns: []string{"fts5", "full-text search", "rebuild fts", "search index", "bm25"},
+		tool:     "search",
+		args:     `{"query":"symbols_fts"}`,
+		why:      "FTS5 lives in the symbols_fts virtual table + 3 sync triggers (internal/db/db.go) — never sync manually, the triggers handle it",
+	},
+	{
+		patterns: []string{"session stats", "token saving", "tokens_used", "cost_avoided"},
+		tool:     "search",
+		args:     `{"query":"jsonResultWithMeta"}`,
+		why:      "every tool response wraps via jsonResultWithMeta which atomically increments session stats — read it before adding a new tool",
+	},
+	{
+		patterns: []string{"trace", "callers", "call graph", "bfs depth", "trace risk"},
+		tool:     "search",
+		args:     `{"query":"traceViaCTE"}`,
+		why:      "trace BFS uses a recursive CTE in internal/db/db.go (traceViaCTE) — that's the SQL doing the work",
+	},
+}
+
+// domainConceptHint returns a concept-aware recommendation when the
+// task references a known pincher domain concept, or nil when no
+// concept matches (caller falls through to shape-default
+// recommendations only).
+func domainConceptHint(task string) *map[string]string {
+	t := strings.ToLower(task)
+	for _, c := range domainConcepts {
+		for _, p := range c.patterns {
+			if strings.Contains(t, p) {
+				return &map[string]string{"tool": c.tool, "args": c.args, "why": c.why}
+			}
+		}
+	}
+	return nil
 }
 
 // guideRecommendations returns the default 2-3 next-tool suggestions
@@ -5099,22 +5193,44 @@ func taskHintFromString(task string) string {
 	// Pick the longest run by token count; ties broken by total
 	// character length (a 3-word run of long names beats a 3-word run
 	// of short ones); further ties broken by position (later wins).
+	// #397: when run lengths tie, prefer runs with all-caps tokens
+	// (acronyms like INI, MCP, FTS5, BPE) over lowercase runs of the
+	// same length. Users mention acronyms as the subject of the task
+	// ("INI file parsing" — the acronym IS the discriminator); the
+	// neighbouring lowercase tokens are usually scope nouns.
 	bestIdx := 0
 	bestLen := len(runs[0])
 	bestChars := totalLen(runs[0])
+	bestAcronyms := acronymCount(runs[0])
 	for i := 1; i < len(runs); i++ {
 		runLen := len(runs[i])
 		runChars := totalLen(runs[i])
+		runAcronyms := acronymCount(runs[i])
 		switch {
 		case runLen > bestLen:
-			bestIdx, bestLen, bestChars = i, runLen, runChars
-		case runLen == bestLen && runChars > bestChars:
-			bestIdx, bestLen, bestChars = i, runLen, runChars
-		case runLen == bestLen && runChars == bestChars:
+			bestIdx, bestLen, bestChars, bestAcronyms = i, runLen, runChars, runAcronyms
+		case runLen == bestLen && runAcronyms > bestAcronyms:
+			bestIdx, bestLen, bestChars, bestAcronyms = i, runLen, runChars, runAcronyms
+		case runLen == bestLen && runAcronyms == bestAcronyms && runChars > bestChars:
+			bestIdx, bestLen, bestChars, bestAcronyms = i, runLen, runChars, runAcronyms
+		case runLen == bestLen && runAcronyms == bestAcronyms && runChars == bestChars:
 			bestIdx = i // later wins on tie
 		}
 	}
 	return strings.Join(runs[bestIdx], " ")
+}
+
+// acronymCount returns the number of all-caps tokens in toks. Used by
+// taskHintFromString tie-break (#397) — acronyms are higher signal than
+// neighbouring lowercase scope nouns.
+func acronymCount(toks []string) int {
+	n := 0
+	for _, t := range toks {
+		if len(t) >= 2 && strings.ToUpper(t) == t {
+			n++
+		}
+	}
+	return n
 }
 
 // qualifiedIdentifierHint returns the highest-signal qualified
@@ -5250,11 +5366,18 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		hint = task
 	}
 	recommendations := guideRecommendations(shape, hint)
+	// #397: if the task mentions a pincher-domain concept, prepend a
+	// concept-aware starter that points at the actual file/symbol where
+	// the concept lives. The shape-default recommendations follow as
+	// the broader workflow.
+	if cc := domainConceptHint(task); cc != nil {
+		recommendations = append([]map[string]string{*cc}, recommendations...)
+	}
 
 	data := map[string]any{
-		"task":          task,
-		"shape":         string(shape),
-		"hint":          hint,
+		"task":                   task,
+		"shape":                  string(shape),
+		"hint":                   hint,
 		"recommended_next_tools": recommendations,
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
