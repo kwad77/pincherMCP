@@ -184,6 +184,23 @@ type Supervisor struct {
 	// Non-zero in steady state suggests a flapping inner.
 	ProbesTimedOut atomic.Int64
 
+	// ToolsListChangedEmitted counts `notifications/tools/list_changed`
+	// frames written to client stdout after a respawn (#407 / PR #416).
+	// Surfaced so an agent can confirm the server is doing its part
+	// even when the client doesn't honour the notification (#429).
+	ToolsListChangedEmitted atomic.Int64
+
+	// ToolsListChangedEmitFailed counts attempts where Stdout.Write
+	// returned an error — usually a closed client pipe on the way
+	// down. Best-effort: respawn doesn't fail on emission error.
+	ToolsListChangedEmitFailed atomic.Int64
+
+	// LastToolsListChangedEmitUnixNano is the unix-nano timestamp of
+	// the most recent emit attempt (success or failure). Stored as
+	// atomic.Int64 so Status() reads coherently across the pump
+	// goroutines. Zero means "never emitted".
+	LastToolsListChangedEmitUnixNano atomic.Int64
+
 	// startedAt is set in Run before any pump goroutines launch.
 	// Surfaced via the status tool as uptime.
 	startedAt time.Time
@@ -214,6 +231,14 @@ type SupervisorStatus struct {
 	ProbesTimedOut    int64  `json:"probes_timed_out"`
 	LastRestartReason string `json:"last_restart_reason,omitempty"`
 	SupervisorVersion string `json:"supervisor_version,omitempty"`
+
+	// #429: tools/list_changed delivery accounting. Lets an agent
+	// (or a developer reading status) confirm the supervisor IS
+	// emitting the notification — even when the client doesn't
+	// honour it (current Claude Code behaviour as of writing).
+	ToolsListChangedEmitted     int64  `json:"tools_list_changed_emitted"`
+	ToolsListChangedEmitFailed  int64  `json:"tools_list_changed_emit_failed,omitempty"`
+	LastToolsListChangedEmitAt  string `json:"last_tools_list_changed_emit_at,omitempty"`
 }
 
 // probeState is the pendingProbe payload — the time the probe went
@@ -816,12 +841,18 @@ func (s *Supervisor) respawn() error {
 	// false negatives (real binary swap, no notification) cost a full
 	// session restart to pick up new tools — much more expensive.
 	notif := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` + "\n")
+	// #429: record the emit attempt unconditionally so Status() can
+	// surface the last-emit timestamp even when the Write fails.
+	s.LastToolsListChangedEmitUnixNano.Store(time.Now().UnixNano())
 	if _, err := s.Stdout.Write(notif); err != nil {
 		// Don't fail the respawn — the notification is best-effort.
 		// If the client can't read its stdin, the next pump iteration
 		// will catch the broken pipe and surface it through the
 		// normal shutdown path.
+		s.ToolsListChangedEmitFailed.Add(1)
 		slog.Warn("supervisor.respawn.notify_tools_list_changed_failed", "err", err)
+	} else {
+		s.ToolsListChangedEmitted.Add(1)
 	}
 
 	slog.Info("supervisor.respawn",
@@ -847,14 +878,22 @@ func (s *Supervisor) Status() SupervisorStatus {
 	alive := s.inner != nil
 	s.mu.RUnlock()
 
+	var lastEmitAt string
+	if n := s.LastToolsListChangedEmitUnixNano.Load(); n > 0 {
+		lastEmitAt = time.Unix(0, n).UTC().Format(time.RFC3339Nano)
+	}
+
 	return SupervisorStatus{
-		Alive:             alive,
-		UptimeSec:         uptime,
-		Restarts:          s.Restarts.Load(),
-		ProbesSent:        s.ProbesSent.Load(),
-		ProbesAnswered:    s.ProbesAnswered.Load(),
-		ProbesTimedOut:    s.ProbesTimedOut.Load(),
-		LastRestartReason: reason,
+		Alive:                      alive,
+		UptimeSec:                  uptime,
+		Restarts:                   s.Restarts.Load(),
+		ProbesSent:                 s.ProbesSent.Load(),
+		ProbesAnswered:             s.ProbesAnswered.Load(),
+		ProbesTimedOut:             s.ProbesTimedOut.Load(),
+		LastRestartReason:          reason,
+		ToolsListChangedEmitted:    s.ToolsListChangedEmitted.Load(),
+		ToolsListChangedEmitFailed: s.ToolsListChangedEmitFailed.Load(),
+		LastToolsListChangedEmitAt: lastEmitAt,
 	}
 }
 
