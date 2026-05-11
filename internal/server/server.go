@@ -1700,11 +1700,11 @@ func (s *Server) registerTools() {
 	// 8. changes
 	s.addTool(&mcp.Tool{
 		Name:        "changes",
-		Description: "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / a branch name.",
+		Description: "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / `base:<branch>` (committed-only diff vs <branch>'s merge-base — use this to preview a PR's blast radius before opening it).",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
-				"scope":{"type":"string","enum":["unstaged","staged","all"],"description":"Which diff to analyse (default: unstaged)"},
+				"scope":{"type":"string","description":"Which diff to analyse: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:<branch>' (committed diff vs merge-base of <branch>, e.g. 'base:master' for pre-PR blast radius)"},
 				"depth":{"type":"integer","description":"Blast radius BFS depth 1-5 (default 3)"}
 			}
 		}`),
@@ -5284,6 +5284,39 @@ func floatArg(args map[string]any, key string, def float64) float64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func runGitDiff(root, scope string) (string, error) {
+	// `base:<branch>` scope: "what's on this branch that isn't on
+	// <branch>" — three-dot syntax uses merge-base, which matches the
+	// "PR diff" question agents actually ask before opening a PR.
+	// Validation is strict: branch name must pass `git rev-parse
+	// --verify --quiet` so we can return a clear error before
+	// shelling out to `git diff` (where a bad ref produces a less
+	// obvious failure). Validating also rejects `..` and `-` prefixed
+	// strings that could otherwise look like flag injection — exec
+	// without a shell already prevents shell injection, but extra
+	// arg validation surfaces user error sooner.
+	if strings.HasPrefix(scope, "base:") {
+		branch := strings.TrimPrefix(scope, "base:")
+		if err := validateGitRefName(branch); err != nil {
+			return "", fmt.Errorf("invalid base branch %q: %w", branch, err)
+		}
+		verify := exec.Command("git", "rev-parse", "--verify", "--quiet", branch)
+		verify.Dir = root
+		if err := verify.Run(); err != nil {
+			return "", fmt.Errorf("base branch %q not found in repo at %s", branch, root)
+		}
+		cmd := exec.Command("git", "diff", "--name-only", branch+"...HEAD")
+		cmd.Dir = root
+		out, err := cmd.Output()
+		if err != nil {
+			return "", err
+		}
+		// base:<branch> reports committed-only diff. Untracked
+		// files on the working tree aren't part of "what does this
+		// branch introduce vs base"; for that view, commit first
+		// then re-run, or use scope=all separately.
+		return string(out), nil
+	}
+
 	args := []string{"diff", "--name-only"}
 	switch scope {
 	case "staged":
@@ -5310,6 +5343,39 @@ func runGitDiff(root, scope string) (string, error) {
 		}
 	}
 	return string(out), nil
+}
+
+// validateGitRefName rejects branch names that could confuse `git`
+// or look like flag injection. Permissive enough to allow real refs
+// (alphanumerics, `/`, `-`, `_`, `.`, `@`, `{`, `}` for reflog refs
+// like `HEAD@{1}`); strict enough to reject empty strings, leading
+// `-` (flag injection), and `..` (range syntax that bypasses the
+// rev-parse single-ref check). The downstream `git rev-parse
+// --verify --quiet` is the real gate; this is a fast pre-check
+// that fails clearly before the subprocess runs.
+func validateGitRefName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty branch name")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("branch name cannot start with '-' (looks like a flag)")
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("branch name cannot contain '..' (use the bare branch name, not a range)")
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '/', r == '-', r == '_', r == '.',
+			r == '@', r == '{', r == '}':
+			continue
+		default:
+			return fmt.Errorf("branch name contains disallowed character %q", r)
+		}
+	}
+	return nil
 }
 
 // runGitLsUntracked returns one untracked, non-ignored path per line —
