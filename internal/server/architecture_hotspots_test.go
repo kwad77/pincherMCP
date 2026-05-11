@@ -349,6 +349,81 @@ func TestHandleArchitecture_IncludeTestsTrue_StillFiltersNonCodeKinds(t *testing
 	}
 }
 
+// isTestFixturePath is a pure helper — pin its decisions so that a
+// future broadening of the directory list doesn't accidentally swallow
+// a real entry point. The motivating bug: `architecture` returned
+// `testdata/corpus/go-project/cmd/cli/main.go` as an entry point of
+// pincher-repo because Go's `is_entry_point=1` flag fires on any
+// `package main` declaration, including hand-crafted fixtures used by
+// the pinned-corpus snapshot tests.
+func TestIsTestFixturePath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		// Positives — fixtures.
+		{"testdata/corpus/go-project/cmd/cli/main.go", true},
+		{"internal/foo/testdata/snapshot.json", true},
+		{"src/__fixtures__/sample.json", true},
+		{"test-fixtures/payload.bin", true},
+		{"src/test_fixtures/x.go", true},
+		{"fixtures/db.sql", true},
+		{`internal\foo\testdata\snapshot.json`, true}, // Windows path separator
+		// Negatives — real production code, real tests, lookalikes.
+		{"internal/server/server.go", false},
+		{"server_test.go", false}, // tests, not fixtures — handled by isTestFile
+		{"testdataloader/loader.go", false},   // `testdata` prefix without `/`
+		{"src/fixturesly/main.go", false},     // `fixtures` prefix without trailing `/`
+		{"cmd/main.go", false},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			if got := isTestFixturePath(c.path); got != c.want {
+				t.Errorf("isTestFixturePath(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+// End-to-end: a fixture-shaped entry point (`testdata/.../main.go`,
+// is_entry_point=1) must NOT appear in the architecture entry_points
+// list. Real entry points still surface.
+func TestHandleArchitecture_EntryPointsExcludeTestFixtures(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "pfix"
+	store.UpsertProject(db.Project{ID: "pfix", Path: "/tmp/pfix", Name: "pfix", IndexedAt: time.Now()})
+
+	syms := []db.Symbol{
+		// Real entry point — must surface.
+		{ID: "s::cmd.main#Function", ProjectID: "pfix", FilePath: "cmd/pinch/main.go",
+			Name: "main", QualifiedName: "main.main", Kind: "Function", Language: "Go",
+			IsEntryPoint: true, ExtractionConfidence: 1},
+		// Fixture entry point — must be filtered.
+		{ID: "s::corpus.main#Function", ProjectID: "pfix",
+			FilePath: "testdata/corpus/go-project/cmd/cli/main.go",
+			Name:     "main", QualifiedName: "main.main", Kind: "Function", Language: "Go",
+			IsEntryPoint: true, ExtractionConfidence: 1},
+	}
+	if err := store.BulkUpsertSymbols(syms); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("handleArchitecture: %v", err)
+	}
+	body := decode(t, result)
+	entryPoints, _ := body["entry_points"].([]any)
+	if len(entryPoints) != 1 {
+		t.Fatalf("expected 1 entry point (real one), got %d: %v", len(entryPoints), entryPoints)
+	}
+	entry, _ := entryPoints[0].(map[string]any)
+	fp, _ := entry["file_path"].(string)
+	if isTestFixturePath(fp) {
+		t.Errorf("fixture entry point leaked through filter: %v", entry)
+	}
+}
+
 // #306: Project struct uses snake_case JSON keys.
 func TestProject_JSONUsesSnakeCase(t *testing.T) {
 	p := db.Project{

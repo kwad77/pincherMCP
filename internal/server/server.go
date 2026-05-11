@@ -422,6 +422,39 @@ func isDeveloperScratchPath(filePath string) bool {
 	return false
 }
 
+// isTestFixturePath reports whether file_path lives under a directory
+// pincher uses for hand-crafted test fixtures (NOT real tests, which
+// `isTestFile` already catches). Used by handleArchitecture to keep
+// entry_points focused on the project's own entrypoints — a
+// `testdata/corpus/go-project/cmd/cli/main.go` shaped fixture
+// declares `package main` and trips the indexer's is_entry_point
+// flag, but it isn't an entrypoint of *this* project.
+//
+// Matched directory segments (case-insensitive, both / and \):
+//   - testdata/        (Go's stdlib convention; also pincher's pinned-corpus dir)
+//   - test-fixtures/, test_fixtures/
+//   - __fixtures__/    (Jest convention)
+//   - fixtures/        (broad; common in Ruby, Rails, generic test data)
+//
+// Distinct from `isTestFile`: tests exercise the production code,
+// fixtures are inputs *to* tests. A fixture's symbols should not
+// surface in orientation views, but they SHOULD remain searchable.
+func isTestFixturePath(filePath string) bool {
+	low := strings.ToLower(filePath)
+	low = strings.ReplaceAll(low, `\`, `/`)
+	for _, dir := range []string{"/testdata/", "/test-fixtures/", "/test_fixtures/", "/__fixtures__/", "/fixtures/"} {
+		if strings.Contains(low, dir) {
+			return true
+		}
+	}
+	for _, prefix := range []string{"testdata/", "test-fixtures/", "test_fixtures/", "__fixtures__/", "fixtures/"} {
+		if strings.HasPrefix(low, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // sortTraceCandidates ranks symbols for trace's name-resolution
 // heuristic (#319). Callers expect `trace name="main"` to land on
 // the binary's actual entry function, not a scratch file's
@@ -3639,6 +3672,9 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 				if isDeveloperScratchPath(fp) {
 					continue
 				}
+				if isTestFixturePath(fp) {
+					continue
+				}
 				entryPoints = append(entryPoints, map[string]any{"name": name, "file_path": fp, "start_line": line})
 				if len(entryPoints) >= 20 {
 					break
@@ -3669,6 +3705,12 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	hotspotMaps := []map[string]any{}
 	for _, h := range rawHotspots {
 		if !includeTests && isTestFile(h.FilePath) {
+			continue
+		}
+		if isTestFixturePath(h.FilePath) {
+			// Fixtures sit in testdata/ — their symbols are real but
+			// they're not signal for "what's the most-called code in
+			// this project?" Same rationale as the entry_points filter.
 			continue
 		}
 		if !isHotspotKind(h.Kind) {
