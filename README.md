@@ -20,7 +20,9 @@ Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
 
 ## What it does
 
-pincherMCP is a single Go binary that indexes a codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — and exposes all three through **20 MCP tools** or an HTTP REST API.
+pincherMCP is the right-hand AI coding tool: structural symbol search, knowledge-graph queries, and full-text retrieval across your codebase, delivered through **20 MCP tools** (plus an HTTP REST API) so any agent can reach for it without burning context on file reads.
+
+Under the hood it's a single Go binary that runs locally — no cloud dependencies, no per-LLM lock-in, AST extraction at 1.0 confidence for Go (with JS / TS shipping in v0.20 and Python / Rust / Java on the roadmap). But that's the implementation; the value is what the agent sees.
 
 Every tool response includes a `_meta` envelope with real BPE token counts (cl100k_base — exact for Claude and OpenAI families, approximate for Gemini/Llama) and latency:
 
