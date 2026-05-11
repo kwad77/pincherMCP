@@ -1690,7 +1690,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name; ambiguous names fall back to the first match (use `changes` if you have an exact symbol ID instead). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol.",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name; ambiguous names fall back to the first match (use `changes` if you have an exact symbol ID instead). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["name"],"properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder')"},
@@ -3240,6 +3240,15 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		direction = "both"
 	}
 	depth := intArg(args, "depth", 3)
+	// #402: detect whether the caller passed depth explicitly. When
+	// they did, honor it exactly. When they didn't (auto mode), the
+	// post-filter below trims the result down to the smallest depth
+	// that still has >= autoTraceDeepenThreshold hops — hotspot
+	// traces don't dump 100+ hops the agent has to read. Pure
+	// post-filter on the existing depth-3 trace; SQL cost is
+	// unchanged. The bigger perf win (single-SQL closure-table
+	// lookups instead of recursive CTEs) is tracked at #403.
+	_, depthExplicit := args["depth"]
 	addRisk := boolArgDefault(args, "risk", true)
 	minConfidence := floatArg(args, "min_confidence", 0.0)
 	// #398: by default, drop hops in *_test.go and testdata/__fixtures__/
@@ -3317,6 +3326,43 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	hops = filtered
 
+	// #402: adaptive trace depth. When the caller didn't pass
+	// `depth` explicitly, find the smallest D where hops with
+	// d <= D total at least autoTraceDeepenThreshold. Trim the
+	// result to that depth. The agent gets the answer "who calls
+	// this directly?" with one round-trip when there are enough
+	// direct callers; deeper hops only appear when shallower ones
+	// don't satisfy the threshold. depthUsed surfaces in _meta.
+	autoTraceDeepenThreshold := 5
+	depthUsed := depth
+	if !depthExplicit && len(hops) > 0 {
+		for d := 1; d <= depth; d++ {
+			count := 0
+			for _, h := range hops {
+				if h.Depth <= d {
+					count++
+				}
+			}
+			if count >= autoTraceDeepenThreshold {
+				depthUsed = d
+				break
+			}
+		}
+		// Trim hops + confs to depthUsed.
+		if depthUsed < depth {
+			trimmed := hops[:0]
+			trimmedConfs := confs[:0]
+			for i, h := range hops {
+				if h.Depth <= depthUsed {
+					trimmed = append(trimmed, h)
+					trimmedConfs = append(trimmedConfs, confs[i])
+				}
+			}
+			hops = trimmed
+			confs = trimmedConfs
+		}
+	}
+
 	// Group by depth
 	byDepth := make(map[int][]map[string]any)
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -3356,6 +3402,17 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	traceRoot, _ := s.resolveProjectRoot(projectID)
 	meta := map[string]any{
 		"confidence_distribution": confidenceDistribution(confs),
+	}
+	// #402: when auto-deepen trimmed the result below the requested
+	// depth, tell the agent so depth_used vs depth_requested is
+	// observable. Only emit when the trim actually shortened
+	// something — a noisy explicit-depth=3 doesn't need to surface
+	// "depth_used:3" on every call.
+	if !depthExplicit && depthUsed < depth {
+		meta["depth_used"] = depthUsed
+		meta["depth_requested"] = depth
+		meta["auto_deepened"] = false
+		meta["depth_hint"] = fmt.Sprintf("trimmed to depth=%d (>=5 hops at this depth); pass depth=%d explicitly to see deeper hops", depthUsed, depth)
 	}
 	// Surface name-ambiguity so the agent can refine instead of trusting
 	// the first-match heuristic silently. Records up to 5 alternative
