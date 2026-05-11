@@ -720,12 +720,44 @@ func (p *parser) parseOneCondition() (condition, error) {
 		return c, fmt.Errorf("unsupported operator: %s", p.peek().value)
 	default:
 		op := p.peek().value
+		// #431: when the parser sees a "naked" property reference
+		// followed by something that ends the predicate — `)`, AND,
+		// OR, RETURN, end-of-input — the user almost certainly meant
+		// `n.is_exported` as a boolean shorthand for `= true`. Cypher
+		// (Neo4j, Memgraph) supports this. We only honour it for
+		// columns we know are bool-typed; anything else gets the
+		// improved error below so the user knows what they're missing.
+		if c.property != "" && isExpressionBoundary(p.peek()) {
+			if isBoolCol(cypherPropToCol(c.property)) {
+				c.op = "="
+				c.value = "1"
+				return c, nil
+			}
+			return c, fmt.Errorf(
+				"WHERE %s.%s needs an operator — saw %q (expected =, <>, >, <, >=, <=, CONTAINS, STARTS WITH, ENDS WITH, IS NULL, IS NOT NULL, =~)",
+				c.variable, c.property, op)
+		}
 		if hint, ok := operatorHint(op); ok {
 			return c, fmt.Errorf("unsupported operator: %s — %s", op, hint)
 		}
 		return c, fmt.Errorf("unsupported operator: %s", op)
 	}
 	return c, nil
+}
+
+// isExpressionBoundary reports whether tok terminates a WHERE leaf —
+// i.e. the parser would expect the next operand here. Used by the
+// #431 naked-boolean check so we can distinguish "missing operator"
+// from "operator typo".
+func isExpressionBoundary(tok token) bool {
+	if tok.kind == "EOF" {
+		return true
+	}
+	switch tok.value {
+	case ")", "AND", "OR", "RETURN", "ORDER", "LIMIT":
+		return true
+	}
+	return false
 }
 
 func (p *parser) parseReturn() ([]returnVar, error) {
@@ -1910,10 +1942,10 @@ func evalCondition(row map[string]any, c condition, reCache map[string]*regexp.R
 		if actual == c.value {
 			return true
 		}
-		// #421: boolean columns (is_exported, is_entry_point) reach
-		// here when the SQL pushdown gate misses (e.g. an OR-chain
-		// path that falls back to Go for an unrelated reason). Allow
-		// "1" / "0" / "true" / "false" to all match the same row.
+		// #421 (bool col coercion) + #431 (naked-bool predicate)
+		// both want "1" / "0" / "true" / "false" to compare equal
+		// when the row holds a Go bool and the WHERE wrote any of
+		// the four spellings. boolCoerceEqual handles both.
 		return boolCoerceEqual(actual, c.value)
 	case "<>":
 		if actual == c.value {
