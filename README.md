@@ -167,7 +167,7 @@ pincher health-check --supervised                 # probe through `pincher super
 pincher health-check --binary /path/to/pincher    # probe a specific binary
 ```
 
-The supervisor also exposes a `pincher.supervisor.status` MCP tool that returns `{alive, uptime_sec, restarts, probes_sent, probes_answered, probes_timed_out, last_restart_reason}` — useful when an agent wants to know why pincher cycled mid-session.
+The supervisor also exposes a `pincher.supervisor.status` MCP tool that returns `{alive, uptime_sec, restarts, probes_sent, probes_answered, probes_timed_out, last_restart_reason, tools_list_changed_emitted, tools_list_changed_emit_failed, last_tools_list_changed_emit_at}` — useful when an agent wants to know why pincher cycled mid-session or confirm the supervisor emitted a `tools/list_changed` notification after a binary swap.
 
 ---
 
@@ -270,6 +270,7 @@ Live milestone burndown: <https://github.com/kwad77/pincher/milestones>. Full pu
 - **Single-user SQLite.** Cross-process indexing is safe (filesystem lockfile). Team / enterprise shared indexes need a server mode — explicitly out of v1.0 scope.
 - **~7 languages without extractors.** Scala, Lua, Zig, Elixir, Haskell, Dart, R are detected as source but emit zero symbols. Adding any of them = implement one Go interface.
 - **In-flight response loss during supervised binary upgrade ([#371](https://github.com/kwad77/pincher/issues/371)).** Affected v0.11.0 specifically — the first non-`health` tool call that fired on the freshly-upgraded binary lost its response; client reported `MCP error -32000`. Fixed in v0.11.1 (server-side defer + supervisor sentinel-id init replay). Upgrade to v0.11.1 or later.
+- **`notifications/tools/list_changed` requires client support ([#429](https://github.com/kwad77/pincher/issues/429)).** Supervised mode emits the notification after every respawn — confirmable via `pincher.supervisor.status` (the `tools_list_changed_emitted` counter increments per emit). MCP clients that honour the notification (Cursor, Codex, Zed) re-issue `tools/list` and pick up newly-added tools live. Claude Code (as of this writing) does not honour the notification — after a binary swap that adds tools, a fresh session is still required to surface them in that client. Existing tools remain callable in-session via the auto-restart path; only new-tool *discovery* is affected.
 
 Full known-limitations list, with severity and tracking issue: [REFERENCE.md → Known Limitations](docs/REFERENCE.md#known-limitations).
 

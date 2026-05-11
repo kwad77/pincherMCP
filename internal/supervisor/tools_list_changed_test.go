@@ -96,6 +96,20 @@ func TestSupervisor_RespawnEmitsToolsListChangedNotification(t *testing.T) {
 		t.Errorf("client stdout missing tools/list_changed notification after respawn; got: %q", got)
 	}
 
+	// #429: Status() must surface the emit counter so an agent can
+	// confirm the supervisor IS doing its part even when the client
+	// doesn't honour the notification.
+	status := sup.Status()
+	if status.ToolsListChangedEmitted < 1 {
+		t.Errorf("Status().ToolsListChangedEmitted = %d, want ≥1 after respawn", status.ToolsListChangedEmitted)
+	}
+	if status.ToolsListChangedEmitFailed != 0 {
+		t.Errorf("Status().ToolsListChangedEmitFailed = %d, want 0 (writer is a healthy buffer)", status.ToolsListChangedEmitFailed)
+	}
+	if status.LastToolsListChangedEmitAt == "" {
+		t.Errorf("Status().LastToolsListChangedEmitAt is empty; want an RFC3339 timestamp")
+	}
+
 	clientStdinW.Close()
 	fakes[1].Close()
 	cancel()

@@ -8,6 +8,17 @@ minors.
 ## [Unreleased]
 
 ### Added
+- **`pincher.supervisor.status` surfaces `tools/list_changed` delivery
+  counters ([#429](https://github.com/kwad77/pincher/issues/429)).**
+  Three new fields: `tools_list_changed_emitted`,
+  `tools_list_changed_emit_failed`, `last_tools_list_changed_emit_at`.
+  Lets an agent confirm the supervisor IS doing its part (notification
+  pushed) even when the client doesn't honour the notification. The
+  README's *Known limitations* section now documents the client matrix:
+  Cursor / Codex / Zed honour the notification and re-list tools live;
+  Claude Code (as of this writing) does not, so binary swaps that add
+  tools still require a fresh session in that client.
+
 - **`guide` recognises structural-audit tasks and routes them to
   pinchQL `query` instead of BM25 search
   ([#467](https://github.com/kwad77/pincher/issues/467)).** Tasks like
