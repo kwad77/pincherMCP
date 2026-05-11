@@ -4854,6 +4854,15 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	var b strings.Builder
 	b.WriteString("┌" + strings.Repeat("─", w) + "┐\n")
 	b.WriteString(header("SESSION"))
+	// #420: the SESSION counters are process-scoped — they reset every
+	// time the supervised inner respawns (binary swap, crash recovery,
+	// probe timeout). Surface the uptime so the agent can tell the
+	// difference between "session=zero because nothing has happened"
+	// and "session=low because the inner just respawned and the prior
+	// session's counters rolled over into ALL-TIME". When uptime is
+	// short relative to ALL-TIME activity, the agent knows a respawn
+	// happened recently.
+	b.WriteString(line("Process up:", humanDuration(time.Since(s.sessionStartedAt))))
 	b.WriteString(line("Tool calls:", commify(calls)))
 	b.WriteString(line("Without pincher:", "~"+commify(baseline)+" tokens"))
 	b.WriteString(line("With pincher:", commify(tokensUsed)+" tokens"))
@@ -4884,6 +4893,24 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 
 	b.WriteString("└" + strings.Repeat("─", w) + "┘")
 	return s.textResultWithMeta(b.String(), start, tool, args, 0), nil
+}
+
+// humanDuration formats a duration with the smallest meaningful unit for
+// the SESSION view: seconds < 1m, minutes < 1h, then h+m. Avoids the
+// full "1h2m3s" Go default when sub-minute precision isn't useful.
+func humanDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) - h*60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
 
 
