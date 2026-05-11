@@ -7,7 +7,27 @@ minors.
 
 ## [Unreleased]
 
+## [v0.19.0] — 2026-05-11 — receiver-type tracking + savings honesty
+
+Minor — the v0.19 theme is **deeper resolution + honest counters.** Receiver-type tracking lets `dead_code` stop false-positiving methods called via struct fields (the `Server.idx.Watch` family); the polymorphic-method blocklist (Close/String/Run) no longer over-drops calls when we know the receiver type. `_meta.baseline_method` makes every response state which Read it replaced — or honestly say "none" instead of fabricating a zero.
+
+Schema v22 — adds `pending_edges.receiver_type` column + `struct_fields` table for the Go receiver-type resolver.
+
 ### Added
+- **Go receiver-type tracking, four-piece stack
+  ([#423](https://github.com/kwad77/pincher/issues/423)).** Closes the
+  long-standing dead_code FP family where methods called via struct
+  fields (`s.cache.Close()`, `s.idx.Watch()`) were either dropped by
+  the polymorphic-method blocklist or false-bound across same-name
+  methods on different types. Pieces: (1) extractor stamps
+  `ExtractedSymbol.Fields` for struct symbols + `ExtractedEdge.ReceiverType`
+  for CALLS edges from method bodies (#514), (2) schema v22 persists
+  both into a new `struct_fields` table and a `pending_edges.receiver_type`
+  column (#517), (3) `resolveCalls` consults receiver_type +
+  struct_fields BEFORE the polymorphic-method blocklist to bind
+  precisely (#518). Same-package only for v0.19 — qualified types
+  (`io.Writer`, `*foo.Bar`) need import-graph awareness and are
+  deliberately deferred.
 - **`_meta.baseline_method` stamp on every tool response
   ([#477](https://github.com/kwad77/pincher/issues/477)).** Three values:
   `"full_file_read"` for tools that replace a Read of source files
