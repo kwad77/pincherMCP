@@ -213,6 +213,41 @@ func TestHandleDeadCode_ExcludesScratchPaths(t *testing.T) {
 	}
 }
 
+// testdata/ fixtures (#393) are post-filtered from dead-code results
+// alongside developer scratch paths. Fixture inputs aren't real code,
+// so calling them "dead" is misleading.
+func TestHandleDeadCode_ExcludesTestFixturePaths(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
+
+	mustUpsertSymbols(t, store, []db.Symbol{
+		{ID: "p1::pkg.realDead#Function", ProjectID: "p1", FilePath: "internal/svc/svc.go",
+			Name: "realDead", QualifiedName: "pkg.realDead", Kind: "Function", Language: "Go",
+			ExtractionConfidence: 1.0},
+		{ID: "p1::corpus.helper#Function", ProjectID: "p1", FilePath: "testdata/corpus/foo/helper.go",
+			Name: "helper", QualifiedName: "corpus.helper", Kind: "Function", Language: "Go",
+			ExtractionConfidence: 1.0},
+	})
+
+	result, _ := srv.handleDeadCode(context.Background(), makeReq(map[string]any{}))
+	body := decode(t, result)
+	dead, _ := body["dead_symbols"].([]any)
+	got := map[string]bool{}
+	for _, d := range dead {
+		entry, _ := d.(map[string]any)
+		if name, ok := entry["name"].(string); ok {
+			got[name] = true
+		}
+	}
+	if !got["realDead"] {
+		t.Errorf("realDead should appear; got %v", got)
+	}
+	if got["helper"] {
+		t.Errorf("testdata/corpus/foo/helper.go fixture should be filtered; got %v", got)
+	}
+}
+
 // Empty result: meta.diagnosis explains the empty, doesn't suggest
 // next-step actions on a non-existent top dead symbol.
 func TestHandleDeadCode_EmptyDiagnosis(t *testing.T) {

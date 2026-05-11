@@ -3687,13 +3687,14 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		return errResult(fmt.Sprintf("dead_code: %v", err)), nil
 	}
 
-	// Post-filter: developer scratch paths shouldn't appear (they're
-	// noise — the developer knows they're dead). PR #393 will add the
-	// testdata/__fixtures__/ filter via isTestFixturePath; expected
-	// to merge alongside this and dedupe in a follow-up.
+	// Post-filter: testdata fixtures (#393) and developer scratch
+	// paths shouldn't appear — they're either fixture inputs (not
+	// real code) or known-dead noise the developer doesn't need
+	// told. SQL can't filter these without a path-pattern column;
+	// LIMIT*2 from SQL + trim in Go is cheaper than a new column.
 	dead := []map[string]any{}
 	for _, sym := range rawDead {
-		if isDeveloperScratchPath(sym.FilePath) {
+		if isDeveloperScratchPath(sym.FilePath) || isTestFixturePath(sym.FilePath) {
 			continue
 		}
 		dead = append(dead, map[string]any{
