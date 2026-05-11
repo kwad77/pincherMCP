@@ -7,6 +7,82 @@ minors.
 
 ## [Unreleased]
 
+## [v0.17.0] — 2026-05-11 — honest savings + failure-as-pedagogy
+
+Minor — the v0.17 theme is "honest savings + failure-as-pedagogy."
+Pincher's pitch is the cost story; this release makes the displayed
+`tokens_saved` defensible by removing the heuristic-fabricated baseline
+and the misleading `cost_avoided` $-figure (we don't know the user's
+model or pricing). Plus two failure-surface fixes: the pinchQL engine
+now warns on typo'd property names instead of silently returning 0
+rows, and `trace` accepts an exact-symbol `id` arg as the
+disambiguation escape hatch promised by the ambiguous-match hint.
+
+### Changed
+- **Honest `tokens_saved` counter
+  ([#476](https://github.com/kwad77/pincher/issues/476),
+  [#478](https://github.com/kwad77/pincher/issues/478),
+  [#479](https://github.com/kwad77/pincher/issues/479)).** Two
+  inflation sources removed:
+  - Per-session `accessed_files` dedup: the second `context`/`symbol`
+    call against the same file in a session claims zero baseline
+    (file is already in the agent's context window), not a fresh
+    full-file save.
+  - Fabricated `savedVsFullRead(count × avgFileSize)` baseline
+    eliminated. `handleQuery`, `handleDeadCode`, `handleChanges` now
+    harvest real file paths from result rows and pass them through
+    the honest `savedVsFileSizesSession` path. When no `file_path`
+    column was projected (`handleQuery` on arbitrary
+    `RETURN n.name` shapes), `tokens_saved` is 0 — honest "I can't
+    tell what files you'd have read" beats a guess.
+  Net effect: cumulative `tokens_saved` on a typical session is
+  30-50% lower than v0.16.0 reported. The displayed number now
+  reflects file-bytes-the-agent-would-have-read, not heuristics.
+- **No more `$-cost figures
+  ([#476](https://github.com/kwad77/pincher/issues/476)).**
+  `cost_avoided` removed from every response envelope, `stats`
+  output, dashboard, README, and tutorials. We don't know the
+  user's model or pricing — a hardcoded `baseCostPer1M = 3.0`
+  assumed Sonnet, but users on Opus / Haiku / GPT / open-source
+  models all saw guesses. Tokens are concrete; dollars were not.
+  DB `cost_avoided` column kept (always 0 going forward) to avoid a
+  schema bump; readers no longer surface it.
+
+### Fixed
+- **`trace` ambiguous-match hint references a real escape hatch
+  ([#474](https://github.com/kwad77/pincher/issues/474)).** Old
+  hint promised "Pass an exact ID via TraceByID." `TraceByID` was
+  an internal Go method, not an MCP tool — an agent that took the
+  hint at face value failed. Two changes: `trace` now accepts an
+  `id` argument (exact-symbol seed; bypasses name resolution and
+  the ambiguous_match meta), and the hint text now references that
+  parameter with a concrete next-call example.
+- **pinchQL surfaces unknown-property warnings instead of silently
+  returning 0 rows
+  ([#473](https://github.com/kwad77/pincher/issues/473)).** A
+  WHERE referencing a typo'd property (`n.typo_name = "x"`) used to
+  evaluate to undefined → falsy → 0 rows, no diagnostic. The engine
+  now walks the parsed query, collects every property name not in
+  the `cypherPropToCol` allowlist, and surfaces them via
+  `Result.Warnings` (and `_meta.warnings` at the MCP boundary).
+  Walker covers WHERE conditions (flat AND-chain + recursive
+  tree), inline match braces (`MATCH (n:Function {foo:"x"})`),
+  and RETURN projections. Non-breaking — query still runs; this
+  is a non-fatal advisory, not an error.
+
+### Known limitations
+- **Pre-#465 polymorphic-method CALLS edges persist until
+  `pincher index <path> --force`
+  ([#475](https://github.com/kwad77/pincher/issues/475)).** v0.16.0
+  added `isPolymorphicInterfaceMethodName` to stop bare-name CALLS
+  resolution for `String` / `Error` / `Read` / etc. New edges
+  follow the new rules, but existing false-positive edges in older
+  DBs don't auto-clean. Recommended migration after upgrading to
+  v0.17.0: run `pincher index <path> --force` once per project to
+  re-extract symbols + edges from scratch. Atomic project-wide
+  edge replace (Option B from #475) deferred to v0.18.0 — needs
+  proper separation of resolve-pass vs per-file edges first.
+
 ## [v0.16.0] — 2026-05-11 — structural perf + dogfood haul
 
 Minor — schema v19, watcher correctness, pinchQL property surface, BFS
