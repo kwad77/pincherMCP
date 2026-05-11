@@ -980,6 +980,39 @@ END;`,
 		threshold_tokens INTEGER NOT NULL PRIMARY KEY,
 		fired_at         INTEGER NOT NULL
 	)`,
+
+	// v21 → v22: receiver-type tracking for Go method calls (#423 piece 2).
+	//
+	// Two persistence channels for the resolver to use in piece 3:
+	//
+	//   1. pending_edges.receiver_type — when a CALLS candidate was
+	//      extracted from inside a Go method body, this is the method's
+	//      receiver type expression (e.g. "*Supervisor"). Empty for
+	//      plain functions and non-Go languages, which keeps every
+	//      pre-#423 row valid under the NOT NULL DEFAULT.
+	//
+	//   2. struct_fields — for each Go struct symbol, one row per
+	//      field. The resolver consults this to follow recv.field.method
+	//      calls: look up the receiver's struct, find the field, get its
+	//      type, resolve the method on that type. Without this table the
+	//      resolver has no way to know what type "s.spawnFn" is, and
+	//      methods like Supervisor.spawnFn target's type get flagged
+	//      dead by dead_code (the #493 / #423 root cause).
+	//
+	// PRIMARY KEY (project_id, struct_id, field_name) lets DeleteSymbolsForFile-
+	// shaped writes use INSERT OR REPLACE without growing duplicate
+	// rows on re-extraction. The (project_id, field_name) index supports
+	// reverse lookup ("find every struct with a field named X") which
+	// the resolver doesn't need today but is cheap and probably useful.
+	`ALTER TABLE pending_edges ADD COLUMN receiver_type TEXT NOT NULL DEFAULT '';
+	CREATE TABLE IF NOT EXISTS struct_fields (
+		project_id TEXT NOT NULL,
+		struct_id  TEXT NOT NULL,
+		field_name TEXT NOT NULL,
+		field_type TEXT NOT NULL,
+		PRIMARY KEY (project_id, struct_id, field_name)
+	);
+	CREATE INDEX IF NOT EXISTS idx_struct_fields_proj_name ON struct_fields(project_id, field_name);`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -2215,6 +2248,12 @@ func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
 			if _, err := tx.Exec(`DELETE FROM edges WHERE from_id=? OR to_id=?`, id, id); err != nil {
 				return err
 			}
+			// #423 piece 2: cascade-delete struct_fields rows whose
+			// struct_id matches a deleted symbol. Without this, every
+			// file re-extraction would orphan its previous fields.
+			if _, err := tx.Exec(`DELETE FROM struct_fields WHERE project_id=? AND struct_id=?`, projectID, id); err != nil {
+				return err
+			}
 		}
 		_, err = tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
 		return err
@@ -2552,6 +2591,12 @@ type PendingEdge struct {
 	FromQN     string
 	ToName     string
 	Confidence float64
+	// ReceiverType is set (in schema v22+) when this candidate was
+	// extracted from inside a Go method body — the method's receiver
+	// type expression, e.g. "*Supervisor". The piece-3 resolver uses
+	// it to follow recv.field.method calls via struct_fields. Empty
+	// for plain functions, non-Go languages, and pre-v22 rows.
+	ReceiverType string
 }
 
 // ReplacePendingEdgesForFile atomically deletes any existing
@@ -2572,15 +2617,15 @@ func (s *Store) ReplacePendingEdgesForFile(projectID, fromFile string, edges []P
 			return nil
 		}
 		stmt, err := tx.Prepare(`
-			INSERT OR IGNORE INTO pending_edges(project_id, from_file, kind, from_qn, to_name, confidence)
-			VALUES (?,?,?,?,?,?)`)
+			INSERT OR IGNORE INTO pending_edges(project_id, from_file, kind, from_qn, to_name, confidence, receiver_type)
+			VALUES (?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for i := range edges {
 			e := &edges[i]
-			if _, err := stmt.Exec(projectID, fromFile, e.Kind, e.FromQN, e.ToName, e.Confidence); err != nil {
+			if _, err := stmt.Exec(projectID, fromFile, e.Kind, e.FromQN, e.ToName, e.Confidence, e.ReceiverType); err != nil {
 				return err
 			}
 		}
@@ -2597,11 +2642,85 @@ func (s *Store) DeletePendingEdgesForFile(projectID, fromFile string) error {
 	return err
 }
 
+// StructField is one row of the v22 struct_fields table — the
+// receiver-type resolver's lookup target (#423). For each Go struct
+// symbol the indexer writes one row per field; the resolver reads
+// (struct_id, field_name) → field_type to follow `recv.field.method`
+// calls.
+type StructField struct {
+	ProjectID string
+	StructID  string // db.MakeSymbolID for the Class symbol
+	FieldName string
+	FieldType string // Go-syntax type expression (e.g. "io.Writer", "*exec.Cmd")
+}
+
+// ReplaceStructFieldsForFile mirrors ReplacePendingEdgesForFile's
+// pattern: atomically delete every struct_fields row for symbols
+// in (project_id, file_path) then INSERT the freshly extracted set.
+// Called by the indexer's per-file goroutine after extraction.
+//
+// The DELETE is keyed by file path via a join on `symbols`, not by
+// struct_id directly, so a struct that gets renamed or removed in
+// this file's edit also clears its rows. Writer-routed (mutates).
+func (s *Store) ReplaceStructFieldsForFile(projectID, filePath string, fields []StructField) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`DELETE FROM struct_fields
+			   WHERE project_id=? AND struct_id IN (
+			     SELECT id FROM symbols WHERE project_id=? AND file_path=?
+			   )`,
+			projectID, projectID, filePath,
+		); err != nil {
+			return err
+		}
+		if len(fields) == 0 {
+			return nil
+		}
+		stmt, err := tx.Prepare(
+			`INSERT OR REPLACE INTO struct_fields(project_id, struct_id, field_name, field_type)
+			 VALUES (?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for i := range fields {
+			f := &fields[i]
+			if _, err := stmt.Exec(projectID, f.StructID, f.FieldName, f.FieldType); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// LoadStructFields returns every struct_fields row for the project.
+// The resolver loads them once per pass and indexes them in memory:
+// map[StructID]map[FieldName]FieldType. Reader-routed — pure SELECT.
+func (s *Store) LoadStructFields(projectID string) ([]StructField, error) {
+	rows, err := s.ro.Query(
+		`SELECT project_id, struct_id, field_name, field_type
+		 FROM struct_fields WHERE project_id=?`,
+		projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StructField
+	for rows.Next() {
+		var f StructField
+		if err := rows.Scan(&f.ProjectID, &f.StructID, &f.FieldName, &f.FieldType); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // LoadPendingEdges returns every persisted candidate for the project
 // of the given kind. Reader-routed — pure SELECT.
 func (s *Store) LoadPendingEdges(projectID, kind string) ([]PendingEdge, error) {
 	rows, err := s.ro.Query(
-		`SELECT project_id, from_file, kind, from_qn, to_name, confidence
+		`SELECT project_id, from_file, kind, from_qn, to_name, confidence, receiver_type
 		 FROM pending_edges WHERE project_id=? AND kind=?`,
 		projectID, kind)
 	if err != nil {
@@ -2611,7 +2730,7 @@ func (s *Store) LoadPendingEdges(projectID, kind string) ([]PendingEdge, error) 
 	var out []PendingEdge
 	for rows.Next() {
 		var e PendingEdge
-		if err := rows.Scan(&e.ProjectID, &e.FromFile, &e.Kind, &e.FromQN, &e.ToName, &e.Confidence); err != nil {
+		if err := rows.Scan(&e.ProjectID, &e.FromFile, &e.Kind, &e.FromQN, &e.ToName, &e.Confidence, &e.ReceiverType); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
