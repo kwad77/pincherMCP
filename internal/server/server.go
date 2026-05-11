@@ -4459,11 +4459,23 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// in-memory copy, surface a binary_stale=true flag with a
 	// reconnect hint. Best-effort — failures (Windows AV scan
 	// holding the file, exe path moved) silently report false.
+	//
+	// The hint text differs based on PINCHER_AUTO_RESTART_ON_DRIFT
+	// (#352). When the env var is "1", the supervisor / MCP client
+	// will respawn the server on the next tool call (typically
+	// within ~100ms — see autoRestartExitDelay), so the manual
+	// "/mcp reconnect" advice would mislead the caller. When unset,
+	// the user has to drive the reconnect themselves, so we keep
+	// the explicit `/mcp reconnect` hint.
 	binaryReplaced := false
 	if s.binaryPath != "" && !s.binaryStartMTime.IsZero() {
 		if info, err := os.Stat(s.binaryPath); err == nil && info.ModTime().After(s.binaryStartMTime) {
 			data["binary_stale"] = true
-			data["binary_stale_message"] = "Newer pincher binary on disk; restart the MCP server (/mcp reconnect) to pick up changes."
+			if os.Getenv(autoRestartEnvVar) == "1" {
+				data["binary_stale_message"] = "Newer pincher binary on disk; supervisor will respawn on the next tool call (PINCHER_AUTO_RESTART_ON_DRIFT=1)."
+			} else {
+				data["binary_stale_message"] = "Newer pincher binary on disk; restart the MCP server (/mcp reconnect) to pick up changes, or set PINCHER_AUTO_RESTART_ON_DRIFT=1 for hands-off swaps via `pincher supervised`."
+			}
 			binaryReplaced = true
 		}
 	}
