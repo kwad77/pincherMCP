@@ -4724,8 +4724,16 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	// total so the caller can decide whether the next page is worth
 	// fetching. #334: zero-len init so list returns "projects":[] (not
 	// null) when the store has no projects.
+	//
+	// #505: track WHY each filter dropped a project so the agent can
+	// see what's hidden. Pre-fix, the lump-sum `dropped` counter was
+	// opaque — agents had no signal whether to pass min_edges=0 or
+	// include_dead=true or active=false to recover the missing entry.
 	filtered := []map[string]any{}
 	dropped := 0
+	droppedDead := 0
+	droppedInactive := 0
+	droppedLowEdges := 0
 	var pruned []string // #302: ids of dead-on-disk projects we deleted
 	for _, p := range projects {
 		// Stat once per project — used by both the include_dead filter
@@ -4752,10 +4760,12 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			// explicitly opts in. The DB row may have been pruned
 			// above; either way it doesn't appear here.
 			dropped++
+			droppedDead++
 			continue
 		}
 		if activeOnly && p.IndexedAt.Before(cutoff) {
 			dropped++
+			droppedInactive++
 			continue
 		}
 		// #419: edge-count gate. Empty-graph projects are usually
@@ -4764,6 +4774,7 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		// min_edges=0 to see them anyway.
 		if minEdges > 0 && p.EdgeCount < minEdges {
 			dropped++
+			droppedLowEdges++
 			continue
 		}
 		filtered = append(filtered, map[string]any{
@@ -4798,11 +4809,41 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		"projects":     rows,
 		"count":        total,
 		"filtered_out": dropped,
+		// #505: split the lump-sum dropped count into per-reason
+		// buckets so the agent knows what knob recovers the missing
+		// entry. Always present (zero values surface as 0, not omitted)
+		// so downstream consumers can rely on the shape.
+		"filtered_breakdown": map[string]any{
+			"dead_path": droppedDead,
+			"inactive":  droppedInactive,
+			"low_edges": droppedLowEdges,
+		},
 		"page": map[string]any{
 			"limit":    limit,
 			"offset":   offset,
 			"returned": len(rows),
 		},
+	}
+	// #505: when a filter dropped anything, surface a one-line diagnosis
+	// telling the agent which arg toggles to flip. Skipped when nothing
+	// was filtered (no signal needed).
+	if dropped > 0 {
+		var hints []string
+		if droppedDead > 0 {
+			hints = append(hints, fmt.Sprintf("%d dead path (pass include_dead=true)", droppedDead))
+		}
+		if droppedInactive > 0 {
+			hints = append(hints, fmt.Sprintf("%d inactive >%dd (pass active=false or active_within_days=N)", droppedInactive, activeWithinDays))
+		}
+		if droppedLowEdges > 0 {
+			hints = append(hints, fmt.Sprintf("%d below min_edges=%d (pass min_edges=0)", droppedLowEdges, minEdges))
+		}
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["filter_diagnosis"] = "filtered: " + strings.Join(hints, ", ")
+		data["_meta"] = meta
 	}
 	// #302: surface what got pruned (only when the caller asked).
 	// Empty list when nothing was deletable; non-nil when prune_dead
