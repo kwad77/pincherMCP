@@ -105,15 +105,15 @@ func (w *jsASTWalker) walkBlock(b js.BlockStmt, insideFunc bool) {
 		switch s := stmt.(type) {
 		case *js.FuncDecl:
 			if !insideFunc {
-				w.emitFunc(s, "Function", "")
+				w.emitFunc(s, "Function", "", false)
 			}
 		case *js.ClassDecl:
 			if !insideFunc {
-				w.emitClass(s)
+				w.emitClass(s, false)
 			}
 		case *js.VarDecl:
 			if !insideFunc {
-				w.emitVarDecl(s)
+				w.emitVarDecl(s, false)
 			}
 		case *js.ImportStmt:
 			w.emitImport(s)
@@ -216,6 +216,14 @@ func (w *jsASTWalker) emitObjectProperty(p js.Property, parent string, depth int
 		if p.Name != nil {
 			name = propertyNameToString(*p.Name)
 		}
+	case *js.ArrowFunc:
+		// Arrow-function value: `name: () => {…}` or `name: async () => …`.
+		// React event handlers, Vue computed props, and modern Node
+		// frameworks lean on this form heavily — pre-fix they were
+		// silently dropped (#266 follow-up).
+		if p.Name != nil {
+			name = propertyNameToString(*p.Name)
+		}
 	default:
 		// Not a function-shaped value. Always recurse so nested objects
 		// like Vue's `methods: { … }` keep getting walked.
@@ -247,7 +255,13 @@ func (w *jsASTWalker) emitObjectProperty(p js.Property, parent string, depth int
 // Used by emitObjectProperty for both shorthand and explicit-function
 // object-literal members.
 func (w *jsASTWalker) locateObjectMember(name string) (int, int, bool) {
-	pattern := `(?m)(?:^|[\s,{])(?:async\s+)?\*?\s*` + regexp.QuoteMeta(name) + `\s*(?:\(|:\s*(?:async\s+)?function\b)`
+	// Three function-shaped forms: shorthand `name(...)`, explicit
+	// `name: function (...)`, and arrow `name: (params) => ...` (or
+	// `name: async (params) => ...`). Pre-fix the third form was
+	// silently dropped because the regex only knew about the first
+	// two — onChange-style React callbacks vanished from the index.
+	pattern := `(?m)(?:^|[\s,{])(?:async\s+)?\*?\s*` + regexp.QuoteMeta(name) +
+		`\s*(?:\(|:\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>))`
 	loc := w.regexFor(pattern).FindIndex(w.source[w.cursor:])
 	if loc == nil {
 		return 0, 0, false
@@ -263,7 +277,7 @@ func (w *jsASTWalker) locateObjectMember(name string) (int, int, bool) {
 	return startByte, endByte, true
 }
 
-func (w *jsASTWalker) emitFunc(fd *js.FuncDecl, kind, parent string) {
+func (w *jsASTWalker) emitFunc(fd *js.FuncDecl, kind, parent string, isExported bool) {
 	if fd.Name == nil {
 		return
 	}
@@ -276,13 +290,14 @@ func (w *jsASTWalker) emitFunc(fd *js.FuncDecl, kind, parent string) {
 	w.appendSymbol(ExtractedSymbol{
 		Name: name, QualifiedName: qn, Kind: kind, Parent: parent,
 		StartByte: startByte, EndByte: endByte,
-		StartLine: offsetToLine(w.lineOffsets, startByte),
-		EndLine:   offsetToLine(w.lineOffsets, endByte),
-		Signature: w.signatureFromSource(startByte),
+		StartLine:  offsetToLine(w.lineOffsets, startByte),
+		EndLine:    offsetToLine(w.lineOffsets, endByte),
+		Signature:  w.signatureFromSource(startByte),
+		IsExported: isExported,
 	})
 }
 
-func (w *jsASTWalker) emitClass(cd *js.ClassDecl) {
+func (w *jsASTWalker) emitClass(cd *js.ClassDecl, isExported bool) {
 	if cd.Name == nil {
 		return
 	}
@@ -295,12 +310,14 @@ func (w *jsASTWalker) emitClass(cd *js.ClassDecl) {
 	w.appendSymbol(ExtractedSymbol{
 		Name: name, QualifiedName: qn, Kind: "Class",
 		StartByte: startByte, EndByte: endByte,
-		StartLine: offsetToLine(w.lineOffsets, startByte),
-		EndLine:   offsetToLine(w.lineOffsets, endByte),
-		Signature: w.signatureFromSource(startByte),
+		StartLine:  offsetToLine(w.lineOffsets, startByte),
+		EndLine:    offsetToLine(w.lineOffsets, endByte),
+		Signature:  w.signatureFromSource(startByte),
+		IsExported: isExported,
 	})
 	// Walk methods inside the class body. Save+restore the cursor so
 	// per-method searches stay scoped to the class's byte range.
+	// Class methods inherit the class's exported-ness.
 	w.classStack = append(w.classStack, qn)
 	saveCursor := w.cursor
 	w.cursor = startByte
@@ -322,9 +339,10 @@ func (w *jsASTWalker) emitClass(cd *js.ClassDecl) {
 			Kind:          "Method",
 			Parent:        qn,
 			StartByte:     ms, EndByte: me,
-			StartLine: offsetToLine(w.lineOffsets, ms),
-			EndLine:   offsetToLine(w.lineOffsets, me),
-			Signature: w.signatureFromSource(ms),
+			StartLine:  offsetToLine(w.lineOffsets, ms),
+			EndLine:    offsetToLine(w.lineOffsets, me),
+			Signature:  w.signatureFromSource(ms),
+			IsExported: isExported,
 		})
 	}
 	w.classStack = w.classStack[:len(w.classStack)-1]
@@ -334,14 +352,27 @@ func (w *jsASTWalker) emitClass(cd *js.ClassDecl) {
 	}
 }
 
-// emitVarDecl emits one Variable per binding. The AST already knows this
-// is a const/let/var rather than a function, so `const X = (expr).method()`
-// is a Variable by construction — no regex tightening needed (#259).
-func (w *jsASTWalker) emitVarDecl(vd *js.VarDecl) {
+// emitVarDecl emits one symbol per binding in a VarDecl. The kind
+// depends on the initializer: `const f = () => {}` and
+// `const f = function() {}` are Functions (the binding is named, the
+// value is a function expression — that's how JS gives a function
+// its name today). Everything else is a Variable. This is the
+// arrow-function / function-expression de-double-emit (#266 follow-up):
+// without it, the same symbol would surface twice (Variable + Function)
+// or, worse, only as Variable and miss callers entirely.
+//
+// `isExported` flags top-level decls reached via emitExport so dead-
+// code analysis doesn't flag them. Plain `const x = …` at module scope
+// is unexported per ES2015 module semantics.
+func (w *jsASTWalker) emitVarDecl(vd *js.VarDecl, isExported bool) {
 	for _, be := range vd.List {
 		name := bindingName(be.Binding)
 		if name == "" {
 			continue
+		}
+		kind := "Variable"
+		if isFunctionInit(be.Default) {
+			kind = "Function"
 		}
 		sb, eb, ok := w.locateVar(name)
 		if !ok {
@@ -349,13 +380,35 @@ func (w *jsASTWalker) emitVarDecl(vd *js.VarDecl) {
 		}
 		w.appendSymbol(ExtractedSymbol{
 			Name: name, QualifiedName: w.qnFor(name, ""),
-			Kind:      "Variable",
+			Kind:      kind,
 			StartByte: sb, EndByte: eb,
-			StartLine: offsetToLine(w.lineOffsets, sb),
-			EndLine:   offsetToLine(w.lineOffsets, eb),
-			Signature: w.signatureFromSource(sb),
+			StartLine:  offsetToLine(w.lineOffsets, sb),
+			EndLine:    offsetToLine(w.lineOffsets, eb),
+			Signature:  w.signatureFromSource(sb),
+			IsExported: isExported,
 		})
 	}
+}
+
+// isFunctionInit reports whether a binding's initializer is a function
+// expression: arrow function, function expression, or either wrapped
+// in parens. Matters for emitVarDecl: function-shaped initializers
+// promote the binding's kind from Variable to Function so the symbol
+// surfaces in the call graph.
+func isFunctionInit(expr js.IExpr) bool {
+	for expr != nil {
+		switch e := expr.(type) {
+		case *js.ArrowFunc:
+			return true
+		case *js.FuncDecl:
+			return true
+		case *js.GroupExpr:
+			expr = e.X
+			continue
+		}
+		return false
+	}
+	return false
 }
 
 func (w *jsASTWalker) emitImport(im *js.ImportStmt) {
@@ -384,24 +437,26 @@ func (w *jsASTWalker) emitExport(ex *js.ExportStmt, insideFunc bool) {
 	switch d := ex.Decl.(type) {
 	case *js.FuncDecl:
 		if !insideFunc {
-			w.emitFunc(d, "Function", "")
+			w.emitFunc(d, "Function", "", true)
 		}
 	case *js.ClassDecl:
 		if !insideFunc {
-			w.emitClass(d)
+			w.emitClass(d, true)
 		}
 	case *js.VarDecl:
 		if !insideFunc {
-			w.emitVarDecl(d)
+			w.emitVarDecl(d, true)
 		}
 	}
 }
 
-// appendSymbol stamps the AST-extractor confidence (1.0) on the symbol
-// before appending. The dispatcher's langAdapter confidence still feeds
-// computeSignals, but per-symbol overrides win.
+// appendSymbol stamps complexity from the source range, then appends.
+// Caller controls IsExported — pre-#266-followup this method
+// unconditionally set IsExported=true, but ES2015+ module semantics
+// say "only `export`-prefixed decls are exported", and non-exported
+// helpers should surface in dead_code. emitExport sets IsExported=true
+// on its callees; everyone else passes false (the struct's zero value).
 func (w *jsASTWalker) appendSymbol(s ExtractedSymbol) {
-	s.IsExported = true // top-level JS module decls are observable
 	s.Complexity = estimateComplexity(w.source[s.StartByte:min(s.EndByte, len(w.source))])
 	w.symbols = append(w.symbols, s)
 }
