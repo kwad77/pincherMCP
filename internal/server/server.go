@@ -2887,6 +2887,23 @@ func sanitizeFTS5Query(q string) string {
 	}
 	tokens := strings.Fields(q)
 	if len(tokens) > 1 && containsBareFTS5Operator(tokens) {
+		// #452: distinguish deliberate FTS5 expressions from prose that
+		// happens to contain capitalised operator words. A short query
+		// where every non-operator token is identifier-shaped (e.g.
+		// `Watch OR poll`, `Foo AND NOT Bar`) is a real FTS5 expression
+		// the user typed on purpose — pass it through with per-token
+		// wrapping so the operator semantics survive. The original
+		// phrase-wrap fallback stays for the prose case (e.g.
+		// `handle AND NOT context` looking for English text).
+		if looksLikeDeliberateFTS5Expr(tokens) {
+			for i, tok := range tokens {
+				if tok == "NOT" || tok == "AND" || tok == "OR" {
+					continue
+				}
+				tokens[i] = wrapTokenIfNeeded(tok)
+			}
+			return strings.Join(tokens, " ")
+		}
 		// Phrase-wrap the whole query so FTS5's operator parser stays
 		// out of it. Strip apostrophes — they'd terminate the phrase
 		// otherwise (#424 unterminated-string repro).
@@ -2897,6 +2914,84 @@ func sanitizeFTS5Query(q string) string {
 		tokens[i] = wrapTokenIfNeeded(tok)
 	}
 	return strings.Join(tokens, " ")
+}
+
+// looksLikeDeliberateFTS5Expr reports whether a tokenised query looks
+// like the user actually meant the operators as FTS5 operators rather
+// than as English words inside prose. Signals required:
+//  1. Short query (2-5 tokens).
+//  2. Every non-operator token is identifier-shaped (alphanumerics + `.`/`-`/`_`).
+//  3. At least one non-operator token carries a code-not-prose signal —
+//     CamelCase, an identifier punctuation char (`.`/`-`/`_`), or a `*` suffix.
+//
+// All-lowercase prose (e.g. `foo OR bar`, `handle AND NOT context`)
+// fails signal 3 and stays phrase-wrapped, preserving the original
+// (#289 / #424) safety for natural-language queries that happen to
+// capitalise AND/OR/NOT. CamelCase or punctuation-bearing names
+// (`Watch OR poll`, `auth* OR oauth*`, `mod.Foo AND mod.Bar`) pass
+// through with operator semantics intact.
+func looksLikeDeliberateFTS5Expr(tokens []string) bool {
+	if len(tokens) < 2 || len(tokens) > 5 {
+		return false
+	}
+	hasOp := false
+	hasCodeIdent := false
+	for _, t := range tokens {
+		if t == "NOT" || t == "AND" || t == "OR" {
+			hasOp = true
+			continue
+		}
+		if !looksLikeIdentToken(t) {
+			return false
+		}
+		if looksLikeCodeIdent(t) {
+			hasCodeIdent = true
+		}
+	}
+	return hasOp && hasCodeIdent
+}
+
+// looksLikeCodeIdent reports whether a token reads as a source-code
+// identifier rather than a plain English word. CamelCase, identifier
+// punctuation, or a prefix wildcard all qualify.
+func looksLikeCodeIdent(s string) bool {
+	if strings.HasSuffix(s, "*") {
+		return true
+	}
+	if strings.ContainsAny(s, "._-") {
+		return true
+	}
+	if len(s) >= 2 && s[0] >= 'A' && s[0] <= 'Z' {
+		for i := 1; i < len(s); i++ {
+			if s[i] >= 'a' && s[i] <= 'z' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// looksLikeIdentToken reports whether a token reads as a source-code
+// identifier or prefix-wildcard. Permissive on intermediate `.`/`-`/`_`
+// because those are common in package paths and qualified names.
+func looksLikeIdentToken(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	if strings.HasSuffix(s, "*") {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isAlphanum(c) || c == '.' || c == '-' || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // wrapTokenIfNeeded returns tok wrapped in FTS5 phrase quotes if it

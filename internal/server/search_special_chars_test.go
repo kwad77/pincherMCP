@@ -43,9 +43,9 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 
 		// #424: bare uppercase boolean operators in a multi-token query
 		// trigger the FTS5 operator parser and crash on malformed
-		// expressions. The sanitizer now phrase-wraps the whole query
-		// so it searches as literal text. Single-token NOT/AND/OR pass
-		// through (FTS5 accepts those alone).
+		// expressions. The sanitizer phrase-wraps the prose case
+		// (lowercase identifier-words around the operator) so it
+		// searches as literal text.
 		{"foo OR bar", `"foo OR bar"`},
 		{"NOT foo", `"NOT foo"`},
 		{"handle AND NOT context", `"handle AND NOT context"`},
@@ -53,6 +53,18 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 		// Lowercase booleans aren't FTS5 operators — pass through.
 		{"foo or bar", "foo or bar"},
 		{"foo and bar", "foo and bar"},
+
+		// #452: deliberate FTS5 expressions — short query with at least
+		// one CamelCase / punctuation / wildcard non-operator token —
+		// pass through with operator semantics preserved. The user
+		// asked for `Watch OR poll`; we honour it.
+		{"Watch OR poll", "Watch OR poll"},
+		{"Foo AND Bar", "Foo AND Bar"},
+		{"Foo AND NOT Bar", "Foo AND NOT Bar"},
+		{"auth* OR oauth*", "auth* OR oauth*"},
+		// Code-shape tokens with punctuation pass through too.
+		{"os.Stat OR fmt.Errorf", `"os.Stat" OR "fmt.Errorf"`},
+		{"my-mod OR your-mod", `"my-mod" OR "your-mod"`},
 
 		// #424: parens, slash, at-sign, brackets, braces, comma, !, ?
 		// — these all crash bare in FTS5; phrase-wrap them.
