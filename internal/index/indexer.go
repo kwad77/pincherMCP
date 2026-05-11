@@ -690,14 +690,32 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				continue
 			}
 			for _, p := range projects {
-				if idx.hasChanges(p) {
-					slog.Debug("pincher.watcher.reindex", "project", p.Name)
-					go func(p db.Project) {
-						if _, err := idx.Index(ctx, p.Path, false); err != nil {
-							slog.Warn("pincher.watcher.reindex.err", "project", p.Name, "err", err)
-						}
-					}(p)
+				changed := idx.changedFiles(p)
+				if len(changed) == 0 {
+					continue
 				}
+				slog.Debug("pincher.watcher.reindex",
+					"project", p.Name,
+					"changed_files", len(changed))
+				// #427 (partial): clear file_hash on direct referencers
+				// of any changed file so they re-extract and their
+				// deferred CALLS / IMPORTS / READS feed resolveCalls
+				// again. Handles one hop — known limitation: a
+				// referencer that itself has incoming edges from
+				// elsewhere drops those edges when DeleteSymbolsForFile
+				// cascades, and they aren't recovered unless the
+				// upstream-of-referencer files also re-extract. The
+				// transitive expansion needed for full correctness
+				// converges on "every file with a cross-file edge" for
+				// typical Go projects, so the right long-term fix is
+				// persisted-deferred-edges (Option 3 from the issue
+				// analysis) rather than recursive hash invalidation.
+				idx.invalidateReferencers(p, changed)
+				go func(p db.Project) {
+					if _, err := idx.Index(ctx, p.Path, false); err != nil {
+						slog.Warn("pincher.watcher.reindex.err", "project", p.Name, "err", err)
+					}
+				}(p)
 			}
 		}
 	}
@@ -711,32 +729,36 @@ func (idx *Indexer) anyActive() bool {
 	return len(idx.active) > 0
 }
 
-// hasChanges checks if any source file in the project has changed since last index.
-// Uses a fast mtime check before doing the full xxh3 hash comparison.
-// hasChanges reports whether any indexable file under p.Path has been
-// modified since the last index run. Returns true on the first newer
-// file (early exit), so the cost on a clean tree is one stat per file
-// + one readdir per directory.
-//
-// #377: pre-fix this only inspected p.Path's top-level entries via
-// os.ReadDir, so edits to anything in a subdirectory (e.g. internal/
-// or src/) were silently ignored. The watcher would then never trigger
-// a re-index, and `search` returned stale results until an explicit
-// `index` call. The fix walks recursively, sharing the indexer's
-// skipped-dirs set so vendor/.git/node_modules don't dominate the walk.
+// hasChanges is kept as a thin compatibility wrapper around
+// changedFiles so existing tests that just need the bool signal don't
+// have to change shape. Returns true the moment changedFiles would
+// emit any entry.
 func (idx *Indexer) hasChanges(p db.Project) bool {
-	var changed bool
+	return len(idx.changedFiles(p)) > 0
+}
+
+// changedFiles returns the relative paths (project-root relative,
+// forward-slashed) of indexable source files whose mtime is newer than
+// the project's last index. Returns an empty slice when nothing changed.
+//
+// Replaces the older hasChanges() bool helper (#427): the watcher now
+// needs the concrete list to find downstream referencers whose
+// cross-file edges must be rebuilt — not just a generic "something
+// changed" signal.
+//
+// #377: walks recursively so edits in subdirectories (internal/, src/)
+// trigger re-index. Uses the indexer's skipped-dirs set to avoid
+// vendor/.git/node_modules dominating the walk.
+func (idx *Indexer) changedFiles(p db.Project) []string {
+	var changed []string
 	_ = filepath.WalkDir(p.Path, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			// Permission denied / path vanished mid-walk — skip and keep going.
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if d.IsDir() {
-			// Don't recurse into the project root if it itself matches
-			// (root has "" as base name and shouldn't be skipped).
 			if path != p.Path && isSkippedDir(d.Name()) {
 				return filepath.SkipDir
 			}
@@ -754,12 +776,54 @@ func (idx *Indexer) hasChanges(p db.Project) bool {
 			return nil
 		}
 		if info.ModTime().After(p.IndexedAt) {
-			changed = true
-			return filepath.SkipAll
+			if rel, relErr := filepath.Rel(p.Path, path); relErr == nil {
+				changed = append(changed, filepath.ToSlash(rel))
+			}
 		}
 		return nil
 	})
 	return changed
+}
+
+// invalidateReferencers clears the file_hash rows for every file that
+// has a cross-file edge pointing into any of `changed`. The next
+// Index() walk sees the hash mismatch and re-extracts those files,
+// which re-populates the deferred CALLS / IMPORTS / READS edges that
+// resolveCalls / resolveImports / resolveReads need in order to rebuild
+// the cross-file edges that DeleteSymbolsForFile(changed) cascade-
+// deletes. Best-effort — failures are logged, not fatal: a missed
+// invalidation just means the edge stays missing until the next force
+// re-index (no worse than the pre-fix behaviour).
+//
+// The referencer-files are invalidated regardless of whether they
+// themselves appear in `changed`: changedFiles is mtime-based and the
+// `files` table stores IndexedAt at second precision, so mtime can
+// falsely match for files that were written within the same second as
+// the prior Index. Trusting `changed` membership here would let those
+// files keep their old (unchanged) content hash and slip through
+// Index()'s hash-skip even though the cross-file edges into the real
+// changed file are gone.
+func (idx *Indexer) invalidateReferencers(p db.Project, changed []string) {
+	if len(changed) == 0 {
+		return
+	}
+	cleared := map[string]bool{}
+	for _, target := range changed {
+		referencers, err := idx.store.FilesWithEdgesToFile(p.ID, target)
+		if err != nil {
+			slog.Debug("pincher.watcher.referencers.err", "project", p.Name, "target", target, "err", err)
+			continue
+		}
+		for _, ref := range referencers {
+			if cleared[ref] {
+				continue
+			}
+			cleared[ref] = true
+			if err := idx.store.DeleteFileHash(p.ID, ref); err != nil {
+				slog.Debug("pincher.watcher.invalidate.err", "project", p.Name, "file", ref, "err", err)
+			}
+		}
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

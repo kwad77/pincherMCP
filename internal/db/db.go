@@ -2961,6 +2961,41 @@ func (s *Store) DeleteFileHash(projectID, path string) error {
 	return err
 }
 
+// FilesWithEdgesToFile returns distinct relative file paths (other than
+// `target` itself) that contain at least one symbol with an outgoing
+// edge pointing into a symbol in `target`. Used by the watcher (#427)
+// to identify which files need re-extraction when `target` changes:
+// their cross-file CALLS / IMPORTS / READS edges to symbols in `target`
+// get cascade-deleted on DeleteSymbolsForFile(target), and only a
+// re-extraction of the *referencing* files can restore them.
+//
+// Returns an empty slice when no such files exist. Read-only; uses the
+// reader pool.
+func (s *Store) FilesWithEdgesToFile(projectID, target string) ([]string, error) {
+	rows, err := s.ro.Query(`
+		SELECT DISTINCT s_from.file_path
+		FROM edges e
+		JOIN symbols s_from ON e.from_id = s_from.id
+		JOIN symbols s_to   ON e.to_id   = s_to.id
+		WHERE e.project_id = ?
+		  AND s_to.file_path = ?
+		  AND s_from.file_path != s_to.file_path`,
+		projectID, target)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ListFilesForProject returns every file path currently recorded in the
 // `files` table for projectID. Used by the indexer's tail-pass GC (#326)
 // to find symbols whose source file was deleted from disk between runs:

@@ -277,6 +277,98 @@ func TestIndex_CrossFileGoCALLS_SamePackage(t *testing.T) {
 	}
 }
 
+// #427: when a file is re-extracted incrementally, edges from OTHER
+// files INTO this file used to be cascade-deleted with no path to
+// recovery — the watcher's hash-skip dropped the referencer files
+// from the per-file goroutine pool, so their deferred CALLS / IMPORTS
+// / READS edges were never re-collected to feed resolveCalls. The
+// referencer-invalidation pass (invalidateReferencers) clears the
+// referencers' file_hash rows BEFORE Index runs, so the next walk
+// picks them up too. This test simulates the watcher path manually:
+// index, change a callee, invalidate referencers, re-index, verify
+// the cross-file edge is still there.
+func TestIndex_IncrementalReindex_PreservesCrossFileEdges(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "callee.go", "package mypkg\n\nfunc Foo() {}\n")
+	writeFile(t, dir, "caller.go", "package mypkg\n\nfunc Bar() {\n\tFoo()\n}\n")
+
+	// Initial full index.
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("first Index: %v", err)
+	}
+	projectID := db.ProjectIDFromPath(dir)
+
+	hopsBefore, err := idx.Trace(context.Background(), projectID, "Bar", "outbound", 3, false)
+	if err != nil {
+		t.Fatalf("Trace before: %v", err)
+	}
+	beforeCount := 0
+	for _, h := range hopsBefore {
+		if h.Symbol.Name == "Foo" {
+			beforeCount++
+		}
+	}
+	if beforeCount == 0 {
+		t.Fatalf("expected Bar→Foo edge after initial index; got %d hops", len(hopsBefore))
+	}
+
+	// Mimic watcher: callee.go content changed (xxh3 hash differs).
+	// Wait a moment so the mtime moves forward past the IndexedAt
+	// timestamp captured above — the watcher's changedFiles compares
+	// against the project's IndexedAt.
+	time.Sleep(20 * time.Millisecond)
+	writeFile(t, dir, "callee.go", "package mypkg\n\n// edited\nfunc Foo() {}\n")
+	future := time.Now().Add(10 * time.Second)
+	if err := os.Chtimes(filepath.Join(dir, "callee.go"), future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// Resolve the project so we have the IndexedAt to compute changed
+	// files against.
+	p, err := store.GetProject(projectID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	changed := idx.changedFiles(*p)
+	if len(changed) == 0 {
+		t.Fatalf("expected changedFiles to return at least callee.go after touch; got %v", changed)
+	}
+
+	// Apply the watcher's pre-Index invalidation pass: caller.go's
+	// file_hash must be cleared so the next Index re-extracts it and
+	// resolveCalls can rebuild the Bar→Foo edge.
+	idx.invalidateReferencers(*p, changed)
+	if h := store.GetFileHash(p.ID, "caller.go"); h != "" {
+		t.Errorf("caller.go hash not cleared after invalidateReferencers; got %q", h)
+	}
+
+	// Re-index. With invalidation: caller.go's hash row was cleared,
+	// so it gets re-extracted and its Foo() call goes back into
+	// pendingCalls, and resolveCalls rebuilds the Bar→Foo edge.
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("second Index: %v", err)
+	}
+
+	hopsAfter, err := idx.Trace(context.Background(), projectID, "Bar", "outbound", 3, false)
+	if err != nil {
+		t.Fatalf("Trace after: %v", err)
+	}
+	afterCount := 0
+	for _, h := range hopsAfter {
+		if h.Symbol.Name == "Foo" {
+			afterCount++
+		}
+	}
+	if afterCount == 0 {
+		t.Errorf("expected Bar→Foo edge after incremental re-index of callee.go; got %d hops. invalidateReferencers must clear caller.go's file_hash so resolveCalls rebuilds the cross-file edge", len(hopsAfter))
+		for _, h := range hopsAfter {
+			t.Logf("  hop: %s (%s)", h.Symbol.Name, h.Symbol.QualifiedName)
+		}
+	}
+}
+
 func TestIndex_CrossFileGoCALLS_CrossPackage(t *testing.T) {
 	idx, store := newTestIndexer(t)
 	dir := t.TempDir()
