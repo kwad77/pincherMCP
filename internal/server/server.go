@@ -1710,11 +1710,12 @@ func (s *Server) registerTools() {
 	// 3. symbols (batch)
 	s.addTool(&mcp.Tool{
 		Name:        "symbols",
-		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch.",
+		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["ids"],"properties":{
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
-				"project":{"type":"string"}
+				"project":{"type":"string"},
+				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."}
 			}
 		}`),
 	}, s.handleSymbols)
@@ -1722,11 +1723,12 @@ func (s *Server) registerTools() {
 	// 4. context
 	s.addTool(&mcp.Tool{
 		Name:        "context",
-		Description: "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source.",
+		Description: "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Symbol ID to fetch with its imports."},
-				"project":{"type":"string"}
+				"project":{"type":"string"},
+				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."}
 			}
 		}`),
 	}, s.handleContext)
@@ -1777,7 +1779,8 @@ func (s *Server) registerTools() {
 				"risk":{"type":"boolean","description":"Add CRITICAL/HIGH/MEDIUM/LOW risk labels (default true)"},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.0 (no filter). Hops whose target symbol scores below the threshold are excluded from the result."},
 				"kinds":{"type":"string","description":"Comma-separated list of edge kinds to traverse (e.g. 'CALLS' or 'READS,WRITES'). Default: CALLS-family (CALLS,HTTP_CALLS,ASYNC_CALLS) — covers the typical 'who calls this' use case. Pass READS / WRITES (Go vars only, see #264/#265) to follow data-flow edges. Whitespace and case-insensitive."},
-				"include_tests":{"type":"boolean","description":"If true, surface hops in test files (*_test.go, *.spec.ts, etc.) and testdata/ fixtures. Default false — tests flood inbound traces on hotspots without orientation value, so they're filtered like architecture's hotspot list. Set true when you genuinely want to see a symbol's test coverage."}
+				"include_tests":{"type":"boolean","description":"If true, surface hops in test files (*_test.go, *.spec.ts, etc.) and testdata/ fixtures. Default false — tests flood inbound traces on hotspots without orientation value, so they're filtered like architecture's hotspot list. Set true when you genuinely want to see a symbol's test coverage."},
+				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'hops,total' to drop risk_summary. Per-hop fields are NOT trimmed — pass shape via downstream symbol/symbols calls. _meta is preserved."}
 			}
 		}`),
 	}, s.handleTrace)
@@ -1790,7 +1793,8 @@ func (s *Server) registerTools() {
 			"type":"object","properties":{
 				"project":{"type":"string"},
 				"scope":{"type":"string","description":"Which diff to analyse: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:<branch>' (committed diff vs merge-base of <branch>, e.g. 'base:master' for pre-PR blast radius)"},
-				"depth":{"type":"integer","description":"Blast radius BFS depth 1-5 (default 3)"}
+				"depth":{"type":"integer","description":"Blast radius BFS depth 1-5 (default 3)"},
+				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'summary,tests_to_run' to drop changed_symbols+impacted lists. Common shape on chained PR-prep flow: agent only needs the summary + which tests to run. _meta is preserved."}
 			}
 		}`),
 	}, s.handleChanges)
@@ -2226,6 +2230,10 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 
 	projectArg := str(args, "project")
+	// #400: per-entry field projection. Caller-driven cut applied
+	// to each row in the `symbols` array. nil = all fields.
+	fieldSet := parseFieldsArg(str(args, "fields"))
+	includeSource := fieldSet == nil || fieldSet["source"]
 	root := s.sessionRoot
 	var resolvedProjectID string
 	if projectArg != "" {
@@ -2262,15 +2270,17 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			continue
 		}
 		source := ""
-		if root != "" {
-			source, _ = index.ReadSymbolSource(root, *sym)
-		}
-		// Document symbols (fetched URLs) store their content in Docstring —
-		// no local file to seek. Mirrors the fallback in handleSymbol so a
-		// batch lookup of mixed source-file + Document symbols returns the
-		// same shape as N single-symbol calls.
-		if source == "" && sym.Kind == "Document" {
-			source = sym.Docstring
+		if includeSource {
+			if root != "" {
+				source, _ = index.ReadSymbolSource(root, *sym)
+			}
+			// Document symbols (fetched URLs) store their content in Docstring —
+			// no local file to seek. Mirrors the fallback in handleSymbol so a
+			// batch lookup of mixed source-file + Document symbols returns the
+			// same shape as N single-symbol calls.
+			if source == "" && sym.Kind == "Document" {
+				source = sym.Docstring
+			}
 		}
 		// #336: project the same field set as handleSymbol so a one-ID
 		// `symbols` batch returns the same shape as a single `symbol` call.
@@ -2306,6 +2316,9 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			}
 			s.attachStalenessWarning(entry, pidForHash, sym, root)
 		}
+		// Apply per-entry projection. _meta (the staleness warning
+		// attached just above) is preserved by projectFields.
+		entry = projectFields(entry, fieldSet)
 		results = append(results, entry)
 		// Document symbols have no on-disk file; skip them in the
 		// savings baseline so we don't os.Stat a non-existent path.
@@ -2329,6 +2342,8 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	if id == "" {
 		return errResult("id is required"), nil
 	}
+	// #400: response-level field projection. Caller-driven cut.
+	fieldSet := parseFieldsArg(str(args, "fields"))
 
 	sym, err := s.store.GetSymbol(id)
 	if err != nil || sym == nil {
@@ -2418,6 +2433,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	if root != "" {
 		s.attachStalenessWarning(data, sym.ProjectID, sym, root)
 	}
+	data = projectFields(data, fieldSet)
 	responseJSON, _ := json.Marshal(data)
 	return s.jsonResultWithMeta(data, start, tool, args, savedVsFileSizes(root, allPaths, responseJSON)), nil
 }
@@ -3552,6 +3568,12 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if addRisk {
 		data["risk_summary"] = riskCounts
 	}
+	// #400: response-level field projection. Per-hop fields are NOT
+	// trimmed (caller wanting fewer fields per hop should pass the
+	// trim shape via downstream `symbol`/`symbols` calls). Top-level
+	// projection lets callers drop e.g. `risk_summary` when they
+	// only want the hop list.
+	data = projectFields(data, parseFieldsArg(str(args, "fields")))
 	return s.jsonResultWithMeta(data, start, tool, args, savedVsFileSizes(traceRoot, tracedPaths, responseJSON)), nil
 }
 
@@ -3708,6 +3730,11 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 	if nextSteps := suggestChangesNextSteps(impacted, changedSymNames, riskCounts); len(nextSteps) > 0 {
 		data["_meta"] = map[string]any{"next_steps": nextSteps}
 	}
+	// #400: response-level field projection. Common shape on chained
+	// PR-prep flow: caller wants summary + tests_to_run, skips
+	// changed_symbols/impacted lists. `fields=summary,tests_to_run`
+	// drops ~80% of the response when the diff impacts many symbols.
+	data = projectFields(data, parseFieldsArg(str(args, "fields")))
 	return s.jsonResultWithMeta(data, start, tool, args, savedVsFullRead(totalTracedSyms, responseJSON)), nil
 }
 
@@ -5503,6 +5530,59 @@ func strSlice(args map[string]any, key string) []string {
 		if s, ok := item.(string); ok {
 			out = append(out, s)
 		}
+	}
+	return out
+}
+
+// parseFieldsArg parses a "field1,field2,field3" comma-separated
+// allow-list into a set. Empty or whitespace-only input returns
+// nil (no projection — caller returns all fields).
+//
+// #400: same shape `search` has used since v0.4 for its `fields`
+// param; promoted to a shared helper so symbol / symbols / context
+// / trace / changes can all opt callers into the same field-trim
+// semantics. Caller-driven cut, no fidelity loss — agent picks
+// what they want, server strips the rest.
+func parseFieldsArg(s string) map[string]bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out[f] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// projectFields returns a shallow copy of m containing only keys in
+// allow. nil allow returns m untouched (no projection). Unknown keys
+// in allow are silently skipped — same behaviour as search's existing
+// `fields` semantics, which lets callers pass a future-proof field
+// list without breaking when a server version doesn't have all of
+// them yet.
+//
+// `_meta` is preserved unconditionally — it carries token-savings
+// numbers, drift warnings, and next-step suggestions that would
+// otherwise be invisible. Callers that want to drop _meta can pop
+// it after this call.
+func projectFields(m map[string]any, allow map[string]bool) map[string]any {
+	if allow == nil {
+		return m
+	}
+	out := make(map[string]any, len(allow)+1)
+	for f := range allow {
+		if v, ok := m[f]; ok {
+			out[f] = v
+		}
+	}
+	if v, ok := m["_meta"]; ok {
+		out["_meta"] = v
 	}
 	return out
 }

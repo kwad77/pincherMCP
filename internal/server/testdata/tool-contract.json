@@ -56,6 +56,10 @@
           "description": "Blast radius BFS depth 1-5 (default 3)",
           "type": "integer"
         },
+        "fields": {
+          "description": "Comma-separated top-level keys to include, e.g. 'summary,tests_to_run' to drop changed_symbols+impacted lists. Common shape on chained PR-prep flow: agent only needs the summary + which tests to run. _meta is preserved.",
+          "type": "string"
+        },
         "project": {
           "type": "string"
         },
@@ -69,9 +73,13 @@
   },
   {
     "name": "context",
-    "description": "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source.",
+    "description": "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need.",
     "input_schema": {
       "properties": {
+        "fields": {
+          "description": "Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally.",
+          "type": "string"
+        },
         "id": {
           "description": "Symbol ID to fetch with its imports.",
           "type": "string"
@@ -409,9 +417,13 @@
   },
   {
     "name": "symbols",
-    "description": "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch.",
+    "description": "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source.",
     "input_schema": {
       "properties": {
+        "fields": {
+          "description": "Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata.",
+          "type": "string"
+        },
         "ids": {
           "description": "Array of stable symbol IDs.",
           "items": {
@@ -445,6 +457,10 @@
             "inbound",
             "both"
           ],
+          "type": "string"
+        },
+        "fields": {
+          "description": "Comma-separated top-level keys to include, e.g. 'hops,total' to drop risk_summary. Per-hop fields are NOT trimmed — pass shape via downstream symbol/symbols calls. _meta is preserved.",
           "type": "string"
         },
         "include_tests": {
