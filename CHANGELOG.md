@@ -7,6 +7,19 @@ minors.
 
 ## [Unreleased]
 
+### Changed
+- **list: filtered_out lump-sum split into per-reason breakdown
+  ([#505](https://github.com/kwad77/pincher/issues/505)).** Pre-fix,
+  the response said `"filtered_out": 116` with no signal whether the
+  hidden projects were dead-on-disk paths, inactive (>14d), or
+  empty-graph stubs — agent had to guess which arg flip would surface
+  what they wanted. Now: `filtered_breakdown: {dead_path, inactive,
+  low_edges}` always present, plus `_meta.filter_diagnosis` naming
+  the recovery args ("3 dead path (pass include_dead=true), 12
+  inactive >14d (pass active=false), 17 below min_edges=1 (pass
+  min_edges=0)") only when something was filtered. Healthy responses
+  stay clean.
+
 ### Added
 - **Occasional milestone celebration in `_meta`
   ([#494](https://github.com/kwad77/pincher/issues/494)).** Tool
