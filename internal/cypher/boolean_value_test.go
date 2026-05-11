@@ -90,9 +90,13 @@ func TestNormalizeConditionValue(t *testing.T) {
 	cases := []struct {
 		kind, in, want string
 	}{
-		{"KEYWORD", "TRUE", "true"},
-		{"KEYWORD", "FALSE", "false"},
-		{"KEYWORD", "NULL", "null"},
+		// #421: TRUE/FALSE map to SQLite INTEGER form so the SQL
+		// pushdown path matches against bool columns under affinity.
+		// In-Go evaluator handles the same equivalence via
+		// boolCoerceEqual.
+		{"KEYWORD", "TRUE", "1"},
+		{"KEYWORD", "FALSE", "0"},
+		{"KEYWORD", "NULL", ""},
 		// Non-boolean keywords pass through unchanged (the parser uses
 		// them for control flow on the syntactic path, not as values).
 		{"KEYWORD", "MATCH", "MATCH"},

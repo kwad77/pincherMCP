@@ -7,6 +7,34 @@ minors.
 
 ## [Unreleased]
 
+## [v0.15.4] — 2026-05-11 — pinchQL bool column coercion
+
+Patch — closes the bool/int coercion gap. Sibling fix to #412 (id),
+#430 (OR), #434 (comparison) — same family of "WHERE silently
+returns 0 because the SQL pushdown gate or the in-Go evaluator
+disagreed about how to compare values".
+
+### Fixed
+- **`WHERE n.is_entry_point="1"` returned 0 rows even when entry
+  points existed ([#421](https://github.com/kwad77/pincher/issues/421)).**
+  Two compounding bugs:
+  1. `is_entry_point` and `is_exported` weren't mapped in
+     `cypherPropToCol`, so the WHERE post-filtered in Go where
+     `fmt.Sprint(true)="true" != "1"` — silent no-match.
+  2. Even after pushing to SQL, `"true"`/`"false"` string literals
+     don't convert under SQLite affinity for INTEGER columns, so
+     `is_entry_point="true"` would still return 0.
+
+  Fix: `is_exported`, `is_entry_point`, `complexity`,
+  `extraction_confidence`, `start_byte`, `end_byte` now map to
+  their SQL columns; `condLeafToSQL` coerces `"true"`/`"false"`
+  bind args to `"1"`/`"0"` when the target column is bool-typed
+  (`isBoolCol`). The TRUE/FALSE/NULL keyword literals normalize
+  to `"1"`/`"0"`/`""` (was `"true"`/`"false"`/`"null"`) so SQL
+  push and in-Go fallback both agree. The new `boolCoerceEqual`
+  in `evalCondition` handles the same equivalence for callers
+  that bypass pushdown.
+
 ## [v0.15.3] — 2026-05-11 — pinchQL comparison-operator pushdown
 
 Patch — closes the third silently-undercounting pushdown gap in
