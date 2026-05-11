@@ -1840,12 +1840,13 @@ func (s *Server) registerTools() {
 	// 11. list
 	s.addTool(&mcp.Tool{
 		Name:        "list",
-		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists or whose last index is older than `active_within_days` (14 by default). Pass `active=false`/`include_dead=true` to widen the filter, `limit=0` for the legacy unbounded dump, `prune_dead=true` to physically remove dead-on-disk projects from the store.",
+		Description: "**Use to confirm which projects are indexed** before scoping a query with `project=`. Returns `[{name, path, files, symbols, edges, indexed_at}, ...]` for active projects. Paginated: defaults to 50 entries per call (limit/offset), with the next page surfaced in `_meta.next_steps` when more remain. Defaults filter out projects whose on-disk path no longer exists, whose last index is older than `active_within_days` (14 by default), or that have zero edges (typically empty worktrees). Pass `active=false`/`include_dead=true`/`min_edges=0` to widen the filter, `limit=0` for the legacy unbounded dump, `prune_dead=true` to physically remove dead-on-disk projects from the store.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{
 			"active":{"type":"boolean","description":"Filter to projects indexed within active_within_days. Default true."},
 			"active_within_days":{"type":"integer","description":"Activity window for active=true. Default 14."},
 			"include_dead":{"type":"boolean","description":"Include projects whose on-disk path no longer exists in the response. Default false. Orthogonal to prune_dead — combine for an audit + cleanup pass (#378)."},
 			"prune_dead":{"type":"boolean","description":"Permanently delete projects whose on-disk path no longer exists from the store. Default false. Pruned ids returned in the pruned field. Combine with include_dead=true to see what got deleted in the same call."},
+			"min_edges":{"type":"integer","description":"Drop projects whose edge count is below this threshold (#419). Default 1 — hides empty-graph worktrees and pre-extraction stubs. Pass 0 for the legacy unfiltered shape."},
 			"limit":{"type":"integer","description":"Max rows returned per page. Default 50. Pass 0 for legacy unbounded behaviour."},
 			"offset":{"type":"integer","description":"Skip the first N rows (default 0). Use the value from _meta.next_steps to walk pages."}
 		}}`),
@@ -4384,6 +4385,17 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		activeWithinDays = int(v)
 	}
 	cutoff := time.Now().Add(-time.Duration(activeWithinDays) * 24 * time.Hour)
+	// #419: drop projects without a usable graph by default. On
+	// developer machines with a worktree fan-out (`.claude/worktrees/`
+	// adjective-scientist slugs from concurrent agent runs), `list`
+	// defaulted to surfacing 30+ empty-graph entries that pushed the
+	// real project out of the response window. min_edges=1 keeps the
+	// orientation view useful; pass min_edges=0 to opt back into the
+	// legacy unfiltered shape.
+	minEdges := 1
+	if v, ok := args["min_edges"].(float64); ok {
+		minEdges = int(v)
+	}
 
 	// Filter first, paginate after — `count` reports the post-filter
 	// total so the caller can decide whether the next page is worth
@@ -4420,6 +4432,14 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			continue
 		}
 		if activeOnly && p.IndexedAt.Before(cutoff) {
+			dropped++
+			continue
+		}
+		// #419: edge-count gate. Empty-graph projects are usually
+		// ephemeral worktrees or pre-extraction stubs that crowd the
+		// orientation view without adding useful info. Caller can pass
+		// min_edges=0 to see them anyway.
+		if minEdges > 0 && p.EdgeCount < minEdges {
 			dropped++
 			continue
 		}

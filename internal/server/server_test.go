@@ -210,8 +210,10 @@ func TestHandleList_WithProjects(t *testing.T) {
 	// drop dead-on-disk rows. Use t.TempDir so the paths actually exist.
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()
-	store.UpsertProject(db.Project{ID: "p1", Path: dir1, Name: "proj1", IndexedAt: time.Now()})
-	store.UpsertProject(db.Project{ID: "p2", Path: dir2, Name: "proj2", IndexedAt: time.Now()})
+	// EdgeCount=1 so the default min_edges=1 filter (#419) doesn't drop
+	// them as empty-graph noise. These tests focus on other filters.
+	store.UpsertProject(db.Project{ID: "p1", Path: dir1, Name: "proj1", IndexedAt: time.Now(), EdgeCount: 1})
+	store.UpsertProject(db.Project{ID: "p2", Path: dir2, Name: "proj2", IndexedAt: time.Now(), EdgeCount: 1})
 
 	result, err := srv.handleList(context.Background(), makeReq(nil))
 	if err != nil {
@@ -237,9 +239,11 @@ func TestHandleList_WithProjects(t *testing.T) {
 func TestHandleList_FiltersDeadAndStale(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	live := t.TempDir()
-	store.UpsertProject(db.Project{ID: "live", Path: live, Name: "live", IndexedAt: time.Now()})
-	store.UpsertProject(db.Project{ID: "dead", Path: filepath.Join(t.TempDir(), "removed-after-index"), Name: "dead", IndexedAt: time.Now()})
-	store.UpsertProject(db.Project{ID: "stale", Path: t.TempDir(), Name: "stale", IndexedAt: time.Now().Add(-30 * 24 * time.Hour)})
+	// EdgeCount=1 so #419's min_edges=1 default doesn't drop these — the
+	// test exercises dead-on-disk and stale filters, not the edge gate.
+	store.UpsertProject(db.Project{ID: "live", Path: live, Name: "live", IndexedAt: time.Now(), EdgeCount: 1})
+	store.UpsertProject(db.Project{ID: "dead", Path: filepath.Join(t.TempDir(), "removed-after-index"), Name: "dead", IndexedAt: time.Now(), EdgeCount: 1})
+	store.UpsertProject(db.Project{ID: "stale", Path: t.TempDir(), Name: "stale", IndexedAt: time.Now().Add(-30 * 24 * time.Hour), EdgeCount: 1})
 
 	result, err := srv.handleList(context.Background(), makeReq(nil))
 	if err != nil {
@@ -260,6 +264,7 @@ func TestHandleList_IncludeDead(t *testing.T) {
 	store.UpsertProject(db.Project{
 		ID: "ghost", Path: filepath.Join(t.TempDir(), "ghost-path-never-existed"),
 		Name: "ghost", IndexedAt: time.Now(),
+		EdgeCount: 1, // skip the #419 empty-graph filter
 	})
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{"include_dead": true}))
 	if err != nil {
@@ -275,7 +280,7 @@ func TestHandleList_IncludeDead(t *testing.T) {
 func TestHandleList_ActiveFalse(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	old := t.TempDir()
-	store.UpsertProject(db.Project{ID: "old", Path: old, Name: "old", IndexedAt: time.Now().Add(-100 * 24 * time.Hour)})
+	store.UpsertProject(db.Project{ID: "old", Path: old, Name: "old", IndexedAt: time.Now().Add(-100 * 24 * time.Hour), EdgeCount: 1})
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{"active": false}))
 	if err != nil {
 		t.Fatalf("handleList: %v", err)
@@ -292,7 +297,7 @@ func TestHandleList_LimitCaps(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	for i := 0; i < 5; i++ {
 		dir := t.TempDir()
-		store.UpsertProject(db.Project{ID: fmt.Sprintf("p%d", i), Path: dir, Name: fmt.Sprintf("p%d", i), IndexedAt: time.Now()})
+		store.UpsertProject(db.Project{ID: fmt.Sprintf("p%d", i), Path: dir, Name: fmt.Sprintf("p%d", i), IndexedAt: time.Now(), EdgeCount: 1})
 	}
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{"limit": 2}))
 	if err != nil {
