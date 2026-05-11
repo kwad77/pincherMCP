@@ -504,6 +504,19 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 		case *ast.GenDecl:
 			syms := goGenDeclToSymbols(d, fset, source, lineOffsets, pkg)
 			result.Symbols = append(result.Symbols, syms...)
+			// #576: walk identifier references inside top-level
+			// var-decl initializer expressions so function values bound
+			// via composite literals (`var X = T{Field: fn}`) surface
+			// READS edges. The resolveReads binding pass (#565) then
+			// converts those whose target is a Function/Method into
+			// CALLS edges so dead_code stops false-flagging the bound
+			// function. Same shape as the in-body extractGoReads
+			// walker; uses fileModuleQN as the anchor since the
+			// reference lives at file scope, not in a function body.
+			if d.Tok == token.VAR || d.Tok == token.CONST {
+				edges := extractGoFileLevelReads(d, fileModuleQN)
+				result.Edges = append(result.Edges, edges...)
+			}
 		}
 	}
 
@@ -700,6 +713,58 @@ func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string) []Extrac
 // function reading or writing a package-level var. The READS / WRITES
 // split lets refactor planners ask the narrower question — who
 // modifies this vs who only observes it.
+// extractGoFileLevelReads emits READS edges for identifier references
+// inside a top-level GenDecl initializer. Mirrors extractGoReads but
+// operates on `*ast.GenDecl` (var/const blocks) rather than function
+// bodies.
+//
+// #576 motivation: the binding pass (#565) converts READS edges whose
+// target resolves to a Function/Method into low-confidence CALLS edges
+// so dead_code stops flagging the bound function. extractGoReads only
+// runs over `FuncDecl.Body`, so a function bound at file scope —
+// `var X = T{Field: fn}`, the canonical "registry of handlers" pattern
+// — was invisible. This walker plugs the gap.
+//
+// One edge per name (deduped) per declaration block. Confidence 0.5,
+// matching the in-body walker. Resolution drops anything not pointing
+// at a known Function/Method/Variable symbol, so type-name idents
+// inside the composite literal (`Target` in `var X = Target{...}`)
+// and short package-qualified refs are filtered out at resolve time.
+func extractGoFileLevelReads(d *ast.GenDecl, callerQN string) []ExtractedEdge {
+	if d == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var edges []ExtractedEdge
+	emit := func(name string) {
+		if isPredeclaredOrBlank(name) || seen[name] {
+			return
+		}
+		seen[name] = true
+		edges = append(edges, ExtractedEdge{
+			FromQN:     callerQN,
+			ToName:     name,
+			Kind:       "READS",
+			Confidence: 0.5,
+		})
+	}
+	for _, spec := range d.Specs {
+		vs, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		for _, val := range vs.Values {
+			ast.Inspect(val, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					emit(id.Name)
+				}
+				return true
+			})
+		}
+	}
+	return edges
+}
+
 func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
 	if body == nil {
 		return nil
