@@ -435,12 +435,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			appendDeferred := func(src []ast.ExtractedEdge) {
 				for _, e := range src {
 					fileDeferred = append(fileDeferred, db.PendingEdge{
-						ProjectID:  projectID,
-						FromFile:   relPath,
-						Kind:       e.Kind,
-						FromQN:     e.FromQN,
-						ToName:     e.ToName,
-						Confidence: e.Confidence,
+						ProjectID:    projectID,
+						FromFile:     relPath,
+						Kind:         e.Kind,
+						FromQN:       e.FromQN,
+						ToName:       e.ToName,
+						Confidence:   e.Confidence,
+						ReceiverType: e.ReceiverType,
 					})
 				}
 			}
@@ -449,6 +450,29 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			appendDeferred(deferredReads)
 			if err := idx.store.ReplacePendingEdgesForFile(projectID, relPath, fileDeferred); err != nil {
 				slog.Warn("pincher.pending_edges.replace.err", "file", relPath, "err", err)
+			}
+
+			// #423 piece 2: persist Go struct field maps so the resolver
+			// can follow recv.field.method calls. Mirrors the
+			// pending_edges per-file replace pattern. No-op for files
+			// that contain no Class symbols with a non-empty Fields map.
+			fileFields := make([]db.StructField, 0)
+			for _, sym := range result.Symbols {
+				if sym.Kind != "Class" || len(sym.Fields) == 0 {
+					continue
+				}
+				structID := db.MakeSymbolID(relPath, sym.QualifiedName, sym.Kind)
+				for fname, ftype := range sym.Fields {
+					fileFields = append(fileFields, db.StructField{
+						ProjectID: projectID,
+						StructID:  structID,
+						FieldName: fname,
+						FieldType: ftype,
+					})
+				}
+			}
+			if err := idx.store.ReplaceStructFieldsForFile(projectID, relPath, fileFields); err != nil {
+				slog.Warn("pincher.struct_fields.replace.err", "file", relPath, "err", err)
 			}
 
 			refreshCounts := false
