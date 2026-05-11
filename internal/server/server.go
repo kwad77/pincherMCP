@@ -1825,10 +1825,11 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Use `search` first to confirm the exact function name; ambiguous names fall back to the first match (use `changes` if you have an exact symbol ID instead). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim.",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim.",
 		InputSchema: json.RawMessage(`{
-			"type":"object","required":["name"],"properties":{
-				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder')"},
+			"type":"object","properties":{
+				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder'). When ambiguous, trace picks the first match and surfaces alternatives via _meta.ambiguous_match — pass id= instead to trace a specific alternative."},
+				"id":{"type":"string","description":"Exact symbol ID to trace (e.g. 'internal/db/db.go::db.Open#Function'). Use this when name resolution would be ambiguous, or when you already have the ID from search/symbols/query. Mutually exclusive with name (id wins). #474."},
 				"project":{"type":"string"},
 				"direction":{"type":"string","enum":["outbound","inbound","both"],"description":"outbound=what it calls, inbound=what calls it. Default: both"},
 				"depth":{"type":"integer","description":"BFS depth 1-5 (default 3)"},
@@ -3644,9 +3645,15 @@ func rowConfidence(row map[string]any) (float64, bool) {
 func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
+	// `id` is the exact-symbol escape hatch (#474): when the caller already
+	// has a symbol ID from search/symbols/query and wants to trace THAT
+	// specific symbol (not whatever the name resolver picks first), pass
+	// id= and skip the name lookup entirely. `name` remains supported for
+	// the common case where the caller is asking by identifier alone.
+	id := str(args, "id")
 	name := str(args, "name")
-	if name == "" {
-		return errResult("name is required"), nil
+	if id == "" && name == "" {
+		return errResult("either `id` or `name` is required"), nil
 	}
 	direction := str(args, "direction")
 	if direction == "" {
@@ -3695,27 +3702,43 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		return errRes, nil
 	}
 
-	// Resolve the start symbol explicitly so we can surface ambiguity in
-	// _meta — agents that hit a same-named symbol elsewhere (common: many
-	// `Run`, `Handler`, `Open` per project) need a hint to refine. Trace's
-	// own picks-first heuristic stays the same; this just makes the choice
-	// observable.
-	starts, err := s.store.GetSymbolsByName(projectID, name, 5)
-	if err != nil {
-		return errResult(fmt.Sprintf("trace lookup: %v", err)), nil
+	// Resolve the start symbol. Two paths:
+	//   - id=  : exact-symbol seed, no ambiguity, no GetSymbolsByName call.
+	//            #474 escape hatch when name resolution picks the wrong target.
+	//   - name=: keep the prior name-based behaviour — surface ambiguity in
+	//            _meta so agents who hit a same-named symbol elsewhere
+	//            (common: many `Run`, `Handler`, `Open` per project) know
+	//            they need to refine via the new `id` parameter.
+	var starts []db.Symbol
+	var seedID string
+	if id != "" {
+		seed, lookupErr := s.store.GetSymbol(id)
+		if lookupErr != nil || seed == nil {
+			return errResult(fmt.Sprintf("trace: symbol id %q not found", id)), nil
+		}
+		starts = []db.Symbol{*seed}
+		seedID = seed.ID
+		name = seed.Name
+	} else {
+		var err error
+		starts, err = s.store.GetSymbolsByName(projectID, name, 5)
+		if err != nil {
+			return errResult(fmt.Sprintf("trace lookup: %v", err)), nil
+		}
+		if len(starts) == 0 {
+			return errResult(fmt.Sprintf("symbol %q not found in project", name)), nil
+		}
+		// #319: rank candidates so the picked target is the most useful
+		// trace seed. Precedence:
+		//   1. Non-scratch, non-test files first (scratch_*.go, *_test.go)
+		//   2. Callable kinds first (Function, Method) — Modules/Settings
+		//      can match a name but they have no CALLS edges, so tracing
+		//      them returns 0 hops and looks like a real empty result.
+		//   3. Stable order from GetSymbolsByName for everything else.
+		sortTraceCandidates(starts)
+		seedID = starts[0].ID
 	}
-	if len(starts) == 0 {
-		return errResult(fmt.Sprintf("symbol %q not found in project", name)), nil
-	}
-	// #319: rank candidates so the picked target is the most useful
-	// trace seed. Precedence:
-	//   1. Non-scratch, non-test files first (scratch_*.go, *_test.go)
-	//   2. Callable kinds first (Function, Method) — Modules/Settings
-	//      can match a name but they have no CALLS edges, so tracing
-	//      them returns 0 hops and looks like a real empty result.
-	//   3. Stable order from GetSymbolsByName for everything else.
-	sortTraceCandidates(starts)
-	hops, err := s.indexer.TraceByID(ctx, projectID, starts[0].ID, direction, depth, addRisk, edgeKinds...)
+	hops, err := s.indexer.TraceByID(ctx, projectID, seedID, direction, depth, addRisk, edgeKinds...)
 	if err != nil {
 		return errResult(fmt.Sprintf("trace error: %v", err)), nil
 	}
@@ -3830,7 +3853,9 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// Surface name-ambiguity so the agent can refine instead of trusting
 	// the first-match heuristic silently. Records up to 5 alternative
 	// matches (the GetSymbolsByName cap) with enough info to disambiguate.
-	if len(starts) > 1 {
+	// Skipped when the caller pinned the seed via `id=` — there's no
+	// ambiguity to surface (#474).
+	if id == "" && len(starts) > 1 {
 		alts := make([]map[string]any, 0, len(starts))
 		for _, s := range starts {
 			alts = append(alts, map[string]any{
@@ -3840,10 +3865,16 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				"file_path":      s.FilePath,
 			})
 		}
+		// #474: hint references the real `id` parameter (just added to
+		// this tool) instead of the fictional `TraceByID` MCP tool.
+		altID := starts[0].ID
+		if len(starts) > 1 {
+			altID = starts[1].ID
+		}
 		meta["ambiguous_match"] = map[string]any{
-			"resolved_to": starts[0].ID,
+			"resolved_to":  starts[0].ID,
 			"alternatives": alts,
-			"hint":         fmt.Sprintf("name %q matched %d symbols; trace used the first (%s). Pass an exact ID via TraceByID, or call `search` with kind/language filters to narrow.", name, len(starts), starts[0].ID),
+			"hint":         fmt.Sprintf(`name %q matched %d symbols; trace used the first (%s). To trace a specific alternative, call trace again with id="%s" (or any other alternative id above). To narrow by name, call search with kind/language filters first.`, name, len(starts), starts[0].ID, altID),
 		}
 	}
 	// Suggest the obvious next move after a trace. The agent has the

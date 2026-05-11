@@ -5006,6 +5006,99 @@ func TestHandleTrace_AmbiguousNameSurfacesAlternatives(t *testing.T) {
 	}
 }
 
+// TestHandleTrace_IDArgSkipsNameAmbiguity pins #474: when the caller
+// pins the seed via `id=`, ambiguous_match must NOT be surfaced even
+// if the symbol's name is shared by other rows. The whole point of
+// `id` is "no, I want THIS one." Surfacing alternatives here would
+// re-introduce the noise the escape hatch was supposed to eliminate.
+func TestHandleTrace_IDArgSkipsNameAmbiguity(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "ptr-id"
+	store.UpsertProject(db.Project{ID: "ptr-id", Path: "/tmp/ptr-id", Name: "ptr-id", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "ptr-id/a.go::pkg.a.Open#Function", ProjectID: "ptr-id",
+			FilePath: "a.go", Name: "Open", QualifiedName: "pkg.a.Open",
+			Kind: "Function", Language: "Go"},
+		{ID: "ptr-id/b.go::pkg.b.Open#Function", ProjectID: "ptr-id",
+			FilePath: "b.go", Name: "Open", QualifiedName: "pkg.b.Open",
+			Kind: "Function", Language: "Go"},
+	})
+
+	// Pass id= explicitly — should bypass name resolution and trace
+	// only the requested symbol, with no ambiguous_match meta.
+	result, err := srv.handleTrace(context.Background(), makeReq(map[string]any{
+		"id":      "ptr-id/b.go::pkg.b.Open#Function",
+		"project": "ptr-id",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("handleTrace: err=%v isErr=%v body=%v", err, result.IsError, decode(t, result))
+	}
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing")
+	}
+	if _, present := meta["ambiguous_match"]; present {
+		t.Error("ambiguous_match must be ABSENT when id= was passed (#474 escape hatch)")
+	}
+}
+
+// TestHandleTrace_IDArgUnknownReturnsError pins the error path for a
+// nonexistent symbol id — caller mistyped or stale. Better to return a
+// specific "id not found" message than silently fall back to name.
+func TestHandleTrace_IDArgUnknownReturnsError(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "ptr-bad"
+	store.UpsertProject(db.Project{ID: "ptr-bad", Path: "/tmp/ptr-bad", Name: "ptr-bad", IndexedAt: time.Now()})
+
+	result, err := srv.handleTrace(context.Background(), makeReq(map[string]any{
+		"id":      "doesnotexist::nope.Func#Function",
+		"project": "ptr-bad",
+	}))
+	if err != nil {
+		t.Fatalf("handleTrace err: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("want IsError=true for unknown id, got %v", decode(t, result))
+	}
+}
+
+// TestHandleTrace_AmbiguousHintReferencesIDParam pins the hint text
+// fix (#474). The old hint pointed at TraceByID which is an internal
+// Go method, not an MCP tool. The new hint must reference the real
+// `id` parameter on this tool and give a concrete next-call example.
+func TestHandleTrace_AmbiguousHintReferencesIDParam(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "ptr-hint"
+	store.UpsertProject(db.Project{ID: "ptr-hint", Path: "/tmp/ptr-hint", Name: "ptr-hint", IndexedAt: time.Now()})
+	store.BulkUpsertSymbols([]db.Symbol{
+		{ID: "ptr-hint/a.go::pkg.a.Run#Function", ProjectID: "ptr-hint",
+			FilePath: "a.go", Name: "Run", QualifiedName: "pkg.a.Run",
+			Kind: "Function", Language: "Go"},
+		{ID: "ptr-hint/b.go::pkg.b.Run#Function", ProjectID: "ptr-hint",
+			FilePath: "b.go", Name: "Run", QualifiedName: "pkg.b.Run",
+			Kind: "Function", Language: "Go"},
+	})
+
+	result, _ := srv.handleTrace(context.Background(), makeReq(map[string]any{
+		"name":    "Run",
+		"project": "ptr-hint",
+	}))
+	m := decode(t, result)
+	meta, _ := m["_meta"].(map[string]any)
+	amb, _ := meta["ambiguous_match"].(map[string]any)
+	if amb == nil {
+		t.Fatal("ambiguous_match missing")
+	}
+	hint, _ := amb["hint"].(string)
+	if strings.Contains(hint, "TraceByID") {
+		t.Errorf("hint must NOT reference TraceByID (fictional tool, #474):\n%s", hint)
+	}
+	if !strings.Contains(hint, `id="`) {
+		t.Errorf("hint must show a concrete `id=\"...\"` next call (#474):\n%s", hint)
+	}
+}
+
 func TestHandleTrace_UniqueNameNoAmbiguityField(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ptr-uniq"
