@@ -7,6 +7,20 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- **`guide` recognises structural-audit tasks and routes them to
+  pinchQL `query` instead of BM25 search
+  ([#467](https://github.com/kwad77/pincher/issues/467)).** Tasks like
+  "find an undocumented exported function" used to receive a generic
+  `search query="undocumented exported"` recommendation — which
+  matches nothing useful in BM25 because the user is asking about the
+  *absence* of a docstring, not the literal phrase. A new `shapeAudit`
+  intent catches "undocumented", "no docstring", "missing comment",
+  etc., and recommends the canonical query: `MATCH (n:Function) WHERE
+  n.docstring IS NULL AND n.is_exported=true RETURN ...`. Builds on
+  #438 (which exposed the docstring/is_exported properties to
+  pinchQL).
+
 ### Fixed
 - **`trace` and `architecture` attributed every `.String()` (and other
   polymorphic-interface) call in the project to the single local
