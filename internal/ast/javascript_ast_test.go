@@ -253,3 +253,206 @@ func TestJSAST_SignatureIsSingleLineBounded(t *testing.T) {
 		t.Errorf("signature should contain the declaration; got %q", sig)
 	}
 }
+
+// `export function`, `export class`, `export const` should each emit
+// the underlying decl (covers all three branches of emitExport).
+func TestJSAST_ExportStatementsEmitInnerDecl(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`export function namedFn() {}
+export class NamedClass {
+    method() {}
+}
+export const namedConst = 42;
+`)
+	r, ok := extractJavaScriptAST(src, "exports.js")
+	if !ok {
+		t.Fatal("expected AST parse to succeed")
+	}
+	got := map[string]string{}
+	for _, s := range r.Symbols {
+		got[s.Name] = s.Kind
+	}
+	if got["namedFn"] != "Function" {
+		t.Errorf("export function: got kind=%q, want Function; full=%v", got["namedFn"], got)
+	}
+	if got["NamedClass"] != "Class" {
+		t.Errorf("export class: got kind=%q, want Class; full=%v", got["NamedClass"], got)
+	}
+	if got["method"] != "Method" {
+		t.Errorf("class method via export: got kind=%q, want Method; full=%v", got["method"], got)
+	}
+	if got["namedConst"] != "Variable" {
+		t.Errorf("export const: got kind=%q, want Variable; full=%v", got["namedConst"], got)
+	}
+}
+
+// findStatementEnd must honour string and template-literal boundaries —
+// `;` inside a quoted/backticked string must not terminate the statement.
+// Pin behaviour by extracting Variables whose initialisers embed `;`.
+func TestJSAST_VarInitWithEmbeddedSemicolonInString(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`const greeting = "hello; world";
+const template = ` + "`" + `tpl ${1 + 2}; tail` + "`" + `;
+const escaped = 'has \';\' inside';
+`)
+	r, ok := extractJavaScriptAST(src, "vars.js")
+	if !ok {
+		t.Fatalf("expected AST parse to succeed; src=%s", src)
+	}
+	got := map[string]bool{}
+	for _, s := range r.Symbols {
+		if s.Kind == "Variable" {
+			got[s.Name] = true
+		}
+	}
+	for _, name := range []string{"greeting", "template", "escaped"} {
+		if !got[name] {
+			t.Errorf("Variable %q not emitted (string/template/escape boundary skipped?); got: %+v", name, r.Symbols)
+		}
+	}
+}
+
+// findStatementEnd handles line and block comments without losing track
+// of statement boundaries.
+func TestJSAST_VarInitWithEmbeddedComments(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`const x = 1; // line comment with ; inside
+const y = 2 /* block ; comment */ + 3;
+`)
+	r, ok := extractJavaScriptAST(src, "vars.js")
+	if !ok {
+		t.Fatal("expected parse")
+	}
+	got := map[string]bool{}
+	for _, s := range r.Symbols {
+		got[s.Name] = true
+	}
+	for _, name := range []string{"x", "y"} {
+		if !got[name] {
+			t.Errorf("Variable %q missing; got %+v", name, r.Symbols)
+		}
+	}
+}
+
+// propertyNameToString filters out string-literal and computed property
+// names so we don't emit `Method "'string-name'"` or `Method "[expr]"`.
+func TestJSAST_StringLiteralPropertyNamesSkipped(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`class C {
+    'string-name'() {}
+    realMethod() {}
+}
+`)
+	r, ok := extractJavaScriptAST(src, "x.js")
+	if !ok {
+		t.Fatal("expected parse")
+	}
+	for _, s := range r.Symbols {
+		if s.Kind != "Method" {
+			continue
+		}
+		if strings.HasPrefix(s.Name, "'") || strings.HasPrefix(s.Name, `"`) ||
+			strings.HasPrefix(s.Name, "`") || strings.HasPrefix(s.Name, "[") {
+			t.Errorf("string/computed property name should be skipped; got %q", s.Name)
+		}
+	}
+}
+
+// unquoteJSString handles single, double, and backtick quotes; returns
+// "" when input isn't quoted (defensive against caller misuse).
+func TestUnquoteJSString_AllQuoteStyles(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{`"double"`, "double"},
+		{`'single'`, "single"},
+		{"`backtick`", "backtick"},
+		{`unquoted`, ""},
+		{`""`, ""},
+		{`"`, ""},
+		{``, ""},
+		{`"mismatched'`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := unquoteJSString([]byte(c.in)); got != c.want {
+				t.Errorf("unquoteJSString(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// Vue-style nested object methods: { methods: { foo() {}, bar() {} } }
+// — exercises the recursive descent in walkExprForObjectMethods +
+// emitObjectProperty's recursion into non-function property values.
+func TestJSAST_NestedObjectMethodsExtracted(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`Vue.component('x', {
+    methods: {
+        clickHandler() { return 1; },
+        submitHandler: function () { return 2; }
+    }
+});
+`)
+	r, ok := extractJavaScriptAST(src, "vue.js")
+	if !ok {
+		t.Fatal("expected parse")
+	}
+	got := map[string]bool{}
+	for _, s := range r.Symbols {
+		if s.Kind == "Method" {
+			got[s.Name] = true
+		}
+	}
+	for _, name := range []string{"clickHandler", "submitHandler"} {
+		if !got[name] {
+			t.Errorf("expected nested Method %q; got symbols=%+v", name, r.Symbols)
+		}
+	}
+}
+
+// Destructuring binders (`const { a, b } = obj`) must produce no
+// symbols — bindingName returns "" for non-Var bindings. Pin the
+// silent skip so a future refactor doesn't accidentally start emitting
+// empty-name symbols.
+func TestJSAST_DestructuringBindingProducesNoSymbol(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`const { a, b } = obj;
+const realName = 5;
+`)
+	r, ok := extractJavaScriptAST(src, "x.js")
+	if !ok {
+		t.Fatal("expected parse")
+	}
+	for _, s := range r.Symbols {
+		if s.Name == "" || s.Name == "a" || s.Name == "b" {
+			t.Errorf("destructuring binders should be skipped; got name=%q", s.Name)
+		}
+	}
+	gotReal := false
+	for _, s := range r.Symbols {
+		if s.Name == "realName" {
+			gotReal = true
+		}
+	}
+	if !gotReal {
+		t.Error("realName should still extract alongside the skipped destructuring")
+	}
+}
+
+// Anonymous function/class declarations (no Name) hit the early-return
+// branches of emitFunc and emitClass. Pin that no symbol leaks.
+func TestJSAST_AnonymousDefaultExportsAreSkipped(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte(`export default function () { return 1; }
+`)
+	r, ok := extractJavaScriptAST(src, "x.js")
+	if !ok {
+		t.Fatal("expected parse")
+	}
+	for _, s := range r.Symbols {
+		if s.Kind == "Function" {
+			t.Errorf("anonymous default-export function leaked through guard; got %+v", s)
+		}
+	}
+}

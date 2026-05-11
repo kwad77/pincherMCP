@@ -190,42 +190,57 @@ func (w *jsASTWalker) walkExprForObjectMethods(expr js.IExpr, parent string, dep
 }
 
 // emitObjectProperty emits a Method symbol for a Property whose value
-// is a function-like declaration. Three cases (in JS frequency order):
-//   - shorthand `{ name() {…} }` → Property.Value is *MethodDecl
-//   - explicit `{ name: function () {…} }` → Value is *FuncDecl
-//   - other Value types (objects, arrays, primitives) — recurse looking
-//     for nested object methods (e.g. Vue's methods: { … })
+// is a function-like declaration. Two name sources, depending on which
+// JS object-method form was used:
+//
+//   - **shorthand** `{ name() {…} }` — Property.Name is nil; the name
+//     lives on Property.Value (a *MethodDecl whose Name field carries
+//     the PropertyName). This is the modern ES6+ form.
+//   - **explicit** `{ name: function () {…} }` — Property.Name carries
+//     the PropertyName; Value is a *FuncDecl. Older but still common
+//     in framework code (LuCI's view.extend, jQuery plugins, AMD).
+//
+// For non-function Value types (nested objects, arrays, primitives),
+// recurse to keep walking — Vue's `methods: { … }` and similar nested
+// patterns surface their methods this way.
 func (w *jsASTWalker) emitObjectProperty(p js.Property, parent string, depth int) {
-	if p.Name == nil {
-		// Always recurse so nested objects like { methods: { … } } get walked.
-		w.walkExprForObjectMethods(p.Value, parent, depth)
-		return
-	}
-	name := propertyNameToString(*p.Name)
-	if name == "" {
-		w.walkExprForObjectMethods(p.Value, parent, depth)
-		return
-	}
-	switch p.Value.(type) {
-	case *js.MethodDecl, *js.FuncDecl:
-		sb, eb, ok := w.locateObjectMember(name)
-		if !ok {
-			return
+	var name string
+	switch v := p.Value.(type) {
+	case *js.MethodDecl:
+		// Shorthand: name is on the method, Property.Name is nil.
+		if v != nil {
+			name = propertyNameToString(v.Name.PropertyName)
 		}
-		w.appendSymbol(ExtractedSymbol{
-			Name:          name,
-			QualifiedName: parent + "." + name,
-			Kind:          "Method",
-			Parent:        parent,
-			StartByte:     sb, EndByte: eb,
-			StartLine: offsetToLine(w.lineOffsets, sb),
-			EndLine:   offsetToLine(w.lineOffsets, eb),
-			Signature: w.signatureFromSource(sb),
-		})
+	case *js.FuncDecl:
+		// Explicit `name: function () {…}`: name is on Property.Name.
+		if p.Name != nil {
+			name = propertyNameToString(*p.Name)
+		}
+	default:
+		// Not a function-shaped value. Always recurse so nested objects
+		// like Vue's `methods: { … }` keep getting walked.
+		w.walkExprForObjectMethods(p.Value, parent, depth)
 		return
 	}
-	// Non-function value — recurse for nested object methods.
-	w.walkExprForObjectMethods(p.Value, parent, depth)
+	if name == "" {
+		// Function-shaped value but couldn't resolve a name (computed
+		// or string-literal property name) — skip silently.
+		return
+	}
+	sb, eb, ok := w.locateObjectMember(name)
+	if !ok {
+		return
+	}
+	w.appendSymbol(ExtractedSymbol{
+		Name:          name,
+		QualifiedName: parent + "." + name,
+		Kind:          "Method",
+		Parent:        parent,
+		StartByte:     sb, EndByte: eb,
+		StartLine: offsetToLine(w.lineOffsets, sb),
+		EndLine:   offsetToLine(w.lineOffsets, eb),
+		Signature: w.signatureFromSource(sb),
+	})
 }
 
 // locateObjectMember finds `NAME(` or `NAME: function` past the cursor.
