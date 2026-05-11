@@ -2002,6 +2002,156 @@ func TestRunGitDiff_IncludesUntrackedForUnstagedAndAll(t *testing.T) {
 	}
 }
 
+// TestRunGitDiff_BaseBranchScope: scope=base:<branch> reports the
+// committed-only diff vs the branch's merge-base. Pre-PR blast-radius
+// preview: agent can ask "what does this branch introduce" without
+// opening the PR first.
+func TestRunGitDiff_BaseBranchScope(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	gitDo := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitDo("init", "-b", "main")
+	gitDo("config", "user.email", "t@t")
+	gitDo("config", "user.name", "t")
+
+	// Seed an initial commit on main with one file.
+	if err := os.WriteFile(dir+"/base.txt", []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDo("add", "base.txt")
+	gitDo("commit", "-m", "base")
+
+	// Branch off and add two new files in two commits.
+	gitDo("checkout", "-b", "feature")
+	if err := os.WriteFile(dir+"/feat-1.txt", []byte("feat 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDo("add", "feat-1.txt")
+	gitDo("commit", "-m", "feat 1")
+	if err := os.WriteFile(dir+"/feat-2.txt", []byte("feat 2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDo("add", "feat-2.txt")
+	gitDo("commit", "-m", "feat 2")
+
+	// Add an unrelated commit on main so merge-base behaviour is
+	// distinguishable from "diff vs branch tip".
+	gitDo("checkout", "main")
+	if err := os.WriteFile(dir+"/main-only.txt", []byte("main only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDo("add", "main-only.txt")
+	gitDo("commit", "-m", "main only")
+	gitDo("checkout", "feature")
+
+	// Add an uncommitted modification on feature — base:<branch>
+	// must IGNORE it (committed-only diff is the contract).
+	if err := os.WriteFile(dir+"/feat-1.txt", []byte("feat 1 modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runGitDiff(dir, "base:main")
+	if err != nil {
+		t.Fatalf("runGitDiff base:main: %v", err)
+	}
+	files := parseGitDiffFiles(out)
+	has := func(name string) bool {
+		for _, f := range files {
+			if f == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("feat-1.txt") {
+		t.Errorf("expected feat-1.txt in base:main diff; got %v", files)
+	}
+	if !has("feat-2.txt") {
+		t.Errorf("expected feat-2.txt in base:main diff; got %v", files)
+	}
+	if has("main-only.txt") {
+		t.Errorf("main-only.txt should NOT appear (it's on main, not feature); got %v", files)
+	}
+	// Three-dot semantics: base.txt is unchanged on the feature branch
+	// vs merge-base, so it must NOT appear.
+	if has("base.txt") {
+		t.Errorf("base.txt unchanged on feature branch; should not appear; got %v", files)
+	}
+}
+
+// base:<branch> with a non-existent branch returns a clear error
+// rather than shelling out and producing an opaque git failure.
+func TestRunGitDiff_BaseBranchNotFound(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	gitDo := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitDo("init", "-b", "main")
+	gitDo("config", "user.email", "t@t")
+	gitDo("config", "user.name", "t")
+	gitDo("commit", "--allow-empty", "-m", "init")
+
+	_, err := runGitDiff(dir, "base:does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for missing branch")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+// validateGitRefName rejects flag-injection-shaped and range-shaped
+// names before they reach the git subprocess.
+func TestValidateGitRefName(t *testing.T) {
+	cases := []struct {
+		name     string
+		want_err bool
+	}{
+		// Allowed.
+		{"main", false},
+		{"master", false},
+		{"feature/foo", false},
+		{"v1.2.3", false},
+		{"release-2026-05", false},
+		{"HEAD", false},
+		{"HEAD@{1}", false}, // reflog ref
+		{"refs/heads/main", false},
+		// Rejected.
+		{"", true},
+		{"-flag", true},                   // looks like a flag
+		{"-rf", true},                     // shell-flavoured paranoia
+		{"main..feature", true},           // range, not a single ref
+		{"name with spaces", true},        // space disallowed
+		{"main;rm -rf /", true},           // shell metachar
+		{"branch$(whoami)", true},         // command substitution shape
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateGitRefName(c.name)
+			if (err != nil) != c.want_err {
+				t.Errorf("validateGitRefName(%q) error=%v want_err=%v", c.name, err, c.want_err)
+			}
+		})
+	}
+}
+
 func TestParseGitDiffFiles_Basic(t *testing.T) {
 	diff := "internal/server/server.go\ninternal/db/db.go\n"
 	files := parseGitDiffFiles(diff)

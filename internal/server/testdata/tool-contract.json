@@ -49,7 +49,7 @@
   },
   {
     "name": "changes",
-    "description": "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / a branch name.",
+    "description": "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / `base:\u003cbranch\u003e` (committed-only diff vs \u003cbranch\u003e's merge-base — use this to preview a PR's blast radius before opening it).",
     "input_schema": {
       "properties": {
         "depth": {
@@ -60,12 +60,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Which diff to analyse (default: unstaged)",
-          "enum": [
-            "unstaged",
-            "staged",
-            "all"
-          ],
+          "description": "Which diff to analyse: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:\u003cbranch\u003e' (committed diff vs merge-base of \u003cbranch\u003e, e.g. 'base:master' for pre-PR blast radius)",
           "type": "string"
         }
       },
