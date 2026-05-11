@@ -102,6 +102,80 @@ func TestDeleteSymbolsForFile_CascadesStructFields(t *testing.T) {
 	}
 }
 
+// #493: interface_methods table — same per-file replace pattern as
+// struct_fields. Tests round-trip + cascade-on-delete + empty-list
+// no-op.
+
+func TestReplaceInterfaceMethodsForFile_InsertThenReplace(t *testing.T) {
+	s := newTestStore(t)
+	pid := "proj1"
+	_ = s.UpsertProject(testProject(pid))
+	_ = s.BulkUpsertSymbols([]Symbol{
+		{ID: MakeSymbolID("eval.go", "p.whereExpr", "Interface"), ProjectID: pid, FilePath: "eval.go", Name: "whereExpr", QualifiedName: "p.whereExpr", Kind: "Interface", Language: "Go"},
+	})
+
+	initial := []InterfaceMethod{
+		{ProjectID: pid, InterfaceID: MakeSymbolID("eval.go", "p.whereExpr", "Interface"), MethodName: "eval"},
+		{ProjectID: pid, InterfaceID: MakeSymbolID("eval.go", "p.whereExpr", "Interface"), MethodName: "stringify"},
+	}
+	if err := s.ReplaceInterfaceMethodsForFile(pid, "eval.go", initial); err != nil {
+		t.Fatalf("first replace: %v", err)
+	}
+	got, _ := s.LoadInterfaceMethods(pid)
+	if len(got) != 2 {
+		t.Fatalf("len after insert = %d, want 2", len(got))
+	}
+
+	replacement := []InterfaceMethod{
+		{ProjectID: pid, InterfaceID: MakeSymbolID("eval.go", "p.whereExpr", "Interface"), MethodName: "compile"},
+	}
+	if err := s.ReplaceInterfaceMethodsForFile(pid, "eval.go", replacement); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	got, _ = s.LoadInterfaceMethods(pid)
+	if len(got) != 1 || got[0].MethodName != "compile" {
+		t.Errorf("after replace: got %v, want one row with MethodName=compile", got)
+	}
+}
+
+func TestReplaceInterfaceMethodsForFile_EmptyDeletesOnly(t *testing.T) {
+	s := newTestStore(t)
+	pid := "proj1"
+	_ = s.UpsertProject(testProject(pid))
+	_ = s.BulkUpsertSymbols([]Symbol{
+		{ID: MakeSymbolID("i.go", "p.I", "Interface"), ProjectID: pid, FilePath: "i.go", Name: "I", QualifiedName: "p.I", Kind: "Interface", Language: "Go"},
+	})
+	_ = s.ReplaceInterfaceMethodsForFile(pid, "i.go", []InterfaceMethod{
+		{ProjectID: pid, InterfaceID: MakeSymbolID("i.go", "p.I", "Interface"), MethodName: "M"},
+	})
+	if err := s.ReplaceInterfaceMethodsForFile(pid, "i.go", nil); err != nil {
+		t.Fatalf("replace empty: %v", err)
+	}
+	got, _ := s.LoadInterfaceMethods(pid)
+	if len(got) != 0 {
+		t.Errorf("after empty replace, len = %d, want 0", len(got))
+	}
+}
+
+func TestDeleteSymbolsForFile_CascadesInterfaceMethods(t *testing.T) {
+	s := newTestStore(t)
+	pid := "proj1"
+	_ = s.UpsertProject(testProject(pid))
+	_ = s.BulkUpsertSymbols([]Symbol{
+		{ID: MakeSymbolID("i.go", "p.I", "Interface"), ProjectID: pid, FilePath: "i.go", Name: "I", QualifiedName: "p.I", Kind: "Interface", Language: "Go"},
+	})
+	_ = s.ReplaceInterfaceMethodsForFile(pid, "i.go", []InterfaceMethod{
+		{ProjectID: pid, InterfaceID: MakeSymbolID("i.go", "p.I", "Interface"), MethodName: "M"},
+	})
+	if err := s.DeleteSymbolsForFile(pid, "i.go"); err != nil {
+		t.Fatalf("DeleteSymbolsForFile: %v", err)
+	}
+	got, _ := s.LoadInterfaceMethods(pid)
+	if len(got) != 0 {
+		t.Errorf("cascade missed: len = %d, want 0", len(got))
+	}
+}
+
 func TestPendingEdges_ReceiverTypeRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	pid := "proj1"

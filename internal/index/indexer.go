@@ -475,6 +475,28 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 				slog.Warn("pincher.struct_fields.replace.err", "file", relPath, "err", err)
 			}
 
+			// #493: persist Go interface method-name sets so dead_code
+			// can mark project-internal methods that satisfy an
+			// interface as not-dead. Same per-file replace pattern as
+			// struct_fields. No-op for files with no Interface symbols.
+			fileMethods := make([]db.InterfaceMethod, 0)
+			for _, sym := range result.Symbols {
+				if sym.Kind != "Interface" || len(sym.InterfaceMethods) == 0 {
+					continue
+				}
+				ifaceID := db.MakeSymbolID(relPath, sym.QualifiedName, sym.Kind)
+				for _, mname := range sym.InterfaceMethods {
+					fileMethods = append(fileMethods, db.InterfaceMethod{
+						ProjectID:   projectID,
+						InterfaceID: ifaceID,
+						MethodName:  mname,
+					})
+				}
+			}
+			if err := idx.store.ReplaceInterfaceMethodsForFile(projectID, relPath, fileMethods); err != nil {
+				slog.Warn("pincher.interface_methods.replace.err", "file", relPath, "err", err)
+			}
+
 			refreshCounts := false
 			bufMu.Lock()
 			symBuf = append(symBuf, syms...)

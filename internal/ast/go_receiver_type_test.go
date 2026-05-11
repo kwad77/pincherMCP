@@ -211,6 +211,62 @@ func other() {}`
 	}
 }
 
+// #493: ExtractedSymbol.InterfaceMethods is populated for Interface
+// symbols and only Interface symbols; embedded interfaces, blank
+// names, and non-method elements are skipped.
+func TestExtractGoInterfaceMethods_BasicAndEmbedded(t *testing.T) {
+	src := `package p
+type I interface {
+	io.Reader
+	Eval(row map[string]any) bool
+	Stringify() string
+}
+type Empty interface{}
+type Struct struct{ x int }`
+	result := Extract([]byte(src), "Go", "p/p.go")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	var iSym, emptySym, structSym *ExtractedSymbol
+	for i := range result.Symbols {
+		switch result.Symbols[i].Name {
+		case "I":
+			iSym = &result.Symbols[i]
+		case "Empty":
+			emptySym = &result.Symbols[i]
+		case "Struct":
+			structSym = &result.Symbols[i]
+		}
+	}
+	if iSym == nil || emptySym == nil || structSym == nil {
+		t.Fatalf("missing one of I / Empty / Struct symbols")
+	}
+	if iSym.Kind != "Interface" {
+		t.Errorf("I.Kind = %q, want Interface", iSym.Kind)
+	}
+	if got, want := iSym.InterfaceMethods, []string{"Eval", "Stringify"}; !equalStringSlice(got, want) {
+		t.Errorf("I.InterfaceMethods = %v, want %v (embedded io.Reader must be skipped)", got, want)
+	}
+	if emptySym.InterfaceMethods != nil {
+		t.Errorf("Empty.InterfaceMethods = %v, want nil for empty interface", emptySym.InterfaceMethods)
+	}
+	if structSym.InterfaceMethods != nil {
+		t.Errorf("Struct.InterfaceMethods = %v, want nil (not an interface)", structSym.InterfaceMethods)
+	}
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestExtractGoCalls_ValueReceiverNotPointer covers the value-
 // receiver case so the resolver gets the bare type name (no leading
 // `*`) when source code wrote a value receiver.

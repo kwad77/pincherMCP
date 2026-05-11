@@ -1013,6 +1013,25 @@ END;`,
 		PRIMARY KEY (project_id, struct_id, field_name)
 	);
 	CREATE INDEX IF NOT EXISTS idx_struct_fields_proj_name ON struct_fields(project_id, field_name);`,
+
+	// v22 → v23: interface_methods table — interface method names
+	// per Interface symbol (#493). The dead_code query joins
+	// against this table to exclude project-internal methods whose
+	// name matches any interface method name in the same project.
+	// Cheap heuristic: name-match only, no full method-set
+	// comparison. Trade-off: over-includes (a Method named String
+	// gets spared even if no real interface uses it) — but the
+	// dead_code direction prefers false-negatives (miss a dead
+	// method) over false-positives (suggest deletion of a method
+	// that's actually called via interface dispatch and would
+	// silently break runtime).
+	`CREATE TABLE IF NOT EXISTS interface_methods (
+		project_id   TEXT NOT NULL,
+		interface_id TEXT NOT NULL,
+		method_name  TEXT NOT NULL,
+		PRIMARY KEY (project_id, interface_id, method_name)
+	);
+	CREATE INDEX IF NOT EXISTS idx_iface_methods_proj_name ON interface_methods(project_id, method_name);`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -2254,6 +2273,12 @@ func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
 			if _, err := tx.Exec(`DELETE FROM struct_fields WHERE project_id=? AND struct_id=?`, projectID, id); err != nil {
 				return err
 			}
+			// #493: cascade-delete interface_methods rows whose
+			// interface_id matches a deleted symbol. Same rationale
+			// as struct_fields — no orphans across re-extractions.
+			if _, err := tx.Exec(`DELETE FROM interface_methods WHERE project_id=? AND interface_id=?`, projectID, id); err != nil {
+				return err
+			}
 		}
 		_, err = tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
 		return err
@@ -2398,6 +2423,22 @@ func (s *Store) GetDeadCode(projectID string, kinds []string, language string, m
 		      SELECT 1 FROM edges e
 		      WHERE e.project_id = s.project_id
 		        AND e.to_id = s.id
+		  )
+		  -- #493: exclude Methods whose name matches any interface
+		  -- method declared in the same project. Cheap heuristic
+		  -- avoids the false-positive class where the only caller
+		  -- goes through interface dispatch (invisible to the static
+		  -- call graph). Over-includes — a Method named String gets
+		  -- spared even if no interface in the project references it.
+		  -- That direction is safer: dead_code suggesting deletion of
+		  -- a method actually called via interface dispatch breaks
+		  -- runtime silently.
+		  AND NOT (
+		      s.kind = 'Method' AND EXISTS (
+		          SELECT 1 FROM interface_methods im
+		          WHERE im.project_id = s.project_id
+		            AND im.method_name = s.name
+		      )
 		  )`
 	args := []any{projectID, minConfidence}
 	for _, k := range kinds {
@@ -2712,6 +2753,76 @@ func (s *Store) LoadStructFields(projectID string) ([]StructField, error) {
 			return nil, err
 		}
 		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// InterfaceMethod is one row of the v23 interface_methods table —
+// the dead_code interface-reachability lookup target (#493). For
+// each Go interface symbol the indexer writes one row per declared
+// method name. The dead_code query joins against this table to
+// exclude project-internal methods whose name matches any
+// interface method name.
+type InterfaceMethod struct {
+	ProjectID   string
+	InterfaceID string // db.MakeSymbolID for the Interface symbol
+	MethodName  string
+}
+
+// ReplaceInterfaceMethodsForFile mirrors ReplaceStructFieldsForFile.
+// Atomically delete every interface_methods row for symbols in
+// (project_id, file_path) then INSERT the freshly extracted set.
+// Writer-routed.
+func (s *Store) ReplaceInterfaceMethodsForFile(projectID, filePath string, methods []InterfaceMethod) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`DELETE FROM interface_methods
+			   WHERE project_id=? AND interface_id IN (
+			     SELECT id FROM symbols WHERE project_id=? AND file_path=?
+			   )`,
+			projectID, projectID, filePath,
+		); err != nil {
+			return err
+		}
+		if len(methods) == 0 {
+			return nil
+		}
+		stmt, err := tx.Prepare(
+			`INSERT OR REPLACE INTO interface_methods(project_id, interface_id, method_name)
+			 VALUES (?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for i := range methods {
+			m := &methods[i]
+			if _, err := stmt.Exec(projectID, m.InterfaceID, m.MethodName); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// LoadInterfaceMethods returns every interface_methods row for the
+// project. The dead_code query uses it directly via SQL JOIN; this
+// reader is here for tests + future heuristics. Reader-routed.
+func (s *Store) LoadInterfaceMethods(projectID string) ([]InterfaceMethod, error) {
+	rows, err := s.ro.Query(
+		`SELECT project_id, interface_id, method_name
+		 FROM interface_methods WHERE project_id=?`,
+		projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InterfaceMethod
+	for rows.Next() {
+		var m InterfaceMethod
+		if err := rows.Scan(&m.ProjectID, &m.InterfaceID, &m.MethodName); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }
