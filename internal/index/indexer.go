@@ -389,6 +389,11 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			deferredCalls := make([]ast.ExtractedEdge, 0)
 			deferredReads := make([]ast.ExtractedEdge, 0)
 			for _, e := range result.Edges {
+				// Stamp the source file before deferral so the resolver
+				// can disambiguate FromQN against project-wide name
+				// collisions (#487). Extractors leave FromFile empty;
+				// indexer fills it here.
+				e.FromFile = relPath
 				if e.Kind == "IMPORTS" {
 					deferredImports = append(deferredImports, e)
 					continue
@@ -1191,6 +1196,7 @@ func loadOrFallback(idx *Indexer, projectID, kind string, fallback []ast.Extract
 			FromQN:     r.FromQN,
 			ToName:     r.ToName,
 			Kind:       r.Kind,
+			FromFile:   r.FromFile,
 			Confidence: r.Confidence,
 		})
 	}
@@ -1371,6 +1377,34 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		qnCache[qn] = canonical
 		return canonical
 	}
+	// lookupFromQN disambiguates FromQN by FromFile when known
+	// (#487). Multiple `package main` directories in one project
+	// produce N symbols sharing QN `main.main`; pickCanonical alone
+	// would attribute every deferred edge to the lex-smallest path.
+	// Prefer the symbol whose file_path matches FromFile (the file
+	// that produced the deferred candidate); fall back to project-
+	// wide pickCanonical when FromFile is empty (older candidates
+	// without the field) or doesn't match any symbol's path. Not
+	// cached because FromFile makes the key (qn, fromFile) — the
+	// project-wide QN lookup IS cached above.
+	lookupFromQN := func(qn, fromFile string) string {
+		if qn == "" {
+			return ""
+		}
+		if fromFile == "" {
+			return lookupQN(qn)
+		}
+		syms, err := idx.store.GetSymbolsByQN(projectID, qn)
+		if err != nil || len(syms) == 0 {
+			return ""
+		}
+		for _, s := range syms {
+			if s.FilePath == fromFile {
+				return s.ID
+			}
+		}
+		return pickCanonical(syms)
+	}
 
 	// methodCache: receiver-method fallback lookups (#285). Empty
 	// string means "tried, no unique match" so we don't re-query.
@@ -1401,7 +1435,7 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
 	for _, e := range pending {
-		fromID := lookupQN(e.FromQN)
+		fromID := lookupFromQN(e.FromQN, e.FromFile)
 		if fromID == "" && !strings.Contains(e.FromQN, ".") {
 			fromID = lookupName(e.FromQN)
 		}
