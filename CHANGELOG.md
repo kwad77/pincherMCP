@@ -7,33 +7,83 @@ minors.
 
 ## [Unreleased]
 
-## [v0.15.4] — 2026-05-11 — pinchQL bool column coercion
+## [v0.15.5] — 2026-05-11 — indexer cross-language scoping
 
-Patch — closes the bool/int coercion gap. Sibling fix to #412 (id),
-#430 (OR), #434 (comparison) — same family of "WHERE silently
-returns 0 because the SQL pushdown gate or the in-Go evaluator
-disagreed about how to compare values".
+Patch — closes the cross-language false-positive class in the
+indexer. Same root-cause family as #410 (stdlib receiver), but
+upstream of the resolver: name lookups themselves were
+language-blind.
+
+### Fixed
+- **`READS` / `WRITES` edges crossed language boundaries
+  ([#436](https://github.com/kwad77/pincher/issues/436)).** On
+  pincher-repo's mixed Go/JSON/YAML/Markdown corpus, ~8% of the
+  graph's edges resolved a Go identifier read to a same-named
+  YAML key (or JSON setting, or Markdown heading) — silent noise
+  that made `trace` and `query` results unreliable for any name
+  collision across language boundaries. `lookupNameInLang` now
+  filters name-lookup candidates by source symbol's language;
+  belt-and-suspenders, the resolver also drops resolved edges
+  where `from.lang != to.lang`. Re-indexing recommended on
+  upgrade — the binary-version drift detector (#304) catches
+  the mismatch on the next `health` call and prompts re-index.
+
+## [v0.15.4] — 2026-05-11 — pinchQL bool predicates + aggregations + WITH/chained-edge rejection
+
+Patch — five fixes from the v0.15.0 autoresearcher dogfood loop,
+all in pinchQL. Closes the bool-coercion gap (sibling to #412 /
+#430 / #434), implements the missing aggregation set, and turns
+two silent-failure parser holes into explicit errors.
 
 ### Fixed
 - **`WHERE n.is_entry_point="1"` returned 0 rows even when entry
   points existed ([#421](https://github.com/kwad77/pincher/issues/421)).**
-  Two compounding bugs:
-  1. `is_entry_point` and `is_exported` weren't mapped in
-     `cypherPropToCol`, so the WHERE post-filtered in Go where
-     `fmt.Sprint(true)="true" != "1"` — silent no-match.
-  2. Even after pushing to SQL, `"true"`/`"false"` string literals
-     don't convert under SQLite affinity for INTEGER columns, so
-     `is_entry_point="true"` would still return 0.
+  Two compounding bugs: `is_entry_point` and `is_exported` weren't
+  mapped in `cypherPropToCol` (silent in-Go post-filter where
+  `fmt.Sprint(true)="true" != "1"`); even after pushing to SQL,
+  `"true"`/`"false"` string literals don't convert under SQLite
+  affinity for INTEGER columns. Fix: `is_exported`,
+  `is_entry_point`, `complexity`, `extraction_confidence`,
+  `start_byte`, `end_byte` now map to their SQL columns;
+  `condLeafToSQL` coerces `"true"`/`"false"` bind args to
+  `"1"`/`"0"` when the target column is bool-typed (`isBoolCol`).
+  The TRUE/FALSE/NULL keyword literals normalize to `"1"`/`"0"`/`""`
+  (was `"true"`/`"false"`/`"null"`) so SQL push and in-Go fallback
+  agree. New `boolCoerceEqual` in `evalCondition` handles the same
+  equivalence for callers that bypass pushdown.
 
-  Fix: `is_exported`, `is_entry_point`, `complexity`,
-  `extraction_confidence`, `start_byte`, `end_byte` now map to
-  their SQL columns; `condLeafToSQL` coerces `"true"`/`"false"`
-  bind args to `"1"`/`"0"` when the target column is bool-typed
-  (`isBoolCol`). The TRUE/FALSE/NULL keyword literals normalize
-  to `"1"`/`"0"`/`""` (was `"true"`/`"false"`/`"null"`) so SQL
-  push and in-Go fallback both agree. The new `boolCoerceEqual`
-  in `evalCondition` handles the same equivalence for callers
-  that bypass pushdown.
+- **SQL LIMIT clamp under-scanned when the WHERE tree fell to
+  in-Go evaluation ([#435](https://github.com/kwad77/pincher/issues/435)).**
+  When `filter != nil` (e.g. `=~` regex predicate that can't push
+  to SQL), the row-scan cap was still `maxRows*2` — too tight on
+  real corpora. `scanLimitFor` now scales to `maxRows*50` (clamped
+  10000) when an in-Go filter is active, so regex WHERE returns
+  matching rows on a 4000-symbol corpus instead of stopping at
+  row 400. Bounded so a 1M-symbol DB doesn't burn the whole
+  symbols table.
+
+- **`WHERE n.is_entry_point` (no `=value`) returned a useless
+  operator error ([#431](https://github.com/kwad77/pincher/issues/431)).**
+  Naked bool predicates now evaluate as truthy (`is_entry_point`
+  true → row matches, false → row drops). And when the user does
+  use an operator that's not supported on the property, the error
+  message lists the supported ops for that type instead of
+  `unknown operator`.
+
+- **`RETURN AVG(n.complexity)` / `MIN` / `MAX` / `SUM` returned
+  200 `NULL` rows instead of one aggregate value
+  ([#432](https://github.com/kwad77/pincher/issues/432)).** Only
+  `COUNT(*)` was wired up. The aggregation pipeline now recognises
+  `AVG`, `MIN`, `MAX`, `SUM` over numeric columns and returns a
+  single result row per query, matching Cypher semantics.
+
+- **`WITH` clauses and chained-edge patterns silently returned
+  garbage ([#433](https://github.com/kwad77/pincher/issues/433)).**
+  `MATCH (a)-[:CALLS]->(b)-[:CALLS]->(c)` and any query containing
+  `WITH` were tokenized but ignored — the parser dropped the
+  intermediate clauses without warning, then projected `NULL` for
+  unbound variables. Both shapes now fail-fast with a clear
+  parse error pointing at the unsupported construct.
 
 ## [v0.15.3] — 2026-05-11 — pinchQL comparison-operator pushdown
 
