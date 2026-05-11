@@ -5473,8 +5473,21 @@ const (
 	shapeTraceIn    guideShape = "trace_in"   // who calls / what calls — trace inbound (#284)
 	shapeTraceOut   guideShape = "trace_out"  // what does X call — trace outbound (#284)
 	shapeAudit      guideShape = "audit"      // structural audit (#467) — undocumented/untested/dead-code surveys
+	shapeToolAudit  guideShape = "tool_audit" // empirical audit of a tool's OUTPUT quality (#497) — "find FPs in dead_code", "audit search results"
 	shapeUnknown    guideShape = "unknown"    // fallback
 )
+
+// pincherToolNames is the set of registered tool names a tool-output
+// audit task might reference (#497). Used by classifyTaskShape and
+// extractAuditedTool to recognize "find FPs in dead_code" / "audit
+// search results" tasks. Order matters: longer names first so
+// "dead_code" wins over a hypothetical "dead" prefix match.
+var pincherToolNames = []string{
+	"dead_code", "neighborhood", "architecture",
+	"changes", "context", "fetch", "health", "index", "list",
+	"query", "schema", "search", "stats", "symbol", "symbols",
+	"trace", "guide", "adr",
+}
 
 // classifyTaskShape inspects a task description and returns the most
 // likely intent. Keyword-based heuristic — no parsing or NLP. Order
@@ -5493,6 +5506,18 @@ func classifyTaskShape(task string) guideShape {
 		return false
 	}
 	switch {
+	// #497: tool-output audit — "find FPs in dead_code", "audit search
+	// results", "characterize trace failures". The user is investigating
+	// a tool's output quality, not generic bugs in its source. The
+	// recipe is: run the tool, verify each result, cluster FPs.
+	// Routed before shapeFix so "find false positives in dead_code"
+	// doesn't match "find " (shapeFind) or "fix" — both would send the
+	// agent down the wrong workflow.
+	case extractAuditedTool(t) != "" &&
+		contains("false positive", "false-positive", "fp ", "fps ",
+			"audit", "noise", "noisy", "wrong result", "incorrect",
+			"precision", "verify output", "characterize"):
+		return shapeToolAudit
 	case contains("test", "spec ", "coverage"):
 		return shapeTest
 	case contains("review", "diff", "before commit", "blast radius", "pre-commit", "impact"):
@@ -5644,12 +5669,52 @@ func domainConceptHint(task string) *map[string]string {
 	return nil
 }
 
+// extractAuditedTool scans a task string (already lowercased) for a
+// pincher tool name and returns it. Returns "" when no tool name is
+// present. Used by #497 tool-audit shape detection so a generic "find
+// FPs" without a tool reference doesn't grab the audit recipe.
+//
+// Word-boundary check (surrounding non-letter chars) avoids matching
+// inside other identifiers — "search" must not match in "researching".
+func extractAuditedTool(taskLower string) string {
+	if taskLower == "" {
+		return ""
+	}
+	for _, name := range pincherToolNames {
+		idx := 0
+		for {
+			pos := strings.Index(taskLower[idx:], name)
+			if pos < 0 {
+				break
+			}
+			absolutePos := idx + pos
+			beforeOK := absolutePos == 0 || !isWordChar(taskLower[absolutePos-1])
+			endPos := absolutePos + len(name)
+			afterOK := endPos == len(taskLower) || !isWordChar(taskLower[endPos])
+			if beforeOK && afterOK {
+				return name
+			}
+			idx = absolutePos + 1
+		}
+	}
+	return ""
+}
+
+// isWordChar — letters, digits, underscore. Anything else is a word
+// boundary for extractAuditedTool's word-match check.
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') ||
+		b == '_'
+}
+
 // guideRecommendations returns the default 2-3 next-tool suggestions
 // for a given task shape. The "args" slot is a best-effort template —
 // the guide tool fills in anything it can extract from the task string
 // (e.g. the most-likely symbol name) and leaves the rest as a
 // placeholder the agent fills in.
-func guideRecommendations(shape guideShape, taskHint string) []map[string]string {
+func guideRecommendations(shape guideShape, taskHint, auditedTool string) []map[string]string {
 	queryArgs := nextStepArgs(map[string]any{"query": taskHint})
 	queryFnArgs := nextStepArgs(map[string]any{"query": taskHint, "kind": "Function"})
 	traceInArgs := nextStepArgs(map[string]any{"name": taskHint, "direction": "inbound"})
@@ -5722,6 +5787,31 @@ func guideRecommendations(shape guideShape, taskHint string) []map[string]string
 				"why": "structural audit — pinchQL filters on docstring/is_exported directly. BM25 search of the literal phrase wouldn't surface anything"},
 			{"tool": "context", "args": `{"id":"<from-query>"}`,
 				"why": "read each candidate's surrounding context to confirm it warrants a docstring"},
+		}
+	case shapeToolAudit:
+		// #497: tool-output audit recipe. The user is asking "is this
+		// tool's output trustworthy?" — the right move is empirical:
+		// run the tool on a known corpus, verify each result, cluster
+		// the false positives by mechanism. Generic "search the source
+		// of the tool" routes the agent to the wrong investigation.
+		//
+		// taskHint comes from taskHintFromString which often strips the
+		// tool name (it's looking for the discriminating identifier).
+		// auditedTool is passed through separately from handleGuide so
+		// the recipe can name the tool the user asked about, not whatever
+		// hint shard happened to survive.
+		audited := auditedTool
+		if audited == "" {
+			audited = "<tool-name>"
+		}
+		toolArgs := nextStepArgs(map[string]any{}) // tool-specific; agent fills in
+		return []map[string]string{
+			{"tool": audited, "args": toolArgs,
+				"why": "run the tool on a representative project — collect its actual output, not your assumption of what it does"},
+			{"tool": "trace", "args": `{"id":"<from-` + audited + `>","direction":"inbound"}`,
+				"why": "verify each result by tracing inbound callers — a true positive has no callers; a false positive has callers the static graph missed"},
+			{"tool": "context", "args": `{"id":"<unexpected-result>"}`,
+				"why": "for each FP cluster, read the symbol's source to identify the missed-edge mechanism (interface dispatch, runtime invocation, build-tag gate, etc.)"},
 		}
 	case shapeTraceIn:
 		return []map[string]string{
@@ -6003,7 +6093,11 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		// completely empty. Edge case for very short or all-stop-word tasks.
 		hint = task
 	}
-	recommendations := guideRecommendations(shape, hint)
+	// #497: scan the raw task once for an audited tool name. Passed to
+	// guideRecommendations so shapeToolAudit can name the right tool —
+	// the hint string usually drops it.
+	auditedTool := extractAuditedTool(strings.ToLower(task))
+	recommendations := guideRecommendations(shape, hint, auditedTool)
 	// #397: if the task mentions a pincher-domain concept, prepend a
 	// concept-aware starter that points at the actual file/symbol where
 	// the concept lives. The shape-default recommendations follow as
