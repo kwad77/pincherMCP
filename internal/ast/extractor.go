@@ -71,9 +71,16 @@ type ExtractedSymbol struct {
 
 // ExtractedEdge is a raw call/import relationship found during extraction.
 type ExtractedEdge struct {
-	FromQN     string
-	ToName     string // may be short name; resolved by indexer against symbol table
-	Kind       string // CALLS|IMPORTS|INHERITS|IMPLEMENTS
+	FromQN string
+	ToName string // may be short name; resolved by indexer against symbol table
+	Kind   string // CALLS|IMPORTS|INHERITS|IMPLEMENTS
+	// FromFile is the source file that produced this candidate. The
+	// extractor leaves it empty; the indexer stamps it from the
+	// per-file goroutine context before deferral, and LoadPendingEdges
+	// carries it back through persistence (#487). Used by the resolver
+	// to disambiguate FromQN when multiple symbols share it — most
+	// commonly `main.main` across `package main` subcommand dirs.
+	FromFile   string
 	Confidence float64
 }
 
