@@ -7,6 +7,89 @@ minors.
 
 ## [Unreleased]
 
+## [v0.15.6] — 2026-05-11 — dogfood-driven hygiene patches
+
+Patch — seven fixes from a continuous dogfood loop. Each one came
+out of *using* pincher and noticing the friction; details below.
+
+### Fixed
+- **`binary_stale_message` told the agent to `/mcp reconnect` even when
+  `PINCHER_AUTO_RESTART_ON_DRIFT=1` was set
+  ([#449](https://github.com/kwad77/pincher/issues/449)).** The
+  supervisor was already going to respawn on the next tool call, but
+  the response text said "drive the reconnect yourself" — agents
+  flailed at a non-existent /mcp tool or asked the user to act. Message
+  now branches on the env var: supervised path announces the auto-
+  respawn, unsupervised path keeps the manual `/mcp reconnect` hint and
+  surfaces the env var as the opt-in.
+
+- **`resolveImports` / `resolveCalls` / `resolveReads` picked the
+  first matching symbol non-deterministically, inflating IMPORTS edge
+  duplicates across re-index runs
+  ([#428](https://github.com/kwad77/pincher/issues/428)).** SQLite
+  returned matching rows in implementation-defined order without an
+  `ORDER BY`, so the same logical `server → db` IMPORTS edge resolved
+  to *different* `(from_module_file, to_module_file)` pairs across
+  runs, each landing as a fresh row under the
+  `UNIQUE(project_id, from_id, to_id, kind)` constraint. The
+  re-resolution wasn't idempotent. Fix picks the lexicographically
+  smallest matching symbol ID — stable across runs, dedup constraint
+  finally does its job. On pincher-repo: 17 IMPORTS edges with visible
+  duplicates → 13, no duplicates.
+
+- **Multi-token unquoted `search` queries silently returned 0 even
+  when each term existed
+  ([#453](https://github.com/kwad77/pincher/issues/453)).** FTS5
+  defaults to implicit AND between bare tokens; queries like
+  `Watch poll` failed because no single symbol matched both. The
+  handler now auto-retries with `" OR "` between the per-token
+  sanitised tokens when the AND path returned 0 and the query wasn't
+  user-quoted / didn't use an explicit operator. Surfaces
+  `_meta.and_fallback_to_or=true` and `_meta.effective_query` so the
+  agent knows what recovered. `diagnoseEmptySearch` also stops
+  blaming `min_confidence` for the multi-token case.
+
+- **Explicit FTS5 `OR` / `AND` / `NOT` operators got phrase-wrapped
+  and silently neutralised
+  ([#452](https://github.com/kwad77/pincher/issues/452)).** The #424
+  safety net for prose-with-capitalised-operators (`handle AND NOT
+  context`) was too aggressive — it also collapsed `Watch OR poll` and
+  `auth* OR oauth*` into phrase searches. New
+  `looksLikeDeliberateFTS5Expr` gate distinguishes the two: short
+  query, identifier-shaped tokens, plus a code-not-prose signal
+  (CamelCase / `.`/`-`/`_` / `*` suffix) lets the operator semantics
+  pass through. All-lowercase prose still phrase-wraps.
+
+- **Watcher dropped ~7% of cross-file edges on every fire
+  ([#427](https://github.com/kwad77/pincher/issues/427), partial fix).**
+  When file F changed, `DeleteSymbolsForFile(F)` cascade-deleted
+  incoming edges from referencer files G/H/I; G/H/I were hash-skipped
+  this run, so resolveCalls never re-collected their deferred edges
+  to rebuild the cross-file relations to F. New
+  `db.Store.FilesWithEdgesToFile` + `Indexer.invalidateReferencers`
+  clear referencer hashes pre-Index, restoring the one-hop case.
+  Full transitive fix tracked in [#457](https://github.com/kwad77/pincher/issues/457)
+  via a persisted-deferred-edges table.
+
+- **`changes scope=unstaged` returned untracked files instead of
+  working-tree-modified files
+  ([#422](https://github.com/kwad77/pincher/issues/422)).** The tool
+  description's scope ladder pinned "(includes untracked)" to `all`
+  alone, but the implementation folded untracked into both `unstaged`
+  and `all`. Agents calling `changes` before a commit could see only
+  untracked dotfiles when real edits sat unanalysed — `tests_to_run`
+  then read "nothing to test, ship it". Fix moves the
+  untracked-merge into the `all` branch only.
+
+- **`list` defaulted to showing zero-edge worktree projects, crowding
+  the orientation view
+  ([#419](https://github.com/kwad77/pincher/issues/419)).** Dev
+  machines with `.claude/worktrees/{adj-sci}` slugs from concurrent
+  agent runs had 30+ empty-graph entries pushing the real project off
+  the default 50-row page. New `min_edges` parameter (default 1) drops
+  projects without a usable graph; pass `min_edges=0` for the legacy
+  unfiltered shape.
+
 ## [v0.15.5] — 2026-05-11 — indexer cross-language scoping
 
 Patch — closes the cross-language false-positive class in the
