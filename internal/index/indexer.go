@@ -1016,8 +1016,17 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 		return 0
 	}
 
-	// Cache QN → first matching symbol ID so we don't repeat SELECTs for
-	// packages imported from many files.
+	// Cache QN → canonical matching symbol ID so we don't repeat SELECTs
+	// for packages imported from many files. The "canonical" pick is the
+	// lexicographically smallest symbol ID — Go packages emit one Module
+	// row per file (`<file>::<pkg>#Module`), and `GetSymbolsByQN` returns
+	// rows in implementation-defined order without an ORDER BY. Picking
+	// `syms[0]` non-deterministically caused #428: the same logical
+	// `(server → db)` IMPORTS edge resolved to different
+	// (from_module_file, to_module_file) pairs across re-index runs,
+	// each new pair landing as a new edge under the
+	// UNIQUE(project_id, from_id, to_id, kind) constraint. Sorting picks
+	// a stable representative per package so re-resolution is idempotent.
 	cache := make(map[string]string)
 	lookup := func(qn string) string {
 		if id, ok := cache[qn]; ok {
@@ -1028,8 +1037,14 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 			cache[qn] = ""
 			return ""
 		}
-		cache[qn] = syms[0].ID
-		return syms[0].ID
+		canonical := syms[0].ID
+		for i := 1; i < len(syms); i++ {
+			if syms[i].ID < canonical {
+				canonical = syms[i].ID
+			}
+		}
+		cache[qn] = canonical
+		return canonical
 	}
 
 	// Dedupe by (fromID, toID) — one pair of files can appear many times
@@ -1147,6 +1162,22 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		return 0
 	}
 
+	// pickCanonical returns the lexicographically smallest symbol ID,
+	// stable across re-index runs. Same rationale as resolveImports
+	// (#428): SQLite returns rows in implementation-defined order
+	// without an ORDER BY, so picking syms[0] non-deterministically
+	// can resolve the same logical (from, to) pair to different
+	// symbol IDs across runs, defeating the
+	// UNIQUE(project_id, from_id, to_id, kind) dedup.
+	pickCanonical := func(syms []db.Symbol) string {
+		canonical := syms[0].ID
+		for i := 1; i < len(syms); i++ {
+			if syms[i].ID < canonical {
+				canonical = syms[i].ID
+			}
+		}
+		return canonical
+	}
 	qnCache := make(map[string]string)
 	lookupQN := func(qn string) string {
 		if qn == "" {
@@ -1160,8 +1191,9 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 			qnCache[qn] = ""
 			return ""
 		}
-		qnCache[qn] = syms[0].ID
-		return syms[0].ID
+		canonical := pickCanonical(syms)
+		qnCache[qn] = canonical
+		return canonical
 	}
 
 	// methodCache: receiver-method fallback lookups (#285). Empty
@@ -1175,13 +1207,19 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		if id, ok := nameCache[name]; ok {
 			return id
 		}
-		syms, err := idx.store.GetSymbolsByName(projectID, name, 1)
+		// limit=200 so pickCanonical sees enough candidates to pick a
+		// stable representative; limit=1 would just pick whichever
+		// SQLite returns first under its implementation-defined order.
+		// Two functions sharing a short name across a 200-package
+		// project is the realistic upper bound this guards against.
+		syms, err := idx.store.GetSymbolsByName(projectID, name, 200)
 		if err != nil || len(syms) == 0 {
 			nameCache[name] = ""
 			return ""
 		}
-		nameCache[name] = syms[0].ID
-		return syms[0].ID
+		canonical := pickCanonical(syms)
+		nameCache[name] = canonical
+		return canonical
 	}
 
 	seen := make(map[string]bool)
@@ -1301,7 +1339,19 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 			qnCache[qn] = lookup{}
 			return lookup{}
 		}
-		v := lookup{id: syms[0].ID, lang: syms[0].Language, isVar: syms[0].Kind == "Variable"}
+		// #428: pick the lexicographically smallest ID for stability
+		// across re-index runs. SQLite returns rows in
+		// implementation-defined order without an ORDER BY, so a naive
+		// syms[0] resolves the same logical edge to different IDs
+		// across runs and defeats the
+		// UNIQUE(project_id, from_id, to_id, kind) dedup.
+		canonical := 0
+		for i := 1; i < len(syms); i++ {
+			if syms[i].ID < syms[canonical].ID {
+				canonical = i
+			}
+		}
+		v := lookup{id: syms[canonical].ID, lang: syms[canonical].Language, isVar: syms[canonical].Kind == "Variable"}
 		qnCache[qn] = v
 		return v
 	}

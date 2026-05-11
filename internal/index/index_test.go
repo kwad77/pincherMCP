@@ -1328,6 +1328,99 @@ func Use() string { return bar.Hello() }
 	}
 }
 
+// #428: re-indexing must not accumulate functionally-duplicate IMPORTS
+// edges. The lookup that maps a package QN → a representative Module
+// symbol used to pick syms[0] non-deterministically (no ORDER BY in
+// GetSymbolsByQN), so the same (server → db) edge would resolve to
+// different (from_id, to_id) pairs across runs. Each new pair landed
+// as a fresh row under UNIQUE(project_id, from_id, to_id, kind),
+// inflating the IMPORTS count without representing new imports.
+//
+// The fix picks the lexicographically smallest ID per QN; this test
+// asserts the IMPORTS edge set is identical after a second
+// force-re-index.
+func TestIndex_ImportsEdges_StableAcrossReindex(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.24\n")
+	// Multi-file packages on both sides so the lookup has >1 candidate
+	// to choose from — non-deterministic picks were only visible when
+	// len(syms) > 1 for some QN.
+	writeFile(t, dir, "internal/bar/a.go", `package bar
+
+func Alpha() string { return "alpha" }
+`)
+	writeFile(t, dir, "internal/bar/b.go", `package bar
+
+func Beta() string { return "beta" }
+`)
+	writeFile(t, dir, "internal/bar/c.go", `package bar
+
+func Gamma() string { return "gamma" }
+`)
+	writeFile(t, dir, "internal/foo/x.go", `package foo
+
+import "example.com/app/internal/bar"
+
+func UseAlpha() string { return bar.Alpha() }
+`)
+	writeFile(t, dir, "internal/foo/y.go", `package foo
+
+import "example.com/app/internal/bar"
+
+func UseBeta() string { return bar.Beta() }
+`)
+
+	collectImportsEdges := func() map[[2]string]bool {
+		t.Helper()
+		fooMods, err := store.GetSymbolsByQN(db.ProjectIDFromPath(dir), "internal/foo")
+		if err != nil {
+			t.Fatalf("GetSymbolsByQN(foo): %v", err)
+		}
+		out := map[[2]string]bool{}
+		for _, m := range fooMods {
+			edges, err := store.EdgesFrom(m.ID, nil)
+			if err != nil {
+				t.Fatalf("EdgesFrom(%s): %v", m.ID, err)
+			}
+			for _, e := range edges {
+				if e.Kind == "IMPORTS" {
+					out[[2]string{e.FromID, e.ToID}] = true
+				}
+			}
+		}
+		return out
+	}
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("first Index: %v", err)
+	}
+	first := collectImportsEdges()
+	if len(first) == 0 {
+		t.Fatal("first index produced no IMPORTS edges from internal/foo")
+	}
+	if len(first) > 1 {
+		t.Errorf("first index produced %d distinct IMPORTS edge IDs from internal/foo; expected 1 (one canonical foo→bar edge), edges=%v", len(first), first)
+	}
+
+	// Second force re-index. With non-deterministic lookup, this would
+	// often produce a different (from_id, to_id) pair, doubling the
+	// count. Deterministic lookup keeps the set identical.
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("second Index: %v", err)
+	}
+	second := collectImportsEdges()
+	if len(second) != len(first) {
+		t.Errorf("IMPORTS edges grew across re-index: first=%d second=%d (expected stable). first=%v second=%v", len(first), len(second), first, second)
+	}
+	for k := range second {
+		if !first[k] {
+			t.Errorf("re-index produced new IMPORTS edge id pair %v that wasn't in first run", k)
+		}
+	}
+}
+
 func TestIndex_ImportsEdges_ExternalDropped(t *testing.T) {
 	idx, store := newTestIndexer(t)
 	dir := t.TempDir()
