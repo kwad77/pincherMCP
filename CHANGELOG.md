@@ -21,6 +21,17 @@ minors.
   stay clean.
 
 ### Added
+- **guide: new `tool_audit` shape for empirical tool-output investigation
+  ([#497](https://github.com/kwad77/pincher/issues/497)).** Pre-fix,
+  asking guide "find false positives in dead_code" returned the generic
+  "fix" recipe (search for the tool's source, read it, trace callers) —
+  the wrong investigation. The right shape is empirical: run the tool,
+  verify each result, cluster the FPs by mechanism. New shape detects
+  a known tool name + audit keyword combination ("FPs", "audit",
+  "noise", "verify output", "precision"). Recipe: (1) run the audited
+  tool, (2) `trace` inbound on each result to verify, (3) `context`
+  the unexpected ones to identify the missed-edge mechanism.
+
 - **Occasional milestone celebration in `_meta`
   ([#494](https://github.com/kwad77/pincher/issues/494)).** Tool
   responses now surface a one-line `_meta.celebration` when cumulative

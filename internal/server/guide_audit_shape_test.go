@@ -47,7 +47,7 @@ func TestClassifyTaskShape_AuditDoesNotOvercatch(t *testing.T) {
 }
 
 func TestGuideRecommendations_AuditEmitsPinchQL(t *testing.T) {
-	recs := guideRecommendations(shapeAudit, "undocumented exported functions")
+	recs := guideRecommendations(shapeAudit, "undocumented exported functions", "")
 	if len(recs) == 0 {
 		t.Fatal("audit shape should produce at least one recommendation")
 	}
