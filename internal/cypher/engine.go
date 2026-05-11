@@ -974,7 +974,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 	// query can't drag the entire symbols table into memory.
 	if !hasAggregation(q) {
 		sqlQ += " LIMIT ?"
-		args = append(args, e.maxRows()*2)
+		args = append(args, scanLimitFor(e.maxRows(), filter))
 	}
 
 	rows, err := e.DB.QueryContext(ctx, sqlQ, args...)
@@ -1109,7 +1109,7 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	// #308: same skip-when-aggregating treatment as runNodeScan.
 	if !hasAggregation(q) {
 		sqlQ += " LIMIT ?"
-		args = append(args, e.maxRows()*2)
+		args = append(args, scanLimitFor(e.maxRows(), filter))
 	}
 
 	rows, err := e.DB.QueryContext(ctx, sqlQ, args...)
@@ -1642,6 +1642,29 @@ func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
 		return
 	}
 	*sqlQ += " AND " + inner
+}
+
+// scanLimitFor picks the SQL LIMIT for the row scan. When SQL handles
+// the entire WHERE (filter==nil), maxRows*2 is plenty — SQL filters
+// before counting against the LIMIT. When in-Go filtering is still
+// needed (e.g. an `=~` regex leaf, or any other non-pushable op),
+// the LIMIT applies to the *unfiltered* row set, so a tight regex
+// against a wide kind+project scan can return 0 just because the
+// matching rows live past row 400 (#435 / sibling of #430, #434).
+//
+// 50× the user limit (capped at 10000) lets the scan reach the
+// matching rows on real corpora (4000 symbols, 2000 functions)
+// while still bounding memory if someone runs against a 1M-symbol
+// project. Aggregating queries opt out of LIMIT entirely (#308).
+func scanLimitFor(maxRows int, filter whereExpr) int {
+	if filter == nil {
+		return maxRows * 2
+	}
+	limit := maxRows * 50
+	if limit > 10000 {
+		limit = 10000
+	}
+	return limit
 }
 
 // pushableOp reports whether condLeafToSQL knows how to render this
