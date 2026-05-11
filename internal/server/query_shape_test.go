@@ -171,3 +171,40 @@ func TestFirstRowID(t *testing.T) {
 		}
 	}
 }
+
+// #473: handleQuery must surface the cypher engine's unknown-property
+// warnings as _meta.warnings so the agent gets a remediation hint
+// instead of a misleading empty result.
+func TestHandleQuery_UnknownProperty_SurfacesWarning(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	pid := "query-warn"
+	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})
+	srv.sessionID = pid
+	srv.sessionRoot = "/tmp/" + pid
+
+	mustUpsertSymbols(t, store, []db.Symbol{
+		{ID: "p::main.Foo#Function", ProjectID: pid, FilePath: "main.go", Name: "Foo",
+			QualifiedName: "main.Foo", Kind: "Function", Language: "Go",
+			StartByte: 0, EndByte: 30, StartLine: 1, EndLine: 3, ExtractionConfidence: 1.0},
+	})
+
+	result, err := srv.handleQuery(context.Background(), makeReq(map[string]any{
+		"pinchql": `MATCH (n:Function) WHERE n.typeo_in_name = "x" RETURN n.id`,
+	}))
+	if err != nil {
+		t.Fatalf("handleQuery: %v", err)
+	}
+	body := decode(t, result)
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("_meta missing")
+	}
+	warnings, _ := meta["warnings"].([]any)
+	if len(warnings) == 0 {
+		t.Fatalf("_meta.warnings empty; want at least one entry naming typeo_in_name")
+	}
+	first, _ := warnings[0].(string)
+	if !strings.Contains(first, "typeo_in_name") {
+		t.Errorf("first warning %q must name the offending property", first)
+	}
+}

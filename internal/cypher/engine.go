@@ -34,6 +34,13 @@ type Result struct {
 	Columns []string         `json:"columns"`
 	Rows    []map[string]any `json:"rows"`
 	Total   int              `json:"total"`
+	// Warnings is the list of non-fatal advisories produced while running
+	// the query. The most common entry is "property X not recognized" —
+	// see #473. Empty when the query is structurally clean. Callers MUST
+	// surface this to the user / agent; the engine treats unknown
+	// properties as undefined (falsy in comparisons), which silently
+	// returns 0 rows on typos when no warning is shown.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Executor runs Cypher queries against a SQLite database.
@@ -71,7 +78,98 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cypher parse: %w", err)
 	}
-	return e.run(ctx, q)
+	// #473: surface property names the engine doesn't know about as
+	// non-fatal warnings. Unknown properties evaluate to undefined,
+	// which makes comparisons falsy and returns 0 rows — without a
+	// warning the agent walks away thinking "no matches" when the
+	// real cause is a typo in the property name.
+	warnings := collectUnknownPropertyWarnings(q)
+	res, err := e.run(ctx, q)
+	if err != nil {
+		return res, err
+	}
+	if res != nil {
+		res.Warnings = append(res.Warnings, warnings...)
+	}
+	return res, nil
+}
+
+// knownPropertyList is the human-readable enumeration used in the
+// unknown-property warning text. Sourced from the cypherPropToCol
+// switch — keep in sync if a new column is added there.
+var knownPropertyList = []string{
+	"id", "name", "qualified_name (qn)", "kind (label)", "file_path",
+	"language", "start_line", "end_line", "start_byte", "end_byte",
+	"complexity", "extraction_confidence (confidence)",
+	"is_exported", "is_entry_point", "is_test",
+	"signature", "return_type", "docstring",
+}
+
+// collectUnknownPropertyWarnings walks the parsed query and returns one
+// warning per distinct unknown property name. Touches WHERE conditions
+// (including inside binaryExpr / notExpr trees), pattern inline match
+// braces ({name:"x"}), and RETURN projections. Empty when every
+// property is known. Sorted alphabetically for stable test output.
+func collectUnknownPropertyWarnings(q *queryAST) []string {
+	if q == nil {
+		return nil
+	}
+	unknown := map[string]struct{}{}
+	check := func(prop string) {
+		if prop == "" {
+			return
+		}
+		if cypherPropToCol(prop) != "" {
+			return
+		}
+		unknown[prop] = struct{}{}
+	}
+	// Flat WHERE conditions (the common AND-chain path).
+	for _, c := range q.conditions {
+		check(c.property)
+	}
+	// Recursive WHERE tree (paren-grouped queries / NOT-groups).
+	var walk func(w whereExpr)
+	walk = func(w whereExpr) {
+		switch e := w.(type) {
+		case condExpr:
+			check(e.c.property)
+		case binaryExpr:
+			walk(e.left)
+			walk(e.right)
+		case notExpr:
+			walk(e.inner)
+		}
+	}
+	walk(q.where)
+	// Inline pattern match braces: MATCH (n:Function {foo:"x"}).
+	for _, pat := range q.patterns {
+		for prop := range pat.fromProps {
+			check(prop)
+		}
+		for prop := range pat.toProps {
+			check(prop)
+		}
+	}
+	// RETURN projections — n.foo references count too.
+	for _, rv := range q.returnVars {
+		check(rv.property)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(unknown))
+	for n := range unknown {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, fmt.Sprintf(
+			"property %q not recognized; treated as undefined (always false in comparisons). Valid properties: %s.",
+			n, strings.Join(knownPropertyList, ", ")))
+	}
+	return out
 }
 
 // symCols is the canonical SELECT column list for the symbols table.

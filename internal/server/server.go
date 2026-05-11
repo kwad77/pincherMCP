@@ -3543,6 +3543,13 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	meta := map[string]any{
 		"confidence_distribution": confidenceDistribution(confs),
 	}
+	// #473: surface unknown-property warnings from the cypher engine.
+	// Typo'd property names (n.foo on a kind that has no foo column)
+	// silently return 0 rows; surfacing the engine's warning gives the
+	// agent a remediation instead of a misleading empty result.
+	if len(result.Warnings) > 0 {
+		meta["warnings"] = result.Warnings
+	}
 	// #338: when the result rows expose an `id` column (RETURN n.id, f.id,
 	// etc.), suggest a `context` follow-up on the top row. Mirrors the
 	// next_steps pattern in search/trace/changes/architecture so an agent

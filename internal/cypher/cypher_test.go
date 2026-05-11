@@ -2004,3 +2004,75 @@ func TestCypherSecurity_BadRegexErrorClean(t *testing.T) {
 		t.Logf("regex error: %v (acceptable; mentions parse details)", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unknown-property warnings (#473)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestExecute_UnknownPropertyInWhereWarns pins the headline #473 case.
+// A WHERE on a non-existent property name silently returned 0 rows
+// with no diagnostic. After the fix, the query still runs (engine
+// treats the property as undefined → falsy → 0 rows) but Result.Warnings
+// names the offending property AND lists the valid alternatives.
+func TestExecute_UnknownPropertyInWhereWarns(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Foo", "Function", "Go")
+
+	r := exec(t, db, `MATCH (n:Function) WHERE n.nonexistent_prop = "x" RETURN n.name`)
+	if len(r.Rows) != 0 {
+		t.Errorf("rows=%d, want 0 (unknown property → falsy comparison)", len(r.Rows))
+	}
+	if len(r.Warnings) == 0 {
+		t.Fatal("Warnings empty; expected an unknown-property advisory naming `nonexistent_prop`")
+	}
+	if !strings.Contains(r.Warnings[0], "nonexistent_prop") {
+		t.Errorf("warning %q must name the offending property", r.Warnings[0])
+	}
+	if !strings.Contains(r.Warnings[0], "Valid properties:") {
+		t.Errorf("warning %q must list valid alternatives", r.Warnings[0])
+	}
+}
+
+// TestExecute_KnownPropertiesNoWarning pins the no-noise invariant: a
+// clean query (every property in the cypherPropToCol allowlist) must
+// produce zero warnings.
+func TestExecute_KnownPropertiesNoWarning(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Foo", "Function", "Go")
+
+	r := exec(t, db,
+		`MATCH (n:Function) WHERE n.name = "Foo" AND n.kind = "Function" RETURN n.id`)
+	if len(r.Warnings) != 0 {
+		t.Errorf("Warnings=%v on a clean query; want []", r.Warnings)
+	}
+}
+
+// TestExecute_UnknownPropertyDedupAcrossClauses pins that the warning
+// list contains each offending property at most once, even when the
+// same typo is referenced in multiple clauses (WHERE + RETURN).
+func TestExecute_UnknownPropertyDedupAcrossClauses(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Foo", "Function", "Go")
+
+	r := exec(t, db, `MATCH (n:Function) WHERE n.bogus = "x" RETURN n.bogus`)
+	if len(r.Warnings) != 1 {
+		t.Errorf("Warnings count=%d, want 1 (typo referenced twice, dedup'd):\n%v", len(r.Warnings), r.Warnings)
+	}
+}
+
+// TestExecute_QualifiedNameAliasNoWarning pins the `qn` short-form alias
+// (cypherPropToCol maps it to qualified_name). Aliases must not trigger
+// a false warning.
+func TestExecute_QualifiedNameAliasNoWarning(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Foo", "Function", "Go")
+
+	r := exec(t, db, `MATCH (n:Function) WHERE n.qn = "Foo" RETURN n.name`)
+	if len(r.Warnings) != 0 {
+		t.Errorf("Warnings=%v on qn alias; want []", r.Warnings)
+	}
+}
