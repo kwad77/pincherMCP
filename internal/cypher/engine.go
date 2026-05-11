@@ -786,9 +786,19 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 // case-fold.
 func normalizeConditionValue(tok token) string {
 	if tok.kind == "KEYWORD" {
+		// #421: map boolean literals to SQLite's INTEGER form ("1" /
+		// "0") so the SQL pushdown path (`is_entry_point=?` against
+		// an INTEGER column) matches under SQLite affinity. The
+		// in-Go fallback (evalCondition) handles the same equivalence
+		// via boolCoerceEqual, so callers that bypass pushdown still
+		// get the right answer.
 		switch tok.value {
-		case "TRUE", "FALSE", "NULL":
-			return strings.ToLower(tok.value)
+		case "TRUE":
+			return "1"
+		case "FALSE":
+			return "0"
+		case "NULL":
+			return ""
 		}
 	}
 	return tok.value
@@ -1648,6 +1658,31 @@ func pushableOp(op string) bool {
 	return false
 }
 
+// isBoolCol reports whether col holds a SQLite INTEGER 0/1 backing
+// a Go bool field. Equality binds against these get the "1"/"0" /
+// "true"/"false" coercion (#421); the row scan would otherwise see
+// a TEXT bind arg that SQLite affinity refuses to convert.
+func isBoolCol(col string) bool {
+	switch col {
+	case "is_exported", "is_entry_point", "is_test":
+		return true
+	}
+	return false
+}
+
+// coerceBoolLiteral maps "true" / "false" (any case, with or without
+// quotes already stripped) to "1" / "0". Pass-through for anything
+// else.
+func coerceBoolLiteral(v string) string {
+	switch strings.ToLower(v) {
+	case "true":
+		return "1"
+	case "false":
+		return "0"
+	}
+	return v
+}
+
 // condLeafToSQL returns the SQL fragment for a single leaf condition
 // without any leading boolean-connector glue, plus its bind args. The
 // fragment is wrapped with `NOT (...)` when c.negated is set so it
@@ -1661,10 +1696,14 @@ func pushableOp(op string) bool {
 func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 	var inner string
 	var args []any
+	val := c.value
+	if isBoolCol(col) {
+		val = coerceBoolLiteral(val)
+	}
 	switch c.op {
 	case "=":
 		inner = prefix + col + "=?"
-		args = append(args, c.value)
+		args = append(args, val)
 	case "<>":
 		// #434: include rows where the column is NULL when comparing
 		// inequality. SQL's `col <> ?` is FALSE on NULL by tri-state
@@ -1672,13 +1711,13 @@ func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 		// `fmt.Sprint(nil)` → "<nil>") returned TRUE for NULL rows,
 		// so preserve that semantics.
 		inner = "(" + prefix + col + " IS NULL OR " + prefix + col + "<>?)"
-		args = append(args, c.value)
+		args = append(args, val)
 	case ">", "<", ">=", "<=":
 		// #434: comparison-operator pushdown. SQLite affinity converts
 		// the string bind arg to the column type, so a query like
 		// `WHERE n.start_line > 4000` works against an INTEGER column.
 		inner = prefix + col + c.op + "?"
-		args = append(args, c.value)
+		args = append(args, val)
 	case "CONTAINS":
 		inner = prefix + col + " LIKE ?"
 		args = append(args, "%"+c.value+"%")
@@ -1778,6 +1817,24 @@ func cypherPropToCol(prop string) string {
 		return "start_line"
 	case "end_line":
 		return "end_line"
+	case "start_byte":
+		return "start_byte"
+	case "end_byte":
+		return "end_byte"
+	case "complexity":
+		return "complexity"
+	case "extraction_confidence", "confidence":
+		return "extraction_confidence"
+	case "is_exported":
+		// #421: bool/int columns. SQLite affinity converts the bind
+		// arg ("1", "0", "true", "false") to INTEGER 0/1, so the
+		// pushed SQL `is_exported=?` matches regardless of how the
+		// caller spelled the bool. Falls through to the in-Go path
+		// for unsupported operators where boolCoerceEqual handles
+		// the same equivalence.
+		return "is_exported"
+	case "is_entry_point":
+		return "is_entry_point"
 	default:
 		return ""
 	}
@@ -1827,9 +1884,19 @@ func evalCondition(row map[string]any, c condition, reCache map[string]*regexp.R
 
 	switch c.op {
 	case "=":
-		return actual == c.value
+		if actual == c.value {
+			return true
+		}
+		// #421: boolean columns (is_exported, is_entry_point) reach
+		// here when the SQL pushdown gate misses (e.g. an OR-chain
+		// path that falls back to Go for an unrelated reason). Allow
+		// "1" / "0" / "true" / "false" to all match the same row.
+		return boolCoerceEqual(actual, c.value)
 	case "<>":
-		return actual != c.value
+		if actual == c.value {
+			return false
+		}
+		return !boolCoerceEqual(actual, c.value)
 	case "=~":
 		var re *regexp.Regexp
 		if reCache != nil {
@@ -1887,6 +1954,32 @@ func QueryAST(q *queryAST) map[string]any {
 		"returns":    len(q.returnVars),
 		"limit":      q.limit,
 	}
+}
+
+// boolCoerceEqual reports whether two stringified values are equal
+// under the "1" / "0" / "true" / "false" equivalence used by SQLite
+// INTEGER columns scanned into Go bool. The Symbol struct's
+// IsExported / IsEntryPoint fields are bool; fmt.Sprint on them
+// yields "true" / "false". The caller's literal in WHERE could be
+// any of "1", "true", "TRUE" (#323 normalises to "true"), or even
+// "0"/"false" — all should resolve to the same equality (#421).
+func boolCoerceEqual(a, b string) bool {
+	an, aok := boolNorm(a)
+	bn, bok := boolNorm(b)
+	if !aok || !bok {
+		return false
+	}
+	return an == bn
+}
+
+func boolNorm(s string) (bool, bool) {
+	switch s {
+	case "1", "true", "TRUE":
+		return true, true
+	case "0", "false", "FALSE":
+		return false, true
+	}
+	return false, false
 }
 
 // minHops is referenced below to avoid unused variable warnings.
