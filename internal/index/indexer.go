@@ -1296,6 +1296,99 @@ func isStdlibReceiver(name string) bool {
 	return false
 }
 
+// fileOfID returns the FilePath of the symbol with the given ID
+// from a candidate slice. Used by #566 sibling detection — the
+// canonical pickCanonical result loses file-path context, so we
+// recover it via a linear scan over the same slice. Empty string
+// if the ID isn't in the slice (shouldn't happen — pickCanonical
+// always picks from syms).
+func fileOfID(syms []db.Symbol, id string) string {
+	for i := range syms {
+		if syms[i].ID == id {
+			return syms[i].FilePath
+		}
+	}
+	return ""
+}
+
+// isBuildTagSibling reports whether two file paths look like
+// build-tag conditional-compilation siblings (#566): same directory,
+// same base-name stem (everything before a recognized platform/arch
+// suffix), differing only by the platform/arch part.
+//
+// Examples that ARE siblings:
+//   - web_windows.go ↔ web_unix.go
+//   - syscall_amd64.go ↔ syscall_arm64.go
+//   - web_windows.go ↔ web_linux.go
+//
+// NOT siblings:
+//   - web.go ↔ web_test.go (test files are intentionally separate)
+//   - web_windows.go ↔ other.go (different stem)
+//   - web_windows.go ↔ web_windows.go (same file)
+//
+// Doesn't parse `//go:build` constraints; the cheap heuristic is
+// filename-based per Go's `_GOOS.go` / `_GOARCH.go` naming
+// convention. The `//go:build` parsing path is filed as a v0.21+
+// follow-up.
+func isBuildTagSibling(a, b string) bool {
+	if a == "" || b == "" || a == b {
+		return false
+	}
+	// Same directory required.
+	aDir, aFile := splitFile(a)
+	bDir, bFile := splitFile(b)
+	if aDir != bDir {
+		return false
+	}
+	aStem := stripPlatformSuffix(aFile)
+	bStem := stripPlatformSuffix(bFile)
+	return aStem != "" && aStem == bStem
+}
+
+// splitFile splits a path into (directory, basename) without
+// pulling in path/filepath (its slash semantics differ between
+// OSes; pincher always stores forward-slash relative paths).
+func splitFile(p string) (string, string) {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' || p[i] == '\\' {
+			return p[:i], p[i+1:]
+		}
+	}
+	return "", p
+}
+
+// stripPlatformSuffix returns the stem of a Go source file with
+// recognized platform/arch suffix removed. Returns "" if the file
+// doesn't end in `.go` or has no recognized suffix — those don't
+// participate in build-tag sibling detection.
+//
+// Recognized GOOS values: every one Go supports as of 1.22.
+// Recognized GOARCH values: same.
+func stripPlatformSuffix(name string) string {
+	const ext = ".go"
+	if !strings.HasSuffix(name, ext) {
+		return ""
+	}
+	stem := name[:len(name)-len(ext)]
+	suffixes := []string{
+		// GOOS
+		"_aix", "_android", "_darwin", "_dragonfly", "_freebsd", "_hurd",
+		"_illumos", "_ios", "_js", "_linux", "_nacl", "_netbsd", "_openbsd",
+		"_plan9", "_solaris", "_unix", "_wasip1", "_windows", "_zos",
+		// GOARCH
+		"_386", "_amd64", "_amd64p32", "_arm", "_arm64", "_armbe", "_arm64be",
+		"_loong64", "_mips", "_mips64", "_mips64le", "_mips64p32", "_mips64p32le",
+		"_mipsle", "_ppc", "_ppc64", "_ppc64le", "_riscv", "_riscv64",
+		"_s390", "_s390x", "_sparc", "_sparc64", "_wasm",
+	}
+	for _, s := range suffixes {
+		if strings.HasSuffix(stem, s) {
+			return strings.TrimSuffix(stem, s)
+		}
+	}
+	return ""
+}
+
 // isPolymorphicInterfaceMethodName reports whether `name` looks like a
 // method name that overwhelmingly resolves to a stdlib interface in
 // real Go code. Companion to isStdlibReceiver (#410): that filter caught
@@ -1421,6 +1514,25 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		}
 		return canonical
 	}
+	// #566: when N symbols share a QN and only differ by build-tag
+	// platform suffix (`web_windows.go` / `web_unix.go`), the
+	// canonical edge goes to one of them and the others false-positive
+	// in dead_code as "no inbound CALLS." Track the sibling IDs so the
+	// main loop can fan out an extra edge to each. Cache parallel to
+	// qnCache; same key.
+	qnSiblings := make(map[string][]string)
+	siblingsForCanonical := func(syms []db.Symbol, canonical string) []string {
+		out := make([]string, 0)
+		for i := range syms {
+			if syms[i].ID == canonical {
+				continue
+			}
+			if isBuildTagSibling(syms[i].FilePath, fileOfID(syms, canonical)) {
+				out = append(out, syms[i].ID)
+			}
+		}
+		return out
+	}
 	qnCache := make(map[string]string)
 	lookupQN := func(qn string) string {
 		if qn == "" {
@@ -1436,6 +1548,12 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		}
 		canonical := pickCanonical(syms)
 		qnCache[qn] = canonical
+		// #566: cache build-tag siblings for the fan-out emission below.
+		if len(syms) > 1 {
+			if sibs := siblingsForCanonical(syms, canonical); len(sibs) > 0 {
+				qnSiblings[qn] = sibs
+			}
+		}
 		return canonical
 	}
 	// lookupFromQN disambiguates FromQN by FromFile when known
@@ -1490,6 +1608,16 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		}
 		canonical := pickCanonical(syms)
 		nameCache[name] = canonical
+		// #566: same fan-out cache as lookupQN, keyed by the bare
+		// name. The main loop reads qnSiblings[e.ToName] regardless
+		// of which lookup path resolved the canonical — bare-name
+		// calls (intra-package `Foo()`) take the lookupName route
+		// and absolutely need this caching path.
+		if len(syms) > 1 {
+			if sibs := siblingsForCanonical(syms, canonical); len(sibs) > 0 {
+				qnSiblings[name] = sibs
+			}
+		}
 		return canonical
 	}
 
@@ -1664,6 +1792,33 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 			Confidence: e.Confidence,
 			Source:     "resolve_pass",
 		})
+		// #566: fan out to build-tag siblings of the canonical target.
+		// `web.go::launchWeb` calling `platformPIDAlive` resolves to ONE
+		// of {web_unix.go, web_windows.go} depending on lex-order;
+		// without this fan-out the other variant looks dead despite
+		// being the implementation built on a different platform. We
+		// emit a copy of the edge to each sibling so dead_code stops
+		// false-positiving the not-currently-built variant.
+		for _, sib := range qnSiblings[e.ToName] {
+			if sib == fromID {
+				continue
+			}
+			sibKey := fromID + "\x00" + sib
+			if seen[sibKey] {
+				continue
+			}
+			seen[sibKey] = true
+			edges = append(edges, db.Edge{
+				ProjectID:  projectID,
+				FromID:     fromID,
+				ToID:       sib,
+				Kind:       "CALLS",
+				// Same confidence as the canonical edge — both are
+				// equally "real" implementations of the same call.
+				Confidence: e.Confidence,
+				Source:     "resolve_pass",
+			})
+		}
 	}
 
 	// #475: atomic replace of the prior resolve pass's CALLS edges so
