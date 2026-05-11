@@ -5842,10 +5842,18 @@ func runGitDiff(root, scope string) (string, error) {
 
 	args := []string{"diff", "--name-only"}
 	switch scope {
+	case "", "unstaged":
+		// default — bare `git diff`, working tree vs index
 	case "staged":
 		args = append(args, "--cached")
 	case "all":
 		args = append(args, "HEAD")
+	default:
+		// #437: typos like `unsage` used to fall through to a bare
+		// `git diff`, returning an empty changeset that looks identical
+		// to a clean working tree. Reject explicitly so the caller
+		// knows their scope arg was wrong.
+		return "", fmt.Errorf("unknown scope %q; must be unstaged / staged / all / base:<branch>", scope)
 	}
 	cmd := exec.Command("git", args...)
 	cmd.Dir = root

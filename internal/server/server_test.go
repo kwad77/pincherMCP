@@ -2133,6 +2133,32 @@ func TestRunGitDiff_BaseBranchNotFound(t *testing.T) {
 	}
 }
 
+// #437: an unrecognised scope used to fall through to a bare `git
+// diff` and return an empty changeset, indistinguishable from a
+// clean working tree. The handler now rejects unknown scopes
+// explicitly with a message naming the legal values.
+func TestRunGitDiff_RejectsUnknownScope(t *testing.T) {
+	dir := t.TempDir()
+	cases := []string{
+		"complete_garbage",
+		"unsage",          // typo of unstaged
+		"untracked",       // not a real scope
+		"working",         // not a real scope
+		"BASE:main",       // wrong case for the prefix form
+	}
+	for _, scope := range cases {
+		t.Run(scope, func(t *testing.T) {
+			_, err := runGitDiff(dir, scope)
+			if err == nil {
+				t.Fatalf("expected error for scope=%q, got nil", scope)
+			}
+			if !strings.Contains(err.Error(), "unknown scope") {
+				t.Errorf("expected 'unknown scope' in error, got: %v", err)
+			}
+		})
+	}
+}
+
 // validateGitRefName rejects flag-injection-shaped and range-shaped
 // names before they reach the git subprocess.
 func TestValidateGitRefName(t *testing.T) {

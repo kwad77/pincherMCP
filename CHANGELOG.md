@@ -7,6 +7,38 @@ minors.
 
 ## [Unreleased]
 
+## [v0.15.2] — 2026-05-11 — pinchQL OR pushdown + changes scope validation
+
+Patch — two correctness fixes from the v0.15.0 dogfood loop.
+
+### Fixed
+- **pinchQL OR-chain returned 0 rows when matches sat past the SQL
+  LIMIT clamp ([#430](https://github.com/kwad77/pincher/issues/430)).**
+  `MATCH (n) WHERE n.file_path ENDS WITH ".js" OR n.file_path ENDS WITH ".jsx"`
+  returned 0 rows on pincher-repo even though the .js branch had 8
+  matches. Root cause: when the WHERE tree contained an `OR` (or
+  paren / NOT-group), `pushdownAllowed` returned false and the
+  engine fell to in-Go evaluation. The SQL scan still had the
+  `maxRows()*2 = 400` safety clamp applied, so on a 4000-symbol
+  corpus the matching rows past the clamp never reached the in-Go
+  filter. Fix: added `whereExprToSQL` that recursively converts the
+  full WHERE tree (OR / paren / NOT included) to SQL when every
+  leaf uses a known column and a pushable operator (`=`, `CONTAINS`,
+  `STARTS WITH`, `ENDS WITH`, `IS NULL`, `IS NOT NULL`). SQL
+  handles OR natively so the LIMIT clamp becomes safe again.
+  Falls back to the previous Go path only when a leaf has an
+  unsupported operator (`=~`, `>`, `<`, `>=`, `<=`, `<>` — those
+  remain in scope for #434).
+- **`changes scope=<typo>` silently returned empty instead of
+  erroring ([#437](https://github.com/kwad77/pincher/issues/437)).**
+  `scope=complete_garbage` (or any typo of the legal values) used
+  to fall through to a bare `git diff`, returning an empty
+  changeset that looked identical to a clean working tree. The
+  agent then assumes "no changes" and ships a regression. Now
+  rejects unknown scopes with `unknown scope "X"; must be unstaged
+  / staged / all / base:<branch>` — same shape as the existing
+  `base:<branch>` validation path.
+
 ## [v0.15.1] — 2026-05-11 — FTS5 sanitizer hardening
 
 Patch — extends `sanitizeFTS5Query` (added by #289) to cover the full

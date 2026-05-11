@@ -936,7 +936,24 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 	if canPush {
 		filter = andChainFromConds(unpushed)
 	} else {
-		filter = q.where
+		// #430: try to push the full WHERE tree (OR / paren / NOT
+		// included) as a SQL boolean. Falling through to in-Go
+		// evaluation here was the bug — the SQL scan capped at
+		// maxRows()*2 before any filter ran, so OR predicates against
+		// large corpora returned far fewer rows than they should.
+		prefixFor := func(v string) (string, bool) {
+			if v == pat.fromVar {
+				return "", true
+			}
+			return "", false
+		}
+		if expr, exprArgs, ok := whereExprToSQL(q.where, prefixFor); ok {
+			sqlQ += " AND " + expr
+			args = append(args, exprArgs...)
+			filter = nil
+		} else {
+			filter = q.where
+		}
 	}
 
 	// #308: skip the SQL LIMIT when the query is aggregating
@@ -1057,7 +1074,26 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	if canPush {
 		filter = andChainFromConds(unpushed)
 	} else {
-		filter = q.where
+		// #430: same OR-pushdown attempt as runNodeScan, with the JOIN
+		// alias mapping (a. for fromVar, b. for toVar). When all leaves
+		// are pushable, SQL handles OR natively and the LIMIT clamp
+		// becomes safe again.
+		prefixFor := func(v string) (string, bool) {
+			if v == pat.fromVar {
+				return "a.", true
+			}
+			if v == pat.toVar {
+				return "b.", true
+			}
+			return "", false
+		}
+		if expr, exprArgs, ok := whereExprToSQL(q.where, prefixFor); ok {
+			sqlQ += " AND " + expr
+			args = append(args, exprArgs...)
+			filter = nil
+		} else {
+			filter = q.where
+		}
 	}
 
 	// #308: same skip-when-aggregating treatment as runNodeScan.
@@ -1580,36 +1616,110 @@ func symRowToMap(varName string, n *symRow) map[string]any {
 // appendWhereOp appends a SQL condition for a pushed-down Cypher WHERE clause.
 // prefix is "" for single-table queries or "alias." for JOIN queries.
 func appendWhereOp(sqlQ *string, args *[]any, prefix, col string, c condition) {
-	// Build the inner clause first (without the leading " AND "), then
-	// wrap with " AND NOT (...)" or " AND " depending on c.negated (#354).
+	inner, leafArgs, ok := condLeafToSQL(prefix, col, c)
+	if !ok {
+		return
+	}
+	*args = append(*args, leafArgs...)
+	if c.negated {
+		// condLeafToSQL already wraps with NOT for paren/OR pushdown
+		// callers; appendWhereOp owns its own NOT wrapping for the
+		// AND-chain path. Strip the inner NOT and re-wrap with the AND
+		// prefix expected by the legacy emit shape.
+		stripped := strings.TrimPrefix(inner, "NOT (")
+		stripped = strings.TrimSuffix(stripped, ")")
+		*sqlQ += " AND NOT (" + stripped + ")"
+		return
+	}
+	*sqlQ += " AND " + inner
+}
+
+// condLeafToSQL returns the SQL fragment for a single leaf condition
+// without any leading boolean-connector glue, plus its bind args. The
+// fragment is wrapped with `NOT (...)` when c.negated is set so it
+// drops directly into a paren/OR tree from whereExprToSQL.
+//
+// Returns ok=false for unsupported operators (`=~`, `>`, `<`, `>=`,
+// `<=`, `<>`) — callers fall back to in-Go evaluation.
+func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 	var inner string
+	var args []any
 	switch c.op {
 	case "=":
 		inner = prefix + col + "=?"
-		*args = append(*args, c.value)
+		args = append(args, c.value)
 	case "CONTAINS":
 		inner = prefix + col + " LIKE ?"
-		*args = append(*args, "%"+c.value+"%")
+		args = append(args, "%"+c.value+"%")
 	case "STARTS WITH":
 		inner = prefix + col + " LIKE ?"
-		*args = append(*args, c.value+"%")
+		args = append(args, c.value+"%")
 	case "ENDS WITH":
 		// #340: SQL pushdown for the suffix-match family.
 		inner = prefix + col + " LIKE ?"
-		*args = append(*args, "%"+c.value)
+		args = append(args, "%"+c.value)
 	case "IS NULL":
 		// #342: NULL OR empty. SQLite's Go driver maps NULL TEXT to "".
 		inner = "(" + prefix + col + " IS NULL OR " + prefix + col + " = '')"
 	case "IS NOT NULL":
 		inner = "(" + prefix + col + " IS NOT NULL AND " + prefix + col + " <> '')"
 	default:
-		return
+		return "", nil, false
 	}
 	if c.negated {
-		*sqlQ += " AND NOT (" + inner + ")"
-	} else {
-		*sqlQ += " AND " + inner
+		inner = "NOT (" + inner + ")"
 	}
+	return inner, args, true
+}
+
+// whereExprToSQL recursively builds a SQL boolean expression for a
+// WHERE tree. Returns ok=false if any leaf has an unknown column,
+// references a variable not in prefixFor, or uses an operator
+// condLeafToSQL doesn't support.
+//
+// This is the #430 fix path: when pushdownAllowed=false (OR / paren),
+// the full row scan was capped at maxRows()*2 BEFORE the in-Go OR
+// filter ran — so on a 4000-symbol corpus, a `.js OR .jsx OR .ts`
+// query whose .js matches sat past the 400-row clamp returned 0.
+// Pushing the full tree (OR included) to SQL makes the LIMIT clamp
+// safe again because SQL filters before counting against it.
+func whereExprToSQL(w whereExpr, prefixFor func(string) (string, bool)) (string, []any, bool) {
+	switch e := w.(type) {
+	case condExpr:
+		prefix, ok := prefixFor(e.c.variable)
+		if !ok {
+			return "", nil, false
+		}
+		col := cypherPropToCol(e.c.property)
+		if col == "" {
+			return "", nil, false
+		}
+		return condLeafToSQL(prefix, col, e.c)
+	case binaryExpr:
+		ls, la, lok := whereExprToSQL(e.left, prefixFor)
+		if !lok {
+			return "", nil, false
+		}
+		rs, ra, rok := whereExprToSQL(e.right, prefixFor)
+		if !rok {
+			return "", nil, false
+		}
+		op := " AND "
+		if e.op == "OR" {
+			op = " OR "
+		}
+		out := make([]any, 0, len(la)+len(ra))
+		out = append(out, la...)
+		out = append(out, ra...)
+		return "(" + ls + op + rs + ")", out, true
+	case notExpr:
+		s, a, ok := whereExprToSQL(e.inner, prefixFor)
+		if !ok {
+			return "", nil, false
+		}
+		return "NOT (" + s + ")", a, true
+	}
+	return "", nil, false
 }
 
 // cypherPropToCol maps a Cypher property name to a SQL column name.
