@@ -29,6 +29,7 @@ func seedProjects(t *testing.T, store *db.Store, n int) {
 			Path:      dir,
 			Name:      fmt.Sprintf("p%03d", i),
 			IndexedAt: now,
+			EdgeCount: 1, // #419: skip the default min_edges=1 empty-graph filter
 		})
 	}
 }

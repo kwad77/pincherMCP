@@ -46,10 +46,12 @@ func TestHandleList_PruneDeadDeletesMissingProjects(t *testing.T) {
 	deadDir := filepath.Join(t.TempDir(), "dead-dir-doesnt-exist")
 	store.UpsertProject(db.Project{
 		ID: "ghost", Path: deadDir, Name: "ghost", IndexedAt: time.Now(),
+		EdgeCount: 1, // #419: skip default min_edges=1 filter
 	})
 	aliveDir := t.TempDir()
 	store.UpsertProject(db.Project{
 		ID: "alive", Path: aliveDir, Name: "alive", IndexedAt: time.Now(),
+		EdgeCount: 1, // #419: skip default min_edges=1 filter
 	})
 
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
@@ -87,6 +89,7 @@ func TestHandleList_PruneDeadEmptyArrayWhenNothingDead(t *testing.T) {
 	aliveDir := t.TempDir()
 	store.UpsertProject(db.Project{
 		ID: "alive", Path: aliveDir, Name: "alive", IndexedAt: time.Now(),
+		EdgeCount: 1, // #419: skip default min_edges=1 filter
 	})
 
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
@@ -118,6 +121,7 @@ func TestHandleList_IncludeDeadAndPruneDead_BothHonored(t *testing.T) {
 	deadDir := filepath.Join(t.TempDir(), "dead-dir-doesnt-exist")
 	store.UpsertProject(db.Project{
 		ID: "ghost", Path: deadDir, Name: "ghost", IndexedAt: time.Now(),
+		EdgeCount: 1, // #419: skip default min_edges=1 filter
 	})
 
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
@@ -154,10 +158,12 @@ func TestHandleList_IncludeDeadAndPruneDead_DogfoodRepro(t *testing.T) {
 	deadDir := filepath.Join(t.TempDir(), "NonexistentProjectThatDoesNotExist")
 	store.UpsertProject(db.Project{
 		ID: "ghost", Path: deadDir, Name: "ghost", IndexedAt: time.Now(),
+		EdgeCount: 1, // #419: skip default min_edges=1 filter
 	})
 	aliveDir := t.TempDir()
 	store.UpsertProject(db.Project{
 		ID: "alive", Path: aliveDir, Name: "alive", IndexedAt: time.Now(),
+		EdgeCount: 1, // #419: skip default min_edges=1 filter
 	})
 
 	// Call shape from the dogfood report: active=false (see all),
