@@ -283,12 +283,14 @@ func TestSupervisor_ClientStdinEOFReturns(t *testing.T) {
 	var clientStdout bytes.Buffer
 
 	fake := newFakeInner(1)
+	t.Cleanup(fake.Close)
 
 	sup := &Supervisor{
-		Stdin:   clientStdinR,
-		Stdout:  &clientStdout,
-		Stderr:  io.Discard,
-		spawnFn: func() (*innerProc, error) { return fake.makeProc(), nil },
+		Stdin:         clientStdinR,
+		Stdout:        &clientStdout,
+		Stderr:        io.Discard,
+		spawnFn:       func() (*innerProc, error) { return fake.makeProc(), nil },
+		ProbeInterval: time.Hour, // disable probes — this test exercises client-stdin EOF, not liveness
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -296,9 +298,13 @@ func TestSupervisor_ClientStdinEOFReturns(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- sup.Run(ctx) }()
 
-	// Immediately close client stdin.
+	// Close client stdin only — Run's shutdownInner will close the
+	// inner pipes, which unblocks the inner→client pump. Closing the
+	// fake from the test goroutine here would race with Run's spawn:
+	// on slow runners (Ubuntu CI), the inner pump sees EOF on the
+	// pre-closed stdout 6× before the client pump catches the EOF,
+	// tripping the respawn circuit breaker (#383).
 	clientStdinW.Close()
-	fake.Close()
 
 	select {
 	case err := <-runDone:
