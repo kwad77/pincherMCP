@@ -124,6 +124,23 @@
     }
   },
   {
+    "name": "doctor",
+    "description": "**Diagnostic report from the local pincher database** — schema version, DB + WAL file sizes, per-project staleness, recent extraction failures, recent slow queries. Same data the `pincher doctor --json` CLI returns; exposed via MCP so dashboards and ops automations can poll without shelling out. Read-only; safe to call repeatedly.",
+    "input_schema": {
+      "properties": {
+        "lookback_hours": {
+          "description": "Hours of history to include in failures + slow-query lists. Default 168 (7 days).",
+          "type": "integer"
+        },
+        "top": {
+          "description": "Maximum failures + slow queries returned per section. Default 10.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
     "name": "fetch",
     "description": "**Use to pull external reference material into the project knowledge base** — API docs, library READMEs, specs, RFCs. Fetches a URL, extracts its text, stores it as a searchable `Document` symbol. After fetching, use `search kind:Document` to find it, or `symbol` with the returned ID to retrieve the full text. The Document kind lives in the `docs` corpus, so `corpus=docs` searches surface it alongside Markdown sections.",
     "input_schema": {
@@ -321,6 +338,19 @@
     }
   },
   {
+    "name": "rebuild_fts",
+    "description": "**Admin: rebuild every FTS5 index from source data.** Equivalent to `pincher rebuild-fts` CLI. Use after symptoms of FTS corruption (search results missing symbols you can confirm exist via `query`). Long-running on large indexes (~1 second per ~10k symbols). Mutates DB; requires confirm=true to actually run — without it, returns the projected work without touching anything.",
+    "input_schema": {
+      "properties": {
+        "confirm": {
+          "description": "If true, perform the rebuild. Default false (dry-run — returns symbol counts only).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
     "name": "schema",
     "description": "**Use before writing a `query`** to see what node/edge kinds exist in this project. Returns node-kind counts (Function, Class, Method, …), edge-kind counts (CALLS, IMPORTS, …), and totals.",
     "input_schema": {
@@ -379,6 +409,14 @@
       "required": [
         "query"
       ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "self_test",
+    "description": "**Smoke-test the pincher install** by exercising the index → search → byte-offset-retrieve loop. Equivalent to `pincher self-test` CLI. Returns per-step pass/fail. Useful as a liveness check after a binary upgrade or in CI. Read-only; uses a temp project that's cleaned up before return.",
+    "input_schema": {
+      "properties": {},
       "type": "object"
     }
   },

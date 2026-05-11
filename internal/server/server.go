@@ -2136,6 +2136,38 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleInit)
+
+	// 19. doctor (#558 phase 2)
+	s.addTool(&mcp.Tool{
+		Name:        "doctor",
+		Description: "**Diagnostic report from the local pincher database** — schema version, DB + WAL file sizes, per-project staleness, recent extraction failures, recent slow queries. Same data the `pincher doctor --json` CLI returns; exposed via MCP so dashboards and ops automations can poll without shelling out. Read-only; safe to call repeatedly.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"lookback_hours":{"type":"integer","description":"Hours of history to include in failures + slow-query lists. Default 168 (7 days)."},
+				"top":{"type":"integer","description":"Maximum failures + slow queries returned per section. Default 10."}
+			}
+		}`),
+	}, s.handleDoctor)
+
+	// 20. rebuild_fts (#558 phase 2)
+	s.addTool(&mcp.Tool{
+		Name:        "rebuild_fts",
+		Description: "**Admin: rebuild every FTS5 index from source data.** Equivalent to `pincher rebuild-fts` CLI. Use after symptoms of FTS corruption (search results missing symbols you can confirm exist via `query`). Long-running on large indexes (~1 second per ~10k symbols). Mutates DB; requires confirm=true to actually run — without it, returns the projected work without touching anything.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"confirm":{"type":"boolean","description":"If true, perform the rebuild. Default false (dry-run — returns symbol counts only)."}
+			}
+		}`),
+	}, s.handleRebuildFTS)
+
+	// 21. self_test (#558 phase 2)
+	s.addTool(&mcp.Tool{
+		Name:        "self_test",
+		Description: "**Smoke-test the pincher install** by exercising the index → search → byte-offset-retrieve loop. Equivalent to `pincher self-test` CLI. Returns per-step pass/fail. Useful as a liveness check after a binary upgrade or in CI. Read-only; uses a temp project that's cleaned up before return.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{}
+		}`),
+	}, s.handleSelfTest)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6543,6 +6575,9 @@ var baselineMethodForTool = map[string]string{
 	"fetch":        baselineMethodNone, // ingests external URL — not a Read replacement
 	"guide":        baselineMethodNone,
 	"init":         baselineMethodNone,
+	"doctor":       baselineMethodNone, // diagnostic report — no Read alternative
+	"rebuild_fts":  baselineMethodNone, // admin: rebuild FTS5 indexes
+	"self_test":    baselineMethodNone, // smoke test — no Read alternative
 }
 
 // humanInt formats an int with thousands separators ("14200" -> "14,200").
