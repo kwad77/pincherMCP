@@ -1066,6 +1066,47 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 	return len(edges)
 }
 
+// isStdlibReceiver reports whether `name` looks like a Go stdlib
+// package leaf (the bit after the last `/` in an import path).
+// When `ToName="strings.Index"` fails QN lookup, the receiver
+// `strings` matches → we skip the in-project method-name fallback
+// (#410) and drop the edge rather than false-bind to any
+// `*Indexer.Index` in the project.
+//
+// This is a stoplist, not a complete check. The proper fix is
+// import-graph-aware resolution (per file, only fall back when
+// the receiver matches an in-project package). Until that lands,
+// this catches the dominant false-positive sources observed in
+// pincher-repo's dogfood pass: every common stdlib package whose
+// methods share names with in-project Methods.
+//
+// Names included cover the stdlib packages whose method/function
+// names overlap most heavily with in-project method names:
+// strings.Index, bytes.Buffer.String, time.Now, os.Open,
+// io.Copy, fmt.Sprintf, http.Get, etc.
+func isStdlibReceiver(name string) bool {
+	switch name {
+	case "strings", "bytes", "time", "os", "fmt", "io", "ioutil",
+		"errors", "context", "sync", "atomic", "filepath", "path",
+		"exec", "url", "http", "regexp", "sort", "strconv", "math",
+		"rand", "log", "slog", "ast", "token", "reflect", "runtime",
+		"unsafe", "unicode", "utf8", "utf16", "binary", "hex",
+		"base64", "csv", "xml", "html", "template", "tls", "syscall",
+		"encoding", "hash", "crypto", "sha256", "sha1", "md5", "rsa",
+		"tar", "zip", "gzip", "flate", "bufio", "bits", "big",
+		"cmplx", "list", "ring", "heap", "container", "image",
+		"color", "draw", "jpeg", "png", "gif", "mime", "multipart",
+		"smtp", "mail", "net", "tcp", "udp", "ip", "rpc", "jsonrpc",
+		"signal", "user", "build", "cgo", "format", "parser",
+		"printer", "scanner", "types", "constant", "doc", "importer",
+		"plugin", "tabwriter", "text", "elliptic", "ecdsa", "ed25519",
+		"x509", "pem", "subtle", "sql", "driver", "expvar", "trace",
+		"pprof":
+		return true
+	}
+	return false
+}
+
 // resolveMethodByName is the #285 receiver-method fallback. Looks up
 // every project symbol with the given short name; returns the ID
 // only when exactly one is of kind=Method. Multiple matches are
@@ -1169,13 +1210,25 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		// exactly one matching Method in the project.
 		if toID == "" {
 			if i := strings.LastIndex(e.ToName, "."); i > 0 && i < len(e.ToName)-1 {
+				receiver := e.ToName[:i]
 				trailing := e.ToName[i+1:]
-				if id, ok := methodCache[trailing]; ok {
-					toID = id
-				} else {
-					id := resolveMethodByName(idx.store, projectID, trailing)
-					methodCache[trailing] = id
-					toID = id
+				// #410: skip the receiver-method fallback when the
+				// receiver looks like a Go stdlib package. Otherwise
+				// `strings.Index(...)` falsely binds to any
+				// `*Indexer.Index` Method in the project (and same
+				// pattern for `bytes.Buffer.String`, `time.Now`,
+				// `os.Open`, etc.). Without import-graph awareness
+				// (the proper fix), this stoplist catches the most
+				// common false-positive sources surfaced during
+				// pincher-repo's own dogfood pass.
+				if !isStdlibReceiver(receiver) {
+					if id, ok := methodCache[trailing]; ok {
+						toID = id
+					} else {
+						id := resolveMethodByName(idx.store, projectID, trailing)
+						methodCache[trailing] = id
+						toID = id
+					}
 				}
 			}
 		}
