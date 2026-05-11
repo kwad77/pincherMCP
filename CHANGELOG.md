@@ -7,44 +7,13 @@ minors.
 
 ## [Unreleased]
 
-### Fixed
-- **search: regex meta-pattern (".*", ".+", ".?") in query rejected
-  with redirect to `query` tool ([#509](https://github.com/kwad77/pincher/issues/509)).**
-  Pre-fix, `search query="handle.*Changes"` leaked `SQL logic error:
-  fts5: syntax error near "."` — the agent typed a regex (natural
-  reach for "match a pattern") and got a raw FTS5 error. Same family
-  as #489 (unbalanced quote → raw leak). Now: pre-flight detects the
-  unmistakable regex meta-patterns `.*` / `.+` / `.?` and returns a
-  friendly error pointing at the right tool: `query` with pinchQL
-  `WHERE n.name =~ 'pattern'`. Narrow on purpose — single `.` (e.g.
-  `db.Open`) and prefix wildcards (`auth*`) continue to work,
-  rescued by the existing #424 sanitizer.
+## [v0.18.0] — 2026-05-11 — failure-as-pedagogy v2 + dopamine + tool-output trust
 
-### Changed
-- **list: filtered_out lump-sum split into per-reason breakdown
-  ([#505](https://github.com/kwad77/pincher/issues/505)).** Pre-fix,
-  the response said `"filtered_out": 116` with no signal whether the
-  hidden projects were dead-on-disk paths, inactive (>14d), or
-  empty-graph stubs — agent had to guess which arg flip would surface
-  what they wanted. Now: `filtered_breakdown: {dead_path, inactive,
-  low_edges}` always present, plus `_meta.filter_diagnosis` naming
-  the recovery args ("3 dead path (pass include_dead=true), 12
-  inactive >14d (pass active=false), 17 below min_edges=1 (pass
-  min_edges=0)") only when something was filtered. Healthy responses
-  stay clean.
+Minor — the v0.18 theme is **failure-as-pedagogy v2 + dopamine + tool-output trust.** v0.17 made every silent zero in pinchQL teach the agent (#473); v0.18 extends that pedagogy across the entire tool surface (tool args, property values, MATCH labels, search regex), adds an occasional dopamine signal so the agent + user see the savings tier they crossed, and tightens two failure surfaces — `dead_code` no longer cries wolf on Go runtime-invoked symbols, and `changes` no longer inflates blast radius into an unfittable payload when a single function changes in a large file.
+
+Schema v21 — adds the `celebrations` table for one-shot per-installation milestone tracking.
 
 ### Added
-- **guide: new `tool_audit` shape for empirical tool-output investigation
-  ([#497](https://github.com/kwad77/pincher/issues/497)).** Pre-fix,
-  asking guide "find false positives in dead_code" returned the generic
-  "fix" recipe (search for the tool's source, read it, trace callers) —
-  the wrong investigation. The right shape is empirical: run the tool,
-  verify each result, cluster the FPs by mechanism. New shape detects
-  a known tool name + audit keyword combination ("FPs", "audit",
-  "noise", "verify output", "precision"). Recipe: (1) run the audited
-  tool, (2) `trace` inbound on each result to verify, (3) `context`
-  the unexpected ones to identify the missed-edge mechanism.
-
 - **Occasional milestone celebration in `_meta`
   ([#494](https://github.com/kwad77/pincher/issues/494)).** Tool
   responses now surface a one-line `_meta.celebration` when cumulative
@@ -53,68 +22,73 @@ minors.
   fires exactly once per installation (persisted in a new
   `celebrations` table, schema v21). When a single huge call vaults
   past multiple tiers, only the highest one fires — no spam. 5×
-  spacing means real milestones, not nagging. The dopamine layer
-  iter-4 promised, scoped down to the single feature that fits in
-  the existing `_meta` envelope.
+  spacing means real milestones, not nagging.
+- **guide: new `tool_audit` shape for empirical tool-output investigation
+  ([#497](https://github.com/kwad77/pincher/issues/497)).** Pre-fix,
+  asking guide "find false positives in dead_code" returned the generic
+  "fix" recipe (search for the tool's source, read it, trace callers) —
+  the wrong investigation. New shape detects a known tool name + audit
+  keyword combination. Recipe: (1) run the audited tool, (2) `trace`
+  inbound on each result to verify, (3) `context` the unexpected ones
+  to identify the missed-edge mechanism.
 
 ### Changed
 - **neighborhood: description rewritten to lead with what it ISN'T
   ([#498](https://github.com/kwad77/pincher/issues/498)).** The name
-  suggests graph adjacency; the tool returns same-file symbols. Agents
-  reach for it expecting `trace direction=both` semantics and get a
-  paginated file dump instead. The fix is descriptive (cheap, no
-  rename, no breaking change): lead the description with "Returns
-  same-file symbols, NOT graph adjacency", point at `trace` for what
-  they actually want. Pairs with #500's unknown-args warnings —
-  passing `depth=1` (the natural-but-wrong arg) now surfaces in
-  `_meta.warnings`. Full rename / alias deferred to a future release.
+  suggests graph adjacency; the tool returns same-file symbols.
+  Description now leads with "Returns same-file symbols, NOT graph
+  adjacency" and points at `trace direction=both` for what agents
+  actually want. Pairs with #500's unknown-args warnings — passing
+  `depth=1` (the natural-but-wrong arg) now surfaces in
+  `_meta.warnings`. Full rename deferred.
+- **list: filtered_out lump-sum split into per-reason breakdown
+  ([#505](https://github.com/kwad77/pincher/issues/505)).** Pre-fix,
+  `"filtered_out": 116` was opaque. Now: `filtered_breakdown:
+  {dead_path, inactive, low_edges}` always present, plus
+  `_meta.filter_diagnosis` naming the recovery args
+  (`include_dead=true`, `active=false`, `min_edges=0`) only when
+  something was filtered. Healthy responses stay clean.
 
 ### Fixed
 - **All tools: unknown args surface in `_meta.warnings` instead of
   silent ignore ([#499](https://github.com/kwad77/pincher/issues/499)).**
   Pre-fix, calling `neighborhood id=... depth=1` silently dropped the
-  `depth` arg (it isn't in `neighborhood`'s schema) and returned a
-  same-file paginated result the agent didn't expect. Same failure
-  family as #473 (typo'd pinchQL properties): silent ignore is the
-  bug; surfacing the typo + listing accepted args is the fix. Per-tool
-  arg allow-lists are computed once from the registered InputSchema
-  on first call. Adds zero overhead when args are valid (pure map
-  lookups).
+  `depth` arg. Same failure family as #473 (typo'd pinchQL properties).
+  Per-tool arg allow-lists computed once from the registered
+  InputSchema on first call. Zero overhead when args are valid.
 - **query: empty-result diagnosis extends to enum-shaped property
-  values ([#501](https://github.com/kwad77/pincher/issues/501)).**
-  Pre-fix, `WHERE n.kind = 'init'` silently returned 0 rows because
-  `'init'` isn't in the kind enum (`init` is a name, not a kind).
-  Same failure shape as #473 one layer down: not the property name
-  but the property VALUE. Now: when a query returns 0 rows AND filters
-  on `kind` / `language` (alias `label` included) with `=`, the engine
-  queries the project's distinct values for that column and surfaces a
-  warning naming the offender + listing the actually-observed values.
-  Cost: at most one cheap `SELECT DISTINCT` per probe per 0-row query;
-  zero cost on non-empty results (the diagnostic is gated on
-  `Total == 0` to keep noise out of healthy responses).
+  values + MATCH-pattern labels
+  ([#501](https://github.com/kwad77/pincher/issues/501)).** Pre-fix,
+  `WHERE n.kind = 'init'` and `MATCH (n:Funtion)` both silently
+  returned 0 rows. Now: when a query returns 0 rows AND filters on
+  `kind` / `language` (incl. alias `label`) with `=`, OR uses one of
+  those values as a MATCH-pattern label, the engine queries the
+  project's distinct values and surfaces a warning naming the offender
+  + listing actually-observed values. Gated on `Total == 0`.
+- **search: regex meta-pattern (".*", ".+", ".?") in query rejected
+  with redirect to `query` tool
+  ([#509](https://github.com/kwad77/pincher/issues/509)).** Pre-fix,
+  `search query="handle.*Changes"` leaked `SQL logic error: fts5:
+  syntax error near "."`. Now returns a friendly redirect to `query`
+  with pinchQL `WHERE n.name =~ 'pattern'`. Narrow check — single `.`
+  (e.g. `db.Open`) and prefix wildcards (`auth*`) continue to work.
 - **changes: blast radius now intersects diff hunks with symbol line
   ranges ([#502](https://github.com/kwad77/pincher/issues/502)).**
   Pre-fix, every symbol in any changed file was treated as "changed"
-  — adding 3 functions to a 6000-line file inflated `changed_symbols`
-  to 240 and the BFS to 472 critical-impacted symbols, producing a
-  345 KB response that didn't fit in agent context. Now `changes`
-  fetches `git diff --unified=0` alongside `--name-only` and parses
-  hunk headers (`@@ -old +new @@`); symbols whose `[StartLine,
-  EndLine]` doesn't overlap any hunk are dropped. On the same 3-PR
-  workload: `changed_symbols` drops from 240 → 3, payload from
-  345 KB → ~3 KB. Fallback preserved: if `git diff --unified=0`
-  fails (e.g. permissions), the per-file all-symbols behaviour
-  kicks back in so the tool stays usable.
+  — a 3-function PR on `server.go` inflated `changed_symbols` to 240,
+  BFS to 472 critical, payload to 345 KB (didn't fit in context).
+  Now: hunk headers from `git diff --unified=0` are intersected with
+  each symbol's `[StartLine, EndLine]`. Same 3-PR workload:
+  changed_symbols 240 → 3, payload 345 KB → ~3 KB. Fallback to the
+  pre-fix behaviour when hunk parsing fails so the tool stays usable.
 - **dead_code precision: Go init / TestMain / main filtered
-  ([#492](https://github.com/kwad77/pincher/issues/492)).** The static
-  CALLS graph cannot see runtime-invoked callers (Go init() called at
-  package load, TestMain called by `go test` discovery, main called
-  by the runtime). These symbols are necessarily false positives in
-  dead_code — they have no inbound edges by definition, yet are
-  always reachable. Filter is language-gated (Go only) and name-list
-  bounded to avoid hiding legitimately-dead symbols in other
-  languages. Interface-dispatch false positives ([#493]) need a
-  separate satisfaction-analysis pass; not addressed here.
+  ([#492](https://github.com/kwad77/pincher/issues/492)).** Runtime-
+  invoked Go symbols (`init` called at package load, `TestMain` by
+  `go test`, `main` by the runtime) have no inbound CALLS edges by
+  definition — necessarily false positives. Language-gated +
+  name-list bounded so legitimately-dead symbols in other languages
+  aren't hidden. Interface-dispatch false positives ([#493]) tracked
+  for v0.19 — needs satisfaction analysis.
 
 ## [v0.17.0] — 2026-05-11 — honest savings + failure-as-pedagogy
 
