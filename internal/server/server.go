@@ -2550,6 +2550,48 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
+	// #453 AND→OR fallback. FTS5's default between bare tokens is
+	// implicit AND; multi-token unquoted queries return 0 when no single
+	// symbol matches every term. A common dogfood pattern is "Watch
+	// poll Index" — the user means "find anything related to these
+	// keywords" but FTS5 reads "find a symbol whose text contains all
+	// three". When the AND path returns 0 (after corpus fallthrough)
+	// AND the query is multi-token AND wasn't user-quoted AND has no
+	// explicit FTS5 operator (so we know the user didn't ask for AND),
+	// retry once joining the per-token-sanitised tokens with " OR ".
+	// Surface `and_fallback_to_or=true` in _meta so the agent knows
+	// the recovery happened.
+	andFellThroughToOr := false
+	orQuery := ""
+	if len(results) == 0 && !strings.Contains(query, `"`) {
+		tokens := strings.Fields(query)
+		if len(tokens) > 1 && !containsBareFTS5Operator(tokens) {
+			sanitised := make([]string, len(tokens))
+			for i, t := range tokens {
+				sanitised[i] = wrapTokenIfNeeded(t)
+			}
+			orQuery = strings.Join(sanitised, " OR ")
+			retryCorpora := []string{corpus}
+			if corpus == "" {
+				retryCorpora = []string{"", db.CorpusConfig, db.CorpusDocs}
+			}
+			for _, fb := range retryCorpora {
+				orResults, orErr := s.store.SearchSymbolsByCorpus(projectID, orQuery, kind, language, fb, fetchLimit)
+				if orErr != nil {
+					continue
+				}
+				if len(orResults) > 0 {
+					results = orResults
+					andFellThroughToOr = true
+					if corpus == "" && fb != "" {
+						fellthroughTo = fb
+					}
+					break
+				}
+			}
+		}
+	}
+
 	// rawPreConfidenceCount is the result count BEFORE the min_confidence
 	// post-filter (#246). Used by the empty-result diagnosis verifier:
 	// if the raw count was > 0 but post-filter is 0, min_confidence is
@@ -2659,6 +2701,13 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	if fellthroughTo != "" {
 		meta["fellthrough_to"] = fellthroughTo
+	}
+	// #453: surface the AND→OR recovery so the agent knows the query
+	// rewrite happened and can re-issue the OR form directly next time
+	// (or refine to a narrower term set).
+	if andFellThroughToOr {
+		meta["and_fallback_to_or"] = true
+		meta["effective_query"] = orQuery
 	}
 	// Suggest the obvious next tool call per top result kind. Reduces
 	// decision friction — agents see the next move spelled out instead of
@@ -3031,6 +3080,12 @@ func isExactIdentifierQuery(query string) bool {
 // is checked before filter args, because a numeric threshold is the
 // least-obvious filter to remember when debugging.
 func diagnoseEmptySearch(query, kind, language, corpus string, minConfidence float64) string {
+	// #453: when the query is multi-token unquoted, the failure mode is
+	// usually "no symbol matched all N tokens (AND) and none matched any
+	// of them (OR)" — surface both halves so the agent stops thinking
+	// about confidence/kind/language tweaks for a query that's just
+	// missing the underlying name.
+	isMultiTokenUnquoted := !strings.ContainsAny(query, "\"") && len(strings.Fields(query)) > 1
 	switch {
 	case minConfidence > 0:
 		return fmt.Sprintf("no matches at min_confidence ≥ %.2f — bottom-floor symbols (lockfile keys, README headings) need min_confidence=0.0 to surface", minConfidence)
@@ -3040,6 +3095,8 @@ func diagnoseEmptySearch(query, kind, language, corpus string, minConfidence flo
 		return fmt.Sprintf("no matches in language=%q — try without the language filter or check the project's actual language mix via `architecture`", language)
 	case corpus != "" && corpus != "code":
 		return fmt.Sprintf("no matches in corpus=%q — try corpus=code (the default for source identifiers) or omit corpus", corpus)
+	case isMultiTokenUnquoted:
+		return fmt.Sprintf("no symbol matched all of %q (FTS5 default = AND) and the OR-fallback also returned 0 — none of the terms exist as symbol names. Re-think the keyword set or `list` projects to confirm scope", query)
 	case !strings.ContainsAny(query, "*\""):
 		return fmt.Sprintf("no exact-term matches for %q — wildcards (`%s*`) or phrase queries (`\"%s\"`) often surface partial-name hits FTS5 BM25 misses", query, query, query)
 	default:
