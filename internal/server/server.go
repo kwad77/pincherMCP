@@ -204,7 +204,31 @@ type Server struct {
 	// newTestServer so the existing exit-gate assertions stay
 	// deterministic.
 	autoRestartDelay time.Duration
+
+	// projectIDCache (#401) avoids the per-MCP-call SQL hit in
+	// resolveProjectID. Keys are caller-supplied project args (name
+	// or ID); values are *projectIDCacheEntry with the resolved ID
+	// and an expiry timestamp. 60s TTL bounds staleness for the
+	// rare case where a project is renamed mid-session — the next
+	// lookup after expiry refreshes from the store. handleIndex
+	// invalidates explicitly when it knows projects changed.
+	//
+	// sync.Map (not map+RWMutex) because the access pattern is
+	// overwhelmingly reads + occasional writes, no deletes during
+	// hot loops; the same shape statsCallsByLanguage uses above.
+	projectIDCache sync.Map
 }
+
+// projectIDCacheEntry is the cached resolution of a project arg.
+// Empty IDs are NOT cached (they signal "not found", which we want
+// to revalidate next call so a freshly-indexed project becomes
+// visible immediately).
+type projectIDCacheEntry struct {
+	id        string
+	expiresAt time.Time
+}
+
+const projectIDCacheTTL = 60 * time.Second
 
 // New creates and registers all 14 MCP tools.
 func New(store *db.Store, indexer *index.Indexer, version string) *Server {
@@ -1561,12 +1585,23 @@ func (s *Server) resolveProjectID(projectArg string) (string, error) {
 		}
 		return s.sessionID, nil
 	}
+	// #401: cache the projectArg → ID resolution for 60s. Hot path
+	// for every MCP call that passes an explicit project arg —
+	// pre-fix this hit GetProject (1 SQL) and on miss fell through
+	// to ListProjects (full scan). Cache miss returns to the same
+	// path; cache hit skips both SQLs. handleIndex invalidates the
+	// cache so a freshly-indexed project resolves on the next call
+	// instead of waiting for TTL expiry.
+	if cached, ok := s.lookupProjectIDCache(projectArg); ok {
+		return cached, nil
+	}
 	// Accept either a name or ID
 	p, err := s.store.GetProject(projectArg)
 	if err != nil {
 		return "", err
 	}
 	if p != nil {
+		s.storeProjectIDCache(projectArg, p.ID)
 		return p.ID, nil
 	}
 	// Try matching by name
@@ -1576,10 +1611,52 @@ func (s *Server) resolveProjectID(projectArg string) (string, error) {
 	}
 	for _, proj := range all {
 		if proj.Name == projectArg {
+			s.storeProjectIDCache(projectArg, proj.ID)
 			return proj.ID, nil
 		}
 	}
 	return "", fmt.Errorf("project %q not found — use `list` to see available projects", projectArg)
+}
+
+// lookupProjectIDCache returns the cached ID for projectArg if
+// present and not yet expired. Misses (cold + expired) both
+// return ("", false) so the caller falls through to the SQL path.
+func (s *Server) lookupProjectIDCache(projectArg string) (string, bool) {
+	v, ok := s.projectIDCache.Load(projectArg)
+	if !ok {
+		return "", false
+	}
+	entry, ok := v.(*projectIDCacheEntry)
+	if !ok || time.Now().After(entry.expiresAt) {
+		s.projectIDCache.Delete(projectArg)
+		return "", false
+	}
+	return entry.id, true
+}
+
+// storeProjectIDCache records a successful resolution. Empty IDs
+// are NOT cached — they would mean "not found", which we want to
+// revalidate next call so a freshly-indexed project becomes
+// visible immediately.
+func (s *Server) storeProjectIDCache(projectArg, id string) {
+	if id == "" {
+		return
+	}
+	s.projectIDCache.Store(projectArg, &projectIDCacheEntry{
+		id:        id,
+		expiresAt: time.Now().Add(projectIDCacheTTL),
+	})
+}
+
+// invalidateProjectIDCache clears the project resolution cache.
+// Called from handleIndex after a successful index/re-index, since
+// that's the operation that can introduce a new project name → ID
+// mapping or change an existing one.
+func (s *Server) invalidateProjectIDCache() {
+	s.projectIDCache.Range(func(key, _ any) bool {
+		s.projectIDCache.Delete(key)
+		return true
+	})
 }
 
 // resolveProjectRoot returns the filesystem root for a project.
@@ -1893,6 +1970,12 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if err != nil {
 		return errResult(fmt.Sprintf("index error: %v", err)), nil
 	}
+
+	// #401: a successful index/re-index can introduce new project
+	// name → ID mappings or change existing ones. Clear the cache
+	// so the next resolveProjectID call sees the fresh state
+	// instead of waiting for the 60s TTL.
+	s.invalidateProjectIDCache()
 
 	data := map[string]any{
 		"project":     result.Project,

@@ -9,6 +9,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -266,6 +267,32 @@ func (s *Store) attachReaderPool(path string, readers int) error {
 	ro.SetMaxOpenConns(readers)
 	ro.SetMaxIdleConns(readers)
 	s.ro = ro
+
+	// #401: warm the reader pool so the first MCP call after server
+	// start doesn't pay the connection-open cost (~5-15ms per
+	// connection on cold disk). database/sql opens connections
+	// lazily; explicitly grab and release N connections here so
+	// `readers` slots are pre-filled. PingContext acquires the
+	// connection, runs a no-op probe, returns it to the pool. We
+	// run them in parallel — each Ping waits for its own slot, and
+	// they don't contend with each other since the pool has N
+	// independent slots.
+	warmCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(readers)
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer wg.Done()
+			conn, err := ro.Conn(warmCtx)
+			if err != nil {
+				return // best-effort; lazy open will still work on first real call
+			}
+			_ = conn.PingContext(warmCtx)
+			_ = conn.Close()
+		}()
+	}
+	wg.Wait()
 	return nil
 }
 
