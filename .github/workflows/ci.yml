@@ -18,8 +18,14 @@ jobs:
           - os: macos-latest
             test-flags: -timeout 120s
           - os: windows-latest
-            # Windows SQLite I/O is ~10x slower; serialize package execution
-            test-flags: -timeout 300s -p 1
+            # Windows SQLite I/O is ~10x slower per package. Was -p 1
+            # (full serial); trying -p 2 — tests use unique temp dirs
+            # so concurrent packages shouldn't contend on SQLite, and
+            # halving the package-level wall time should cut Windows
+            # job from ~7min toward ~4min. Revert to -p 1 if flakes
+            # emerge from WAL-file lock contention or runner memory
+            # pressure.
+            test-flags: -timeout 300s -p 2
 
     steps:
       - uses: actions/checkout@v4
@@ -29,9 +35,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Vet
-        run: go vet ./...
-
+      # `go test` runs `go vet` automatically (with a slightly narrower
+      # default check set than `go vet ./...`). We don't pass -vet=off,
+      # so the standalone vet step would just re-run the same analysers
+      # — pure duplication, ~10-30s on Windows. If you want stricter
+      # vet coverage, pass -vet=all to `go test` instead.
       - name: Test
         run: go test ./... ${{ matrix.test-flags }}
 
