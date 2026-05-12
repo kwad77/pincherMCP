@@ -1,9 +1,24 @@
 
 *{box-sizing:border-box;margin:0;padding:0}
+/* #549: theme variables. Default = dark (GitHub-dark palette).
+   Light variant overrides via :root[data-theme="light"]. The auto
+   mode is the system @media query; explicit attribute wins. */
 :root{
   --bg:#0d1117;--surface:#161b22;--border:#30363d;
   --text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;
   --green:#3fb950;--purple:#a371f7;--orange:#f0883e;--red:#f85149;
+}
+:root[data-theme="light"]{
+  --bg:#f6f8fa;--surface:#ffffff;--border:#d0d7de;
+  --text:#1f2328;--muted:#656d76;--accent:#0969da;
+  --green:#1a7f37;--purple:#8250df;--orange:#bc4c00;--red:#cf222e;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme]){
+    --bg:#f6f8fa;--surface:#ffffff;--border:#d0d7de;
+    --text:#1f2328;--muted:#656d76;--accent:#0969da;
+    --green:#1a7f37;--purple:#8250df;--orange:#bc4c00;--red:#cf222e;
+  }
 }
 body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;min-height:100vh}
 header{background:linear-gradient(135deg,#0d1117 0%,#1a1f2e 100%);border-bottom:1px solid var(--border);padding:20px 32px;display:flex;align-items:center;gap:16px}
@@ -14,6 +29,7 @@ header p{color:var(--muted);font-size:13px;margin-top:3px}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.4px}
 .badge-green{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
 .badge-blue{background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.25)}
+.badge-muted{background:transparent;color:var(--muted);border:1px solid var(--border);font-variant-numeric:tabular-nums}
 .header-btn{background:none;border:1px solid var(--border);border-radius:20px;color:var(--muted);cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.4px;padding:3px 12px;transition:all .15s;font-family:inherit}
 .header-btn:hover{border-color:var(--accent);color:var(--accent)}
 .header-btn.authed{border-color:var(--green);color:var(--green)}

@@ -7,6 +7,24 @@ minors.
 
 ## [Unreleased]
 
+## [v0.28.0] — 2026-05-12 — dashboard auto-refresh polish
+
+Four issues from umbrella #519's auto-refresh batch: a projection-banner guard against insufficient data, a freshness indicator + a polling manager that pauses when the tab is hidden, and a three-state dark/light/auto theme toggle. All four touch dashboard JS/CSS only.
+
+No schema change — all v0.28 work runs on schema v23.
+
+### Added
+- **Projection banner guard against insufficient data
+  ([#544](https://github.com/kwad77/pincher/issues/544),
+  [#602](https://github.com/kwad77/pincher/pull/602)).** Pre-fix the projection extrapolated from 2 sessions over <1 day produced "1M tokens/mo" or NaN. Now `computeProjection(sessions)` returns `{needsMoreData: true, days}` below the 7-day floor (rendered as "Need 7+ days of history to project"); `null` on zero savings or invalid timestamps; capped result on monthly projections >100M tokens. Pure function — testable independently of DOM.
+- **Freshness indicator + visibility-aware poll manager
+  ([#545](https://github.com/kwad77/pincher/issues/545),
+  [#546](https://github.com/kwad77/pincher/issues/546),
+  [#602](https://github.com/kwad77/pincher/pull/602)).** New `pollManager(label, fn, ms)` wraps `setInterval` and tracks last-fetch time per label in `_lastRefresh`. A `visibilitychange` listener clears every poller's timer when the tab is hidden and fires an immediate refresh + restarts on visible. The header gains a `.updated-ago` badge that re-renders every second from `_lastRefresh` ("just now", "23s ago", "2m ago", "1h ago"). Replaces the bare `setInterval(load, 30000)` + `setInterval(loadProjection, 60000)` calls — bare calls would short-circuit the visibility wrapper.
+- **Three-state theme toggle (auto/light/dark)
+  ([#549](https://github.com/kwad77/pincher/issues/549),
+  [#602](https://github.com/kwad77/pincher/pull/602)).** CSS adds `:root[data-theme="light"]` palette + `@media (prefers-color-scheme: light)` for the system-default path. Header `🌗`/`☀️`/`🌙` button cycles auto → light → dark → auto, persisted via `localStorage`. `applyStoredTheme()` runs before first paint to avoid a dark-flash on light-mode reload. Auto mode = no `data-theme` attr, system query takes over; explicit attr always wins.
+
 ## [v0.27.0] — 2026-05-12 — dashboard search polish
 
 Four issues from umbrella #519's UX-polish batch: search-as-you-type, in-snippet match highlighting, sparkline tooltip, and a "Show all" toggle on the architecture detail truncation. All four touch dashboard JS only — no schema or API changes.

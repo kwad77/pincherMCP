@@ -60,6 +60,8 @@ const dashboardTemplate = `<!DOCTYPE html>
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-blue" id="last-refresh">—</span>
+    <span class="badge badge-muted updated-ago" data-source="overview" title="Time since last auto-refresh">—</span>
+    <button class="header-btn" id="theme-btn" title="Toggle theme (auto/light/dark)" data-action="cycleTheme">🌗</button>
     <button class="header-btn" id="auth-btn" title="Set HTTP bearer token (required when pincher is started with --http-key)" data-action="promptForKey">Auth</button>
   </div>
 </header>
@@ -185,10 +187,25 @@ const dashboardTemplate = `<!DOCTYPE html>
 // dashboardCSSContent is the dashboard stylesheet, served from /v1/dashboard.css.
 const dashboardCSSContent = `
 *{box-sizing:border-box;margin:0;padding:0}
+/* #549: theme variables. Default = dark (GitHub-dark palette).
+   Light variant overrides via :root[data-theme="light"]. The auto
+   mode is the system @media query; explicit attribute wins. */
 :root{
   --bg:#0d1117;--surface:#161b22;--border:#30363d;
   --text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;
   --green:#3fb950;--purple:#a371f7;--orange:#f0883e;--red:#f85149;
+}
+:root[data-theme="light"]{
+  --bg:#f6f8fa;--surface:#ffffff;--border:#d0d7de;
+  --text:#1f2328;--muted:#656d76;--accent:#0969da;
+  --green:#1a7f37;--purple:#8250df;--orange:#bc4c00;--red:#cf222e;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme]){
+    --bg:#f6f8fa;--surface:#ffffff;--border:#d0d7de;
+    --text:#1f2328;--muted:#656d76;--accent:#0969da;
+    --green:#1a7f37;--purple:#8250df;--orange:#bc4c00;--red:#cf222e;
+  }
 }
 body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;min-height:100vh}
 header{background:linear-gradient(135deg,#0d1117 0%,#1a1f2e 100%);border-bottom:1px solid var(--border);padding:20px 32px;display:flex;align-items:center;gap:16px}
@@ -199,6 +216,7 @@ header p{color:var(--muted);font-size:13px;margin-top:3px}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.4px}
 .badge-green{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
 .badge-blue{background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.25)}
+.badge-muted{background:transparent;color:var(--muted);border:1px solid var(--border);font-variant-numeric:tabular-nums}
 .header-btn{background:none;border:1px solid var(--border);border-radius:20px;color:var(--muted);cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.4px;padding:3px 12px;transition:all .15s;font-family:inherit}
 .header-btn:hover{border-color:var(--accent);color:var(--accent)}
 .header-btn.authed{border-color:var(--green);color:var(--green)}
@@ -472,6 +490,37 @@ function promptForKey(message) {
   showToast('Auth token saved; reloading…');
   setTimeout(() => location.reload(), 400);
   return val;
+}
+
+// #549: theme toggle. Three states cycle on click — auto → light → dark → auto.
+// Stored in localStorage so it survives reload. "auto" removes the
+// data-theme attribute so the @media query takes over.
+const THEME_STORAGE = 'pincher_theme';
+
+function applyStoredTheme() {
+  const v = localStorage.getItem(THEME_STORAGE);
+  if (v === 'light' || v === 'dark') {
+    document.documentElement.setAttribute('data-theme', v);
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  // Update the toggle icon to reflect current state.
+  const btn = document.getElementById('theme-btn');
+  if (btn) {
+    btn.textContent = v === 'light' ? '☀️' : v === 'dark' ? '🌙' : '🌗';
+  }
+}
+
+function cycleTheme() {
+  const cur = localStorage.getItem(THEME_STORAGE) || 'auto';
+  const next = cur === 'auto' ? 'light' : cur === 'light' ? 'dark' : 'auto';
+  if (next === 'auto') {
+    localStorage.removeItem(THEME_STORAGE);
+  } else {
+    localStorage.setItem(THEME_STORAGE, next);
+  }
+  applyStoredTheme();
+  showToast('Theme: '+next);
 }
 
 function updateAuthBadge() {
@@ -1216,36 +1265,83 @@ async function loadSessions() {
 }
 
 // ── Cost projection ────────────────────────────────────────────────────────
+// #544: minimum data window before showing the projection banner.
+// Below this the math extrapolates noise \u2014 typical bug: 2 sessions
+// over <1 day produced "1M tokens/mo" or NaN. 7 days is the floor
+// where the rate stops being mostly-randomness.
+const PROJECTION_MIN_DAYS = 7;
+// #544: cap the displayed monthly rate. Above this the number is
+// either wrong (math bug) or so big it strains credibility \u2014 better
+// to show the cap with a "~" indicator than a misleading 999B.
+const PROJECTION_MAX_TOKENS_PER_MONTH = 100_000_000;
+
+// computeProjection extracts the math from loadProjection so it can
+// be unit-tested with synthetic session arrays. Returns null when
+// the data isn't sufficient to project (insufficient days, zero
+// savings, NaN/Infinity guard). Pure function \u2014 no DOM access.
+function computeProjection(sessions) {
+  if (!Array.isArray(sessions) || sessions.length < 2) return null;
+  const totalSaved = sessions.reduce((a, s) => a + (s.tokens_saved || 0), 0);
+  const totalCalls = sessions.reduce((a, s) => a + (s.calls || 0), 0);
+  if (totalSaved === 0) return null;
+  const dates = sessions.map(s => new Date(s.started_at)).filter(d => !isNaN(d));
+  if (!dates.length) return null;
+  const oldest = Math.min(...dates.map(d => d.getTime()));
+  const newest = Math.max(...dates.map(d => d.getTime()));
+  const days = (newest - oldest) / 86400000;
+  if (!isFinite(days) || days < PROJECTION_MIN_DAYS) {
+    return { needsMoreData: true, days: Math.max(0, days), totalSaved, totalCalls };
+  }
+  let dailyTokens = totalSaved / days;
+  let monthlyTokens = dailyTokens * 30;
+  // NaN/Infinity guard: cap or null.
+  if (!isFinite(dailyTokens) || !isFinite(monthlyTokens)) return null;
+  if (monthlyTokens > PROJECTION_MAX_TOKENS_PER_MONTH) {
+    monthlyTokens = PROJECTION_MAX_TOKENS_PER_MONTH;
+    dailyTokens = monthlyTokens / 30;
+  }
+  return {
+    needsMoreData: false,
+    days: Math.round(days),
+    sessionCount: sessions.length,
+    dailyTokens: Math.round(dailyTokens),
+    monthlyTokens: Math.round(monthlyTokens),
+    totalSaved,
+    totalCalls,
+    capped: monthlyTokens >= PROJECTION_MAX_TOKENS_PER_MONTH,
+  };
+}
+
 async function loadProjection() {
-  const el=document.getElementById('projection-banner');
-  if(!el) return;
+  const el = document.getElementById('projection-banner');
+  if (!el) return;
   try {
-    const data=await fetch('/v1/sessions').then(r=>r.json());
-    const sessions=data.sessions||[];
-    if(sessions.length<2){el.innerHTML='';return;}
-    const totalSaved=sessions.reduce((a,s)=>a+(s.tokens_saved||0),0);
-    const totalCalls=sessions.reduce((a,s)=>a+(s.calls||0),0);
-    // Date range from oldest to newest
-    const dates=sessions.map(s=>new Date(s.started_at)).filter(d=>!isNaN(d));
-    if(!dates.length||totalSaved===0){el.innerHTML='';return;}
-    const oldest=Math.min(...dates.map(d=>d.getTime()));
-    const newest=Math.max(...dates.map(d=>d.getTime()));
-    const days=Math.max((newest-oldest)/86400000, 1);
-    const dailyTokens=Math.round(totalSaved/days);
-    const monthlyTokens=Math.round(dailyTokens*30);
-    el.innerHTML='<div class="proj-banner">'+
+    const data = await fetch('/v1/sessions').then(r => r.json());
+    const p = computeProjection(data.sessions || []);
+    if (!p) { el.innerHTML = ''; return; }
+    if (p.needsMoreData) {
+      el.innerHTML = '<div class="proj-banner proj-banner-pending">'+
+        '<div class="proj-banner-icon">\u23f3</div>'+
+        '<div class="proj-banner-body">'+
+          '<div class="proj-banner-title">Projection unavailable</div>'+
+          '<div class="proj-banner-sub">Need '+PROJECTION_MIN_DAYS+'+ days of session history to project (currently '+
+            (p.days < 1 ? '<1 day' : Math.round(p.days)+' days')+'). Keep using pincher \u2014 the rate stabilizes after a week.</div>'+
+        '</div></div>';
+      return;
+    }
+    el.innerHTML = '<div class="proj-banner">'+
       '<div class="proj-banner-icon">\ud83d\udcc8</div>'+
       '<div class="proj-banner-body">'+
         '<div class="proj-banner-title">Projected Savings Rate</div>'+
-        '<div class="proj-banner-rate">~'+fmt(monthlyTokens)+' tokens/mo</div>'+
-        '<div class="proj-banner-sub">Based on '+sessions.length+' sessions over '+Math.round(days)+' days \u00b7 ~'+fmt(dailyTokens)+' tokens/day</div>'+
+        '<div class="proj-banner-rate">'+(p.capped?'\u2265':'~')+fmt(p.monthlyTokens)+' tokens/mo</div>'+
+        '<div class="proj-banner-sub">Based on '+p.sessionCount+' sessions over '+p.days+' days \u00b7 ~'+fmt(p.dailyTokens)+' tokens/day'+(p.capped?' \u00b7 capped':'')+'</div>'+
       '</div>'+
       '<div class="proj-banner-pills">'+
-        '<div class="proj-banner-pill">'+fmt(totalSaved)+' tokens saved</div>'+
-        '<div class="proj-banner-pill blue">'+totalCalls+' tool calls</div>'+
+        '<div class="proj-banner-pill">'+fmt(p.totalSaved)+' tokens saved</div>'+
+        '<div class="proj-banner-pill blue">'+p.totalCalls+' tool calls</div>'+
       '</div>'+
     '</div>';
-  } catch(e) { document.getElementById('projection-banner').innerHTML=''; }
+  } catch(e) { document.getElementById('projection-banner').innerHTML = ''; }
 }
 
 // ── Project deep-dive ──────────────────────────────────────────────────────
@@ -1368,13 +1464,72 @@ document.body.addEventListener('keydown', e => {
   if (el) _dispatchSimple(el, 'data-action-enter');
 });
 
+// #545 + #546: pollManager wraps setInterval with two enhancements:
+// 1) tracks last-fetch time per source (#545) so the staleness
+//    indicator can show "Updated Ns ago".
+// 2) pauses the interval when the tab is hidden (#546). On visible
+//    again, fires an immediate refresh AND restarts the interval.
+// Returns nothing — the manager owns the timer and the visibility
+// listener for the lifetime of the page.
+const _lastRefresh = {};
+const _pollers = []; // {label, fn, ms, timerId}
+
+function pollManager(label, fn, ms) {
+  const wrapped = async () => {
+    try { await fn(); } catch(_) {}
+    _lastRefresh[label] = Date.now();
+  };
+  // Initial fire — also seeds _lastRefresh so the indicator has a
+  // value to render on first paint.
+  wrapped();
+  const entry = { label, fn: wrapped, ms, timerId: null };
+  entry.timerId = setInterval(wrapped, ms);
+  _pollers.push(entry);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // #546: pause every poller. The label survives so we can resume.
+    _pollers.forEach(p => {
+      if (p.timerId !== null) { clearInterval(p.timerId); p.timerId = null; }
+    });
+  } else {
+    // Resume: fire each poller once immediately for a fresh paint,
+    // then restart the interval.
+    _pollers.forEach(p => {
+      if (p.timerId === null) {
+        p.fn();
+        p.timerId = setInterval(p.fn, p.ms);
+      }
+    });
+  }
+});
+
+// #545: tick the staleness indicator every second. Single setInterval
+// for all sources — re-renders all .updated-ago elements from
+// _lastRefresh on each tick. Cheap; one DOM read + N short writes.
+function _renderStaleness() {
+  const now = Date.now();
+  document.querySelectorAll('.updated-ago').forEach(el => {
+    const src = el.getAttribute('data-source');
+    const last = _lastRefresh[src];
+    if (!last) { el.textContent = ''; return; }
+    const sec = Math.round((now - last) / 1000);
+    el.textContent = sec < 5 ? 'just now'
+      : sec < 60 ? sec + 's ago'
+      : sec < 3600 ? Math.round(sec / 60) + 'm ago'
+      : Math.round(sec / 3600) + 'h ago';
+  });
+}
+setInterval(_renderStaleness, 1000);
+
 // ── Init ───────────────────────────────────────────────────────────────────
+applyStoredTheme(); // #549: must run before first paint
 updateAuthBadge();
-load();
 populateSearchProjects();
-loadProjection();
-setInterval(load, 30000);
-setInterval(loadProjection, 60000);
+// #545 + #546: switched from raw setInterval to pollManager.
+pollManager('overview', load, 30000);
+pollManager('projection', loadProjection, 60000);
 
 // Restore tab from URL hash
 const hash=(location.hash||'').replace('#','');

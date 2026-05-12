@@ -22,6 +22,8 @@
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-blue" id="last-refresh">—</span>
+    <span class="badge badge-muted updated-ago" data-source="overview" title="Time since last auto-refresh">—</span>
+    <button class="header-btn" id="theme-btn" title="Toggle theme (auto/light/dark)" data-action="cycleTheme">🌗</button>
     <button class="header-btn" id="auth-btn" title="Set HTTP bearer token (required when pincher is started with --http-key)" data-action="promptForKey">Auth</button>
   </div>
 </header>
