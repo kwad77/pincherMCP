@@ -237,6 +237,38 @@ The point of breaking it out per tier is that you can match the tool to the work
 
 ---
 
+## Indexing & staleness
+
+Four mechanisms keep the index current. Each handles a different staleness source — knowing which is which makes it obvious when (and whether) to call `index` manually.
+
+| Mechanism | Triggered by | Cadence | What it does |
+|---|---|---|---|
+| **Initial index** | `pincher index` (CLI), `index` MCP tool, or first-time `pincher init` follow-up | Once per project | Walks every file, parses, populates symbols + edges + FTS in one AST pass |
+| **Watcher** | `pincher` server starts a per-project watcher loop | Polls 2s active / 30s idle | xxh3-hashes every file; re-extracts on hash change. Per-file goroutine; tail-pass GC removes orphans |
+| **Cross-file resolution** | After per-file edits, project-wide resolve passes run | On every batch flush | Resolves Go IMPORTS / CALLS / READS edges that span files; uses the v0.16 `pending_edges` table so transitive edges aren't lost |
+| **SessionStart hook** | Claude Code SessionStart → `pincher index --hook` | Per session start | Catches anything the watcher missed since last shutdown |
+
+### When to call `index` manually
+
+The watcher covers steady-state usage. Three cases need the explicit lever:
+
+1. **Fresh repo / first-time setup.** Nothing has indexed this project yet. The agent calls `index` (or you run `pincher index` from the CLI) before any other tool returns useful results.
+2. **Binary-version drift.** When `pincher` upgrades, the new binary's resolver rules may differ from whatever indexed the project — `_meta.binary_version_warning` and the dashboard surface this. The remedy is `index force=true`, which re-runs every file under the new rules.
+3. **In-session race the watcher hasn't ticked yet.** You edit a file, immediately want to query it, and the 2s watcher tick hasn't fired. `index` (incremental — only the changed file re-parses) closes the gap immediately.
+
+The MCP `index` tool was operator-only in v0.35 and restored to the agent-facing surface in v0.51 (after a real user hit "unknown tool 'index'" trying to do exactly case 1 above). Both the MCP tool and the CLI subcommand call the same code path.
+
+### Indicators that the index is stale
+
+- `_meta.binary_version_warning` on any tool response → upgrade-driven drift (case 2)
+- `_meta.warnings` containing `index_stale` or similar → watcher missed something
+- `health` output `index_drift: true` + `index_drift_message` → upgrade-driven drift again
+- Search results that "feel wrong" relative to a recent edit → in-session race (case 3)
+
+In all four cases the recovery is one tool call: `index force=true` for upgrade-driven drift, plain `index` for the rest.
+
+---
+
 ## Staying current
 
 Three subcommands keep pincher fresh and discoverable on the same machine:

@@ -7,6 +7,20 @@ minors.
 
 ## [Unreleased]
 
+## [v0.51.0] — 2026-05-12 — restore index + adr to MCP; explain indexing in README
+
+The dogfood-driven correction release. A real user hit `unknown tool "index"` trying to call index over MCP — the v0.35 #624 surface narrowing had swept index into the operator-only bucket on the theory it was diagnostic noise. It isn't. Index is core: it's how an agent helps a user onboard a fresh repo, recovers from binary-version drift surfaced in `_meta.binary_version_warning`, and closes the in-session-edit race the watcher's 2s tick can't cover. v0.51 restores it to the agent-facing surface (along with `adr`, which has the same shape — institutional memory the agent reads + writes mid-session per the global CLAUDE.md policy). README gains a new "Indexing & staleness" section that walks through the four staleness-defense mechanisms and the three cases where manual `index` is the right lever.
+
+No schema change — runs on schema v24.
+
+### Changed
+- **MCP-visible tool surface 9 → 11 ([#645](https://github.com/kwad77/pincher/issues/645)).** `index` and `adr` move back from `addOperatorTool` to `addTool`. HTTP routes preserved for backward compat. `mcp_surface_split_test.go` partition updated; tool-contract golden file regenerated.
+- **README adds an "Indexing & staleness" section.** Four-mechanism table (initial index / watcher / cross-file resolution / SessionStart hook), explicit "when to call `index` manually" guidance for the three cases the watcher can't cover, and the four signals that say the index is stale.
+
+### Notes
+- Pairs with [#644](https://github.com/kwad77/pincher/issues/644) (structured `operator_tool_not_on_mcp` error for the remaining 11 operator tools — keeps future surface changes from biting users with bare "unknown tool" errors). #644 ships separately in v0.51.
+- The v0.35 narrowing was a deliberate experiment, not a bug. Framing this as repositioning rather than fix.
+
 ## [v0.50.0] — 2026-05-12 — maturity consolidation + README repositioning
 
 The version-number-truthing release. Eighteen minor releases shipped in roughly 24 hours (v0.21 through v0.38), each picking up real work — dashboard hardening, hook foundation, conversion-rate metric, polyglot install warning. The changelog reflects every step of that, but the leading single-digit version number understated the actual maturity of the codebase. v0.50.0 is the discipline correction: bump the version to where the test coverage (85.2% sustained), tool surface (frozen since v0.35), and schema (v24, stable since the v0.36 hook table) actually sit. No new functionality past v0.38; this is purely the README differentiator from #641 plus the version-number truthing.
