@@ -4,41 +4,42 @@ import (
 	"testing"
 )
 
-// #624: MCP exposes Tier 1+2 (search/symbol/symbols/context/trace/
-// query/guide/changes/fetch). Operator tools (architecture/health/
-// schema/list/index/adr/neighborhood/stats/doctor/rebuild_fts/
-// self_test/dead_code) stay reachable via /v1/<tool> HTTP but are
-// off the agent-facing MCP surface. Cuts agent decision-tax of "which
-// tool do I reach for" from 22 entries to 9.
+// #624: MCP exposes the agent working set; operator/diagnostic tools
+// stay reachable via /v1/<tool> HTTP. v0.35 narrowed from 22 → 9; v0.51
+// (#645) restored `index` and `adr` after real-user feedback showed the
+// narrowing was too aggressive — index is core (helps onboard fresh
+// repos, recovers from binary-version drift, closes the watcher's 2s-
+// tick race) and adr is the institutional-memory tool the agent reads +
+// writes mid-session per the global CLAUDE.md policy. Current MCP-
+// visible count: 11. Operator-only: 11.
 //
 // API parity (#558 phase 3) is preserved: every operator handler still
 // has an HTTP route. CLI ↔ HTTP parity gate is unaffected — that gate
 // asserts CLI subcommands have HTTP endpoints, not that they're MCP-
 // visible.
 
-// Expected MCP-visible set per the v0.35 design conversation. Update
-// this whenever the agent-facing surface changes (additions go through
-// design review; the test fails until the list is consciously updated).
+// Expected MCP-visible set. Additions go through design review; the
+// test fails until the list is consciously updated.
 var expectedMCPTools = map[string]bool{
-	"search":   true,
-	"symbol":   true,
-	"symbols":  true,
-	"context":  true,
-	"trace":    true,
-	"query":    true,
-	"guide":    true,
-	"changes":  true,
-	"fetch":    true,
+	"search":  true,
+	"symbol":  true,
+	"symbols": true,
+	"context": true,
+	"trace":   true,
+	"query":   true,
+	"guide":   true,
+	"changes": true,
+	"fetch":   true,
+	"index":   true, // restored v0.51 (#645)
+	"adr":     true, // restored v0.51 (#645)
 }
 
 // Expected operator-only set (HTTP route exists, MCP doesn't expose).
 var expectedOperatorTools = map[string]bool{
-	"index":        true,
 	"dead_code":    true,
 	"architecture": true,
 	"schema":       true,
 	"list":         true,
-	"adr":          true,
 	"health":       true,
 	"stats":        true,
 	"neighborhood": true,

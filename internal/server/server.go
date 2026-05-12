@@ -2220,8 +2220,15 @@ func (s *Server) unknownArgs(tool string, args map[string]any) []string {
 }
 
 func (s *Server) registerTools() {
-	// 1. index — operator tool (HTTP only after #624)
-	s.addOperatorTool(&mcp.Tool{
+	// 1. index — restored to MCP-visible in v0.51 (#645). The v0.35 #624
+	// surface narrowing swept index into the operator-only bucket; real-
+	// user feedback showed agents need it on the working set to (a) help
+	// onboard fresh repos, (b) recover from binary-version drift surfaced
+	// in `_meta.binary_version_warning`, (c) close the in-session-edit
+	// race the watcher's 2s tick can't cover. HTTP route stays for backward
+	// compat. See docs/REFERENCE.md → "Indexing modes" for the full
+	// staleness model.
+	s.addTool(&mcp.Tool{
 		Name:        "index",
 		Description: "**Call once per project before using any other tool.** Indexes a repository: extracts symbols with byte offsets, builds the knowledge graph, populates FTS5 search — all in one pass. Incremental by default (content-hash checks skip unchanged files; the watcher keeps it fresh during a session). Pass `force=true` to re-parse every file (rare; only after schema/extractor changes).",
 		InputSchema: json.RawMessage(`{
@@ -2393,8 +2400,11 @@ func (s *Server) registerTools() {
 		}}`),
 	}, s.handleList)
 
-	// 12. adr — operator tool (HTTP only after #624)
-	s.addOperatorTool(&mcp.Tool{
+	// 12. adr — restored to MCP-visible in v0.51 (#645). Same v0.35 #624
+	// over-correction as `index`: institutional memory tool the agent
+	// reads + writes mid-session per global CLAUDE.md policy. Operator-
+	// only access defeated that workflow. HTTP route preserved.
+	s.addTool(&mcp.Tool{
 		Name:        "adr",
 		Description: "**Use to record decisions/conventions/gotchas** that should survive across sessions. Persistent project knowledge store. Actions: `set` (store), `get` (retrieve), `list` (all entries), `delete`. Examples: `adr set PURPOSE 'payment processing service'`; `adr set STACK 'Go+SQLite+Redis'`; `adr list` to recall everything stored. Call `adr list` early in unfamiliar work — prior agents' notes often save a `search` chain.",
 		InputSchema: json.RawMessage(`{
