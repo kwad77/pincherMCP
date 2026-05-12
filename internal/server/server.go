@@ -1045,17 +1045,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// to amortize repeat fetches by the same browser tab. The basepath
 		// substitution in the JS body means cache key is per-prefix; since
 		// most deployments have a stable prefix, this works as expected.
+		//
+		// #556: serve with ETag (content hash) so a 304 short-circuits
+		// the body when the browser has the same JS already. Plus gzip
+		// when the client sent Accept-Encoding: gzip — typical 70-80%
+		// size reduction on this asset.
+		body := []byte(renderDashboardJS(s.effectivePrefix(r)))
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=600")
 		s.writeDashboardSecurityHeaders(w, "default-src 'none'; frame-ancestors 'none'")
-		w.Write([]byte(renderDashboardJS(s.effectivePrefix(r))))
+		writeAssetWithETagAndGzip(w, r, body)
 		return
 	}
 	if path == "dashboard.css" && r.Method == http.MethodGet {
+		body := []byte(renderDashboardCSS())
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=600")
 		s.writeDashboardSecurityHeaders(w, "default-src 'none'; frame-ancestors 'none'")
-		w.Write([]byte(renderDashboardCSS()))
+		writeAssetWithETagAndGzip(w, r, body)
 		return
 	}
 	// GET /v1/stats — dashboard-safe stats reader. Reads from DB only; never

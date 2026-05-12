@@ -124,6 +124,8 @@ const dashboardTemplate = `<!DOCTYPE html>
       <input type="checkbox" id="proj-hide-empty" data-action-change="renderProjects"/> Hide empty
     </label>
     <button class="btn secondary" id="proj-cleanup-btn" data-action="cleanupEmpty">Remove all empty</button>
+    <button class="btn secondary" title="Export current projects table as CSV (#551)" data-action="exportTable" data-args='["csv","projects"]'>CSV</button>
+    <button class="btn secondary" title="Export current projects table as JSON (#551)" data-action="exportTable" data-args='["json","projects"]'>JSON</button>
     <span class="toolbar-count" id="proj-count">&nbsp;</span>
   </div>
   <div class="grid grid-2" id="projects-grid"><div class="loading">Loading…</div></div>
@@ -179,7 +181,13 @@ const dashboardTemplate = `<!DOCTYPE html>
 <!-- SESSIONS -->
 <div id="tab-sessions" class="tab-pane">
 <main>
-  <p class="section-title">Session History</p>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <p class="section-title" style="margin:0">Session History</p>
+    <div>
+      <button class="btn secondary" title="Export sessions as CSV (#551)" data-action="exportTable" data-args='["csv","sessions"]'>CSV</button>
+      <button class="btn secondary" title="Export sessions as JSON (#551)" data-action="exportTable" data-args='["json","sessions"]'>JSON</button>
+    </div>
+  </div>
   <div id="sessions-table-wrap"><div class="loading">Loading…</div></div>
 </main>
 </div>
@@ -287,6 +295,9 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 
 /* ── Projects toolbar ── */
 .proj-toolbar{display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+/* #550: keyboard-focused project card. Outline picks up the accent
+   color so it's visible in both light and dark themes. */
+.proj-card.kbd-focused{outline:2px solid var(--accent);outline-offset:2px}
 .proj-toolbar .search-input{flex:1;min-width:200px}
 .toolbar-check{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;white-space:nowrap}
 .toolbar-check input{accent-color:var(--accent);cursor:pointer}
@@ -1505,6 +1516,10 @@ async function openDetail(id, name) {
   if(_detailOpenId===id && panel.classList.contains('open')){ closeDetail(); return; }
   _detailOpenId=id;
   panel.classList.add('open');
+  // #554: encode project ID into hash so the URL is shareable.
+  // history.replaceState avoids polluting browser history with each
+  // detail open/close — refresh + back behave naturally.
+  history.replaceState(null, '', '#projects/'+encodeURIComponent(id));
   title.textContent=name+' — Architecture';
   body.innerHTML='<div class="loading">Loading architecture…</div>';
   panel.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -1567,6 +1582,8 @@ function toggleDetailExpanded(toggleId) {
 function closeDetail() {
   _detailOpenId=null;
   document.getElementById('proj-detail-panel').classList.remove('open');
+  // #554: drop the project ID from the hash so the URL reflects state.
+  history.replaceState(null, '', '#projects');
 }
 
 // ── Event delegation ───────────────────────────────────────────────────────
@@ -1708,7 +1725,156 @@ function onRefreshIntervalChange() {
   applyRefreshInterval(valid);
 }
 
-// Restore tab from URL hash
-const hash=(location.hash||'').replace('#','');
-if(['overview','projects','search','adrs','sessions'].includes(hash)) showTab(hash);
+// #554: deep links — restore tab + optional project ID from hash.
+// Format: #<tab> or #<tab>/<projectID>. Replaces the v0.21 plain-tab
+// hash routing without breaking the older shape (a bare "#projects"
+// still works since the split returns ["projects", undefined]).
+function _parseHash() {
+  const raw = (location.hash || '').replace('#', '');
+  const [tab, project] = raw.split('/');
+  return { tab, project };
+}
+function _restoreFromHash() {
+  const { tab, project } = _parseHash();
+  if (['overview','projects','search','adrs','sessions'].includes(tab)) {
+    showTab(tab);
+  }
+  // #554: if hash includes a project ID, open the detail panel for it
+  // after the projects tab finishes loading. The card may not exist
+  // yet on first paint, so retry once after a short delay.
+  if (project && tab === 'projects') {
+    setTimeout(() => {
+      const card = document.getElementById('pcard-'+project);
+      if (card) {
+        const name = card.querySelector('.proj-name');
+        if (name) openDetail(project, name.textContent);
+      }
+    }, 300);
+  }
+}
+_restoreFromHash();
+// Reflect detail-panel state into the hash so the URL is shareable.
+window.addEventListener('hashchange', _restoreFromHash);
+
+// #550: keyboard shortcuts. Don't fire while typing into an input.
+//   /     → focus the search box (Search tab)
+//   g s   → switch to search tab
+//   g p   → switch to projects tab
+//   g o   → switch to overview tab
+//   g a   → switch to ADRs tab
+//   g h   → switch to sessions tab (h = history)
+//   Esc   → close detail panel + dismiss confirm modal
+//   j/k   → next/prev project card in Projects tab
+const SHORTCUT_HELP = [
+  ['/', 'Focus search'],
+  ['g s', 'Search tab'], ['g p', 'Projects tab'],
+  ['g o', 'Overview'], ['g a', 'ADRs'], ['g h', 'Sessions'],
+  ['j/k', 'Next/prev project'],
+  ['Esc', 'Close panel/modal'],
+];
+let _kbdLeader = '';
+let _kbdLeaderTimer = null;
+let _kbdProjectCursor = -1;
+function _isTypingTarget(t) {
+  if (!t) return false;
+  const tag = t.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+}
+document.addEventListener('keydown', (ev) => {
+  // Don't intercept when modal is open — Escape is its own handler.
+  if (_isTypingTarget(ev.target) && ev.key !== 'Escape') return;
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+  if (ev.key === '/') {
+    ev.preventDefault();
+    showTab('search');
+    setTimeout(() => document.getElementById('search-q').focus(), 50);
+    return;
+  }
+  if (ev.key === 'Escape') {
+    // Close detail panel if open (modal closes itself via its own listener).
+    if (document.getElementById('proj-detail-panel') &&
+        document.getElementById('proj-detail-panel').classList.contains('open')) {
+      closeDetail();
+    }
+    return;
+  }
+  if (_kbdLeader === 'g') {
+    const map = { s: 'search', p: 'projects', o: 'overview', a: 'adrs', h: 'sessions' };
+    if (map[ev.key]) { ev.preventDefault(); showTab(map[ev.key]); }
+    _kbdLeader = '';
+    return;
+  }
+  if (ev.key === 'g') {
+    _kbdLeader = 'g';
+    clearTimeout(_kbdLeaderTimer);
+    _kbdLeaderTimer = setTimeout(() => { _kbdLeader = ''; }, 1500);
+    return;
+  }
+  if (ev.key === 'j' || ev.key === 'k') {
+    const cards = Array.from(document.querySelectorAll('#projects-grid .proj-card'));
+    if (!cards.length) return;
+    _kbdProjectCursor = ev.key === 'j'
+      ? Math.min(_kbdProjectCursor + 1, cards.length - 1)
+      : Math.max(_kbdProjectCursor - 1, 0);
+    cards.forEach(c => c.classList.remove('kbd-focused'));
+    const c = cards[_kbdProjectCursor];
+    c.classList.add('kbd-focused');
+    c.scrollIntoView({block: 'nearest'});
+    ev.preventDefault();
+  }
+});
+
+// #551: CSV/JSON export. Generates a Blob from the table data and
+// triggers a download. No server roundtrip — uses the data already
+// rendered. exportTable(elementID, filename, format) is generic
+// so the same helper covers Projects + Sessions tables.
+function exportTable(format, kind) {
+  let rows = [];
+  let header = [];
+  let filename = kind+'.'+format;
+  if (kind === 'projects') {
+    header = ['id','name','path','file_count','symbol_count','edge_count','indexed_at'];
+    rows = (_allProjects || []).map(p => [
+      p.ID || p.id || '',
+      p.Name || p.name || '',
+      p.Path || p.path || '',
+      p.FileCount || p.file_count || 0,
+      p.SymCount || p.sym_count || 0,
+      p.EdgeCount || p.edge_count || 0,
+      p.IndexedAt || p.indexed_at || '',
+    ]);
+  } else if (kind === 'sessions') {
+    header = ['session_id','started_at','last_seen','calls','tokens_saved','tokens_used'];
+    // Re-fetch to get the live data — the sparkline cache only holds
+    // a slice. Async export so we can await the fetch.
+    return fetch('/v1/sessions').then(r=>r.json()).then(data => {
+      const sessions = data.sessions || [];
+      const rows2 = sessions.map(s => [s.session_id, s.started_at, s.last_seen, s.calls||0, s.tokens_saved||0, s.tokens_used||0]);
+      _downloadExport(format, filename, header, rows2);
+    });
+  }
+  _downloadExport(format, filename, header, rows);
+}
+function _downloadExport(format, filename, header, rows) {
+  let body;
+  if (format === 'csv') {
+    const escCsv = v => {
+      const s = String(v == null ? '' : v);
+      if (/["\n,]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    body = header.join(',') + '\n' + rows.map(r => r.map(escCsv).join(',')).join('\n');
+  } else {
+    body = JSON.stringify(rows.map(r => Object.fromEntries(header.map((h, i) => [h, r[i]]))), null, 2);
+  }
+  const blob = new Blob([body], { type: format === 'csv' ? 'text/csv' : 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('Exported '+rows.length+' rows to '+filename);
+}
 `

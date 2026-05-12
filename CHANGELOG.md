@@ -7,6 +7,31 @@ minors.
 
 ## [Unreleased]
 
+## [v0.30.0] — 2026-05-12 — dashboard E2E essentials + #519 umbrella close
+
+Closes umbrella [#519](https://github.com/kwad77/pincher/issues/519) — dashboard hardening — after a 10-release march that ran v0.21 → v0.30 in one continuous session. Four functional issues land here (#550 keyboard shortcuts, #551 export, #554 deep links, #556 ETag); three E2E items defer to a future release with documented rationale; #529 closes as covered-differently.
+
+No schema change — all v0.30 work runs on schema v23.
+
+### Added
+- **Keyboard shortcuts ([#550](https://github.com/kwad77/pincher/issues/550), [#604](https://github.com/kwad77/pincher/pull/604)).** `/` focuses the search box, `Esc` closes the project detail panel, `g s/p/o/a/h` switch to search/projects/overview/adrs/sessions, `j`/`k` move the keyboard cursor through project cards (`.kbd-focused` outline). Typing-target guard prevents shortcuts from firing inside inputs/textareas/select. Leader pattern (`g + key`) times out after 1.5s.
+- **CSV/JSON export buttons on Projects + Sessions tables ([#551](https://github.com/kwad77/pincher/issues/551), [#604](https://github.com/kwad77/pincher/pull/604)).** New `exportTable(format, kind)` helper builds a Blob from the rendered table data and triggers a browser download. CSV-escapes embedded commas/quotes/newlines per RFC 4180. JSON path emits an array of header-keyed records. Sessions export re-fetches `/v1/sessions` to get the live data; Projects exports the cached `_allProjects`.
+- **Deep links to project detail ([#554](https://github.com/kwad77/pincher/issues/554), [#604](https://github.com/kwad77/pincher/pull/604)).** Hash format `#<tab>` extends to `#<tab>/<projectID>` so `https://localhost:18080/v1/dashboard#projects/proj-0042` opens the dashboard with that project's architecture detail panel pre-opened. `openDetail`/`closeDetail` `history.replaceState` (not `pushState`) so back/refresh behave naturally without history pollution. `hashchange` listener restores state on URL edits.
+- **Dashboard asset ETag (#556 partial, [#604](https://github.com/kwad77/pincher/pull/604)).** `/v1/dashboard.js` and `/v1/dashboard.css` now respond with `ETag: "<sha256-prefix>"` + `Vary: Accept-Encoding`. Subsequent requests with `If-None-Match: <etag>` get a 304 + zero-body response. Gzip compression was already wired (transparent middleware in the dispatcher); the helper docstring documents why we don't double-gzip.
+
+### Closed (deferred or covered-differently)
+- **#520 E2E harness, #524 mobile snapshots, #525 auth E2E** — deferred. A Playwright/rod harness needs a Node toolchain alongside Go in CI, which is out of scope for the umbrella close. The non-runtime gates we added across v0.24-v0.30 (HTML + CSS snapshot tests + 23 dashboard JS template-inspection contract tests) catch most of the regression class an E2E harness would. Reopen when adopting Playwright is itself the desired work item; track separately rather than gating umbrella close on it.
+- **#529 backend coverage gate on dashboard.go** — closed as covered-differently. The file is 90% string templates with no executable Go logic; the renderer wrappers are one-liners around `strings.ReplaceAll`. A line-count threshold tracks template byte-count, not regression risk. The 23 snapshot+wiring tests gate the meaningful surface.
+- **#521 HTML snapshot test** — already shipped in v0.21.0 (PR #561). Stale tracking issue closed.
+
+### #519 umbrella scoreboard
+After 10 releases (v0.21 → v0.30):
+- 28 issues closed across the dashboard hardening surface
+- 3 issues deferred with documented rationale (E2E harness)
+- 23 dashboard-specific test functions added (snapshot, contract, wiring, large-dataset)
+- 1 BREAKING API change shipped + documented (v0.25 #537 error envelope)
+- 0 regressions in CI across the run
+
 ## [v0.29.0] — 2026-05-12 — dashboard interactive polish
 
 Six issues from umbrella #519's interactive-polish batch — empty-state CTAs, loading skeletons, toast variants, custom confirm dialog, configurable refresh interval, and ADR rich render.

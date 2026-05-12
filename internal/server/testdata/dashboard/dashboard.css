@@ -93,6 +93,9 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 
 /* ── Projects toolbar ── */
 .proj-toolbar{display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+/* #550: keyboard-focused project card. Outline picks up the accent
+   color so it's visible in both light and dark themes. */
+.proj-card.kbd-focused{outline:2px solid var(--accent);outline-offset:2px}
 .proj-toolbar .search-input{flex:1;min-width:200px}
 .toolbar-check{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;white-space:nowrap}
 .toolbar-check input{accent-color:var(--accent);cursor:pointer}
