@@ -1923,7 +1923,7 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 	var hops []bfsHop
 	for rows.Next() {
 		var n symRow
-		var isExp, isEntry, isTest int64
+		var isExp, isEntry, isTest sql.NullInt64
 		var depth int
 		if err := rows.Scan(
 			&n.ID, &n.ProjectID, &n.FilePath, &n.Name, &n.QualifiedName, &n.Kind, &n.Language,
@@ -1932,9 +1932,9 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 		); err != nil {
 			return nil, err
 		}
-		n.IsExported = isExp != 0
-		n.IsEntryPoint = isEntry != 0
-		n.IsTest = isTest != 0
+		n.IsExported = isExp.Int64 != 0
+		n.IsEntryPoint = isEntry.Int64 != 0
+		n.IsTest = isTest.Int64 != 0
 		hops = append(hops, bfsHop{node: &n, depth: depth})
 	}
 	return hops, rows.Err()
@@ -2187,7 +2187,7 @@ func toFloatForOrderBy(v any) (float64, bool) {
 
 func scanSymRow(rows *sql.Rows) (*symRow, error) {
 	var n symRow
-	var isExp, isEntry, isTest int64
+	var isExp, isEntry, isTest sql.NullInt64
 	if err := rows.Scan(
 		&n.ID, &n.ProjectID, &n.FilePath, &n.Name, &n.QualifiedName, &n.Kind, &n.Language,
 		&n.StartByte, &n.EndByte, &n.StartLine, &n.EndLine, &isExp, &isEntry, &n.Complexity,
@@ -2195,16 +2195,16 @@ func scanSymRow(rows *sql.Rows) (*symRow, error) {
 	); err != nil {
 		return nil, err
 	}
-	n.IsExported = isExp != 0
-	n.IsEntryPoint = isEntry != 0
-	n.IsTest = isTest != 0
+	n.IsExported = isExp.Int64 != 0
+	n.IsEntryPoint = isEntry.Int64 != 0
+	n.IsTest = isTest.Int64 != 0
 	return &n, nil
 }
 
 func scanJoinRow(rows *sql.Rows) (a, b *symRow, edgeKind string, conf float64, err error) {
 	a = &symRow{}
 	b = &symRow{}
-	var isExpA, isEntryA, isTestA, isExpB, isEntryB, isTestB int64
+	var isExpA, isEntryA, isTestA, isExpB, isEntryB, isTestB sql.NullInt64
 	err = rows.Scan(
 		&a.ID, &a.ProjectID, &a.FilePath, &a.Name, &a.QualifiedName, &a.Kind, &a.Language,
 		&a.StartByte, &a.EndByte, &a.StartLine, &a.EndLine, &isExpA, &isEntryA, &a.Complexity,
@@ -2214,12 +2214,12 @@ func scanJoinRow(rows *sql.Rows) (a, b *symRow, edgeKind string, conf float64, e
 		&b.ExtractionConfidence, &b.Signature, &b.ReturnType, &b.Docstring, &isTestB,
 		&edgeKind, &conf,
 	)
-	a.IsExported = isExpA != 0
-	a.IsEntryPoint = isEntryA != 0
-	a.IsTest = isTestA != 0
-	b.IsExported = isExpB != 0
-	b.IsEntryPoint = isEntryB != 0
-	b.IsTest = isTestB != 0
+	a.IsExported = isExpA.Int64 != 0
+	a.IsEntryPoint = isEntryA.Int64 != 0
+	a.IsTest = isTestA.Int64 != 0
+	b.IsExported = isExpB.Int64 != 0
+	b.IsEntryPoint = isEntryB.Int64 != 0
+	b.IsTest = isTestB.Int64 != 0
 	return
 }
 
@@ -2347,6 +2347,27 @@ func coerceBoolLiteral(v string) string {
 	return v
 }
 
+// isZeroValuePredicate reports whether a `col=val` predicate is
+// asking "where the column is absent or empty" — in which case the
+// SQL emitter wraps the comparison in `(IS NULL OR col=?)` so NULL
+// rows match (#606). The cases are:
+//
+//   - val=="" on any column — the user wrote "" meaning "no value"
+//   - bool-column false (val=="0" after coerceBoolLiteral) — same
+//     intent: "where this flag is unset"
+//
+// Non-zero literals keep the strict `col=?` semantics (NULL stays
+// excluded), matching the natural reading of `WHERE col="hello"`.
+func isZeroValuePredicate(col, val string) bool {
+	if val == "" {
+		return true
+	}
+	if isBoolCol(col) && val == "0" {
+		return true
+	}
+	return false
+}
+
 // condLeafToSQL returns the SQL fragment for a single leaf condition
 // without any leading boolean-connector glue, plus its bind args. The
 // fragment is wrapped with `NOT (...)` when c.negated is set so it
@@ -2366,7 +2387,19 @@ func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 	}
 	switch c.op {
 	case "=":
-		inner = prefix + col + "=?"
+		// #606: treat `col=""` and `col=<falsy-bool>` as "no value
+		// extracted OR explicit zero" so the canonical "find
+		// undocumented APIs" / "exclude tests" queries match NULL
+		// rows. SQL standard `col=?` returns false for NULL by
+		// tri-state logic; users writing the predicate mean "where
+		// the value is absent or empty" and expect NULL to match.
+		// Same UX class as #473/#578/#591/#593 — silent wrong
+		// answer otherwise.
+		if isZeroValuePredicate(col, val) {
+			inner = "(" + prefix + col + " IS NULL OR " + prefix + col + "=?)"
+		} else {
+			inner = prefix + col + "=?"
+		}
 		args = append(args, val)
 	case "<>":
 		// #434: include rows where the column is NULL when comparing
@@ -2573,6 +2606,26 @@ func evalCondition(row map[string]any, c condition, reCache map[string]*regexp.R
 
 	switch c.op {
 	case "=":
+		// #606: NULL-as-zero. When the user writes `col=""` or a
+		// falsy bool predicate, NULL rows must match — same logic
+		// as the SQL emitter's isZeroValuePredicate path. Without
+		// this the in-Go evaluation (used when the predicate can't
+		// push to SQL, e.g. inside an OR tree with an unsupported
+		// sibling) silently zero-rows the canonical "find
+		// undocumented APIs" query.
+		raw, present := row[key]
+		isNullRow := !present || raw == nil || actual == "<nil>"
+		if isNullRow {
+			if c.value == "" {
+				return true
+			}
+			// Bool columns: NULL coerces to false, so `col=false`
+			// matches NULL.
+			col := cypherPropToCol(c.property)
+			if isBoolCol(col) && (c.value == "false" || c.value == "0") {
+				return true
+			}
+		}
 		if actual == c.value {
 			return true
 		}

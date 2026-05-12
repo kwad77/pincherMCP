@@ -872,6 +872,33 @@ type gzipResponseWriter struct {
 
 func (g *gzipResponseWriter) Write(b []byte) (int, error) { return g.gz.Write(b) }
 
+// headResponseWriter discards body bytes while preserving headers and
+// status. Used to satisfy RFC 7231 §4.3.2: a HEAD response MUST carry
+// the same headers as the corresponding GET, with no message body.
+// #609: routing HEAD as GET + this writer means container liveness
+// probes that issue HEAD (the spec-recommended verb) get the same
+// Content-Type / ETag / Cache-Control / Allow they'd get from GET.
+type headResponseWriter struct {
+	http.ResponseWriter
+}
+
+func (w *headResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
+
+// httpGetOnlyRoutes lists /v1 paths that exist only as GET (plus HEAD
+// per RFC 7231). Used by the dispatcher to return 405 Method Not
+// Allowed with `Allow: GET, HEAD` instead of the misleading
+// "unknown tool" 404 when a client POSTs to a known GET endpoint
+// (#609). Keep in sync with the GET handlers in ServeHTTP.
+var httpGetOnlyRoutes = map[string]bool{
+	"dashboard":     true,
+	"dashboard.js":  true,
+	"dashboard.css": true,
+	"stats":         true,
+	"sessions":      true,
+	"openapi.json":  true,
+	"health":        true,
+}
+
 // ServeHTTP makes Server implement http.Handler.
 //
 // Route: POST /v1/{tool}  — call any registered tool with a JSON body.
@@ -887,6 +914,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+
+	// #609: route HEAD as GET internally and wrap the response writer
+	// to drop the body. Per RFC 7231 §4.3.2, HEAD must return the same
+	// headers as GET — wrapping post-routing keeps every header (ETag,
+	// Cache-Control, Content-Type, Allow) byte-identical without
+	// duplicating handler code.
+	if r.Method == http.MethodHead {
+		r.Method = http.MethodGet
+		w = &headResponseWriter{ResponseWriter: w}
 	}
 
 	// Bearer token auth — enforced when --http-key is set.
@@ -992,6 +1029,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
+
+	// #609: GET-only routes must reject non-GET methods up front with
+	// `Allow: GET, HEAD`. Without this gate, openapi.json and health
+	// (which previously didn't check r.Method at all) would happily
+	// answer PUT/DELETE requests with their normal payload — quietly
+	// violating REST semantics and confusing API consumers expecting
+	// 405. HEAD is already mapped to GET at the top of ServeHTTP, so
+	// it falls through and returns the GET payload (writer wrapper
+	// drops the body).
+	if httpGetOnlyRoutes[path] && r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			fmt.Sprintf("endpoint /v1/%s requires GET or HEAD", path))
+		return
+	}
+
 	if path == "health" {
 		// auth_required surfaces whether --http-key is set. The dashboard
 		// reads it to decide whether to show a "no auth in place" notice
@@ -1228,6 +1281,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodPost {
+		// #609: when the path is a known GET-only endpoint, surface a
+		// targeted 405 with `Allow: GET, HEAD` instead of the generic
+		// "use POST /v1/{tool}" — that message implied the endpoint
+		// didn't exist as a tool, sending operators down the wrong
+		// debugging path.
+		if httpGetOnlyRoutes[path] {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				fmt.Sprintf("endpoint /v1/%s requires GET or HEAD", path))
+			return
+		}
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 			"method not allowed — use POST /v1/{tool}")
 		return
@@ -1235,6 +1299,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handler, ok := s.handlers[path]
 	if !ok {
+		// #609: POST against a known GET-only path must 405, not 404 —
+		// the endpoint exists, the verb doesn't.
+		if httpGetOnlyRoutes[path] {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				fmt.Sprintf("endpoint /v1/%s requires GET or HEAD", path))
+			return
+		}
 		// Build the available-tools list from the live registry so a new
 		// tool added in registerTools() shows up here automatically — keeps
 		// this error from drifting (it claimed 14 tools after `fetch` was
@@ -5853,6 +5925,17 @@ var pincherToolNames = []string{
 	"trace", "guide", "adr",
 }
 
+// auditShapePattern matches the structural-audit phrasing #608
+// flagged: "(find|list|count) every <noun> (without|missing|lacking|
+// that lacks|that has no|that doesn't have|with no|with zero) ...".
+// Anchored with `\b` so partial matches don't trigger; case-insensitive
+// matching is the caller's job (input is already lowercased before
+// the regex runs).
+var auditShapePattern = regexp.MustCompile(
+	`\b(find|list|count|show|surface) (every|all|any) \w+( \w+){0,3}?` +
+		` (without|missing|lacking|lacks|has no|have no|doesn't have|does not have|with no|with zero|where there's no)\b`,
+)
+
 // classifyTaskShape inspects a task description and returns the most
 // likely intent. Keyword-based heuristic — no parsing or NLP. Order
 // matters: the first matching shape wins because some keywords
@@ -5870,6 +5953,13 @@ func classifyTaskShape(task string) guideShape {
 		return false
 	}
 	switch {
+	// #608: structural-audit pattern ("find every X without Y") must
+	// run before shapeFix — otherwise tasks like "find every handler
+	// that has no error return" match `error` and route to fix instead
+	// of the intended pinchQL audit query. The pattern is intentionally
+	// tighter than the keyword sweeps below, so an early match is safe.
+	case auditShapePattern.MatchString(t):
+		return shapeAudit
 	// #497: tool-output audit — "find FPs in dead_code", "audit search
 	// results", "characterize trace failures". The user is investigating
 	// a tool's output quality, not generic bugs in its source. The

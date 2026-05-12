@@ -7,6 +7,21 @@ minors.
 
 ## [Unreleased]
 
+## [v0.31.0] — 2026-05-12 — autoresearcher haul: dead code, NULL pinchQL, redact tests, audit-shape, HTTP method semantics
+
+Five issues filed by an autoresearcher dogfood probe of v0.30 against pincher-repo, fixed in one batch. The bug class is "silently wrong UX": dead unreferenced helper, predicates that match nothing because of SQL tri-state, untested credential redaction, guide misroutes, and a 404 that misleads operators about whether an endpoint exists.
+
+No schema change — all v0.31 work runs on schema v23.
+
+### Fixed
+- **`pinchQL n.docstring=""` and `n.is_test=false` now match NULL rows ([#606](https://github.com/kwad77/pincher/issues/606)).** The canonical "find undocumented APIs" demo (`MATCH (n:Function) WHERE n.is_exported=true AND n.docstring="" AND n.is_test=false`) returned 0 rows on every realistic corpus because SQL `col=''` is false for NULL. `condLeafToSQL` and `evalCondition` now expand zero-valued comparisons to `(col IS NULL OR col=?)`. Three nullable bool scan sites converted to `sql.NullInt64`. Same UX class as #473/#578/#591/#593 — predicates that look natural but silently return wrong/empty answers.
+- **`guide` routes "find every X without Y" to query, not search ([#608](https://github.com/kwad77/pincher/issues/608)).** New `auditShapePattern` regex catches the structural-audit phrasing ("find every function without a test", "list every endpoint missing auth") that #467's docstring-only trigger missed. Routed before `shapeFix` so the keyword sweep on "error"/"fix" doesn't intercept "find every handler that has no error return". Restores the canonical demo from #438.
+- **POST/PUT/DELETE on a known GET-only endpoint returns 405, not "unknown tool" 404 ([#609](https://github.com/kwad77/pincher/issues/609)).** Pre-fix, `POST /v1/dashboard` returned `{"error":{"code":"not_found","message":"unknown tool 'dashboard'","details":{"available_tools":[…22 names…]}}}` — implying the endpoint didn't exist. Now returns `405 Method Not Allowed` with `Allow: GET, HEAD` and a clear message. Same fix applies to /v1/dashboard.{js,css}, /v1/stats, /v1/sessions, /v1/openapi.json, /v1/health. HEAD support added everywhere per RFC 7231 §4.3.2 — `headResponseWriter` wraps the response writer to drop body bytes while preserving every header (Content-Type, ETag, Cache-Control, CSP, Allow). Unblocks container liveness probes that prefer HEAD.
+- **`dedupCSymbolsByQN` removed from `internal/ast/extractor.go` ([#605](https://github.com/kwad77/pincher/issues/605)).** Helper had no callers — the dedup it claimed to do is now handled by a different path. Caught by `dead_code`; removal also dropped a stale comment block that referenced it. Closes the dead-code-FP loop on this file (one fewer unreachable function in the audit baseline).
+
+### Tested
+- **`redactSensitiveSlice` recursion ([#607](https://github.com/kwad77/pincher/issues/607)).** The slice-recursion path inside `redactSensitiveArgs` was 0% covered despite being reachable from every tool response via `maybeRecordSlowQuery`. Four new tests cover slice-of-maps, slice-of-slice-of-maps, mixed scalar+map slices, and nil input. Coverage 0% → 100% on the helper. A bug here would have silently leaked credentials into the `slow_queries.args_json` column.
+
 ## [v0.30.0] — 2026-05-12 — dashboard E2E essentials + #519 umbrella close
 
 Closes umbrella [#519](https://github.com/kwad77/pincher/issues/519) — dashboard hardening — after a 10-release march that ran v0.21 → v0.30 in one continuous session. Four functional issues land here (#550 keyboard shortcuts, #551 export, #554 deep links, #556 ETag); three E2E items defer to a future release with documented rationale; #529 closes as covered-differently.
