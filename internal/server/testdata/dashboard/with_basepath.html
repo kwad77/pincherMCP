@@ -117,8 +117,9 @@
     <button class="btn secondary" data-action="toggleADRForm">+ Add Entry</button>
   </div>
   <div class="adr-form" id="adr-form">
-    <input id="adr-key" type="text" placeholder="Key (e.g. PURPOSE, STACK, PATTERNS)"/>
-    <textarea id="adr-val" placeholder="Value…"></textarea>
+    <input id="adr-key" type="text" maxlength="256" placeholder="Key (e.g. PURPOSE, STACK, PATTERNS)"/>
+    <textarea id="adr-val" maxlength="16384" placeholder="Value…"></textarea>
+    <div id="adr-val-counter" class="adr-counter">0 / 16384</div>
     <div class="adr-form-actions">
       <button class="btn" data-action="saveADR">Save</button>
       <button class="btn secondary" data-action="toggleADRForm">Cancel</button>

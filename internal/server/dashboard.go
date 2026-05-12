@@ -155,8 +155,9 @@ const dashboardTemplate = `<!DOCTYPE html>
     <button class="btn secondary" data-action="toggleADRForm">+ Add Entry</button>
   </div>
   <div class="adr-form" id="adr-form">
-    <input id="adr-key" type="text" placeholder="Key (e.g. PURPOSE, STACK, PATTERNS)"/>
-    <textarea id="adr-val" placeholder="Value…"></textarea>
+    <input id="adr-key" type="text" maxlength="256" placeholder="Key (e.g. PURPOSE, STACK, PATTERNS)"/>
+    <textarea id="adr-val" maxlength="16384" placeholder="Value…"></textarea>
+    <div id="adr-val-counter" class="adr-counter">0 / 16384</div>
     <div class="adr-form-actions">
       <button class="btn" data-action="saveADR">Save</button>
       <button class="btn secondary" data-action="toggleADRForm">Cancel</button>
@@ -304,6 +305,9 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .adr-form{background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:16px;margin-bottom:16px;display:none}
 .adr-form.open{display:block}
 .adr-form input,.adr-form textarea{background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;padding:8px 10px;width:100%;margin-bottom:10px;outline:none;font-family:inherit}
+.adr-counter{font-size:11px;color:var(--muted);text-align:right;margin-top:-6px;margin-bottom:8px}
+.adr-counter.warn{color:#f59e0b}
+.adr-counter.over{color:#ef4444;font-weight:600}
 .adr-form textarea{min-height:80px;resize:vertical}
 .adr-form input:focus,.adr-form textarea:focus{border-color:var(--accent)}
 .adr-form-actions{display:flex;gap:8px}
@@ -522,7 +526,76 @@ function showToast(msg, ok=true) {
 }
 
 // ── Tab navigation ─────────────────────────────────────────────────────────
+// #539: per-tab AbortController registry. Each load*() registers
+// its in-flight controller so the next load on that tab (or a
+// tab switch) can abort prior requests. Without this, fast tab
+// switching pile up parallel fetches whose late-arriving responses
+// can overwrite a newer tab's content.
+const _tabControllers = {};
+
+function _abortTab(tab) {
+  const c = _tabControllers[tab];
+  if (c) {
+    try { c.abort(); } catch(_) {}
+    delete _tabControllers[tab];
+  }
+}
+
+// tabFetch: scoped fetch wrapper. Aborts any prior in-flight request
+// on this tab, registers a new controller, and returns the response.
+// Callers handle AbortError by returning early (the controller was
+// superseded by a newer call, the result is no longer relevant).
+async function tabFetch(tab, url, opts) {
+  _abortTab(tab);
+  const c = new AbortController();
+  _tabControllers[tab] = c;
+  opts = opts || {};
+  opts.signal = c.signal;
+  try {
+    const r = await fetch(url, opts);
+    return r;
+  } finally {
+    // Only clear if we're still the active controller — a newer call
+    // may have replaced us between fetch() and now, in which case we
+    // should NOT clear theirs.
+    if (_tabControllers[tab] === c) delete _tabControllers[tab];
+  }
+}
+
+// #538: surface fetch failure in the tab body itself, not just the
+// global error banner. Each tab-pane has a "loading…" placeholder
+// that pre-#538 stayed forever on failure; setTabError swaps it for
+// the v0.25 error envelope's message + a Retry button.
+function setTabError(elementID, message, retryFn) {
+  const el = document.getElementById(elementID);
+  if (!el) return;
+  // Strip control chars + cap length so a malicious response can't
+  // inject anything weird through esc().
+  const safe = String(message || 'Request failed').slice(0, 500);
+  let html = '<div class="error">'+esc(safe);
+  if (retryFn) html += ' <button class="btn secondary" data-action="'+esc(retryFn)+'">Retry</button>';
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// extractErrMsg pulls the message off the v0.25 envelope. Falls back
+// to a status code or the generic exception message.
+async function extractErrMsg(r) {
+  if (!r) return 'no response';
+  try {
+    const body = await r.json();
+    if (body.error && body.error.message) return body.error.message;
+    if (typeof body.error === 'string') return body.error; // pre-v0.25 fallback
+  } catch(_) {}
+  return 'HTTP '+r.status;
+}
+
 function showTab(name) {
+  // #539: abort every other tab's in-flight fetches before switching.
+  // The tab we're switching TO will get a fresh controller from its
+  // load*() call below.
+  Object.keys(_tabControllers).forEach(t => { if (t !== name) _abortTab(t); });
+
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
@@ -644,11 +717,17 @@ let _allProjects = [];
 
 async function loadProjects() {
   try {
-    const data = await fetch('/v1/projects').then(r=>r.json());
+    const r = await tabFetch('projects', '/v1/projects');
+    if (!r.ok) {
+      setTabError('projects-grid', 'Failed to load projects: '+(await extractErrMsg(r)), 'loadProjects');
+      return;
+    }
+    const data = await r.json();
     _allProjects = data.projects || [];
     renderProjects();
   } catch(e) {
-    document.getElementById('projects-grid').innerHTML = '<div class="error">Failed to load projects: '+esc(e.message)+'</div>';
+    if (e.name === 'AbortError') return; // #539: superseded by newer call
+    setTabError('projects-grid', 'Failed to load projects: '+e.message, 'loadProjects');
   }
 }
 
@@ -892,7 +971,9 @@ async function loadADRs() {
   if(!proj){list.innerHTML='<div class="empty">Select a project to view its ADRs.</div>';return;}
   list.innerHTML='<div class="loading">Loading…</div>';
   try {
-    const data=await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',project:proj})}).then(r=>r.json());
+    const r=await tabFetch('adrs','/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',project:proj})});
+    if(!r.ok){setTabError('adr-list','Failed to load ADRs: '+(await extractErrMsg(r)),'loadADRs');return;}
+    const data=await r.json();
     const entries=(data.result||data).entries||[];
     if(!entries.length){list.innerHTML='<div class="empty">No ADR entries yet. Add the first one above.</div>';return;}
     list.innerHTML=entries.map(e=>
@@ -904,14 +985,38 @@ async function loadADRs() {
       '<button class="adr-del" title="Delete" data-action="deleteADR" data-args="'+esc(JSON.stringify([e.key||'']))+'">&#x2715;</button>'+
       '</div>'
     ).join('');
-  } catch(e) { list.innerHTML='<div class="error">Failed to load ADRs: '+esc(e.message)+'</div>'; }
+  } catch(e) {
+    if(e.name==='AbortError')return; // #539: superseded by newer call
+    setTabError('adr-list','Failed to load ADRs: '+e.message,'loadADRs');
+  }
 }
 
 function toggleADRForm() {
   const f=document.getElementById('adr-form');
   f.classList.toggle('open');
-  if(f.classList.contains('open')) document.getElementById('adr-key').focus();
-  else { document.getElementById('adr-key').value=''; document.getElementById('adr-val').value=''; }
+  if(f.classList.contains('open')) {
+    document.getElementById('adr-key').focus();
+    // #534: rebind the value-counter listener every open. Idempotent —
+    // listeners on the element get reattached on the same node, and
+    // the previous one was already removed when the textarea cleared.
+    const v=document.getElementById('adr-val');
+    const c=document.getElementById('adr-val-counter');
+    if(v && c) {
+      const update=()=>{
+        const len=v.value.length, max=16384;
+        c.textContent=len+' / '+max;
+        c.classList.toggle('warn', len>max*0.85 && len<=max);
+        c.classList.toggle('over', len>max);
+      };
+      v.removeEventListener('input', v._counterUpdate);
+      v._counterUpdate=update;
+      v.addEventListener('input', update);
+      update();
+    }
+  } else {
+    document.getElementById('adr-key').value='';
+    document.getElementById('adr-val').value='';
+  }
 }
 
 async function saveADR() {
@@ -920,8 +1025,19 @@ async function saveADR() {
   const val=document.getElementById('adr-val').value.trim();
   if(!proj){showToast('Select a project first',false);return;}
   if(!key||!val){showToast('Key and value are required',false);return;}
+  // #534: client-side preflight on the same bounds the backend enforces.
+  // Saves the round-trip when the user pasted a transcript by mistake.
+  if(key.length>256){showToast('Key too long ('+key.length+' / 256)',false);return;}
+  if(val.length>16384){showToast('Value too long ('+val.length+' / 16384)',false);return;}
   try {
-    await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set',project:proj,key,value:val})});
+    const r=await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set',project:proj,key,value:val})});
+    if(!r.ok) {
+      // v0.25 error envelope: {error: {code, message, details?}}.
+      const body=await r.json().catch(()=>({}));
+      const msg=(body.error && body.error.message) || ('HTTP '+r.status);
+      showToast('Save failed: '+msg, false);
+      return;
+    }
     showToast('ADR saved.');
     toggleADRForm();
     loadADRs();
@@ -943,7 +1059,9 @@ async function loadSessions() {
   const wrap=document.getElementById('sessions-table-wrap');
   wrap.innerHTML='<div class="loading">Loading…</div>';
   try {
-    const data=await fetch('/v1/sessions').then(r=>r.json());
+    const r=await tabFetch('sessions','/v1/sessions');
+    if(!r.ok){setTabError('sessions-table-wrap','Failed to load sessions: '+(await extractErrMsg(r)),'loadSessions');return;}
+    const data=await r.json();
     const sessions=data.sessions||[];
     if(!sessions.length){wrap.innerHTML='<div class="empty">No sessions recorded yet.</div>';return;}
     // Running totals for a footer row so users see the cumulative number
@@ -970,7 +1088,10 @@ async function loadSessions() {
       '<td style="color:var(--green)">'+fmt(totalSaved)+'</td>'+
       '<td>'+fmt(totalUsed)+'</td>'+
       '</tr></tfoot></table>';
-  } catch(e) { wrap.innerHTML='<div class="error">Failed to load sessions: '+esc(e.message)+'</div>'; }
+  } catch(e) {
+    if(e.name==='AbortError')return; // #539: superseded by newer call
+    setTabError('sessions-table-wrap','Failed to load sessions: '+e.message,'loadSessions');
+  }
 }
 
 // ── Cost projection ────────────────────────────────────────────────────────

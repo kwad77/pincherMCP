@@ -7,6 +7,24 @@ minors.
 
 ## [Unreleased]
 
+## [v0.26.0] — 2026-05-12 — dashboard reliability
+
+Four issues from umbrella #519's reliability batch: ADR length limits + the per-tab error/abort wiring that makes a failed fetch visible without leaving the tab stuck on "loading…". The dashboard JS gains an AbortController-backed fetch wrapper so rapid tab switching no longer races stale responses onto the wrong tab.
+
+No schema change — all v0.26 work runs on schema v23.
+
+### Added
+- **ADR field length limits + backend validation
+  ([#534](https://github.com/kwad77/pincher/issues/534),
+  [#600](https://github.com/kwad77/pincher/pull/600)).** Server-side: `action=set` now enforces key ≤256 chars and value ≤16 KB and returns the error through the v0.25 envelope. Form-side: `<input maxlength="256">` + `<textarea maxlength="16384">` plus a live counter that turns amber at 85% and red on overflow. Pre-fix a paste-of-an-entire-transcript blew up the row size and the `text` column accepted it silently.
+- **Per-tab error state — fetch failure no longer stuck on "loading…"
+  ([#538](https://github.com/kwad77/pincher/issues/538),
+  [#526](https://github.com/kwad77/pincher/issues/526),
+  [#600](https://github.com/kwad77/pincher/pull/600)).** New `setTabError(elementID, message, retryFn)` swaps the per-tab "loading…" placeholder for the error message + a Retry button. New `extractErrMsg(response)` reads `body.error.message` (the v0.25 envelope) with fallback to bare `body.error` (pre-v0.25 transitional shape) so partial-rollout proxies still yield useful messages. Wired through `loadProjects`, `loadSessions`, `loadADRs`. Closes #526 (the JS-side fetch error path test) since the per-tab wiring it gated on now exists — covered by `TestDashboardJS_HasPerTabErrorState` rather than a JS-runtime harness (we have no headless browser in CI).
+- **XHR abort on tab switch — late responses can't overwrite newer tabs
+  ([#539](https://github.com/kwad77/pincher/issues/539),
+  [#600](https://github.com/kwad77/pincher/pull/600)).** New `tabFetch(tab, url, opts)` registers a per-tab `AbortController` and aborts the previous one for that tab before issuing the new fetch. `showTab` aborts every other tab's controller on switch. Catch handlers in each `load*()` short-circuit on `AbortError` so a superseded request quietly disappears instead of writing stale data into the now-active tab. Worst case pre-fix: spam-clicking between Projects → Sessions → Search left N parallel pending requests, and a late Projects response could overwrite the Sessions table.
+
 ## [v0.25.0] — 2026-05-12 — dashboard API hardening
 
 Six issues from umbrella #519's API-shape batch: pagination on three GET endpoints, ETA on index-progress, dashboard-version probe, and a standardized error envelope. The error envelope is the **breaking change** in this release.
