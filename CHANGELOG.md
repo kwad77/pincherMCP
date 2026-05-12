@@ -7,6 +7,26 @@ minors.
 
 ## [Unreleased]
 
+## [v0.27.0] — 2026-05-12 — dashboard search polish
+
+Four issues from umbrella #519's UX-polish batch: search-as-you-type, in-snippet match highlighting, sparkline tooltip, and a "Show all" toggle on the architecture detail truncation. All four touch dashboard JS only — no schema or API changes.
+
+No schema change — all v0.27 work runs on schema v23.
+
+### Added
+- **Search-as-you-type with debounce
+  ([#547](https://github.com/kwad77/pincher/issues/547),
+  [#601](https://github.com/kwad77/pincher/pull/601)).** New `debounce(fn, wait)` wrapper + 200ms-debounced `debouncedSearch` bound to the search input via `data-action-input`. Pre-fix Enter was the only trigger; pre-fix typing "supervisor" sent zero requests. Post-fix typing "supervisor" sends one request after the user pauses. Skips queries shorter than 2 chars to avoid BM25-rank noise. Combines with #539's `tabFetch` so an in-flight search is aborted by the next keystroke.
+- **Snippet highlighting via `<mark>`
+  ([#548](https://github.com/kwad77/pincher/issues/548),
+  [#601](https://github.com/kwad77/pincher/pull/601)).** New `highlightSnippet(snippet, query)` escapes the snippet for HTML, then wraps each query token in `<mark>` for visible highlighting. Pure-string substitution after escape — never touches `innerHTML` on raw snippet content, so no XSS surface beyond what `esc()` already gates. Strips FTS5 operators (quotes, asterisks, AND/OR, parens) from the highlight pass so `"login flow"` highlights `login` and `flow` (not the surrounding quotes). Wired into both name + snippet/signature render paths.
+- **Sparkline per-point tooltip
+  ([#555](https://github.com/kwad77/pincher/issues/555),
+  [#601](https://github.com/kwad77/pincher/pull/601)).** Mousemove handler over the sparkline SVG computes the nearest data point via cursor-x → index mapping, looks up the cached session record, and renders a floating tooltip with date + tokens-saved + call count. Touch support: tap shows tooltip, mouseleave hides. Tooltip flips left when it would clip the right edge.
+- **Architecture detail "Show all" toggle
+  ([#533](https://github.com/kwad77/pincher/issues/533),
+  [#601](https://github.com/kwad77/pincher/pull/601)).** Pre-fix the architecture detail panel hard-truncated entry-points at 8 and hotspots at 10 with no indication; users had no way to know the rest existed. Post-fix the section header shows "X of Y" when the list exceeds the cap, and a "Show all" button expands inline to a higher cap (50). Per-detail-section state in `_detailExpanded` so multiple open panels remember independently.
+
 ## [v0.26.0] — 2026-05-12 — dashboard reliability
 
 Four issues from umbrella #519's reliability batch: ADR length limits + the per-tab error/abort wiring that makes a failed fetch visible without leaving the tab stuck on "loading…". The dashboard JS gains an AbortController-backed fetch wrapper so rapid tab switching no longer races stale responses onto the wrong tab.

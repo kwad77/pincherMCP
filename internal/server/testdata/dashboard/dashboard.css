@@ -45,7 +45,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .card-sub{font-size:12px;color:var(--muted);margin-top:6px}
 
 /* ── Sparkline ── */
-.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px}
+.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px;position:relative}
+.sparkline-tip{display:none;position:absolute;background:#0d1117e6;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:6px 9px;pointer-events:none;white-space:nowrap;z-index:10;line-height:1.4}
 .sparkline-card svg{width:100%;height:80px;display:block}
 .sparkline-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .sparkline-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
@@ -103,6 +104,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .first-run code{background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-family:ui-monospace,monospace;color:var(--accent);font-size:12px}
 .result-meta{font-size:11px;color:var(--muted);margin-bottom:8px}
 .result-snippet{background:#0d1117;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;overflow-x:auto;padding:10px 12px;white-space:pre;color:var(--text)}
+.result-snippet mark,.result-name mark{background:#facc1530;color:#fde047;padding:0 2px;border-radius:2px}
+.result-count{color:var(--muted);font-size:12px;margin-bottom:8px;font-variant-numeric:tabular-nums}
 
 /* ── ADR tab ── */
 .adr-toolbar{display:flex;gap:10px;margin-bottom:20px;align-items:center}
@@ -156,6 +159,9 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .detail-close:hover{color:var(--text)}
 .detail-section{margin-bottom:16px}
 .detail-section-label{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.detail-section-count{font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted);margin-left:6px;font-size:11px}
+.show-all-btn{background:none;border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;font-size:11px;margin-top:6px;padding:3px 9px}
+.show-all-btn:hover{border-color:var(--accent);background:#161b22}
 .lang-bar{display:flex;gap:6px;flex-wrap:wrap}
 .lang-chip{background:rgba(163,113,247,.12);border:1px solid rgba(163,113,247,.25);border-radius:6px;color:var(--purple);font-size:11px;font-family:ui-monospace,monospace;padding:3px 8px}
 .ep-list,.hotspot-list{list-style:none;margin:0;padding:0}

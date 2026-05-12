@@ -133,7 +133,7 @@ const dashboardTemplate = `<!DOCTYPE html>
 <main>
   <p class="section-title">Symbol Search</p>
   <div class="search-bar">
-    <input class="search-input" id="search-q" type="text" placeholder="Search symbols… (e.g. handleSearch, auth*, &quot;token validation&quot;)" data-action-enter="doSearch"/>
+    <input class="search-input" id="search-q" type="text" placeholder="Search symbols… (e.g. handleSearch, auth*, &quot;token validation&quot;)" data-action-enter="doSearch" data-action-input="debouncedSearch"/>
     <select class="search-select" id="search-kind">
       <option value="">All kinds</option>
       <option>Function</option><option>Method</option><option>Class</option>
@@ -230,7 +230,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .card-sub{font-size:12px;color:var(--muted);margin-top:6px}
 
 /* ── Sparkline ── */
-.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px}
+.sparkline-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:32px;position:relative}
+.sparkline-tip{display:none;position:absolute;background:#0d1117e6;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:6px 9px;pointer-events:none;white-space:nowrap;z-index:10;line-height:1.4}
 .sparkline-card svg{width:100%;height:80px;display:block}
 .sparkline-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .sparkline-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
@@ -288,6 +289,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .first-run code{background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-family:ui-monospace,monospace;color:var(--accent);font-size:12px}
 .result-meta{font-size:11px;color:var(--muted);margin-bottom:8px}
 .result-snippet{background:#0d1117;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;overflow-x:auto;padding:10px 12px;white-space:pre;color:var(--text)}
+.result-snippet mark,.result-name mark{background:#facc1530;color:#fde047;padding:0 2px;border-radius:2px}
+.result-count{color:var(--muted);font-size:12px;margin-bottom:8px;font-variant-numeric:tabular-nums}
 
 /* ── ADR tab ── */
 .adr-toolbar{display:flex;gap:10px;margin-bottom:20px;align-items:center}
@@ -341,6 +344,9 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .detail-close:hover{color:var(--text)}
 .detail-section{margin-bottom:16px}
 .detail-section-label{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.detail-section-count{font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted);margin-left:6px;font-size:11px}
+.show-all-btn{background:none;border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;font-size:11px;margin-top:6px;padding:3px 9px}
+.show-all-btn:hover{border-color:var(--accent);background:#161b22}
 .lang-bar{display:flex;gap:6px;flex-wrap:wrap}
 .lang-chip{background:rgba(163,113,247,.12);border:1px solid rgba(163,113,247,.25);border-radius:6px;color:var(--purple);font-size:11px;font-family:ui-monospace,monospace;padding:3px 8px}
 .ep-list,.hotspot-list{list-style:none;margin:0;padding:0}
@@ -687,13 +693,18 @@ async function load() {
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
+// #555: per-data-point lookup state. Stored on a module-level variable
+// so the mousemove handler can find the right session without re-
+// fetching. Cleared by loadSparkline on each refresh.
+let _sparklineData = null;
+
 async function loadSparkline() {
   try {
     const data = await fetch('/v1/sessions').then(r=>r.json());
     const sessions = (data.sessions||[]).slice().reverse();
     const svg = document.getElementById('sparkline-svg');
     const legend = document.getElementById('sparkline-legend');
-    if (!sessions.length) { svg.innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">No sessions yet</text>'; return; }
+    if (!sessions.length) { svg.innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">No sessions yet</text>'; _sparklineData = null; return; }
     const vals = sessions.map(s => s.tokens_saved||0);
     const maxVal = Math.max(...vals, 1);
     const W=800, H=80, pad=4;
@@ -707,9 +718,58 @@ async function loadSparkline() {
       '<circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="3" fill="#58a6ff"/>';
     const total = vals.reduce((a,b)=>a+b,0);
     legend.textContent = fmt(total)+' total \u00b7 '+sessions.length+' sessions \u00b7 peak '+fmt(maxVal)+'/session';
+    // #555: cache the per-point coordinate\u2192session lookup for the
+    // tooltip mousemove handler. Recomputed each load so a refresh
+    // gets the fresh window.
+    _sparklineData = { sessions, W, H, pad, xStep };
+    _attachSparklineTooltip(svg);
   } catch(e) {
     document.getElementById('sparkline-svg').innerHTML = '<text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Could not load history</text>';
+    _sparklineData = null;
   }
+}
+
+// #555: tooltip wiring. Idempotent \u2014 listeners are bound on the SVG
+// element which gets recycled on each loadSparkline call (innerHTML
+// replacement on the same node), so re-attaching every load doesn't
+// leak listeners. The tooltip element is a single <div> appended to
+// the sparkline-card.
+function _attachSparklineTooltip(svg) {
+  const card = svg.closest('.sparkline-card');
+  if (!card) return;
+  let tip = card.querySelector('.sparkline-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.className = 'sparkline-tip';
+    card.appendChild(tip);
+  }
+  // Avoid double-binding by replacing the old onmousemove handler.
+  svg.onmousemove = (ev) => {
+    if (!_sparklineData) return;
+    const rect = svg.getBoundingClientRect();
+    const ratio = (ev.clientX - rect.left) / rect.width;
+    const xSvg = ratio * _sparklineData.W;
+    const idx = Math.round((xSvg - _sparklineData.pad) / _sparklineData.xStep);
+    const clamped = Math.max(0, Math.min(_sparklineData.sessions.length - 1, idx));
+    const s = _sparklineData.sessions[clamped];
+    if (!s) return;
+    tip.innerHTML = '<b>'+esc(timeAgo(s.started_at))+'</b><br>'+
+      fmt(s.tokens_saved||0)+' tokens saved \u00b7 '+(s.calls||0)+' calls';
+    tip.style.display = 'block';
+    // Position right of cursor; flip left if it would clip viewport.
+    const tipW = tip.offsetWidth;
+    let x = ev.clientX - rect.left + 12;
+    if (x + tipW > rect.width) x = ev.clientX - rect.left - tipW - 12;
+    tip.style.left = x + 'px';
+    tip.style.top = (ev.clientY - rect.top - 30) + 'px';
+  };
+  svg.onmouseleave = () => { tip.style.display = 'none'; };
+  // Touch support \u2014 tap shows tooltip near the touch point; tap
+  // outside hides via the body listener.
+  svg.ontouchstart = (ev) => {
+    if (!ev.touches || !ev.touches[0]) return;
+    svg.onmousemove({ clientX: ev.touches[0].clientX, clientY: ev.touches[0].clientY });
+  };
 }
 
 // ── Projects ───────────────────────────────────────────────────────────────
@@ -886,6 +946,43 @@ async function populateSearchProjects() {
   } catch(e) {}
 }
 
+// #547: debounce wrapper. Wraps a function so rapid invocations
+// collapse to a single trailing call after the wait period of quiet.
+// Used on the search input so typing "supervisor" sends 1 fetch, not 10.
+function debounce(fn, wait) {
+  let t = null;
+  return function(...args) {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => { t = null; fn.apply(this, args); }, wait);
+  };
+}
+
+// #548: highlight match terms in a snippet. Splits the query into
+// tokens (FTS5-style — whitespace, then strip leading/trailing
+// non-word chars), escapes the snippet for HTML, then wraps each
+// case-insensitive match in <mark>. Pure-string substitution after
+// escape — never touches innerHTML on raw user input, so no XSS
+// surface beyond what esc() already gates.
+function highlightSnippet(snippet, query) {
+  const escaped = esc(snippet || '');
+  if (!query) return escaped;
+  // Drop FTS5 operators that aren't part of the literal text the user
+  // wants to see highlighted (quotes, asterisks, OR/AND, parens).
+  const cleaned = String(query).replace(/["*()]|\bOR\b|\bAND\b/g, ' ');
+  const tokens = cleaned.split(/\s+/).filter(t => t.length >= 2);
+  if (!tokens.length) return escaped;
+  // Sort tokens longest-first so a substring match doesn't shadow a
+  // longer one (e.g. "func" before "function").
+  tokens.sort((a, b) => b.length - a.length);
+  // Build a single regex from all tokens with alternation. Escape
+  // regex special chars in each token so a typo'd .+ doesn't blow
+  // up the regex compile.
+  const re = new RegExp('(' + tokens.map(t =>
+    t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  ).join('|') + ')', 'gi');
+  return escaped.replace(re, '<mark>$1</mark>');
+}
+
 async function doSearch() {
   const q=document.getElementById('search-q').value.trim();
   if(!q){showToast('Enter a search query',false);return;}
@@ -897,13 +994,21 @@ async function doSearch() {
     const body={query:q};
     if(kind) body.kind=kind;
     if(proj) body.project=proj;
-    const data=await fetch('/v1/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    const r=await tabFetch('search','/v1/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){setTabError('search-results','Search failed: '+(await extractErrMsg(r)),'doSearch');return;}
+    const data=await r.json();
     const results=(data.result||data).results||[];
+    const total=(data.result||data).total;
     if(!results.length){out.innerHTML='<div class="empty">No results for "'+esc(q)+'"</div>';return;}
-    out.innerHTML=results.map(r=>
+    // #532: surface total + has_more in a header row.
+    let header='';
+    if(typeof total==='number' && total>results.length){
+      header='<div class="result-count">Showing '+results.length+' of '+total+(((data.result||data).has_more)?'+':'')+'</div>';
+    }
+    out.innerHTML=header+results.map(r=>
       '<div class="result-card">'+
       '<div class="result-header">'+
-        '<div class="result-name">'+esc(r.name||'')+'</div>'+
+        '<div class="result-name">'+highlightSnippet(r.name||'', q)+'</div>'+
         // SECURITY: esc() around JSON.stringify — see project-card buttons.
         (r.id?'<button class="copy-id-btn" title="Copy symbol ID" data-action="copyID" data-args="'+esc(JSON.stringify([r.id]))+'">Copy ID</button>':'')+
       '</div>'+
@@ -912,12 +1017,28 @@ async function doSearch() {
         esc(r.file_path||'')+(r.start_line?' :'+r.start_line:'')+
         (r.language?' &nbsp;<span class="pill">'+esc(r.language)+'</span>':'')+
       '</div>'+
-      (r.snippet?'<div class="result-snippet">'+esc(r.snippet)+'</div>':
-        r.signature?'<div class="result-snippet">'+esc(r.signature)+'</div>':'')+
+      // #548: highlight query terms in snippet/signature.
+      (r.snippet?'<div class="result-snippet">'+highlightSnippet(r.snippet, q)+'</div>':
+        r.signature?'<div class="result-snippet">'+highlightSnippet(r.signature, q)+'</div>':'')+
       '</div>'
     ).join('');
-  } catch(e) { out.innerHTML='<div class="error">Search failed: '+esc(e.message)+'</div>'; }
+  } catch(e) {
+    if(e.name==='AbortError')return;
+    setTabError('search-results','Search failed: '+e.message,'doSearch');
+  }
 }
+
+// #547: debounced search-as-you-type. Bound below in init via
+// addEventListener('input', debouncedSearch). Pre-fix Enter was the
+// only way to trigger search; debounce makes type-to-search viable
+// without spamming the server.
+const debouncedSearch = debounce(() => {
+  // Skip empty / very-short queries — they BM25-rank to noise and
+  // wasting a request to render "no results" trains the user that
+  // type-as-you-go is broken.
+  const q = document.getElementById('search-q');
+  if (q && q.value.trim().length >= 2) doSearch();
+}, 200);
 
 // ── ADRs ───────────────────────────────────────────────────────────────────
 const ADR_LAST_PROJECT = 'pincher_adr_last_project';
@@ -1146,15 +1267,54 @@ async function openDetail(id, name) {
     const langs=d.languages||[];
     const eps=d.entry_points||[];
     const hotspots=d.hotspot_functions||d.hotspots||[];
+    // #533: render entry-points + hotspots with a "Show all" toggle
+    // when the list exceeds the default cap (8 / 10). Pre-fix the
+    // truncation was silent \u2014 users had no idea more existed.
+    const renderTruncatable = (label, items, defaultCap, expandedCap, toggleId, fmtItem) => {
+      if (!items.length) return '';
+      const expanded = _detailExpanded[toggleId] === true;
+      const cap = expanded ? expandedCap : defaultCap;
+      const shown = items.slice(0, cap);
+      const total = items.length;
+      const showToggle = total > defaultCap;
+      const headerCount = showToggle ? ' <span class="detail-section-count">'+shown.length+' of '+total+'</span>' : '';
+      const toggle = showToggle ? '<button class="show-all-btn" data-action="toggleDetailExpanded" data-args="'+esc(JSON.stringify([toggleId]))+'">'+(expanded?'Show fewer':'Show all '+total)+'</button>' : '';
+      return '<div class="detail-section"><div class="detail-section-label">'+label+headerCount+'</div>'+
+        '<ul class="'+(label==='Hotspot Functions'?'hotspot-list':'ep-list')+'">'+
+        shown.map(fmtItem).join('')+
+        '</ul>'+toggle+'</div>';
+    };
     body.innerHTML=
       (langs.length?'<div class="detail-section"><div class="detail-section-label">Languages</div>'+
         '<div class="lang-bar">'+langs.map(l=>'<span class="lang-chip">'+esc(l.language||l)+(l.file_count?' \u00b7 '+l.file_count+' files':'')+'</span>').join('')+'</div></div>':'')+
-      (eps.length?'<div class="detail-section"><div class="detail-section-label">Entry Points</div>'+
-        '<ul class="ep-list">'+eps.slice(0,8).map(e=>'<li>'+esc(e.name||e)+(e.file?' <span style="color:var(--muted)">'+esc(e.file)+'</span>':'')+'</li>').join('')+'</ul></div>':'')+
-      (hotspots.length?'<div class="detail-section"><div class="detail-section-label">Hotspot Functions</div>'+
-        '<ul class="hotspot-list">'+hotspots.slice(0,10).map(h=>'<li>'+esc(h.name||h)+'<span class="hotspot-calls">'+(h.call_count!=null?h.call_count+' calls':'')+'</span></li>').join('')+'</ul></div>':'')+
+      renderTruncatable('Entry Points', eps, 8, 50, 'eps_'+id,
+        e=>'<li>'+esc(e.name||e)+(e.file?' <span style="color:var(--muted)">'+esc(e.file)+'</span>':'')+'</li>') +
+      renderTruncatable('Hotspot Functions', hotspots, 10, 50, 'hotspots_'+id,
+        h=>'<li>'+esc(h.name||h)+'<span class="hotspot-calls">'+(h.call_count!=null?h.call_count+' calls':'')+'</span></li>') +
       (!langs.length&&!eps.length&&!hotspots.length?'<div class="empty">No architecture data available. Re-index the project first.</div>':'');
   } catch(e) { body.innerHTML='<div class="error">Failed to load architecture: '+esc(e.message)+'</div>'; }
+}
+
+// #533: per-detail-section expanded state. Keyed by toggle ID
+// (e.g. "eps_<projectID>" or "hotspots_<projectID>") so multiple
+// open detail panels each remember their own state. Cleared on
+// closeDetail.
+const _detailExpanded = {};
+
+function toggleDetailExpanded(toggleId) {
+  _detailExpanded[toggleId] = !_detailExpanded[toggleId];
+  // Re-render the same detail panel by re-invoking openDetail with
+  // the cached id+name. The toggleId always starts with "eps_" or
+  // "hotspots_" \u2014 the suffix is the project id.
+  const id = toggleId.replace(/^(eps_|hotspots_)/, '');
+  const card = document.getElementById('pcard-'+id);
+  const name = card ? card.querySelector('.proj-name') : null;
+  if (id && name) {
+    // openDetail toggles closed if same project clicked again \u2014 pre-empt
+    // that by clearing _detailOpenId so the re-open is a fresh open.
+    _detailOpenId = null;
+    openDetail(id, name.textContent);
+  }
 }
 
 function closeDetail() {
