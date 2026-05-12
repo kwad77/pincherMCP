@@ -970,6 +970,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #590: root URL → dashboard. A user typing the bare URL in a
+	// browser shouldn't see "method not allowed — use POST /v1/{tool}";
+	// the dashboard IS the front door. 302 redirect (NOT 301) so we
+	// can change the front door later without poisoning bookmarks.
+	// Honors basepath so /pincher/ → /pincher/v1/dashboard.
+	if r.URL.Path == "/" && r.Method == http.MethodGet {
+		http.Redirect(w, r, s.effectivePrefix(r)+"/v1/dashboard", http.StatusFound)
+		return
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
 	if path == "health" {
 		// auth_required surfaces whether --http-key is set. The dashboard
