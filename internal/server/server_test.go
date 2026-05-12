@@ -2758,6 +2758,28 @@ func TestServeHTTP_RootRedirectsToDashboard(t *testing.T) {
 	}
 }
 
+// #588: /v1/health + /v1/openapi.json must be reachable without
+// bearer auth even when --http-key is set, so container
+// orchestrators can liveness-probe the server without sharing the
+// bearer secret. Every other endpoint still enforces auth.
+func TestServeHTTP_HealthAndOpenAPIBypassBearerAuth(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetHTTPKey("secret123")
+
+	for _, path := range []string{"/v1/health", "/v1/openapi.json"} {
+		w := httpGet(t, srv, path)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s with no bearer: got %d, want 200 (public probe carve-out, #588)", path, w.Code)
+		}
+	}
+
+	// Sanity: a real tool endpoint still requires auth.
+	w := httpPost(t, srv, "/v1/list", "{}")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("/v1/list with no bearer: got %d, want 401 — auth carve-out leaked", w.Code)
+	}
+}
+
 // #586: HTTP error responses must be valid JSON matching the
 // shared Error component schema ({error: string}) declared in the
 // OpenAPI spec under every endpoint's `default` response. Pre-fix

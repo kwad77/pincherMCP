@@ -926,7 +926,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// would produce tok="", then hash and compare. Both rejected, but
 	// the latter takes one less SHA-256 byte to ingest. Edge-case
 	// timing distinguishability. Post-fix: identical work in both.
-	if s.httpKey != "" {
+	// #588: container orchestrators (Docker, Kubernetes, fly.io,
+	// ECS) ping /v1/health and /v1/openapi.json as liveness probes
+	// and they can't carry a bearer token without significant config
+	// gymnastics (mount the secret, sidecar, etc.). Both paths are
+	// documentation-shaped — health surfaces version + auth_required
+	// + binary_stale; openapi.json surfaces the dynamic spec built
+	// from registered tools. Neither leaks project state. Skip the
+	// bearer check for them so liveness probes work alongside
+	// --http-key. Every other endpoint still enforces auth.
+	pathTrimmed := strings.TrimPrefix(r.URL.Path, "/v1/")
+	isPublicProbe := pathTrimmed == "health" || pathTrimmed == "openapi.json"
+	if s.httpKey != "" && !isPublicProbe {
 		auth := r.Header.Get("Authorization")
 		tok, hasBearer := strings.CutPrefix(auth, "Bearer ")
 		got := sha256.Sum256([]byte(tok))
