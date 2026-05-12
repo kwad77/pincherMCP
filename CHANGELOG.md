@@ -7,6 +7,16 @@ minors.
 
 ## [Unreleased]
 
+## [v0.37.0] — 2026-05-12 — hook conversion-rate dashboard
+
+The measurement release. v0.36 wired runtime interception via the PreToolUse hook; v0.37 surfaces the headline metric — what fraction of redirected Read/Grep calls the agent actually follows through on. Two panels triangulate the diagnosis: an override rate that isolates "saw and rejected" from "no signal yet", and a per-tool breakdown so a low conversion rate has somewhere to drill into.
+
+No schema change — all v0.37 work runs on schema v24. The remaining triangulating panels (entropy, payload size, per-tier %) carve out as [#635](https://github.com/kwad77/pincher/issues/635) for v0.38; they need new data plumbing not currently tracked.
+
+### Added
+- **`GET /v1/hook-stats` endpoint + headline conversion-rate dashboard panel ([#628](https://github.com/kwad77/pincher/issues/628)).** Returns trailing-7-day `redirects`, `taken`, and `conversion_pct` from the v0.36 `hook_invocations` table. Dashboard renders a "Read/Grep → pincher (7d)" card showing the bounded percentage. When no intercepts exist yet the panel renders an onboarding hint pointing at `pincher init --target=claude` rather than flapping zero-percent. Endpoint is GET-only; POST returns 405 with `Allow: GET, HEAD`. Local-only — every byte originates in the user's `pincher.db`.
+- **Triangulating panels: override rate + per-tool breakdown ([#629](https://github.com/kwad77/pincher/issues/629), partial).** Two supporting cards beneath the headline. **Override rate** isolates "agent saw the suggestion and rejected it" (`took_recommendation=0`) from "no signal yet" (`took_recommendation IS NULL`) — distinct from `100%-conversion_pct` because the unresolved bucket is excluded from both numerator and denominator. **Per-tool breakdown** reports redirects and takes for Read vs Grep separately so an imbalance flags which decision tier needs rebalancing. Backed by new readers `HookOverrideRate7d` and `HookCountsByTool7d`. The remaining three panels (tool-call entropy, median payload, per-tier saved-pct medians) carve out to [#635](https://github.com/kwad77/pincher/issues/635) — they each require new data plumbing not currently tracked.
+
 ## [v0.36.0] — 2026-05-12 — hook foundation: PreToolUse interception + telemetry
 
 The leverage release. Instruction-layer nudges plateaued — `CLAUDE.md` saying "use pincher first" is a soft prior that competes with the strong prior "Read/Grep always works." This batch ships runtime interception via Claude Code's PreToolUse hook so the redirect happens at the moment of decision, not by persuasion. One install — `pincher init --target=claude` — wires both the MCP server config AND the hook entry. Conversion-rate metric on the dashboard ships in v0.37.

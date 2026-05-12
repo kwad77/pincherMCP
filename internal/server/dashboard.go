@@ -111,6 +111,8 @@ const dashboardTemplate = `<!DOCTYPE html>
       <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Loading…</text>
     </svg>
   </div>
+  <p class="section-title">PreToolUse Hook (last 7 days)</p>
+  <div class="grid grid-3" id="hook-stats-cards"><div class="loading">Loading…</div></div>
 </main>
 </div>
 
@@ -882,11 +884,63 @@ async function load() {
     document.getElementById('error-box').innerHTML = '<div class="error">Failed to load stats: '+esc(statsR.reason)+'</div>';
   }
 
-  // Projects + sparkline load concurrently in the background — the overview
-  // is already interactive once stats resolve.
+  // Projects + sparkline + hook stats load concurrently in the background
+  // — the overview is already interactive once stats resolve.
   loadProjects();
   loadSparkline();
+  loadHookStats();
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+
+// loadHookStats fetches /v1/hook-stats and renders the v0.37 headline
+// conversion-rate panel (#628). Until the v0.36 hook accumulates at
+// least a handful of intercepts, the panel renders an onboarding hint
+// pointing the user at "pincher init --target=claude" instead of
+// flapping percentages.
+async function loadHookStats() {
+  try {
+    const data = await fetch('/v1/hook-stats').then(r => r.json());
+    const redirects = data.redirects || 0;
+    const taken = data.taken || 0;
+    const resolved = data.resolved || 0;
+    const overrides = data.overrides || 0;
+    const pct = (redirects > 0) ? (data.conversion_pct || 0).toFixed(1) + '%' : '—';
+    const sub = (redirects > 0)
+      ? taken + ' of ' + redirects + ' redirects taken within 3 calls'
+      : 'No PreToolUse intercepts in the last 7 days';
+    const cardCls = (redirects === 0) ? '' : (data.conversion_pct >= 60 ? 'green' : 'purple');
+    const headline = statCard('Read/Grep → pincher (7d)', pct, 'green', sub, cardCls);
+    // #629: override rate isolates "agent saw the hint and rejected"
+    // from "no signal yet". Distinct from 100%-conversion because it
+    // excludes redirects with no subsequent calls observed.
+    const overridePct = (resolved > 0) ? (data.override_pct || 0).toFixed(1) + '%' : '—';
+    const overrideSub = (resolved > 0)
+      ? overrides + ' of ' + resolved + ' resolved redirects rejected'
+      : 'Awaiting first resolved redirect';
+    const overrideCls = (resolved === 0) ? '' : (data.override_pct < 30 ? 'green' : 'purple');
+    const overrideCard = statCard('Override rate (7d)', overridePct, 'purple', overrideSub, overrideCls);
+    // #629: per-tool breakdown — Read vs Grep imbalance is an early
+    // signal that one tier of decision logic needs rebalancing.
+    const byTool = data.by_tool || {};
+    const toolNames = Object.keys(byTool).sort();
+    let breakdownVal, breakdownSub;
+    if (toolNames.length === 0) {
+      breakdownVal = '—';
+      breakdownSub = 'No tool intercepts yet';
+    } else {
+      breakdownVal = toolNames.length + ' tool' + (toolNames.length === 1 ? '' : 's');
+      breakdownSub = toolNames.map(n => n + ': ' + (byTool[n].redirects || 0) + 'r/' + (byTool[n].taken || 0) + 't').join(' · ');
+    }
+    const breakdownCard = statCard('By tool (7d)', breakdownVal, 'green', breakdownSub, '');
+    let body = headline + overrideCard + breakdownCard;
+    if (redirects === 0) {
+      body += '<div class="empty" style="grid-column:1/-1">Install the PreToolUse hook to start capturing intercepts: <code>pincher init --target=claude</code>. Once the hook fires on indexed Read/Grep calls, the conversion rate populates here within ~1 day of normal usage.</div>';
+    }
+    document.getElementById('hook-stats-cards').innerHTML = body;
+  } catch (e) {
+    document.getElementById('hook-stats-cards').innerHTML =
+      '<div class="error">Failed to load hook stats: ' + esc(String(e)) + '</div>';
+  }
 }
 
 // #555: per-data-point lookup state. Stored on a module-level variable

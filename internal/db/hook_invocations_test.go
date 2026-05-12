@@ -114,6 +114,102 @@ func TestResolveHookInvocations_NotTakenWhenSuggestedToolMissing(t *testing.T) {
 	}
 }
 
+// #629: HookOverrideRate7d isolates "agent saw and rejected" from
+// "no signal yet". Three redirects: one taken, one ignored, one with
+// no subsequent calls (unresolved). Override rate should be 1/2=50%
+// — the unresolved row is excluded from both numerator and denominator.
+func TestHookOverrideRate7d(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UnixNano()
+	for i, sid := range []string{"o1", "o2", "o3"} {
+		if err := store.LogHookInvocation(HookInvocation{
+			TS: now + int64(i), SessionID: sid, ToolName: "Read",
+			Decision: "redirect", SuggestedTool: "context",
+		}); err != nil {
+			t.Fatalf("log %s: %v", sid, err)
+		}
+	}
+	// o1: agent took the redirect.
+	if _, err := store.ResolveHookInvocationsForSession("o1",
+		[]HookSessionCall{{TS: now + 100, ToolName: "context"}}); err != nil {
+		t.Fatalf("resolve o1: %v", err)
+	}
+	// o2: agent rejected — called something else.
+	if _, err := store.ResolveHookInvocationsForSession("o2",
+		[]HookSessionCall{{TS: now + 100, ToolName: "Edit"}}); err != nil {
+		t.Fatalf("resolve o2: %v", err)
+	}
+	// o3: never resolved (no subsequent calls).
+	pct, overrides, resolved, err := store.HookOverrideRate7d()
+	if err != nil {
+		t.Fatalf("override rate: %v", err)
+	}
+	if resolved != 2 {
+		t.Errorf("resolved = %d, want 2 (o3 still NULL)", resolved)
+	}
+	if overrides != 1 {
+		t.Errorf("overrides = %d, want 1", overrides)
+	}
+	if pct < 49.9 || pct > 50.1 {
+		t.Errorf("override pct = %.2f, want ~50", pct)
+	}
+}
+
+// Empty store returns (0, 0, 0, nil) — small-N onboarding shape.
+func TestHookOverrideRate7d_EmptyStore(t *testing.T) {
+	store := newTestStore(t)
+	pct, overrides, resolved, err := store.HookOverrideRate7d()
+	if err != nil {
+		t.Fatalf("override rate: %v", err)
+	}
+	if pct != 0 || overrides != 0 || resolved != 0 {
+		t.Errorf("empty store should be zero-shaped; got pct=%.2f overrides=%d resolved=%d", pct, overrides, resolved)
+	}
+}
+
+// #629: per-tool breakdown isolates Read-vs-Grep imbalance. Two
+// Read redirects (one taken) + one Grep redirect (taken) + one
+// pass_through Read (counts toward Read total but not redirects).
+func TestHookCountsByTool7d(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UnixNano()
+	rows := []HookInvocation{
+		{TS: now, SessionID: "t", ToolName: "Read", Decision: "redirect", SuggestedTool: "context"},
+		{TS: now + 1, SessionID: "t", ToolName: "Read", Decision: "redirect", SuggestedTool: "context"},
+		{TS: now + 2, SessionID: "t", ToolName: "Read", Decision: "pass_through"},
+		{TS: now + 3, SessionID: "t", ToolName: "Grep", Decision: "redirect", SuggestedTool: "search"},
+	}
+	for i, r := range rows {
+		if err := store.LogHookInvocation(r); err != nil {
+			t.Fatalf("log %d: %v", i, err)
+		}
+	}
+	if _, err := store.ResolveHookInvocationsForSession("t", []HookSessionCall{
+		{TS: now + 10, ToolName: "context"},
+		{TS: now + 11, ToolName: "search"},
+	}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	out, err := store.HookCountsByTool7d()
+	if err != nil {
+		t.Fatalf("by tool: %v", err)
+	}
+	if got := out["Read"]["redirects"]; got != 2 {
+		t.Errorf("Read redirects = %d, want 2", got)
+	}
+	if got := out["Read"]["taken"]; got != 2 {
+		// Both Read redirects suggested context; agent called context once,
+		// which marks every redirect-with-suggested-tool=context as taken.
+		t.Errorf("Read taken = %d, want 2", got)
+	}
+	if got := out["Grep"]["redirects"]; got != 1 {
+		t.Errorf("Grep redirects = %d, want 1", got)
+	}
+	if got := out["Grep"]["taken"]; got != 1 {
+		t.Errorf("Grep taken = %d, want 1", got)
+	}
+}
+
 func TestResolveHookInvocations_SkipsAlreadyResolved(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now().UnixNano()

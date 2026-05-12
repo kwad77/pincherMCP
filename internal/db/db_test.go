@@ -449,6 +449,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"CountSymbolsInFile":      true,
 	"LargestSymbolInFile":     true,
 	"HookConversionRate7d":    true,
+	"HookOverrideRate7d":      true,
+	"HookCountsByTool7d":      true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).

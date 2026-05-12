@@ -4193,6 +4193,68 @@ func (s *Store) HookConversionRate7d() (float64, int, int, error) {
 	return float64(taken) / float64(redirects) * 100, redirects, taken, nil
 }
 
+// HookOverrideRate7d returns the trailing-7d percentage of redirects
+// the agent saw and explicitly rejected (took_recommendation=0). When
+// this stays > 30% over multiple weeks, the redirect message itself
+// is the problem — agents are seeing the suggestion and choosing not
+// to take it. Returns (pct, overrides, resolved, err) where resolved
+// is the number of redirects with a non-NULL took_recommendation
+// (the denominator) and overrides is the count where it equals 0.
+//
+// Distinct from "100% - conversion_pct" because it excludes redirects
+// that haven't been resolved yet (no subsequent calls observed).
+// Reader-routed.
+func (s *Store) HookOverrideRate7d() (float64, int, int, error) {
+	row := s.ro.QueryRow(
+		`SELECT
+		    COALESCE(SUM(CASE WHEN took_recommendation IS NOT NULL THEN 1 ELSE 0 END), 0) AS resolved,
+		    COALESCE(SUM(CASE WHEN took_recommendation=0 THEN 1 ELSE 0 END), 0) AS overrides
+		   FROM hook_invocations
+		  WHERE decision='redirect' AND ts > ?`,
+		time.Now().Add(-7*24*time.Hour).UnixNano(),
+	)
+	var resolved, overrides int
+	if err := row.Scan(&resolved, &overrides); err != nil {
+		return 0, 0, 0, err
+	}
+	if resolved == 0 {
+		return 0, 0, 0, nil
+	}
+	return float64(overrides) / float64(resolved) * 100, overrides, resolved, nil
+}
+
+// HookCountsByTool7d breaks down the trailing-7d intercept counts by
+// tool name. Surfaces the Read-vs-Grep balance — when one is much
+// higher than the other, the per-pattern decision logic may need
+// rebalancing. Returns a map of tool_name → {redirects, taken} pairs.
+// Reader-routed.
+func (s *Store) HookCountsByTool7d() (map[string]map[string]int, error) {
+	rows, err := s.ro.Query(
+		`SELECT
+		    tool_name,
+		    SUM(CASE WHEN decision='redirect' THEN 1 ELSE 0 END) AS redirects,
+		    SUM(CASE WHEN took_recommendation=1 THEN 1 ELSE 0 END) AS taken
+		   FROM hook_invocations
+		  WHERE ts > ?
+		  GROUP BY tool_name`,
+		time.Now().Add(-7*24*time.Hour).UnixNano(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]map[string]int)
+	for rows.Next() {
+		var tool string
+		var redirects, taken int
+		if err := rows.Scan(&tool, &redirects, &taken); err != nil {
+			return nil, err
+		}
+		out[tool] = map[string]int{"redirects": redirects, "taken": taken}
+	}
+	return out, rows.Err()
+}
+
 // FormatSize formats a byte count as a human-readable string.
 func FormatSize(bytes int) string {
 	switch {

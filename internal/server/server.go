@@ -903,6 +903,7 @@ var httpGetOnlyRoutes = map[string]bool{
 	"dashboard.css": true,
 	"stats":         true,
 	"sessions":      true,
+	"hook-stats":    true, // v0.37 hook conversion-rate dashboard panel (#628)
 	"openapi.json":  true,
 	"health":        true,
 }
@@ -1158,6 +1159,47 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp["session_project"] = s.sessionID
 		}
 		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	// GET /v1/hook-stats — PreToolUse hook conversion-rate metrics
+	// over the trailing 7 days. Backs the v0.37 dashboard headline
+	// panel (#628). Returns the bounded percentage + raw counts so
+	// the dashboard can render the small-N "no data yet" state.
+	//
+	// Telemetry is local-only (#626) — every byte returned here
+	// originates in the user's pincher.db. Nothing phones home.
+	if path == "hook-stats" && r.Method == http.MethodGet {
+		pct, redirects, taken, err := s.store.HookConversionRate7d()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		// #629: triangulating panels — override rate (intentional reject vs
+		// unresolved-yet) and per-tool breakdown so a low conversion rate
+		// has somewhere to drill into.
+		overridePct, overrides, resolved, err := s.store.HookOverrideRate7d()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		byTool, err := s.store.HookCountsByTool7d()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if byTool == nil {
+			byTool = map[string]map[string]int{}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"window":         "7d",
+			"redirects":      redirects,
+			"taken":          taken,
+			"conversion_pct": pct,
+			"resolved":       resolved,
+			"overrides":      overrides,
+			"override_pct":   overridePct,
+			"by_tool":        byTool,
+		})
 		return
 	}
 	// GET /v1/sessions — per-session savings history for sparkline chart.
