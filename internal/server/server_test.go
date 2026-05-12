@@ -4982,10 +4982,12 @@ func TestSlowQuery_SecretRedaction(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _meta.savings line — human-readable adoption-feedback line per friend's note
+// _meta.tokens_saved_pct — bounded percentage form of tokens_saved (#619).
+// Replaces the v0.33-and-earlier `_meta.savings` human-prose line:
+// structured fields scale better across clients than parseable strings.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestMeta_SavingsLine_PresentWhenSavingsPositive(t *testing.T) {
+func TestMeta_TokensSavedPct_PresentWhenSavingsPositive(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "savpr", Path: "/tmp/savpr", Name: "savpr", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
@@ -5007,19 +5009,32 @@ func TestMeta_SavingsLine_PresentWhenSavingsPositive(t *testing.T) {
 	if meta == nil {
 		t.Fatal("_meta missing")
 	}
-	savings, _ := meta["savings"].(string)
-	if savings == "" {
-		t.Errorf("expected _meta.savings line, got %v", meta)
+	pct, present := meta["tokens_saved_pct"]
+	if !present {
+		t.Fatalf("expected _meta.tokens_saved_pct; got %v", meta)
 	}
-	if !strings.Contains(savings, "tokens vs reading files") {
-		t.Errorf("savings line shape unexpected: %q", savings)
+	pctF, ok := pct.(float64)
+	if !ok || pctF == 0 {
+		t.Errorf("tokens_saved_pct should be a non-zero float on a positive-savings call; got %v (%T)", pct, pct)
+	}
+	// Pre-#619: prose `savings:` field. Now removed in favor of the
+	// structured percentage. Pin the absence so the field doesn't sneak
+	// back via copy-paste.
+	if _, present := meta["savings"]; present {
+		t.Errorf("v0.33-era prose `savings` field should not be in _meta any more; got %v", meta["savings"])
 	}
 }
 
-func TestMeta_SavingsLine_AbsentWhenSavingsZero(t *testing.T) {
+func TestMeta_TokensSavedPct_NullWhenBaselineMethodNone(t *testing.T) {
 	srv, _, _ := newTestServer(t)
-	// list returns 0 tokens_saved (admin tool — no file-read comparison).
-	result, err := srv.handleList(context.Background(), makeReq(nil))
+	// list is an admin/orientation tool (baseline_method=none) — there is
+	// no honest Read alternative to compare against, so both
+	// tokens_saved and tokens_saved_pct surface as null rather than 0.
+	// req.Params.Name must be set explicitly — the baseline-method lookup
+	// keys on it and falls back to full_file_read on empty.
+	req := makeReq(nil)
+	req.Params.Name = "list"
+	result, err := srv.handleList(context.Background(), req)
 	if err != nil || result.IsError {
 		t.Fatalf("handleList: err=%v isErr=%v", err, result.IsError)
 	}
@@ -5028,8 +5043,11 @@ func TestMeta_SavingsLine_AbsentWhenSavingsZero(t *testing.T) {
 	if meta == nil {
 		t.Fatal("_meta missing")
 	}
+	if v, present := meta["tokens_saved_pct"]; !present || v != nil {
+		t.Errorf("tokens_saved_pct should be null on baseline_method=none; got %v (present=%v)", v, present)
+	}
 	if _, present := meta["savings"]; present {
-		t.Errorf("savings line should be absent when tokens_saved is 0; got %v", meta["savings"])
+		t.Errorf("v0.33-era prose `savings` field should not be in _meta any more; got %v", meta["savings"])
 	}
 }
 

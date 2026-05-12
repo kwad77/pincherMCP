@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -139,6 +140,13 @@ type Server struct {
 	sessionRoot    string
 	sessionProject string // derived from sessionRoot
 	sessionID      string // db.ProjectIDFromPath(sessionRoot)
+
+	// #620: dedupe binary_version_warning. Once a given (project, indexed-by
+	// version) pair has surfaced its drift warning to this server process,
+	// suppress subsequent emissions of the same warning. Each unique pair
+	// fires exactly once per server lifetime — fresh process or a version
+	// change re-arms it. Key shape: "projectID:indexed-version".
+	driftWarningsEmitted sync.Map
 
 	// persistentSessionID is a stable identifier for this process invocation,
 	// used as the primary key in the sessions table for persistent ROI tracking.
@@ -1398,10 +1406,10 @@ func openAPIComponentSchemas() map[string]any {
 					"enum":        []any{"full_file_read", "partial_read", "none"},
 					"description": "Which kind of work this tool replaced. `full_file_read` for tools that replace a Read of source files; `partial_read` for repeat-access; `none` for admin / orientation tools with no Read alternative.",
 				},
-				"tokens_used":  map[string]any{"type": "integer", "description": "Approx tokens spent producing this response."},
-				"tokens_saved": map[string]any{"type": []any{"integer", "null"}, "description": "Approx tokens saved vs reading the underlying source files. `null` when baseline_method=none."},
-				"latency_ms":   map[string]any{"type": "integer", "description": "Server-side handler latency in milliseconds."},
-				"savings":      map[string]any{"type": "string", "description": "Optional human-readable savings line; suppressed when baseline_method=none."},
+				"tokens_used":      map[string]any{"type": "integer", "description": "Approx tokens spent producing this response."},
+				"tokens_saved":     map[string]any{"type": []any{"integer", "null"}, "description": "Approx tokens saved vs reading the underlying source files. `null` when baseline_method=none."},
+				"tokens_saved_pct": map[string]any{"type": []any{"number", "null"}, "description": "Bounded form of tokens_saved: percentage of total token cost (saved+used) avoided by this call. Capped at 100; can be negative when the response envelope cost more than the savings. `null` when baseline_method=none."},
+				"latency_ms":       map[string]any{"type": "integer", "description": "Server-side handler latency in milliseconds."},
 				"next_steps": map[string]any{
 					"type":        "array",
 					"description": "Suggested next tool calls to keep the agent oriented.",
@@ -5631,9 +5639,13 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 
 	baseline := tokensUsed + tokensSaved
-	ratio := ""
-	if tokensUsed > 0 && tokensSaved > 0 {
-		ratio = fmt.Sprintf("  %.0fx", float64(baseline)/float64(tokensUsed))
+	// #619: bounded-percentage form alongside the absolute count. Capped
+	// at 100% by construction; trivially comparable across sessions and
+	// across users without ratio compounding. Suppressed when there's no
+	// meaningful comparison to draw.
+	pct := ""
+	if baseline > 0 && tokensSaved > 0 {
+		pct = fmt.Sprintf("  (%.0f%%)", float64(tokensSaved)/float64(baseline)*100)
 	}
 
 	var b strings.Builder
@@ -5651,7 +5663,7 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	b.WriteString(line("Tool calls:", commify(calls)))
 	b.WriteString(line("Without pincher:", "~"+commify(baseline)+" tokens"))
 	b.WriteString(line("With pincher:", commify(tokensUsed)+" tokens"))
-	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+ratio))
+	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+pct))
 	b.WriteString(line("Avg latency:", fmt.Sprintf("%d ms", avgLatency)))
 
 	// ALL-TIME section — only render when the DB has data (otherwise it's
@@ -6832,8 +6844,23 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	meta["baseline_method"] = baselineMethod
 	if baselineMethod == baselineMethodNone {
 		meta["tokens_saved"] = nil
+		meta["tokens_saved_pct"] = nil
 	} else {
 		meta["tokens_saved"] = tokensSaved
+		// #619: percentage saved is the bounded form of the same number —
+		// easier to reason about per-call (capped at 100%, negative when
+		// the envelope cost more than the savings, no compounding across
+		// sessions). Reported alongside the absolute count so consumers
+		// have both shapes available. Formula: saved / (saved + used).
+		// Negative results are kept as-is — a -15% reads as "this call
+		// cost more than the Read it replaced," which is the right signal
+		// when it happens; clamping to 0 would hide that.
+		denom := tokensSaved + tokensUsed
+		if denom > 0 {
+			meta["tokens_saved_pct"] = math.Round(float64(tokensSaved)/float64(denom)*1000) / 10
+		} else {
+			meta["tokens_saved_pct"] = 0.0
+		}
 	}
 	meta["latency_ms"] = latency
 
@@ -6847,17 +6874,11 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 		existing, _ := meta["warnings"].([]string)
 		meta["warnings"] = append(existing, w...)
 	}
-	// No cost_avoided / $-figures: we don't know the user's model or their
-	// pricing. Tokens are concrete and defensible; dollars are a guess.
-	// Human-readable savings line. Trains agents + users that pincher is
-	// cheaper than reading files; a one-liner per response is the most
-	// effective place to surface it (per #138/#139/#140 adoption thread).
-	// Suppressed when baseline_method is "none" (no honest comparison
-	// to draw) and when no tokens were saved on a measurable tool.
-	if baselineMethod != baselineMethodNone && tokensSaved > 0 {
-		meta["savings"] = fmt.Sprintf("saved ~%s tokens vs reading files (used %s, %dms)",
-			humanInt(tokensSaved), humanInt(tokensUsed), latency)
-	}
+	// #619: prose `savings:` line dropped. The structured fields
+	// (tokens_saved + tokens_saved_pct) carry the same information in
+	// a form clients can render however they like — dashboard renders
+	// the percentage as the headline, raw integer as supporting detail,
+	// without ever parsing a human string.
 	data["_meta"] = meta
 
 	// Accumulate session stats. On the very first call, flush immediately so

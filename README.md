@@ -29,9 +29,10 @@ Every tool response includes a `_meta` envelope with real BPE token counts (cl10
   "name": "processPayment",
   "source": "func processPayment(amount float64) error { ... }",
   "_meta": {
-    "tokens_used":  312,
-    "tokens_saved": 14500,
-    "latency_ms":   2
+    "tokens_used":       312,
+    "tokens_saved":      14500,
+    "tokens_saved_pct":  97.9,
+    "latency_ms":        2
   }
 }
 ```
@@ -203,14 +204,34 @@ The `stats` tool renders a session summary directly in chat:
 │  Tool calls:          5                    │
 │  Without pincher:   ~45,200 tokens         │
 │  With pincher:        1,200 tokens         │
-│  Saved:             ~44,000 tokens   37x   │
+│  Saved:             ~44,000 tokens  (97%)  │
 │  Avg latency:         2 ms                 │
 └────────────────────────────────────────────┘
 ```
 
 **Without pincher** is the estimated baseline (whole file reads). **With pincher** is the actual BPE token count of what was returned. Savings persist in SQLite across reconnects, process restarts, and binary upgrades — the dashboard at `/v1/dashboard` shows the all-time total.
 
-Typical per-call savings: `symbol` ~95%, `context` ~90%, `search` ~98%, `trace` ~99%. (`architecture` returns metadata only — no file-read alternative — so its `tokens_saved` is reported as 0 rather than fabricated, see [#219](https://github.com/kwad77/pincher/issues/219).)
+Every `_meta` envelope carries `tokens_saved` (absolute) and `tokens_saved_pct` (the same number as a bounded percentage — capped at 100%, can go negative when the response envelope cost more than the savings). The bounded form is easier to reason about per-call than a compounding ratio.
+
+### What to expect per workflow shape
+
+Savings vary by what pincher is actually replacing. The tool breakdown:
+
+| Workflow / tool | Typical saved % | What's happening |
+|---|---|---|
+| **Reading a function in a large file** — `context`, `symbol`, `symbols` | 95-99% | Byte-offset retrieval skips the rest of the file entirely. The bigger the source file, the larger the absolute saving. |
+| **Tracing callers or call-graph traversal** — `trace`, `query` | 80-95% | Returns just the matching paths in one call instead of a multi-step grep-and-Read workflow. |
+| **Conceptual / BM25 search** — `search` | 60-90% | Ranked snippets in 2KB beat unranked grep output across many files. On exact-token greps where Grep already returns one line, savings approach zero. |
+| **Project orientation** — `architecture`, `health`, `schema`, `list` | reported as `null` | No honest file-read baseline to compare against. Useful but not measured as "saved." |
+| **First fetch of an external doc** — `fetch` | ~0% on first call | Real value is persistence + cross-session search re-use. Second-and-Nth access to the same stored Document is 85-90% saved. |
+
+### Best / typical / break-even
+
+- **Large Go (or JS) project, > 500 files, > 50KB average file size** — workflows hit Tier 1 retrieval often. Aggregate session savings commonly land at **70-90%**.
+- **Mixed-language mid-size project** (Go + JS + config + docs) — fewer big-file reads, more orientation calls. Expect **40-70%** aggregate.
+- **Small project (< 50 files) or one dominated by stub-tier languages** (Scala, Lua, Zig, Elixir, Haskell, Dart, R) — Read/Grep is genuinely competitive on small files. Expect **break-even to ~30%**.
+
+The point of breaking it out per tier is that you can match the tool to the workflow you actually have. If your day is mostly small-file edits in a polyglot repo with thin language support, pincher's value is concentrated in the structural-query and search tools rather than per-call retrieval — and that's the honest framing rather than an aggregate ratio that doesn't apply to your shape.
 
 ---
 
@@ -273,6 +294,7 @@ Other CLI subcommands ([`pincher index`](docs/REFERENCE.md#pincher-index), [`pin
 | **v0.31.0** | **Autoresearcher haul: dead code + NULL pinchQL + redact tests + audit-shape + HTTP method semantics.** Five issues filed by an autoresearcher dogfood probe of v0.30, fixed in one batch. `pinchQL n.docstring=""` and `n.is_test=false` now match NULL rows — the canonical "find undocumented APIs" demo silently returned 0 because of SQL tri-state ([#606](https://github.com/kwad77/pincher/issues/606)). `guide` routes "find every X without Y" phrasing to `query` instead of `search` — restores the #438 demo across arbitrary nouns ([#608](https://github.com/kwad77/pincher/issues/608)). POST/PUT/DELETE on a known GET-only endpoint now returns 405 with `Allow: GET, HEAD` instead of a misleading "unknown tool" 404; HEAD support added everywhere per RFC 7231 ([#609](https://github.com/kwad77/pincher/issues/609)). `redactSensitiveSlice` recursion path covered — was 0%, now 100% ([#607](https://github.com/kwad77/pincher/issues/607)). `dedupCSymbolsByQN` removed as dead helper ([#605](https://github.com/kwad77/pincher/issues/605)). | ✅ shipped |
 | **v0.32.0** | **Loop-2 dogfood haul: 0%-coverage gates + edge-property warning pedagogy.** Three issues filed by autoresearcher round 2 against v0.31. pinchQL edge-property warnings (`r.source` etc.) now list edge properties (`kind`, `confidence`) instead of misleading users with the symbol property list — same pedagogy spirit as #473/#499/#501 ([#612](https://github.com/kwad77/pincher/issues/612)). pinchQL `notExpr.eval` Go-side fallback covered (was 0%) — six tests pin the contract against silent NOT inversion ([#611](https://github.com/kwad77/pincher/issues/611)). `db.CurrentSchemaVersion` covered (was 0%) — pins `len(schemaMigrations)+1` and asserts equality with the freshly-opened DB's `schema_version` row, catching off-by-one and migration-skip regressions ([#613](https://github.com/kwad77/pincher/issues/613)). | ✅ shipped |
 | **v0.33.0** | **Loop-3 dogfood haul: guide methodology routing + fetch JS-render warning.** Three usability issues filed by autoresearcher round 3 against v0.32. `guide` methodology questions ("how do I find what calls a private function") stop extracting category nouns as the hint — visibility/category nouns are now stop words ([#615](https://github.com/kwad77/pincher/issues/615)). `guide` "use pinchQL to ..." routes to the `query` tool with a starter template instead of pointing at pinchQL's source code ([#616](https://github.com/kwad77/pincher/issues/616)). `fetch` warns via `_meta.warnings` when the extracted text is suspiciously small relative to raw bytes — JS-rendered SPA shells no longer silently return empty text disguised as a successful fetch ([#617](https://github.com/kwad77/pincher/issues/617)). | ✅ shipped |
+| **v0.34.0** | **Measurement honesty: bounded percentages + structured fields + per-tier README claims.** New `tokens_saved_pct` field on every `_meta` envelope alongside the existing `tokens_saved` count — bounded form is easier to reason about per-call than compounding ratios ([#619](https://github.com/kwad77/pincher/issues/619)). `binary_version_warning` now surfaces once per (project, indexed-version) pair per server process rather than once per response — repeated identical warnings trained agents to filter `_meta` entirely ([#620](https://github.com/kwad77/pincher/issues/620)). README savings section repositions around per-tier percentages — symbol retrieval, structural traversal, BM25 search, orientation, persistence — so expected savings can be matched to workflow shape ([#621](https://github.com/kwad77/pincher/issues/621)). Removed: `_meta.savings` prose string (redundant with the structured fields). | ✅ shipped |
 | **v1.0** | Tool schemas frozen, schema attestation, migration guide, public launch. | planned |
 
 Live milestone burndown: <https://github.com/kwad77/pincher/milestones>. Full punch lists per release: [#193](https://github.com/kwad77/pincher/issues/193).

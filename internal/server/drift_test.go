@@ -3,6 +3,7 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kwad77/pincher/internal/db"
 )
@@ -174,6 +175,71 @@ func TestAttachDriftWarning_NoOpOnMatch(t *testing.T) {
 
 	if _, ok := data["_meta"]; ok {
 		t.Error("_meta should not be allocated when no drift")
+	}
+}
+
+// #620: same (project, indexed-version) pair must surface the warning
+// only once per server process. Repeated identical warnings train
+// agents to filter `_meta` entirely.
+func TestAttachDriftWarning_EmittedOncePerProcess(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.version = "0.9.0"
+	pid := seedProject(t, srv, "p", "0.10.0")
+
+	// First emission lands.
+	first := map[string]any{}
+	srv.attachDriftWarning(first, pid)
+	if meta, ok := first["_meta"].(map[string]any); !ok || meta["binary_version_warning"] == nil {
+		t.Fatal("first call should attach the drift warning")
+	}
+
+	// Second emission for the same (project, indexed-version) pair is
+	// suppressed even though the drift state is unchanged.
+	second := map[string]any{}
+	srv.attachDriftWarning(second, pid)
+	if meta, ok := second["_meta"].(map[string]any); ok {
+		if w := meta["binary_version_warning"]; w != nil {
+			t.Errorf("second call should not re-emit; got %v", w)
+		}
+	}
+	// And a third — confirm the suppression is durable, not one-shot.
+	third := map[string]any{}
+	srv.attachDriftWarning(third, pid)
+	if _, ok := third["_meta"]; ok {
+		t.Error("third call should not allocate _meta either")
+	}
+}
+
+// #620: a version change re-arms the warning. If the project gets
+// re-indexed at a different binary version mid-session (rare but
+// possible), the new pair fires fresh.
+func TestAttachDriftWarning_DifferentVersionReArmsEmission(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.version = "0.9.0"
+	pid := seedProject(t, srv, "p", "0.10.0")
+
+	first := map[string]any{}
+	srv.attachDriftWarning(first, pid)
+	if _, ok := first["_meta"]; !ok {
+		t.Fatal("first emission missing")
+	}
+
+	// Re-stamp the project at a different indexed-by version.
+	if err := srv.store.UpsertProject(db.Project{
+		ID:            pid,
+		Path:          "/tmp/p",
+		Name:          "p",
+		IndexedAt:     time.Now(),
+		BinaryVersion: "0.11.0",
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+
+	second := map[string]any{}
+	srv.attachDriftWarning(second, pid)
+	meta, ok := second["_meta"].(map[string]any)
+	if !ok || meta["binary_version_warning"] == nil {
+		t.Errorf("version change should re-arm emission; got %v", second)
 	}
 }
 

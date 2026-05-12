@@ -7,6 +7,22 @@ minors.
 
 ## [Unreleased]
 
+## [v0.34.0] — 2026-05-12 — measurement honesty: bounded percentages, structured fields, per-tier README claims
+
+Three changes that shift how pincher reports its value to a more useful shape. Bounded percentages are easier to reason about per-call than compounding multipliers; structured fields scale better across clients than parseable prose; per-tier README claims let users match expected savings to the workflow shape they actually have. Forward-looking repositioning — the prior shapes were fine for a first pass; these shapes are clearer for the use cases that have emerged.
+
+No schema change — all v0.34 work runs on schema v23.
+
+### Added
+- **`tokens_saved_pct` field on every `_meta` envelope ([#619](https://github.com/kwad77/pincher/issues/619)).** Bounded form of `tokens_saved` — capped at 100%, can be negative when the response envelope cost more than the savings. Reported alongside the absolute count so consumers have both shapes available. Stats CLI box now leads with the percentage; `(97%)` rather than `37x`. Compounding ratios obscure per-call value and are easy to inflate; bounded percentages aren't. The dashboard's absolute counts are unchanged.
+
+### Changed
+- **`binary_version_warning` surfaces once per session per project, not once per response ([#620](https://github.com/kwad77/pincher/issues/620)).** When the running binary is older than the project's indexed-by version, the drift advisory previously fired on every tool response — visible noise that trains agents to filter `_meta` entirely, which kills the useful warnings (#473/#499/#612). Now emitted once per (project, indexed-version) pair per server process; a fresh process or a re-stamp at a different version re-arms emission.
+- **README repositions savings claims around per-tier percentages ([#621](https://github.com/kwad77/pincher/issues/621)).** New section breaks expected savings down by workflow tier — symbol retrieval (95-99% on large files), structural traversal (80-95%), BM25 search (60-90% on conceptual queries, near-zero on exact-token greps), orientation tools (`null` because no honest baseline), persistence-shaped tools like `fetch` (~0% first call, 85-90% on re-access). New best-case / typical / break-even framing helps users match the tool to their codebase shape rather than expect an aggregate ratio that doesn't apply to their workflow.
+
+### Removed
+- **`_meta.savings` human-prose string.** Redundant with the structured `tokens_saved` + `tokens_saved_pct` fields and added ~100B of envelope cost on every successful response. Dashboard renders the percentage as the headline; nothing in the codebase consumed the prose.
+
 ## [v0.33.0] — 2026-05-12 — loop-3 dogfood haul: guide methodology routing + fetch JS-render warning
 
 Three issues filed by autoresearcher round 3 against v0.32, fixed in one batch. Loop-3 was scoped to *usability* — friction agents hit even when the underlying tool works correctly.

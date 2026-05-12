@@ -112,12 +112,31 @@ func (s *Server) driftFor(projectID string) (string, driftAction) {
 // otherwise. Designed to be called immediately after mustProject in
 // each reader.
 //
+// #620: emitted exactly once per (project, indexed-binary-version)
+// pair per server process. Once the agent has seen the warning, every
+// subsequent response in the same session carrying the same warning
+// is noise — the underlying drift state hasn't changed. Repeating it
+// trains agents to filter out `_meta` entirely, which kills the
+// genuinely-useful warnings (#473, #499, #612). A fresh server process
+// or a version change re-arms emission via the keyed cache.
+//
 // `data` is the response map the handler is building; it must be
 // non-nil. The function takes care of allocating the `_meta` sub-map
 // if absent.
 func (s *Server) attachDriftWarning(data map[string]any, projectID string) {
 	msg, action := s.driftFor(projectID)
 	if action != driftActionWarn {
+		return
+	}
+	// Per-session dedupe. Key includes the indexer's binary version so
+	// that an upgrade (which the index command will re-stamp) re-arms
+	// the warning rather than silently suppressing it.
+	p, err := s.store.GetProject(projectID)
+	if err != nil || p == nil {
+		return
+	}
+	key := projectID + ":" + p.BinaryVersion
+	if _, alreadyEmitted := s.driftWarningsEmitted.LoadOrStore(key, struct{}{}); alreadyEmitted {
 		return
 	}
 	meta, _ := data["_meta"].(map[string]any)
