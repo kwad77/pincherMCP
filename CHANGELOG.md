@@ -7,6 +7,15 @@ minors.
 
 ## [Unreleased]
 
+## [v0.22.1] — 2026-05-12 — HTTP error response contract honored
+
+Patch — HTTP gateway error responses now match the OpenAPI `Error` schema shipped in v0.22.0 (#582). Pre-fix the dispatcher wrote raw `errResult()` text under a `Content-Type: application/json` header, breaking the contract that #582 explicitly promised.
+
+### Fixed
+- **HTTP error responses are JSON `{error}` matching OpenAPI Error schema
+  ([#586](https://github.com/kwad77/pincher/issues/586),
+  [#587](https://github.com/kwad77/pincher/pull/587)).** Discovered during v0.22 dogfood probe spinning up `pincher --http 127.0.0.1:18080`; the first `/v1/search` call without a session project returned 400 with plain-text body. Generated SDKs against `/v1/openapi.json` would have choked on the body shape mismatch. Fix wraps `tc.Text` in `{"error": tc.Text}` when `result.IsError`; success path unchanged.
+
 ## [v0.22.0] — 2026-05-12 — dogfood haul + OpenAPI contracts
 
 Patch-shaped minor — five fixes and one feature, all surfaced in a single ~3-hour dogfood probe of v0.21.0. Headline: every `/v1/<tool>` endpoint now ships a real OpenAPI response schema with typed fields, a shared `_meta` envelope component, and an `Error` component for the default response — generated SDKs from `/v1/openapi.json` get typed response models per endpoint instead of `{ [k: string]: any }`. The other four fixes are dogfood-driven precision: dead_code's FP triangle's last leg gets a real-world close (the v0.21 README claim retroactively becomes true), fetch stops corrupting markdown, doctor stops blowing the MCP token cap on multi-project installs, and pinchQL stops silently accepting unknown function names.
