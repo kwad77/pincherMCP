@@ -7,6 +7,78 @@ minors.
 
 ## [Unreleased]
 
+## [v0.22.0] — 2026-05-12 — dogfood haul + OpenAPI contracts
+
+Patch-shaped minor — five fixes and one feature, all surfaced in a single ~3-hour dogfood probe of v0.21.0. Headline: every `/v1/<tool>` endpoint now ships a real OpenAPI response schema with typed fields, a shared `_meta` envelope component, and an `Error` component for the default response — generated SDKs from `/v1/openapi.json` get typed response models per endpoint instead of `{ [k: string]: any }`. The other four fixes are dogfood-driven precision: dead_code's FP triangle's last leg gets a real-world close (the v0.21 README claim retroactively becomes true), fetch stops corrupting markdown, doctor stops blowing the MCP token cap on multi-project installs, and pinchQL stops silently accepting unknown function names.
+
+No schema change — all v0.22 work runs on schema v23.
+
+### Added
+- **Real OpenAPI response contracts + shared Meta/Error components
+  ([#581](https://github.com/kwad77/pincher/issues/581),
+  [#582](https://github.com/kwad77/pincher/pull/582)).** v0.20 (#560)
+  landed dynamic request-side schemas; v0.22 completes the response
+  side. Every `/v1/<tool>` endpoint declares typed top-level fields,
+  required-field list, and a `_meta` `$ref` to a shared component.
+  Default response on every endpoint references a shared `Error`
+  schema. Two new gate tests
+  (`TestOpenAPI_EveryToolHasNonPlaceholderResponseSchema` +
+  `TestOpenAPI_HasSharedMetaAndErrorComponents`) prevent future
+  endpoints from regressing to the bare `{type: object}` placeholder.
+  Closes the response-side parity claim made in v0.20.
+
+### Fixed
+- **dead_code: file-scope composite-literal function-value binding
+  ([#576](https://github.com/kwad77/pincher/issues/576),
+  [#577](https://github.com/kwad77/pincher/pull/577)).** The v0.21
+  binding pass (#565) only handled assignment-statement bindings
+  (`s.handler = fn`); file-scope composite-literal bindings
+  (`var X = T{Field: fn}` — the canonical "registry of handlers"
+  pattern) were silently uncovered. Pincher's own
+  `var CodexTarget = Target{DetectFn: detectCodex, …}` exposed the
+  gap during v0.21 dogfood. New `extractGoFileLevelReads` walks
+  identifier references inside top-level var/const initializer
+  expressions; the resolveReads binding pass converts function-value
+  READS to confidence-0.4 CALLS edges. The v0.21 README limitation
+  rewrite claimed `T{Handler: someFn}` was covered — with this PR
+  landed, that claim is true.
+- **fetch: corrupts markdown — eats `>` chars + runs HTML stripper on
+  text/markdown URLs
+  ([#579](https://github.com/kwad77/pincher/issues/579),
+  [#580](https://github.com/kwad77/pincher/pull/580)).** Three bugs
+  from one root cause. `extractTextFromHTML` ran on every fetched
+  URL regardless of Content-Type → markdown bodies got tag-stripped
+  → arrows (`=>`), generics (`Vec<T>`), blockquotes, and literal
+  angle-bracket content all silently lost characters. Discovered
+  fetching pincher's own CHANGELOG: `/v1/<tool>` rendered as `/v1/ `,
+  every `=>` lost its `>`. Fix: handler dispatches on
+  `Content-Type` (text/markdown / text/plain skip stripping); new
+  `firstMarkdownH1` parses the title from `# Title`; the HTML
+  scanner only consumes `>` when it actually closes a tag we
+  entered, defending even on real HTML.
+- **doctor: handler caps projects + failures globally
+  ([#575](https://github.com/kwad77/pincher/issues/575),
+  [#583](https://github.com/kwad77/pincher/pull/583)).** Pre-fix the
+  handler iterated every project and pulled `top` failures per
+  project; on a 125-project install with default top=10 the response
+  ballooned to ~119 KB and exceeded the MCP per-call token cap. Two
+  caps: projects list capped at `top` (sorted by symbol count desc
+  so the largest projects — most likely to surface a problem — are
+  kept), and extraction failures capped GLOBALLY at `top` instead of
+  per-project. Overflow surfaced in `projects_truncated` /
+  `extraction_failures_truncated` so the caller knows. Discovered
+  same-session as #573 shipped — first call against my own install
+  repro'd it.
+- **pinchQL: rejects unknown function calls in RETURN
+  ([#578](https://github.com/kwad77/pincher/issues/578),
+  [#584](https://github.com/kwad77/pincher/pull/584)).** Pre-fix
+  `RETURN LENGTH(f.docstring)` parsed silently — `LENGTH` became a
+  bare variable ref, the `(f.docstring)` was tolerated, every row
+  evaluated to null. Same UX class as #473 (typo'd properties):
+  malformed input silently returns "an answer" that isn't. Fix
+  surfaces a clear pinchQL error naming the offender + the supported
+  aggregator set.
+
 ## [v0.21.0] — 2026-05-11 — function-value-binding edges + build-tag fan-out + admin tools on MCP/HTTP
 
 Minor — the v0.21 theme is **closing the dead_code FP triangle's last leg + cross-platform call-graph correctness + finishing the API parity work started in v0.20.** Function values bound to struct fields (`s.handler = fn`) no longer false-flag the bound function as dead; build-tag duplicate-implementation siblings (`web_windows.go` / `web_unix.go` pattern) both surface as inbound-reachable instead of just the lex-smallest variant; and `doctor` / `rebuild-fts` / `self-test` graduate from CLI-only to MCP+HTTP, exposed via the dynamic dispatcher built in v0.20. A CLI↔MCP parity gate prevents future user-facing CLI commands from being silently CLI-only.
