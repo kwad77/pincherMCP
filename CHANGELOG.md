@@ -7,6 +7,28 @@ minors.
 
 ## [Unreleased]
 
+## [v0.23.0] — 2026-05-12 — HTTP gateway hardening + pinchQL data integrity
+
+Patch-shaped minor — four fixes from a continuous v0.22 dogfood probe of the HTTP gateway and pinchQL deep queries. Net effect: container orchestrators can now liveness-probe pincher behind `--http-key`, the bare URL routes to the dashboard, and pinchQL stops silently inflating result sets via two distinct edge-cases (multi-sourced edges + column-vs-column comparisons).
+
+The originally-planned "dashboard hardening" theme rolls forward to v0.24.0 — this release was the dogfood haul that surfaced through the previous round's probes.
+
+No schema change — all v0.23 work runs on schema v23.
+
+### Fixed
+- **HTTP `/v1/health` + `/v1/openapi.json` bypass bearer auth
+  ([#588](https://github.com/kwad77/pincher/issues/588),
+  [#594](https://github.com/kwad77/pincher/pull/594)).** Container orchestrators (Docker, Kubernetes, fly.io, ECS) ping these as liveness probes — they can't carry a bearer token without significant config gymnastics. Pre-fix operators behind `--http-key` either couldn't liveness-probe at all, or had to drop their auth. Both paths are documentation-shaped (version + auth_required + binary_stale; the dynamic spec) and don't leak project state. Every other endpoint still enforces auth.
+- **HTTP root `/` redirects to `/v1/dashboard`
+  ([#590](https://github.com/kwad77/pincher/issues/590),
+  [#595](https://github.com/kwad77/pincher/pull/595)).** Pre-fix the bare URL hit "method not allowed — use POST /v1/{tool}" — a confusing front door for operators typing the URL in a browser. 302 redirect (not 301) so we can change the front door later without poisoning bookmarks. Honors basepath: `/pincher/` → `/pincher/v1/dashboard`.
+- **pinchQL: dedup multi-sourced CALLS/READS edges in MATCH JOIN
+  ([#591](https://github.com/kwad77/pincher/issues/591),
+  [#592](https://github.com/kwad77/pincher/pull/592)).** The edges table stores one row per source tag (`per_file` / `resolve_pass` / `binding_pass`) by design (#475 / #565), but pinchQL JOIN was returning all of them — silently inflating caller counts. Pre-fix repro on pincher-repo: `MATCH (a)-[:CALLS]->(b) WHERE a.name="mustProject" AND b.name="errResult" RETURN a.id, b.id` → 2 rows with identical IDs. Now dedup at engine level on `(from_id, to_id, kind)`, keeping highest-confidence variant. Same UX class as #473 / #578: silent data inflation, agent makes decisions on the wrong count.
+- **pinchQL: rejects + warns on column-vs-column comparisons in WHERE
+  ([#593](https://github.com/kwad77/pincher/issues/593),
+  [#596](https://github.com/kwad77/pincher/pull/596)).** Pre-fix `WHERE a.col <op> b.col` silently parsed as always-true — RHS treated as unmatched literal — so the predicate inflated result sets. Discovered while validating the v0.15.5 cross-language scoping (#436): canonical `WHERE a.language <> b.language` returned Go→Go pairs. Fix surfaces a warning naming the offending clause + makes evaluation return false (consistent with #473 unknown-property handling).
+
 ## [v0.22.1] — 2026-05-12 — HTTP error response contract honored
 
 Patch — HTTP gateway error responses now match the OpenAPI `Error` schema shipped in v0.22.0 (#582). Pre-fix the dispatcher wrote raw `errResult()` text under a `Content-Type: application/json` header, breaking the contract that #582 explicitly promised.
