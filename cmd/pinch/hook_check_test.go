@@ -215,6 +215,64 @@ func TestDecideHook_Grep_NoIndexedProjects_PassesThrough(t *testing.T) {
 	}
 }
 
+// Cover the I/O shims that don't get hit by the decideHook unit tests:
+// emitHookResponse, emitPassThrough, logHookDecision, debugPass on the
+// observable-stderr path. End-to-end via stdin/stdout swap.
+func TestRunHookCheckCLI_PassThroughEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	// Swap stdin to a piped JSON payload; capture stdout to a temp file.
+	in, _ := os.CreateTemp(t.TempDir(), "stdin")
+	in.WriteString(`{"tool_name":"Read","tool_input":{"file_path":"/nowhere/foo.go"}}`)
+	in.Close()
+	stdinFile, _ := os.Open(in.Name())
+	defer stdinFile.Close()
+
+	outFile, _ := os.CreateTemp(t.TempDir(), "stdout")
+	defer outFile.Close()
+
+	origStdin, origStdout := os.Stdin, os.Stdout
+	os.Stdin = stdinFile
+	os.Stdout = outFile
+	defer func() { os.Stdin = origStdin; os.Stdout = origStdout }()
+
+	runHookCheckCLI([]string{"--data-dir", dir})
+
+	outFile.Sync()
+	body, _ := os.ReadFile(outFile.Name())
+	got := strings.TrimSpace(string(body))
+	if !strings.Contains(got, `"continue":true`) {
+		t.Errorf("unindexed Read should pass through; got %q", got)
+	}
+	if strings.Contains(got, "stopReason") || strings.Contains(got, "systemMessage") {
+		t.Errorf("pass-through should be silent; got %q", got)
+	}
+}
+
+func TestRunHookCheckCLI_BadJSONStillPassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	in, _ := os.CreateTemp(t.TempDir(), "stdin")
+	in.WriteString(`not valid json`)
+	in.Close()
+	stdinFile, _ := os.Open(in.Name())
+	defer stdinFile.Close()
+
+	outFile, _ := os.CreateTemp(t.TempDir(), "stdout")
+	defer outFile.Close()
+
+	origStdin, origStdout := os.Stdin, os.Stdout
+	os.Stdin = stdinFile
+	os.Stdout = outFile
+	defer func() { os.Stdin = origStdin; os.Stdout = origStdout }()
+
+	runHookCheckCLI([]string{"--data-dir", dir, "--debug"})
+
+	outFile.Sync()
+	body, _ := os.ReadFile(outFile.Name())
+	if !strings.Contains(string(body), `"continue":true`) {
+		t.Errorf("malformed input must NOT block the agent; got %q", body)
+	}
+}
+
 func TestEmitHookResponse_PassThroughIsSilent(t *testing.T) {
 	// Pass-through must NOT include stopReason / systemMessage —
 	// otherwise every successful Read would generate noise that
