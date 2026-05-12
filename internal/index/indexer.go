@@ -28,9 +28,16 @@ import (
 )
 
 // IndexProgress tracks live file-processing progress for a running index job.
+//
+// StartedAt is set when the IndexProgress struct is created (at the
+// top of Index()) and lets clients compute elapsed time + ETA via
+// `(now - StartedAt) / FilesDone * (FilesTotal - FilesDone)`. Stored
+// as Unix nanoseconds in an atomic so GetProgress doesn't need to
+// take the indexer lock to read it (#535).
 type IndexProgress struct {
-	FilesDone  atomic.Int64
-	FilesTotal atomic.Int64
+	FilesDone     atomic.Int64
+	FilesTotal    atomic.Int64
+	StartedAtUnix atomic.Int64
 }
 
 // DefaultMaxFileSize bounds per-file memory during indexing. Real source
@@ -105,6 +112,23 @@ func (idx *Indexer) GetProgress(projectID string) (done, total int64, active boo
 	return 0, 0, active
 }
 
+// GetProgressDetail returns progress + the StartedAtUnix timestamp.
+// Used by HTTP /v1/index-progress to compute ETA + files/sec without
+// the caller needing to know about the IndexProgress struct shape
+// (#535). Returns startedAtUnix==0 when there's no progress entry
+// (project not currently indexing); callers should treat that as
+// "no ETA data available."
+func (idx *Indexer) GetProgressDetail(projectID string) (done, total, startedAtUnix int64, active bool) {
+	idx.mu.Lock()
+	active = idx.active[projectID]
+	idx.mu.Unlock()
+	if v, ok := idx.progress.Load(projectID); ok {
+		p := v.(*IndexProgress)
+		return p.FilesDone.Load(), p.FilesTotal.Load(), p.StartedAtUnix.Load(), active
+	}
+	return 0, 0, 0, active
+}
+
 // IndexResult summarises a completed indexing run.
 type IndexResult struct {
 	ProjectID  string
@@ -154,6 +178,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	idx.active[projectID] = true
 	idx.mu.Unlock()
 	prog := &IndexProgress{}
+	prog.StartedAtUnix.Store(time.Now().UnixNano())
 	idx.progress.Store(projectID, prog)
 	defer func() {
 		idx.mu.Lock()

@@ -187,10 +187,11 @@ func requireKeys(t *testing.T, body []byte, label string, keys ...string) {
 	}
 }
 
-// requireErrorShape: error responses must be `{"error": "..."}` JSON,
-// not a bare string or HTML. The dashboard's auth-prompt + toast logic
-// reads `body.error` to display the message; a different shape silently
-// shows nothing.
+// requireErrorShape: error responses must be `{"error": {code, message, details?}}`
+// JSON per the v0.25 standardized envelope (#537). Pre-v0.25 was a bare
+// `error: string`; the change is breaking and intentional. The dashboard's
+// fetch wrapper extracts `body.error.message` for display and
+// `body.error.code` for switch-on-error-type behavior.
 func requireErrorShape(t *testing.T, body []byte, label string) {
 	t.Helper()
 	var resp map[string]any
@@ -198,7 +199,16 @@ func requireErrorShape(t *testing.T, body []byte, label string) {
 		t.Errorf("%s: error response not JSON: %v\nbody: %s", label, err, string(body))
 		return
 	}
-	if _, ok := resp["error"]; !ok {
-		t.Errorf("%s: error response missing \"error\" key\nbody: %s", label, string(body))
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Errorf("%s: v0.25 error envelope: error must be an object, got %T\nbody: %s",
+			label, resp["error"], string(body))
+		return
+	}
+	if code, _ := errObj["code"].(string); code == "" {
+		t.Errorf("%s: error envelope missing code\nbody: %s", label, string(body))
+	}
+	if msg, _ := errObj["message"].(string); msg == "" {
+		t.Errorf("%s: error envelope missing message\nbody: %s", label, string(body))
 	}
 }

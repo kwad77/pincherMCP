@@ -944,8 +944,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		want := sha256.Sum256([]byte(s.httpKey))
 		matches := subtle.ConstantTimeCompare(got[:], want[:]) == 1
 		if !hasBearer || !matches {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]any{"error": "unauthorized — set Authorization: Bearer <key>"})
+			writeError(w, http.StatusUnauthorized, "unauthorized",
+				"unauthorized — set Authorization: Bearer <key>")
 			return
 		}
 	}
@@ -955,8 +955,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// behind a reverse proxy (issue #40).
 	ip := s.clientIP(r)
 	if !s.allowRequest(ip) {
-		w.WriteHeader(http.StatusTooManyRequests)
-		json.NewEncoder(w).Encode(map[string]any{"error": fmt.Sprintf("rate limit exceeded — max %d requests per %s", s.rateLimit, s.rateWindow)})
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			fmt.Sprintf("rate limit exceeded — max %d requests per %s", s.rateLimit, s.rateWindow))
 		return
 	}
 
@@ -997,10 +997,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// reads it to decide whether to show a "no auth in place" notice
 		// (#203). Server-side enforcement is unchanged — this is purely
 		// metadata so clients can render appropriate UX.
+		//
+		// #536: dashboard_version is the server version that produced the
+		// dashboard JS the browser is currently running. The JS bakes its
+		// own build version in at render time and polls health to detect
+		// "your tab is running stale JS against a newer server" — common
+		// after a binary upgrade because the JS Cache-Control max-age=600
+		// can keep stale JS in the browser for 10 minutes after upgrade.
+		// Same value as `version` in this release; carried as a separate
+		// field so we can advance one without the other later (e.g. a
+		// dashboard rebuild without a server bump).
 		json.NewEncoder(w).Encode(map[string]any{
-			"ok":            true,
-			"version":       s.version,
-			"auth_required": s.httpKey != "",
+			"ok":                true,
+			"version":           s.version,
+			"dashboard_version": s.version,
+			"auth_required":     s.httpKey != "",
 		})
 		return
 	}
@@ -1083,10 +1094,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// GET /v1/sessions — per-session savings history for sparkline chart.
 	if path == "sessions" && r.Method == http.MethodGet {
-		sessions, err := s.store.GetSessions(90) // last 90 sessions
+		// #531: ?limit= lifts the previously-hardcoded 90-session window.
+		// Default 90 (preserves prior behavior), max 500. Sessions are
+		// small per row (~150 B) so 500 is comfortably bounded.
+		p := parsePageParams(r, 90, 500)
+		sessions, err := s.store.GetSessions(p.Limit + p.Offset)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		// #334: zero-len init so HTTP /v1/sessions returns "sessions":[] (not null) when no sessions exist.
@@ -1101,10 +1115,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"tokens_saved": sess.TokensSaved,
 			})
 		}
-		json.NewEncoder(w).Encode(map[string]any{"sessions": rows})
+		page, total, hasMore := sliceWindow(rows, p)
+		json.NewEncoder(w).Encode(map[string]any{
+			"sessions": page,
+			"total":    total,
+			"has_more": hasMore,
+		})
 		return
 	}
 	// POST /v1/index-progress — live file progress for a running index job.
+	// #535: alongside files_done/files_total/active we now return
+	// started_at + elapsed_ms + files_per_sec + eta_ms so the dashboard
+	// can render "Indexing… 1234/5678 (~2 min remaining)" instead of
+	// just a static counter.
+	//
+	// Math: rate = done / elapsed; eta = (total - done) / rate. When
+	// rate is 0 (no files done yet) eta_ms is null — clients render
+	// "estimating..." rather than infinity. Same when an index is
+	// inactive: started_at + elapsed_ms + eta_ms are all null because
+	// the in-memory progress entry has been deleted.
 	if path == "index-progress" && r.Method == http.MethodPost {
 		var body struct {
 			Project string `json:"project"`
@@ -1114,24 +1143,51 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if projectID == "" {
 			projectID = s.sessionID
 		}
-		done, total, active := s.indexer.GetProgress(projectID)
-		json.NewEncoder(w).Encode(map[string]any{
-			"project":     projectID,
-			"files_done":  done,
-			"files_total": total,
-			"active":      active,
-		})
+		done, total, startedAtUnix, active := s.indexer.GetProgressDetail(projectID)
+		resp := map[string]any{
+			"project":        projectID,
+			"files_done":     done,
+			"files_total":    total,
+			"active":         active,
+			"started_at":     nil,
+			"elapsed_ms":     nil,
+			"files_per_sec":  nil,
+			"eta_ms":         nil,
+		}
+		if startedAtUnix > 0 {
+			startedAt := time.Unix(0, startedAtUnix)
+			resp["started_at"] = startedAt.Format(time.RFC3339)
+			elapsed := time.Since(startedAt)
+			elapsedMs := elapsed.Milliseconds()
+			resp["elapsed_ms"] = elapsedMs
+			if done > 0 && elapsedMs > 0 {
+				rate := float64(done) / elapsed.Seconds()
+				resp["files_per_sec"] = rate
+				if active && total > done {
+					remaining := float64(total-done) / rate
+					resp["eta_ms"] = int64(remaining * 1000)
+				}
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 	// GET /v1/projects — list all indexed projects.
+	// #530: pagination via ?limit=&offset=. Default 50, max 200. Returns
+	// {projects, total, has_more} so the dashboard can render a "Load
+	// more" button without re-counting.
 	if path == "projects" && r.Method == http.MethodGet {
 		projects, err := s.store.ListProjects()
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"projects": projects})
+		page, total, hasMore := sliceWindow(projects, parsePageParams(r, 50, 200))
+		json.NewEncoder(w).Encode(map[string]any{
+			"projects": page,
+			"total":    total,
+			"has_more": hasMore,
+		})
 		return
 	}
 	// DELETE /v1/projects/empty — bulk-delete every project with zero
@@ -1140,8 +1196,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "projects/empty" && r.Method == http.MethodDelete {
 		n, err := s.store.DeleteEmptyProjects()
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"deleted": n})
@@ -1153,13 +1208,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ID string `json:"id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{"error": "body must be {\"id\":\"<project-id>\"}"})
+			writeError(w, http.StatusBadRequest, "bad_request",
+				`body must be {"id":"<project-id>"}`)
 			return
 		}
 		if err := s.store.DeleteProject(body.ID); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"deleted": body.ID})
@@ -1167,7 +1221,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed — use POST /v1/{tool}"}`, http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			"method not allowed — use POST /v1/{tool}")
 		return
 	}
 
@@ -1182,17 +1237,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			available = append(available, name)
 		}
 		sort.Strings(available)
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": fmt.Sprintf("unknown tool %q — available: %s", path, strings.Join(available, ", ")),
-		})
+		writeError(w, http.StatusNotFound, "not_found",
+			fmt.Sprintf("unknown tool %q", path),
+			map[string]any{"available_tools": available},
+		)
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MB limit
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"error": "failed to read request body"})
+		writeError(w, http.StatusBadRequest, "bad_request", "failed to read request body")
 		return
 	}
 	if len(body) == 0 {
@@ -1208,28 +1262,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	result, err := handler(r.Context(), req)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	// #586: when the handler returns IsError, wrap the plain-text
-	// error message in the documented {error: string} envelope so the
-	// HTTP body matches the OpenAPI Error schema referenced from
-	// every endpoint's `default` response (#581/#582). Pre-fix the
-	// raw text was written under a Content-Type: application/json
-	// header — broken in two ways (not JSON, doesn't match schema).
-	// Mirrors the pre-handler `err != nil` path above which already
-	// uses json.NewEncoder.
+	// #586+#537: when the handler returns IsError, wrap the plain-text
+	// error message in the standardized v0.25 envelope so the HTTP body
+	// matches the OpenAPI Error schema referenced from every endpoint's
+	// `default` response. Pre-v0.25 used `{error: string}`; v0.25
+	// changed to `{error: {code, message, details?}}` so generated SDKs
+	// and the dashboard JS can pattern-match on `error.code` instead of
+	// substring-checking the message text.
 	if result.IsError {
-		w.WriteHeader(http.StatusBadRequest)
+		msg := "empty error result"
 		if len(result.Content) > 0 {
 			if tc, ok := result.Content[0].(*mcp.TextContent); ok {
-				json.NewEncoder(w).Encode(map[string]any{"error": tc.Text})
-				return
+				msg = tc.Text
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"error": "empty error result"})
+		writeError(w, http.StatusBadRequest, "tool_error", msg)
 		return
 	}
 
@@ -1242,7 +1293,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	json.NewEncoder(w).Encode(map[string]any{"error": "empty result"})
+	writeError(w, http.StatusInternalServerError, "internal_error", "empty result from handler")
 }
 
 // openAPIComponentSchemas defines the shared schemas referenced via
@@ -1291,9 +1342,19 @@ func openAPIComponentSchemas() map[string]any {
 		},
 		"Error": map[string]any{
 			"type":        "object",
-			"description": "Returned for any non-success response (auth failures, validation errors, server errors).",
-			"properties":  map[string]any{"error": map[string]any{"type": "string"}},
-			"required":    []any{"error"},
+			"description": "v0.25 standardized error envelope (#537). Returned for every 4xx/5xx response. BREAKING CHANGE from v0.24: pre-v0.25 returned `{error: \"<text>\"}`; v0.25 returns `{error: {code, message, details?}}` so clients can pattern-match on the machine-readable code instead of substring-checking the text. Standard codes: bad_request, not_found, unauthorized, rate_limited, method_not_allowed, internal_error, tool_error.",
+			"properties": map[string]any{
+				"error": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"code":    map[string]any{"type": "string", "description": "Machine-readable identifier (snake_case)."},
+						"message": map[string]any{"type": "string", "description": "Human-readable description."},
+						"details": map[string]any{"type": "object", "description": "Optional structured context (e.g. {\"available_tools\": [...]} on not_found)."},
+					},
+					"required": []any{"code", "message"},
+				},
+			},
+			"required": []any{"error"},
 		},
 	}
 }
@@ -2066,7 +2127,8 @@ func (s *Server) registerTools() {
 				"kind":{"type":"string","description":"Filter by symbol kind: Function|Method|Class|Interface|Enum|Type|Variable|Module|Setting|Section|Document|Resource|DataSource|Output|Local|Provider|Block"},
 				"language":{"type":"string","description":"Filter by language: Go|Python|TypeScript|HCL|YAML|Markdown|etc"},
 				"corpus":{"type":"string","enum":["","code","config","docs"],"description":"FTS5 corpus to search. Default (omitted or '') is 'code' — source-code identifiers (Function/Method/Class/etc). 'config' restricts to YAML/JSON/HCL/TOML Settings/Resources/Outputs; 'docs' to Markdown sections + fetched Documents. Use a specific corpus to avoid BM25 dilution from unrelated symbol kinds. (The legacy 'all' value was removed in v0.5; older callers passing 'all' are soft-redirected to 'code' with a deprecation log line.)"},
-				"limit":{"type":"integer","description":"Max results (default 20)"},
+				"limit":{"type":"integer","description":"Max results returned in this page (default 20, max 500)."},
+				"offset":{"type":"integer","description":"Skip this many BM25-ranked results before the page. Default 0, max 5000. Used for paginated 'Load more' UX (#532). Response includes total + has_more so callers can decide whether to page deeper."},
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. Rationale: 0.71 filters bottom-floor doc-section symbols that can BM25-match wide queries; an exact identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned."}
 			}
@@ -2877,6 +2939,25 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		corpus = ""
 	}
 	limit := intArg(args, "limit", 20)
+	// #532: cap limit at 500. Pre-cap a caller asking for limit=10000 would
+	// pin a goroutine on FTS5 + the projection loop. Server-side cap also
+	// bounds the "Load more" payload growth in the dashboard.
+	if limit > 500 {
+		limit = 500
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	// #532: offset for paginated "Load more" UX. Default 0, cap 5000 —
+	// past 5000 results the BM25 tail isn't useful; agents should refine
+	// the query instead of paging deeper.
+	offset := intArg(args, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 5000 {
+		offset = 5000
+	}
 	fieldsArg := str(args, "fields")
 	// #34 Phase 4 + #112 calibration baseline: 0.71 filters the
 	// bottom-floor symbols (README/CHANGELOG/CONTRIBUTING H1 sections that
@@ -2910,9 +2991,16 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// corpora; a min_confidence=0.7 filter on a Settings-heavy corpus
 	// might still under-deliver, but that's the right signal — the agent
 	// asked for high-precision and the corpus didn't have it.
-	fetchLimit := limit
+	//
+	// #532: when offset > 0, include the offset in the fetch so we can
+	// slice past it before applying the limit. Pagination semantics are
+	// "BM25-ranked top-(offset+limit), serve [offset:offset+limit]" —
+	// deeper offsets get the more-relevance-degraded long tail, which
+	// is the correct trade-off for a "Load more" UX where the user
+	// already saw the top-ranked results.
+	fetchLimit := limit + offset
 	if minConfidence > 0 {
-		fetchLimit = limit * 4
+		fetchLimit = (limit + offset) * 4
 	}
 	// #289: FTS5 treats `.` and `-` as syntactic; bare dotted identifiers
 	// like `os.Stat` produce raw "fts5: syntax error" messages that don't
@@ -3007,9 +3095,29 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			}
 		}
 		results = filtered
-		if len(results) > limit {
-			results = results[:limit]
+	}
+
+	// #532: pagination envelope. `searchTotal` = post-filter row count we
+	// considered; `searchHasMore` = there's at least one row past the
+	// current window. The window is [offset:offset+limit] of the BM25-
+	// ranked, confidence-filtered, fallthrough-resolved result set.
+	//
+	// Note: searchTotal is a LOWER BOUND on the true match count for
+	// queries that hit fetchLimit — FTS5 stops at fetchLimit so we don't
+	// know how many more rows exist past it. The dashboard treats
+	// has_more as the source of truth for the "Load more" button; total
+	// is rendered as "Showing 50 of 1234+" when has_more is true.
+	searchTotal := len(results)
+	searchHasMore := false
+	if offset >= len(results) {
+		results = results[:0]
+	} else {
+		end := offset + limit
+		if end > len(results) {
+			end = len(results)
 		}
+		searchHasMore = end < searchTotal || searchTotal >= fetchLimit
+		results = results[offset:end]
 	}
 
 	// Resolve project root once for snippet reads.
@@ -3176,10 +3284,14 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 	data := map[string]any{
-		"results": rows,
-		"count":   len(rows),
-		"query":   query,
-		"_meta":   meta,
+		"results":  rows,
+		"count":    len(rows),
+		"query":    query,
+		"total":    searchTotal,
+		"has_more": searchHasMore,
+		"offset":   offset,
+		"limit":    limit,
+		"_meta":    meta,
 	}
 	// F1: surface binary-version drift on read-class tools so the agent
 	// knows results may reflect older parsing logic than what indexed

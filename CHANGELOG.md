@@ -7,6 +7,34 @@ minors.
 
 ## [Unreleased]
 
+## [v0.25.0] — 2026-05-12 — dashboard API hardening
+
+Six issues from umbrella #519's API-shape batch: pagination on three GET endpoints, ETA on index-progress, dashboard-version probe, and a standardized error envelope. The error envelope is the **breaking change** in this release.
+
+No schema change — all v0.25 work runs on schema v23.
+
+### Changed (BREAKING)
+- **Standardized error envelope across every /v1/ response
+  ([#537](https://github.com/kwad77/pincher/issues/537),
+  [#599](https://github.com/kwad77/pincher/pull/599)).** Pre-v0.25 error responses were `{"error": "<text>"}` (the v0.22.1 transitional shape). v0.25 returns `{"error": {"code": "<snake_case>", "message": "<text>", "details": {...optional}}}` so clients can pattern-match on the machine-readable code instead of substring-checking the message text. Standard codes: `bad_request`, `not_found`, `unauthorized`, `rate_limited`, `method_not_allowed`, `internal_error`, `tool_error`. The OpenAPI `Error` component schema (#581) was updated in lockstep — generated SDKs need a regen. Hand-written clients reading `body.error` as a string need to read `body.error.message` instead.
+
+### Added
+- **GET /v1/projects pagination
+  ([#530](https://github.com/kwad77/pincher/issues/530),
+  [#599](https://github.com/kwad77/pincher/pull/599)).** Accepts `?limit=&offset=` (default 50, max 200). Returns `{projects, total, has_more}` so the dashboard can render a "Load more" button without re-counting. In-Go slicing for now (the projects list is bounded; the v0.24 large-dataset test gates the cliff) — push to SQL `LIMIT/OFFSET` if/when ListProjects becomes the bottleneck.
+- **GET /v1/sessions limit parameter
+  ([#531](https://github.com/kwad77/pincher/issues/531),
+  [#599](https://github.com/kwad77/pincher/pull/599)).** Accepts `?limit=` (default 90, max 500). Pre-v0.25 the 90-row count was hardcoded server-side. Returns the same `{sessions, total, has_more}` envelope as `/v1/projects`. Sparkline-friendly defaults preserved.
+- **POST /v1/search pagination
+  ([#532](https://github.com/kwad77/pincher/issues/532),
+  [#599](https://github.com/kwad77/pincher/pull/599)).** Accepts `limit` (default 20, max 500) + `offset` (default 0, max 5000) in the body. Returns `{results, count, total, has_more, offset, limit, ...}`. Pagination semantics: BM25-ranked top-(offset+limit), serve [offset:offset+limit]. `total` is a lower bound when has_more is true (FTS5 stops at fetchLimit). The dashboard renders "Showing 50 of 1234+" when `has_more` is true.
+- **POST /v1/index-progress ETA
+  ([#535](https://github.com/kwad77/pincher/issues/535),
+  [#599](https://github.com/kwad77/pincher/pull/599)).** Returns `started_at` + `elapsed_ms` + `files_per_sec` + `eta_ms` alongside the existing `files_done`/`files_total`/`active`. ETA is `(total - done) / rate` where `rate = done / elapsed`. Null for inactive projects (no in-memory progress entry) so clients render "estimating…" rather than infinity. New indexer method `GetProgressDetail` exposes `IndexProgress.StartedAtUnix` to the HTTP handler.
+- **GET /v1/health dashboard_version field
+  ([#536](https://github.com/kwad77/pincher/issues/536),
+  [#599](https://github.com/kwad77/pincher/pull/599)).** Equals server `version` in this release; carried as a separate field so they can advance independently later. The dashboard JS bakes its own build version in at render time and polls health to detect "your tab is running stale JS against a newer server" — common after a binary upgrade because the dashboard JS `Cache-Control: max-age=600` can keep stale JS in the browser for 10 minutes.
+
 ## [v0.24.0] — 2026-05-12 — dashboard test foundation
 
 Patch-shaped minor — four test additions closing the umbrella #519 dashboard hardening's "no test coverage" gap. v0.23 already shipped the runtime hardening (CSP, basepath, error envelope); v0.24 surrounds those with regression tests so future edits surface drift immediately. Plus one small renderer change: `renderDashboard*` now normalize the basepath through `normalizeBasePath`, so a trailing slash on the input prefix doesn't silently produce double-slashed fetch URLs.

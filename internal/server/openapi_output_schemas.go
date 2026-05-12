@@ -99,13 +99,18 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
-	// 5. search — BM25-ranked.
+	// 5. search — BM25-ranked. v0.25 #532: pagination via limit/offset
+	// with total/has_more in the response envelope.
 	"search": `{
 		"type":"object",
-		"required":["query","count","results","_meta"],
+		"required":["query","count","results","total","has_more","offset","limit","_meta"],
 		"properties":{
 			"query":{"type":"string"},
-			"count":{"type":"integer"},
+			"count":{"type":"integer","description":"Number of results in this page (len(results))."},
+			"total":{"type":"integer","description":"Total post-filter result count considered. Lower bound when has_more is true and the FTS5 fetch hit the cap (5000)."},
+			"has_more":{"type":"boolean","description":"True when there's at least one row past offset+limit. Drives the dashboard's Load more button."},
+			"offset":{"type":"integer","description":"The offset that produced this page (echoed for clients)."},
+			"limit":{"type":"integer","description":"The limit that produced this page (echoed for clients)."},
 			"results":{"type":"array","items":{
 				"type":"object",
 				"properties":{

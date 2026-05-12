@@ -2780,11 +2780,12 @@ func TestServeHTTP_HealthAndOpenAPIBypassBearerAuth(t *testing.T) {
 	}
 }
 
-// #586: HTTP error responses must be valid JSON matching the
-// shared Error component schema ({error: string}) declared in the
-// OpenAPI spec under every endpoint's `default` response. Pre-fix
-// the handler wrote the raw error text under a Content-Type:
-// application/json header — broken in two ways.
+// #586 + v0.25 #537: HTTP error responses must be valid JSON matching
+// the shared Error component schema declared in the OpenAPI spec under
+// every endpoint's `default` response. v0.25 changed the envelope from
+// `{error: string}` to `{error: {code, message, details?}}` so clients
+// can pattern-match on the machine-readable code instead of substring-
+// checking the message text.
 func TestServeHTTP_ErrorResponseIsJSON(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 
@@ -2800,9 +2801,16 @@ func TestServeHTTP_ErrorResponseIsJSON(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("error response not valid JSON: %v\nraw: %s", err, w.Body.String())
 	}
-	errMsg, ok := body["error"].(string)
-	if !ok || errMsg == "" {
-		t.Errorf("error response missing %q field; got %v", "error", body)
+	// v0.25: error is an object with code + message, not a bare string.
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("v0.25 error envelope: error field must be an object, got %T (%v)", body["error"], body)
+	}
+	if code, _ := errObj["code"].(string); code == "" {
+		t.Errorf("error envelope missing code; got %v", errObj)
+	}
+	if msg, _ := errObj["message"].(string); msg == "" {
+		t.Errorf("error envelope missing message; got %v", errObj)
 	}
 }
 

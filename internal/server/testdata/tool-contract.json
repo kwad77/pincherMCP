@@ -390,12 +390,16 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max results (default 20)",
+          "description": "Max results returned in this page (default 20, max 500).",
           "type": "integer"
         },
         "min_confidence": {
           "description": "Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. Rationale: 0.71 filters bottom-floor doc-section symbols that can BM25-match wide queries; an exact identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned.",
           "type": "number"
+        },
+        "offset": {
+          "description": "Skip this many BM25-ranked results before the page. Default 0, max 5000. Used for paginated 'Load more' UX (#532). Response includes total + has_more so callers can decide whether to page deeper.",
+          "type": "integer"
         },
         "project": {
           "description": "Project name or ID. Defaults to session project. Pass '*' to search across every indexed project (cross-repo lookups).",
