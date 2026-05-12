@@ -7,6 +7,20 @@ minors.
 
 ## [Unreleased]
 
+## [v0.29.0] — 2026-05-12 — dashboard interactive polish
+
+Six issues from umbrella #519's interactive-polish batch — empty-state CTAs, loading skeletons, toast variants, custom confirm dialog, configurable refresh interval, and ADR rich render.
+
+No schema change — all v0.29 work runs on schema v23.
+
+### Added
+- **Empty-state CTAs ([#540](https://github.com/kwad77/pincher/issues/540), [#603](https://github.com/kwad77/pincher/pull/603)).** New `emptyStateCTA(kind)` helper renders a centered card with icon + title + body + optional command, replacing bare "No X yet" text in Projects, Sessions, and ADRs tabs.
+- **Loading skeletons ([#541](https://github.com/kwad77/pincher/issues/541), [#603](https://github.com/kwad77/pincher/pull/603)).** New `skeletonRows(count, kind)` helper + CSS skeleton classes with pulse animation. Wired into `loadSessions` (8 lines) and `loadADRs` (4 cards). Replaces the literal "Loading…" text on async re-fetches.
+- **Toast variants + ARIA live region ([#542](https://github.com/kwad77/pincher/issues/542), [#603](https://github.com/kwad77/pincher/pull/603)).** `showToast(msg, kind, opts)` supports success/error/info; default TTL varies by kind (4500ms for errors). Backwards-compatible with the legacy `(msg, ok)` form. `aria-live="polite"` so screen readers announce updates.
+- **Custom confirm dialog ([#543](https://github.com/kwad77/pincher/issues/543), [#603](https://github.com/kwad77/pincher/pull/603)).** Promise-returning `showConfirmDialog(title, body, opts)` replaces `window.confirm()` at all three call sites (delete project, delete empty projects, delete ADR). Styled card on translucent backdrop, ARIA `role="dialog"` + `aria-modal="true"`, Escape key cancels, initial focus on Cancel for safer keyboard ergonomics. Destructive variant gets red emphasis.
+- **Configurable refresh interval ([#552](https://github.com/kwad77/pincher/issues/552), [#603](https://github.com/kwad77/pincher/pull/603)).** Header `<select>` with 5s/30s/1m/5m/off choices, persisted in `localStorage`. Re-uses v0.28's `_pollers` registry so the visibility-aware pause/resume + the user-controlled cadence compose cleanly. `off` clears all timers.
+- **ADR rich render ([#553](https://github.com/kwad77/pincher/issues/553), [#603](https://github.com/kwad77/pincher/pull/603)).** ADR value renders inside `<pre class="adr-val">` with `white-space: pre-wrap` so multi-line content + code snippets keep their line breaks. Still text-only — no markdown parser, no `innerHTML` on raw values; the `esc()` pipeline is unchanged.
+
 ## [v0.28.0] — 2026-05-12 — dashboard auto-refresh polish
 
 Four issues from umbrella #519's auto-refresh batch: a projection-banner guard against insufficient data, a freshness indicator + a polling manager that pauses when the tab is hidden, and a three-state dark/light/auto theme toggle. All four touch dashboard JS/CSS only.

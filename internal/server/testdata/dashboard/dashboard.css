@@ -142,6 +142,40 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .adr-counter{font-size:11px;color:var(--muted);text-align:right;margin-top:-6px;margin-bottom:8px}
 .adr-counter.warn{color:#f59e0b}
 .adr-counter.over{color:#ef4444;font-weight:600}
+
+/* #553: ADR value as <pre> with pre-wrap so multi-line content
+   keeps its line breaks but still wraps on long lines. */
+.adr-val{background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.5;color:var(--text);white-space:pre-wrap;word-wrap:break-word;margin-top:4px;max-height:400px;overflow-y:auto}
+
+/* #541: skeleton loading placeholders. Pulse animation gives the
+   user visual confirmation that something is loading without text. */
+.sk-wrap{display:flex;flex-direction:column;gap:8px;padding:8px 0}
+.sk-line{background:var(--surface);border-radius:4px;height:16px;width:100%;animation:sk-pulse 1.5s ease-in-out infinite}
+.sk-line:nth-child(2n){width:80%}
+.sk-line:nth-child(3n){width:65%}
+.sk-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;height:60px;animation:sk-pulse 1.5s ease-in-out infinite}
+@keyframes sk-pulse{0%,100%{opacity:.4}50%{opacity:.7}}
+
+/* #540: empty-state CTA card. Replaces the bare "No X yet" text. */
+.empty-cta{background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:32px;text-align:center;margin:8px 0}
+.empty-cta-icon{font-size:32px;margin-bottom:8px}
+.empty-cta-title{font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px}
+.empty-cta-body{font-size:12px;color:var(--muted);margin-bottom:12px}
+.empty-cta-cmd{display:inline-block;background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-family:ui-monospace,monospace;font-size:12px;color:var(--text);text-align:left}
+
+/* #543: confirm modal. Centered card on a translucent backdrop. */
+.confirm-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.confirm-modal.open{display:flex}
+.confirm-modal-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px 22px;max-width:420px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+.confirm-modal-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px}
+.confirm-modal-body{font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:16px}
+.confirm-modal-actions{display:flex;gap:8px;justify-content:flex-end}
+.btn.destructive{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.4)}
+.btn.destructive:hover{background:rgba(248,81,73,.25)}
+
+/* #552: header refresh select picks up header-btn styling but needs
+   a matching appearance reset since it's a <select>. */
+#refresh-select{appearance:none;-webkit-appearance:none;background-image:none;padding-right:18px}
 .adr-form textarea{min-height:80px;resize:vertical}
 .adr-form input:focus,.adr-form textarea:focus{border-color:var(--accent)}
 .adr-form-actions{display:flex;gap:8px}

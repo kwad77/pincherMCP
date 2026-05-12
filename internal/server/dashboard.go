@@ -61,6 +61,13 @@ const dashboardTemplate = `<!DOCTYPE html>
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-blue" id="last-refresh">—</span>
     <span class="badge badge-muted updated-ago" data-source="overview" title="Time since last auto-refresh">—</span>
+    <select class="header-btn" id="refresh-select" title="Auto-refresh interval (#552)" data-action-change="onRefreshIntervalChange">
+      <option value="5000">Refresh: 5s</option>
+      <option value="30000" selected>Refresh: 30s</option>
+      <option value="60000">Refresh: 1m</option>
+      <option value="300000">Refresh: 5m</option>
+      <option value="0">Refresh: off</option>
+    </select>
     <button class="header-btn" id="theme-btn" title="Toggle theme (auto/light/dark)" data-action="cycleTheme">🌗</button>
     <button class="header-btn" id="auth-btn" title="Set HTTP bearer token (required when pincher is started with --http-key)" data-action="promptForKey">Auth</button>
   </div>
@@ -329,6 +336,40 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .adr-counter{font-size:11px;color:var(--muted);text-align:right;margin-top:-6px;margin-bottom:8px}
 .adr-counter.warn{color:#f59e0b}
 .adr-counter.over{color:#ef4444;font-weight:600}
+
+/* #553: ADR value as <pre> with pre-wrap so multi-line content
+   keeps its line breaks but still wraps on long lines. */
+.adr-val{background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.5;color:var(--text);white-space:pre-wrap;word-wrap:break-word;margin-top:4px;max-height:400px;overflow-y:auto}
+
+/* #541: skeleton loading placeholders. Pulse animation gives the
+   user visual confirmation that something is loading without text. */
+.sk-wrap{display:flex;flex-direction:column;gap:8px;padding:8px 0}
+.sk-line{background:var(--surface);border-radius:4px;height:16px;width:100%;animation:sk-pulse 1.5s ease-in-out infinite}
+.sk-line:nth-child(2n){width:80%}
+.sk-line:nth-child(3n){width:65%}
+.sk-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;height:60px;animation:sk-pulse 1.5s ease-in-out infinite}
+@keyframes sk-pulse{0%,100%{opacity:.4}50%{opacity:.7}}
+
+/* #540: empty-state CTA card. Replaces the bare "No X yet" text. */
+.empty-cta{background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:32px;text-align:center;margin:8px 0}
+.empty-cta-icon{font-size:32px;margin-bottom:8px}
+.empty-cta-title{font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px}
+.empty-cta-body{font-size:12px;color:var(--muted);margin-bottom:12px}
+.empty-cta-cmd{display:inline-block;background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-family:ui-monospace,monospace;font-size:12px;color:var(--text);text-align:left}
+
+/* #543: confirm modal. Centered card on a translucent backdrop. */
+.confirm-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.confirm-modal.open{display:flex}
+.confirm-modal-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px 22px;max-width:420px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+.confirm-modal-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px}
+.confirm-modal-body{font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:16px}
+.confirm-modal-actions{display:flex;gap:8px;justify-content:flex-end}
+.btn.destructive{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.4)}
+.btn.destructive:hover{background:rgba(248,81,73,.25)}
+
+/* #552: header refresh select picks up header-btn styling but needs
+   a matching appearance reset since it's a <select>. */
+#refresh-select{appearance:none;-webkit-appearance:none;background-image:none;padding-right:18px}
 .adr-form textarea{min-height:80px;resize:vertical}
 .adr-form input:focus,.adr-form textarea:focus{border-color:var(--accent)}
 .adr-form-actions{display:flex;gap:8px}
@@ -572,12 +613,107 @@ async function copyID(id, btn) {
   }
 }
 
-function showToast(msg, ok=true) {
+// #542: toast manager. Originally a single one-shot toast; now
+// supports kind (success/error/info), configurable TTL, and an
+// ARIA live region so screen readers announce updates. Backwards
+// compatible — existing callers passing showToast(msg, ok) still
+// work because the second arg is reinterpreted as kind=success/error.
+function showToast(msg, kindOrOk='success', opts={}) {
+  const kind = (kindOrOk === true || kindOrOk === 'success') ? 'success'
+             : (kindOrOk === false || kindOrOk === 'error') ? 'error'
+             : kindOrOk;
   const t = document.getElementById('toast');
+  if (!t) return;
+  t.setAttribute('role', 'status');
+  t.setAttribute('aria-live', 'polite');
   t.textContent = msg;
-  t.style.borderColor = ok ? 'var(--green)' : 'var(--red)';
+  t.style.borderColor = kind === 'error' ? 'var(--red)'
+                      : kind === 'info' ? 'var(--accent)'
+                      : 'var(--green)';
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2800);
+  const ttl = (opts && opts.ttl) || (kind === 'error' ? 4500 : 2800);
+  clearTimeout(t._toastTimer);
+  t._toastTimer = setTimeout(() => t.classList.remove('show'), ttl);
+}
+
+// #543: custom confirm dialog. Replaces window.confirm() — styled,
+// non-blocking, focus-managed, ARIA role=dialog. Returns a Promise
+// that resolves true on confirm, false on cancel/Esc. Idempotent:
+// the modal element is created lazily on first call.
+function showConfirmDialog(title, body, opts={}) {
+  return new Promise(resolve => {
+    let m = document.getElementById('confirm-modal');
+    if (!m) {
+      m = document.createElement('div');
+      m.id = 'confirm-modal';
+      m.className = 'confirm-modal';
+      m.setAttribute('role', 'dialog');
+      m.setAttribute('aria-modal', 'true');
+      document.body.appendChild(m);
+    }
+    const destroyText = (opts && opts.destroyText) || 'Confirm';
+    const cancelText = (opts && opts.cancelText) || 'Cancel';
+    const destructive = !!(opts && opts.destructive);
+    m.innerHTML = '<div class="confirm-modal-card">'+
+      '<div class="confirm-modal-title">'+esc(title)+'</div>'+
+      '<div class="confirm-modal-body">'+esc(body)+'</div>'+
+      '<div class="confirm-modal-actions">'+
+        '<button class="btn secondary" id="cm-cancel">'+esc(cancelText)+'</button>'+
+        '<button class="btn '+(destructive?'destructive':'')+'" id="cm-ok">'+esc(destroyText)+'</button>'+
+      '</div></div>';
+    m.classList.add('open');
+    const cancelBtn = m.querySelector('#cm-cancel');
+    const okBtn = m.querySelector('#cm-ok');
+    const close = (val) => {
+      m.classList.remove('open');
+      document.removeEventListener('keydown', onKey);
+      resolve(val);
+    };
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); close(false); }
+    };
+    cancelBtn.onclick = () => close(false);
+    okBtn.onclick = () => close(true);
+    m.onclick = (ev) => { if (ev.target === m) close(false); };
+    document.addEventListener('keydown', onKey);
+    // Initial focus on cancel — the safer default per accessibility
+    // guidance for destructive actions.
+    setTimeout(() => cancelBtn.focus(), 10);
+  });
+}
+
+// #541: render a skeleton placeholder for a tab section. Pure DOM —
+// caller decides which element to fill. Skeleton blocks pulse via
+// CSS animation so the user perceives "loading" without text.
+function skeletonRows(count, kind='line') {
+  const cls = kind === 'card' ? 'sk-card' : 'sk-line';
+  let h = '<div class="sk-wrap" aria-busy="true" aria-label="Loading">';
+  for (let i = 0; i < count; i++) h += '<div class="' + cls + '"></div>';
+  h += '</div>';
+  return h;
+}
+
+// #540: empty-state CTA. Tab-specific copy + a single primary action.
+// Centralizes the three reachable empty states (Projects, Sessions,
+// ADRs) so the messaging stays consistent.
+function emptyStateCTA(kind) {
+  const data = {
+    projects: { icon: '📦', title: 'No projects indexed yet',
+      body: 'Index your first repo to see it here.',
+      cmd: 'pincher index /path/to/your/repo' },
+    sessions: { icon: '⏱', title: 'No sessions yet',
+      body: 'Sessions appear after the MCP server runs and flushes its first counters.',
+      cmd: '' },
+    adrs: { icon: '📓', title: 'No ADR entries',
+      body: 'Pick a project and add the first decision via the form above.',
+      cmd: '' },
+  }[kind] || { icon: '·', title: 'Empty', body: '', cmd: '' };
+  return '<div class="empty-cta">'+
+    '<div class="empty-cta-icon">'+data.icon+'</div>'+
+    '<div class="empty-cta-title">'+esc(data.title)+'</div>'+
+    '<div class="empty-cta-body">'+esc(data.body)+'</div>'+
+    (data.cmd ? '<pre class="empty-cta-cmd">'+esc(data.cmd)+'</pre>' : '')+
+    '</div>';
 }
 
 // ── Tab navigation ─────────────────────────────────────────────────────────
@@ -851,7 +987,7 @@ function renderProjects() {
   const hideEmpty = hideEmptyInput ? hideEmptyInput.checked : false;
 
   if (!_allProjects.length) {
-    grid.innerHTML = '<div class="empty">No projects indexed yet.<br/><br/>Run <code>pincher index /path/to/your/repo</code> to get started.</div>';
+    grid.innerHTML = emptyStateCTA('projects'); // #540
     if (countEl) countEl.textContent = '';
     if (cleanupBtn) cleanupBtn.disabled = true;
     return;
@@ -917,7 +1053,11 @@ function renderProjects() {
 async function cleanupEmpty() {
   const emptyCount = _allProjects.filter(p => (p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
   if (!emptyCount) { showToast('No empty projects to remove.'); return; }
-  if (!confirm('Remove '+emptyCount+' empty project'+(emptyCount>1?'s':'')+' from the index?\n\nOnly projects with zero symbols and zero edges are affected.\nSource files are NOT deleted.')) return;
+  const ok = await showConfirmDialog(
+    'Remove '+emptyCount+' empty project'+(emptyCount>1?'s':'')+'?',
+    'Only projects with zero symbols and zero edges are affected. Source files are NOT deleted.',
+    {destroyText: 'Remove', destructive: true});
+  if (!ok) return;
   try {
     const r = await fetch('/v1/projects/empty', {method:'DELETE'});
     if (!r.ok) throw new Error(await r.text());
@@ -973,7 +1113,11 @@ async function reindex(id, btn) {
 }
 
 async function deleteProject(id, name) {
-  if(!confirm('Remove project "'+name+'" from the index?\n\nThis deletes all symbols, edges, and graph data. Source files are NOT deleted.')) return;
+  const ok = await showConfirmDialog(
+    'Remove project "'+name+'"?',
+    'This deletes all symbols, edges, and graph data. Source files are NOT deleted.',
+    {destroyText: 'Remove', destructive: true});
+  if (!ok) return;
   try {
     const r=await fetch('/v1/projects',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
     if(!r.ok) throw new Error(await r.text());
@@ -1139,7 +1283,7 @@ async function loadADRs() {
   const proj=document.getElementById('adr-proj').value;
   const list=document.getElementById('adr-list');
   if(!proj){list.innerHTML='<div class="empty">Select a project to view its ADRs.</div>';return;}
-  list.innerHTML='<div class="loading">Loading…</div>';
+  list.innerHTML=skeletonRows(4, 'card'); // #541
   try {
     const r=await tabFetch('adrs','/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',project:proj})});
     if(!r.ok){setTabError('adr-list','Failed to load ADRs: '+(await extractErrMsg(r)),'loadADRs');return;}
@@ -1149,7 +1293,10 @@ async function loadADRs() {
     list.innerHTML=entries.map(e=>
       '<div class="adr-row">'+
       '<div class="adr-key">'+esc(e.key||'')+'</div>'+
-      '<div class="adr-val">'+esc(e.value||'')+'</div>'+
+      // #553: pre-wrap so multi-line values + code snippets render
+      // with their original line breaks. Still text-only — no
+      // markdown parser, no innerHTML on raw values.
+      '<pre class="adr-val">'+esc(e.value||'')+'</pre>'+
       // SECURITY: see openDetail/reindex/deleteProject — esc() around
       // JSON.stringify keeps the value safe inside an HTML attribute.
       '<button class="adr-del" title="Delete" data-action="deleteADR" data-args="'+esc(JSON.stringify([e.key||'']))+'">&#x2715;</button>'+
@@ -1215,7 +1362,11 @@ async function saveADR() {
 }
 
 async function deleteADR(key) {
-  if(!confirm('Delete ADR entry "'+key+'"?')) return;
+  const ok = await showConfirmDialog(
+    'Delete ADR entry "'+key+'"?',
+    'This is permanent — the value is removed from the project.',
+    {destroyText: 'Delete', destructive: true});
+  if (!ok) return;
   const proj=document.getElementById('adr-proj').value;
   try {
     await fetch('/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete',project:proj,key})});
@@ -1227,13 +1378,13 @@ async function deleteADR(key) {
 // ── Sessions ───────────────────────────────────────────────────────────────
 async function loadSessions() {
   const wrap=document.getElementById('sessions-table-wrap');
-  wrap.innerHTML='<div class="loading">Loading…</div>';
+  wrap.innerHTML=skeletonRows(8, 'line'); // #541
   try {
     const r=await tabFetch('sessions','/v1/sessions');
     if(!r.ok){setTabError('sessions-table-wrap','Failed to load sessions: '+(await extractErrMsg(r)),'loadSessions');return;}
     const data=await r.json();
     const sessions=data.sessions||[];
-    if(!sessions.length){wrap.innerHTML='<div class="empty">No sessions recorded yet.</div>';return;}
+    if(!sessions.length){wrap.innerHTML=emptyStateCTA('sessions');return;} // #540
     // Running totals for a footer row so users see the cumulative number
     // without reaching for a spreadsheet. No cost column — we don't know
     // the user's model or pricing (#476 SAVINGS_HONESTY).
@@ -1527,9 +1678,35 @@ setInterval(_renderStaleness, 1000);
 applyStoredTheme(); // #549: must run before first paint
 updateAuthBadge();
 populateSearchProjects();
-// #545 + #546: switched from raw setInterval to pollManager.
-pollManager('overview', load, 30000);
-pollManager('projection', loadProjection, 60000);
+// #552: configurable refresh interval (#545+#546 pollManager keeps
+// the visibility-aware wrapping). applyRefreshInterval tears down
+// existing _pollers and re-registers; ms === 0 leaves _pollers
+// empty so the visibility-resume path does nothing either.
+const REFRESH_STORAGE = 'pincher_refresh_ms';
+function applyRefreshInterval(ms) {
+  _pollers.forEach(p => { if (p.timerId !== null) clearInterval(p.timerId); });
+  _pollers.length = 0;
+  if (ms <= 0) return;
+  pollManager('overview', load, ms);
+  pollManager('projection', loadProjection, ms * 2);
+}
+function onRefreshIntervalChange() {
+  const sel = document.getElementById('refresh-select');
+  const ms = parseInt(sel.value, 10);
+  if (isFinite(ms) && ms >= 0) {
+    localStorage.setItem(REFRESH_STORAGE, String(ms));
+    applyRefreshInterval(ms);
+    showToast('Auto-refresh: '+(ms===0?'off':((ms>=60000?(ms/60000)+'m':(ms/1000)+'s'))));
+  }
+}
+// Initial bind: read persisted choice (default 30s).
+{
+  const stored = parseInt(localStorage.getItem(REFRESH_STORAGE) || '30000', 10);
+  const valid = [0, 5000, 30000, 60000, 300000].includes(stored) ? stored : 30000;
+  const sel = document.getElementById('refresh-select');
+  if (sel) sel.value = String(valid);
+  applyRefreshInterval(valid);
+}
 
 // Restore tab from URL hash
 const hash=(location.hash||'').replace('#','');
