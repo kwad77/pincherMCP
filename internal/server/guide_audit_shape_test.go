@@ -29,6 +29,33 @@ func TestClassifyTaskShape_AuditUndocumented(t *testing.T) {
 	}
 }
 
+// #608: the original #467 trigger only fired on docstring-flavored
+// phrases ("undocumented", "no docstring"). The structural-audit
+// shape is broader — any "find every <thing> without <other thing>"
+// phrasing should route to query, not BM25 search of the literal
+// phrase. Regression test for the canonical examples that were
+// silently falling through to shapeFind.
+func TestClassifyTaskShape_AuditEveryWithoutPattern(t *testing.T) {
+	cases := []string{
+		"find every function without a test",
+		"list every endpoint without auth",
+		"count every method that lacks a return type",
+		"show every exported symbol with no callers",
+		"find any handler that has no error return",
+		"surface all migrations without a rollback",
+		"find every public field that doesn't have a tag",
+		"list any function with zero callers",
+	}
+	for _, task := range cases {
+		t.Run(task, func(t *testing.T) {
+			got := classifyTaskShape(task)
+			if got != shapeAudit {
+				t.Errorf("classifyTaskShape(%q) = %v, want shapeAudit", task, got)
+			}
+		})
+	}
+}
+
 func TestClassifyTaskShape_AuditDoesNotOvercatch(t *testing.T) {
 	// Generic find / understand tasks should NOT fall into shapeAudit.
 	cases := map[string]guideShape{

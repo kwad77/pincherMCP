@@ -1582,13 +1582,6 @@ var cMacroRE = regexp.MustCompile(
 //     bare-prefix macros (EXPORT_SYMBOL, MODULE_PARM_DESC) that funcRE
 //     can't match because they have no preceding word.
 //
-// (#79 part 2's `dedupCSymbolsByQN` step has been retired: the centralised
-// `disambiguateDuplicates` call in `ExtractWithModule` now handles
-// `#ifdef`/`#else` branch collisions by suffixing the 2nd+ occurrence
-// with `~<line>`, so both variants survive instead of one being dropped.
-// dedupCSymbolsByQN is kept around for the per-extractor unit tests
-// that drive it directly.)
-//
 // Each pass is independently testable; the order matters because:
 //   - rewriteCMacro must run BEFORE the central disambiguator so
 //     DEVICE_ATTR and friends get their proper per-instance names
@@ -1838,33 +1831,6 @@ func offsetToLineNumber(source []byte, off int) int {
 		}
 	}
 	return line
-}
-
-// dedupCSymbolsByQN keeps the first symbol per qualified_name and drops
-// duplicates. C's preprocessor permits multiple definitions of the same
-// function name in mutually-exclusive `#ifdef` / `#else` branches; the
-// regex extractor can't tell which branch the active build configures,
-// so emitting both produces a qualified_name_collision (#79 part 2).
-//
-// The first occurrence wins. This is a heuristic — a real fix needs
-// preprocessor awareness (modernc.org/cc/v4 is the documented next
-// step). The user-visible improvement is that `pincher search` returns
-// one canonical symbol per name rather than silently picking the last
-// one via BulkUpsertSymbols' last-write-wins behaviour.
-func dedupCSymbolsByQN(syms []ExtractedSymbol) []ExtractedSymbol {
-	if len(syms) <= 1 {
-		return syms
-	}
-	seen := make(map[string]struct{}, len(syms))
-	out := make([]ExtractedSymbol, 0, len(syms))
-	for _, s := range syms {
-		if _, ok := seen[s.QualifiedName]; ok {
-			continue
-		}
-		seen[s.QualifiedName] = struct{}{}
-		out = append(out, s)
-	}
-	return out
 }
 
 var csRE = &regexExtractor{

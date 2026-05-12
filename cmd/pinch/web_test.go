@@ -470,7 +470,11 @@ func TestNoStdio_WithHTTP_StaysAlive(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		resp, err := http.Post(url, "application/json", strings.NewReader("{}"))
+		// #609: /v1/health is GET-only (with HEAD per RFC 7231).
+		// Pre-#609 the dispatcher answered any verb; now POST returns
+		// 405. Use GET — that's what k8s/docker liveness probes do
+		// and what the dashboard expects.
+		resp, err := http.Get(url)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
