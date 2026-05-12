@@ -444,6 +444,11 @@ var readerRoutedStoreMethods = map[string]bool{
 	"TraceViaCTE":             true,
 	"TraceViaCTEScoped":       true,
 	"GetSymbolScoped":         true,
+	// v0.36 hook telemetry helpers (#626).
+	"IsFileIndexed":           true,
+	"CountSymbolsInFile":      true,
+	"LargestSymbolInFile":     true,
+	"HookConversionRate7d":    true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).
@@ -477,6 +482,9 @@ var writerRoutedStoreMethods = map[string]bool{
 	"RecordExtractionFailure":  true,
 	"ClearExtractionFailures":  true,
 	"RecordSlowQuery":          true,
+	// v0.36 hook telemetry writers (#626).
+	"LogHookInvocation":               true,
+	"ResolveHookInvocationsForSession": true,
 	// Mixed read+write — kept on writer for transactional consistency.
 	"HealthCheck": true,
 	// Pragmas / lifecycle (writer-pool by definition).

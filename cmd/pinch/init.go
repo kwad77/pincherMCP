@@ -29,6 +29,7 @@ func runInitCLI(args []string) {
 	force := fs.Bool("force", false, "Overwrite the marker block without prompting (default behavior anyway, kept for explicit scripted use)")
 	dataDir := fs.String("data-dir", "", "Override data directory (used to discover the running HTTP dashboard URL)")
 	targetFlag := fs.String("target", "claude", "Editor target: "+strings.Join(pinit.TargetNames(), ", "))
+	noHook := fs.Bool("no-hook", false, "(claude target only) Skip writing the .claude/settings.json PreToolUse hook. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher init [--target=NAME] [--global] [--dry-run] [--force]")
 		fmt.Fprintln(os.Stderr, "  Seed a pincher usage policy file for an editor or agent (idempotent; replace-in-place via marker comments).")
@@ -60,6 +61,17 @@ func runInitCLI(args []string) {
 		if err := runInitTarget(out, t, cwd, *global, *dryRun); err != nil {
 			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 			os.Exit(1)
+		}
+		// #627: when target=claude (and we're not running a global
+		// install — hooks are project-scoped), wire the PreToolUse hook
+		// so that Read/Grep on indexed files redirects to pincher
+		// equivalents at runtime. Without this, the CLAUDE.md policy
+		// is the only nudge — and instruction-layer nudges plateau.
+		if t.Name == "claude" && !*global && !*noHook {
+			if err := installClaudeHook(out, cwd, *dryRun); err != nil {
+				fmt.Fprintf(os.Stderr, "pincher init: hook install: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 

@@ -7,6 +7,21 @@ minors.
 
 ## [Unreleased]
 
+## [v0.36.0] — 2026-05-12 — hook foundation: PreToolUse interception + telemetry
+
+The leverage release. Instruction-layer nudges plateaued — `CLAUDE.md` saying "use pincher first" is a soft prior that competes with the strong prior "Read/Grep always works." This batch ships runtime interception via Claude Code's PreToolUse hook so the redirect happens at the moment of decision, not by persuasion. One install — `pincher init --target=claude` — wires both the MCP server config AND the hook entry. Conversion-rate metric on the dashboard ships in v0.37.
+
+Schema migration v23 → **v24** — adds the `hook_invocations` telemetry table. Local-only; no phone-home.
+
+### Added
+- **`pincher hook-check` subcommand ([#625](https://github.com/kwad77/pincher/issues/625)).** Reads a Claude Code PreToolUse JSON payload from stdin; writes a hook-spec response on stdout. Pass-through is silent (no `stopReason`, no `systemMessage`); redirect carries `continue:false` plus a one-line message naming the suggested call. Decision logic for Read: pass through on unindexed paths, files < ~3.5 KB, files with < 5 indexed symbols, and Read calls already narrowed via offset/limit; otherwise redirect to `context id=<largest-symbol> lite=true`. Latency budget < 50 ms.
+- **Grep redirect logic ([#630](https://github.com/kwad77/pincher/issues/630)).** Within `hook-check`, Grep with a single-identifier pattern (`Foo`, `pkg.Bar`, `Class::method`) on an indexed project rewrites to `search query="<pattern>"`. Regexes (`func \w+\(`), multi-word phrases (`hello world`), special-char-only patterns (`->`), and non-indexed paths pass through. Identifier check runs before the regex-metachar check so qualified ids (which contain `.` and `:`) aren't misclassified as regex.
+- **`pincher init --target=claude` writes/merges the PreToolUse hook into `.claude/settings.json` ([#627](https://github.com/kwad77/pincher/issues/627)).** One install wires both MCP and the hook. `--no-hook` flag skips the hook write for users who want only the MCP wiring. Idempotent: re-running init detects existing `pincher hook-check` entries (including those with custom command paths or args) and leaves them alone. Existing settings.json keys (theme, telemetry, other event hooks) are preserved.
+- **Hook telemetry table ([#626](https://github.com/kwad77/pincher/issues/626)).** Schema v24 `hook_invocations(id, ts, session_id, tool_name, file_path, file_bytes, decision, suggested_tool, suggested_args, next_tool_within_3, took_recommendation)`. `pincher hook-check` writes one row per invocation (best-effort — never blocks the decision on a failed insert). `ResolveHookInvocationsForSession` is a post-hoc joiner that walks the session's subsequent tool calls and sets `took_recommendation=1` when the suggested tool fires within 3 calls. Conversion rate (`taken / redirects`) is the v0.37 headline dashboard metric. New `HookConversionRate7d` reader returns the trailing-7-day percentage. Local-only — no phone-home, no CLI flag for upload.
+
+### Migration
+Schema migrates v23 → v24 automatically on first `pincher` run. Additive — no existing data touched. Re-index is **not** required.
+
 ## [v0.35.0] — 2026-05-12 — envelope discipline + MCP surface split
 
 Three changes that shift how pincher's tool surface presents to agents. Pedagogy-shape `next_steps` no longer ride on every successful response (kept on empty/ambiguous results where the pedagogy is load-bearing). New `context lite=true` mode returns source-only minimum-envelope for the v0.36 PreToolUse hook redirect path. The MCP-visible tool surface drops from 22 to 9 — operator/diagnostic tools (architecture, health, schema, list, index, adr, neighborhood, stats, doctor, rebuild_fts, self_test, dead_code) remain reachable via `POST /v1/<tool>` HTTP for monitoring dashboards and ops automation.
