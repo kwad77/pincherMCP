@@ -1032,6 +1032,33 @@ END;`,
 		PRIMARY KEY (project_id, interface_id, method_name)
 	);
 	CREATE INDEX IF NOT EXISTS idx_iface_methods_proj_name ON interface_methods(project_id, method_name);`,
+
+	// v23 → v24: hook_invocations telemetry (#626). Logs every
+	// `pincher hook-check` invocation: the proposed tool call, the
+	// hook's decision (pass-through vs redirect), and — after a
+	// post-hoc joiner walks the session's subsequent tool calls —
+	// whether the agent took the recommendation within 3 calls.
+	// Conversion rate (`taken / redirects`) is the v0.37 headline.
+	//
+	// session_id is nullable because hook-check may run outside an
+	// MCP session (e.g. when wired into a CLI-only workflow). Values
+	// are local to the user's pincher.db; nothing phones home.
+	`CREATE TABLE IF NOT EXISTS hook_invocations (
+		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts                  INTEGER NOT NULL,
+		session_id          TEXT,
+		tool_name           TEXT NOT NULL,
+		file_path           TEXT,
+		file_bytes          INTEGER,
+		decision            TEXT NOT NULL,
+		suggested_tool      TEXT,
+		suggested_args      TEXT,
+		next_tool_within_3  TEXT,
+		took_recommendation INTEGER
+	);
+	CREATE INDEX IF NOT EXISTS idx_hook_session ON hook_invocations(session_id);
+	CREATE INDEX IF NOT EXISTS idx_hook_ts ON hook_invocations(ts);
+	CREATE INDEX IF NOT EXISTS idx_hook_pending_join ON hook_invocations(took_recommendation, ts) WHERE took_recommendation IS NULL;`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -3968,6 +3995,202 @@ func ApproxTokens(s string) int {
 		return len(ids)
 	}
 	return (len(s) + 3) / 4
+}
+
+// HookInvocation captures one row of the v24 hook_invocations table.
+// Written by `pincher hook-check` on every PreToolUse callout; the
+// `took_recommendation` column is filled in by a post-hoc joiner that
+// walks the session's subsequent tool calls. See #626.
+type HookInvocation struct {
+	ID                 int64
+	TS                 int64  // unix epoch nanos
+	SessionID          string // optional; empty for non-MCP invocations
+	ToolName           string // "Read" or "Grep"
+	FilePath           string
+	FileBytes          int64
+	Decision           string // "pass_through" | "redirect"
+	SuggestedTool      string // null/empty on pass_through
+	SuggestedArgs      string // JSON blob; null/empty on pass_through
+	NextToolWithin3    string
+	TookRecommendation *bool // nullable; nil until joiner runs
+}
+
+// LogHookInvocation writes one hook decision into the telemetry table.
+// Best-effort: callers shouldn't fail their primary work because this
+// failed. Writer-routed.
+func (s *Store) LogHookInvocation(inv HookInvocation) error {
+	_, err := s.db.Exec(
+		`INSERT INTO hook_invocations(
+			ts, session_id, tool_name, file_path, file_bytes,
+			decision, suggested_tool, suggested_args
+		) VALUES (?,?,?,?,?,?,?,?)`,
+		inv.TS, inv.SessionID, inv.ToolName, inv.FilePath, inv.FileBytes,
+		inv.Decision, inv.SuggestedTool, inv.SuggestedArgs,
+	)
+	return err
+}
+
+// ResolveHookInvocationsForSession walks redirect rows for the given
+// session whose took_recommendation is still NULL and marks them as
+// 1 / 0 based on whether suggested_tool appears in the session's next
+// 3 tool calls after the invocation timestamp. Returns the count of
+// rows updated. Idempotent: rows already resolved are skipped by the
+// WHERE clause. Reader+writer routed (read pending, write resolution).
+func (s *Store) ResolveHookInvocationsForSession(sessionID string, recentCalls []HookSessionCall) (int, error) {
+	rows, err := s.ro.Query(
+		`SELECT id, ts, suggested_tool
+		   FROM hook_invocations
+		  WHERE session_id = ? AND decision = 'redirect' AND took_recommendation IS NULL
+		  ORDER BY ts`,
+		sessionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	type pending struct {
+		ID            int64
+		TS            int64
+		SuggestedTool string
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.ID, &p.TS, &p.SuggestedTool); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if len(todo) == 0 {
+		return 0, nil
+	}
+	var updated int
+	for _, p := range todo {
+		took := 0
+		var nextTool string
+		// Find the up-to-3 next calls strictly after the invocation.
+		seen := 0
+		for _, c := range recentCalls {
+			if c.TS <= p.TS {
+				continue
+			}
+			seen++
+			if c.ToolName == p.SuggestedTool {
+				took = 1
+				nextTool = c.ToolName
+				break
+			}
+			if nextTool == "" {
+				nextTool = c.ToolName
+			}
+			if seen >= 3 {
+				break
+			}
+		}
+		// Only resolve when at least one subsequent call exists. Without
+		// any next-call evidence we can't say whether the agent took it.
+		if seen == 0 {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`UPDATE hook_invocations
+			    SET took_recommendation = ?, next_tool_within_3 = ?
+			  WHERE id = ?`,
+			took, nextTool, p.ID,
+		); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+// HookSessionCall is a minimal tool-call record used to resolve hook
+// invocations. Passed in by the caller so the resolver doesn't need to
+// know about the session-call source.
+type HookSessionCall struct {
+	TS       int64
+	ToolName string
+}
+
+// IsFileIndexed reports whether (projectID, filePath) appears in
+// the files (file-hash) table — i.e. the indexer has processed this
+// file at least once. Cheap point lookup; the hook decision path
+// calls this on every Read interception so latency budget is tight.
+// Reader-routed.
+func (s *Store) IsFileIndexed(projectID, filePath string) bool {
+	var n int
+	if err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM files WHERE project_id = ? AND path = ?`,
+		projectID, filePath,
+	).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// CountSymbolsInFile returns the number of indexed symbols for the
+// given (projectID, filePath). Used by the PreToolUse hook to gate
+// redirect on \"file has meaningful symbolic content\" — < 5 symbols
+// usually means a config blob where context wouldn't help.
+// Reader-routed.
+func (s *Store) CountSymbolsInFile(projectID, filePath string) (int, error) {
+	var n int
+	err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM symbols WHERE project_id = ? AND file_path = ?`,
+		projectID, filePath,
+	).Scan(&n)
+	return n, err
+}
+
+// LargestSymbolInFile returns the ID of the symbol with the widest
+// byte span in (projectID, filePath). Used by the PreToolUse hook
+// to pick a sensible default for the `context id=...` redirect —
+// the file's main entry point is usually the largest symbol.
+// Returns empty string when the file has no indexed symbols.
+// Reader-routed.
+func (s *Store) LargestSymbolInFile(projectID, filePath string) (string, error) {
+	var id string
+	err := s.ro.QueryRow(
+		`SELECT id FROM symbols
+		  WHERE project_id = ? AND file_path = ?
+		  ORDER BY (end_byte - start_byte) DESC
+		  LIMIT 1`,
+		projectID, filePath,
+	).Scan(&id)
+	if err != nil {
+		// Treat \"no rows\" as empty string + no error (caller wants
+		// best-effort, not a hard fail).
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+// HookConversionRate7d returns the conversion rate over the trailing
+// 7 days plus raw counts. Returns (pct, redirects, taken, err) where
+// pct is in [0, 100]. Backs the v0.37 headline dashboard panel.
+// Reader-routed.
+func (s *Store) HookConversionRate7d() (float64, int, int, error) {
+	row := s.ro.QueryRow(
+		`SELECT
+		    COALESCE(SUM(CASE WHEN decision='redirect' THEN 1 ELSE 0 END), 0) AS redirects,
+		    COALESCE(SUM(CASE WHEN took_recommendation=1 THEN 1 ELSE 0 END), 0) AS taken
+		   FROM hook_invocations
+		  WHERE ts > ?`,
+		time.Now().Add(-7*24*time.Hour).UnixNano(),
+	)
+	var redirects, taken int
+	if err := row.Scan(&redirects, &taken); err != nil {
+		return 0, 0, 0, err
+	}
+	if redirects == 0 {
+		return 0, 0, 0, nil
+	}
+	return float64(taken) / float64(redirects) * 100, redirects, taken, nil
 }
 
 // FormatSize formats a byte count as a human-readable string.

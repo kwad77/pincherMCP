@@ -79,6 +79,10 @@ func main() {
 		runHealthCheckCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "hook-check" {
+		runHookCheckCLI(os.Args[2:])
+		return
+	}
 
 	var (
 		showVersion = flag.Bool("version", false, "Print version and exit")
