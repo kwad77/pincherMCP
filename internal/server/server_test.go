@@ -2741,6 +2741,32 @@ func TestServeHTTP_PostList(t *testing.T) {
 	}
 }
 
+// #586: HTTP error responses must be valid JSON matching the
+// shared Error component schema ({error: string}) declared in the
+// OpenAPI spec under every endpoint's `default` response. Pre-fix
+// the handler wrote the raw error text under a Content-Type:
+// application/json header — broken in two ways.
+func TestServeHTTP_ErrorResponseIsJSON(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	// /v1/search with no project + no session project → IsError.
+	w := httpPost(t, srv, "/v1/search", `{"query":"x"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("error response not valid JSON: %v\nraw: %s", err, w.Body.String())
+	}
+	errMsg, ok := body["error"].(string)
+	if !ok || errMsg == "" {
+		t.Errorf("error response missing %q field; got %v", "error", body)
+	}
+}
+
 func TestServeHTTP_BearerAuth(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("secret123")

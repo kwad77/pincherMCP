@@ -1192,11 +1192,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #586: when the handler returns IsError, wrap the plain-text
+	// error message in the documented {error: string} envelope so the
+	// HTTP body matches the OpenAPI Error schema referenced from
+	// every endpoint's `default` response (#581/#582). Pre-fix the
+	// raw text was written under a Content-Type: application/json
+	// header — broken in two ways (not JSON, doesn't match schema).
+	// Mirrors the pre-handler `err != nil` path above which already
+	// uses json.NewEncoder.
 	if result.IsError {
 		w.WriteHeader(http.StatusBadRequest)
+		if len(result.Content) > 0 {
+			if tc, ok := result.Content[0].(*mcp.TextContent); ok {
+				json.NewEncoder(w).Encode(map[string]any{"error": tc.Text})
+				return
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"error": "empty error result"})
+		return
 	}
 
-	// Extract the text content from the MCP result and re-emit as JSON.
+	// Success path: handlers build a JSON-encoded string explicitly
+	// via jsonResultWithMeta and pass it through TextContent verbatim
+	// — write through unchanged.
 	if len(result.Content) > 0 {
 		if tc, ok := result.Content[0].(*mcp.TextContent); ok {
 			w.Write([]byte(tc.Text))
