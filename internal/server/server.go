@@ -2662,6 +2662,18 @@ func fileHashOnDisk(absPath string) (string, bool) {
 // to prevent unbounded DB query loops and excessive memory usage.
 const maxBatchSymbols = 100
 
+// adrKeyMaxLen + adrValueMaxLen bound the ADR set action's input
+// (#534). The dashboard's input/textarea elements set matching
+// maxlength attributes so the bounds enforce uniformly across UI
+// and server. 256-char keys are display labels (e.g.
+// "auth-rewrite-2026"); 16 KB values cover real ADRs with room
+// for embedded code blocks but reject paste-of-an-entire-transcript
+// pathology that #534 motivated.
+const (
+	adrKeyMaxLen   = 256
+	adrValueMaxLen = 16 * 1024
+)
+
 func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
@@ -5239,6 +5251,21 @@ func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	case "set":
 		if key == "" || value == "" {
 			return errResult("key and value are required for action=set"), nil
+		}
+		// #534: enforce length limits — pre-fix the form accepted
+		// arbitrary-length input, and a paste-of-an-entire-transcript
+		// blew up the row. Backend bounds match the form's maxlength
+		// attributes so the validation message is consistent across
+		// surfaces (UI rejects on submit, MCP/HTTP reject server-side).
+		if len(key) > adrKeyMaxLen {
+			return errResult(fmt.Sprintf(
+				"key too long: %d chars exceeds limit of %d (#534). Use a shorter ADR key — keys are display labels, not the body.",
+				len(key), adrKeyMaxLen)), nil
+		}
+		if len(value) > adrValueMaxLen {
+			return errResult(fmt.Sprintf(
+				"value too long: %d bytes exceeds limit of %d (#534). Trim the body or split across multiple ADR entries — long pastes are a smell that the value is doing the job of a separate document.",
+				len(value), adrValueMaxLen)), nil
 		}
 		if err := s.store.SetADR(projectID, key, value); err != nil {
 			return errResult(err.Error()), nil
