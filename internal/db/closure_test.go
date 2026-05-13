@@ -172,6 +172,57 @@ func TestTraceViaClosure_RespectsDepthCeiling(t *testing.T) {
 	}
 }
 
+func TestBuildClosure_EmptyProject(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.UpsertProject(Project{ID: "empty", Path: dir, Name: "empty"}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	// No edges at all — BuildClosure must succeed and produce 0 rows.
+	if err := store.BuildClosure(context.Background(), "empty", 3); err != nil {
+		t.Fatalf("BuildClosure: %v", err)
+	}
+	n, _ := store.ClosureRowCount("empty")
+	if n != 0 {
+		t.Errorf("empty project: expected 0 closure rows; got %d", n)
+	}
+}
+
+func TestBuildClosure_ContextCancellation(t *testing.T) {
+	store, pid := closureFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+	if err := store.BuildClosure(ctx, pid, 3); err == nil {
+		t.Errorf("expected error on cancelled context")
+	}
+}
+
+func TestBuildClosure_OnClosedStore(t *testing.T) {
+	store, pid := closureFixture(t)
+	store.Close()
+	if err := store.BuildClosure(context.Background(), pid, 3); err == nil {
+		t.Errorf("expected error after store.Close()")
+	}
+}
+
+func TestTraceViaClosure_UnknownDirection_NoOp(t *testing.T) {
+	store, pid := closureFixture(t)
+	if err := store.BuildClosure(context.Background(), pid, 3); err != nil {
+		t.Fatalf("BuildClosure: %v", err)
+	}
+	results, err := store.TraceViaClosure(pid, "A", "sideways", 3)
+	if err != nil {
+		t.Errorf("unexpected error on unknown direction: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for unknown direction; got %d", len(results))
+	}
+}
+
 func TestClosureEnabled_ReadsEnv(t *testing.T) {
 	t.Setenv(envClosureEnabled, "1")
 	if !ClosureEnabled() {
