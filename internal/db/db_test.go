@@ -443,6 +443,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ResolveStaleID":          true,
 	"TraceViaCTE":             true,
 	"TraceViaCTEScoped":       true,
+	"TraceViaClosure":         true, // #652 phase 1
+	"ClosureRowCount":         true, // #652 phase 1
 	"GetSymbolScoped":         true,
 	// v0.36 hook telemetry helpers (#626).
 	"IsFileIndexed":           true,
@@ -489,6 +491,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"ResolveHookInvocationsForSession": true,
 	// Mixed read+write — kept on writer for transactional consistency.
 	"HealthCheck": true,
+	"BuildClosure": true, // #652 phase 1 — DELETE + INSERT in a tx
 	// Pragmas / lifecycle (writer-pool by definition).
 	"Optimize":           true,
 	"CheckpointTruncate": true,

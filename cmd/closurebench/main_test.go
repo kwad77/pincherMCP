@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -357,6 +358,79 @@ func TestRun_NonexistentProject(t *testing.T) {
 	code := run([]string{"-db", path, "-project", "nope"}, &stderr)
 	if code == 0 {
 		t.Errorf("expected non-zero exit on missing project")
+	}
+}
+
+func TestPrintSummary_NoEdges_SkipsInflationLine(t *testing.T) {
+	results := map[int]closureMeasurement{
+		3: {Depth: 3, Rows: 0, BytesOnly: 1024, BuildMS: 5},
+	}
+	out := captureStdout(t, func() {
+		printSummary("/x/pincher.db", "p1", 0, 0, 1024, results)
+	})
+	if strings.Contains(out, "inflation vs edges") {
+		t.Errorf("inflation line should not print when edges=0; got:\n%s", out)
+	}
+}
+
+func TestPrintSummary_WithEdges_IncludesInflationLine(t *testing.T) {
+	results := map[int]closureMeasurement{
+		3: {Depth: 3, Rows: 30, BytesOnly: 1024, BuildMS: 5},
+	}
+	out := captureStdout(t, func() {
+		printSummary("/x/pincher.db", "p1", 5, 10, 1024, results)
+	})
+	if !strings.Contains(out, "inflation vs edges") {
+		t.Errorf("inflation line should print when edges>0; got:\n%s", out)
+	}
+}
+
+func TestRun_BigFixtureMultipleDepths_BuildsBoth(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pincher.db")
+	db, _ := sql.Open("sqlite", "file:"+path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT, name TEXT, indexed_at INTEGER);
+		CREATE TABLE symbols (id TEXT PRIMARY KEY, project_id TEXT, file_path TEXT, name TEXT);
+		CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, from_id TEXT, to_id TEXT, kind TEXT);
+		INSERT INTO projects VALUES ('chain', '/x', 'chain', 1);
+	`); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := db.Exec(`INSERT INTO symbols VALUES (?, 'chain', 'f.go', ?)`,
+			fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i)); err != nil {
+			t.Fatalf("symbol: %v", err)
+		}
+	}
+	for i := 0; i < 9; i++ {
+		if _, err := db.Exec(`INSERT INTO edges (project_id, from_id, to_id, kind) VALUES ('chain', ?, ?, 'CALLS')`,
+			fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1)); err != nil {
+			t.Fatalf("edge: %v", err)
+		}
+	}
+
+	var stderr bytes.Buffer
+	out := captureStdout(t, func() {
+		code := run([]string{"-db", path, "-depth", "3,5"}, &stderr)
+		if code != 0 {
+			t.Fatalf("run exit=%d stderr=%s", code, stderr.String())
+		}
+	})
+	for _, want := range []string{"depth=3:", "depth=5:", "inflation vs edges"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in summary:\n%s", want, out)
+		}
+	}
+}
+
+func TestRun_EmptyDepthInList_Skipped(t *testing.T) {
+	path := fixtureDB(t, false)
+	var stderr bytes.Buffer
+	code := run([]string{"-db", path, "-depth", "1, ,3,"}, &stderr)
+	if code != 0 {
+		t.Errorf("expected success with empty depth tokens; got %d, stderr=%s", code, stderr.String())
 	}
 }
 

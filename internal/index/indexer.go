@@ -651,6 +651,28 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		"ms", duration.Milliseconds(),
 	)
 
+	// #652 phase 1: closure-table tail-pass. Off by default; opt-in via
+	// PINCHER_CLOSURE_TABLES=1. Materializes the depth-N transitive
+	// closure of the edges graph so trace queries become a single
+	// indexed SELECT instead of a recursive CTE. Failure is logged but
+	// non-fatal — the indexer reports success even if the closure pass
+	// fails, since trace falls back to the recursive-CTE path.
+	if db.ClosureEnabled() {
+		closureStart := time.Now()
+		closureDepth := db.ClosureMaxDepth()
+		if err := idx.store.BuildClosure(ctx, projectID, closureDepth); err != nil {
+			slog.Warn("pincher.closure.build.err", "project", projectName, "err", err)
+		} else {
+			n, _ := idx.store.ClosureRowCount(projectID)
+			slog.Info("pincher.closure.built",
+				"project", projectName,
+				"rows", n,
+				"max_depth", closureDepth,
+				"ms", time.Since(closureStart).Milliseconds(),
+			)
+		}
+	}
+
 	// Refresh query-planner stats if stale. PRAGMA optimize is a no-op when
 	// nothing's changed, so it's safe to call even on incremental indexes
 	// where most files were skipped via content-hash.
@@ -988,6 +1010,25 @@ func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, directio
 		edgeKinds = []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
 	}
 
+	// #652 phase 1: closure-fast-path. When PINCHER_CLOSURE_TABLES=1 is
+	// set AND the project's closure table is populated AND the caller
+	// uses the default edge-kind set (the only set the closure was built
+	// for), do a single indexed SELECT instead of a recursive CTE.
+	// Phase-1 trade-off: closure rows don't store per-hop edge kind, so
+	// `Via` ends up empty on the fast-path. Callers needing `Via` get the
+	// CTE path automatically by passing a non-default edgeKinds slice.
+	useClosure := db.ClosureEnabled() && projectID != "" && isDefaultTraceKinds(edgeKinds)
+	if useClosure {
+		if n, _ := idx.store.ClosureRowCount(projectID); n > 0 {
+			traceResults, err := idx.store.TraceViaClosure(projectID, symbolID, direction, maxDepth)
+			if err == nil {
+				return idx.materializeHops(projectID, traceResults, addRisk), nil
+			}
+			slog.Warn("pincher.trace.closure_fastpath.err",
+				"project", projectID, "err", err, "fallback", "TraceViaCTEScoped")
+		}
+	}
+
 	// Single CTE traversal per direction (max 2 SQL calls total for "both").
 	// Project-scoped (#7): the recursive edge join restricts to the
 	// caller's project so a same-named or same-IDed symbol in a sibling
@@ -997,13 +1038,18 @@ func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, directio
 		return nil, err
 	}
 
+	return idx.materializeHops(projectID, traceResults, addRisk), nil
+}
+
+// materializeHops resolves trace-result symbol IDs to full db.Symbol rows
+// via GetSymbolScoped (project-scoped, #2 belt-and-braces against stale
+// cross-project IDs) and tags each with a risk label when requested.
+// Used by both the closure fast-path and the recursive-CTE fallback so
+// the post-trace shape stays identical regardless of which path produced
+// the IDs.
+func (idx *Indexer) materializeHops(projectID string, traceResults []db.TraceResult, addRisk bool) []Hop {
 	var hops []Hop
 	for _, tr := range traceResults {
-		// GetSymbolScoped (#2) belt-and-braces: the BFS already
-		// filtered edges, but a stale row whose target was overwritten
-		// by a colliding symbol in another project would still surface
-		// here. The scoped lookup verifies the symbol belongs to the
-		// requested project. Falls back to unscoped when projectID="".
 		var sym *db.Symbol
 		var getErr error
 		if projectID != "" {
@@ -1023,7 +1069,25 @@ func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, directio
 			break
 		}
 	}
-	return hops, nil
+	return hops
+}
+
+// isDefaultTraceKinds reports whether the caller's edge-kind set matches
+// the default set the closure builder uses. Closure rows don't store
+// per-hop edge kind (phase 1 simplification), so we only take the
+// fast-path when the caller is asking for those default kinds — any
+// other set forces the CTE path which still respects the kind filter.
+func isDefaultTraceKinds(kinds []string) bool {
+	if len(kinds) != 3 {
+		return false
+	}
+	want := map[string]bool{"CALLS": true, "HTTP_CALLS": true, "ASYNC_CALLS": true}
+	for _, k := range kinds {
+		if !want[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // RiskLabel maps a BFS depth to a risk label: 1=CRITICAL, 2=HIGH, 3=MEDIUM, 4+=LOW.

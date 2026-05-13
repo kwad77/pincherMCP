@@ -1059,6 +1059,39 @@ END;`,
 	CREATE INDEX IF NOT EXISTS idx_hook_session ON hook_invocations(session_id);
 	CREATE INDEX IF NOT EXISTS idx_hook_ts ON hook_invocations(ts);
 	CREATE INDEX IF NOT EXISTS idx_hook_pending_join ON hook_invocations(took_recommendation, ts) WHERE took_recommendation IS NULL;`,
+
+	// v24 → v25: closure table — materialized transitive closure of the
+	// edges graph for fast trace queries (#652 phase 1, #403 design). When
+	// PINCHER_CLOSURE_TABLES=1 is set at index time, the indexer's tail-pass
+	// builds (from_id, to_id, depth, project_id) tuples up to a configurable
+	// max-depth (default 3, override via PINCHER_CLOSURE_MAX_DEPTH). Trace
+	// queries then become a single indexed SELECT instead of an N-deep
+	// recursive CTE — millisecond instead of 5–50 ms on a project with
+	// thousands of edges.
+	//
+	// Storage cost: per #639 measurement, 50k edges → 50k–60k closure rows
+	// at depth=3 (~10 MB), 100k–120k at depth=5 (~25 MB). 10k-file repo
+	// linear extrapolation: ~325 MB at depth=3 — comfortably under the
+	// 500 MB budget for v0.54 phase 1. depth=5 is opt-in only.
+	//
+	// PRIMARY KEY (project_id, from_id, to_id) WITHOUT ROWID is the right
+	// shape for the typical trace query (`WHERE project_id=? AND from_id=?`)
+	// — primary-key lookup beats secondary-index for this access pattern.
+	// `depth` is a payload column, not part of the key — the same (from, to)
+	// pair through different paths records the MIN depth (insert-or-ignore
+	// + ascending BFS guarantees the first insert is the shortest path).
+	//
+	// Empty by default — even with the schema present, the table stays
+	// empty until PINCHER_CLOSURE_TABLES=1 triggers the builder. No cost
+	// to existing deployments; opt-in feature behind an env flag for v0.54.
+	`CREATE TABLE IF NOT EXISTS closure (
+		project_id TEXT NOT NULL REFERENCES projects(id),
+		from_id    TEXT NOT NULL,
+		to_id      TEXT NOT NULL,
+		depth      INTEGER NOT NULL,
+		PRIMARY KEY (project_id, from_id, to_id)
+	) WITHOUT ROWID;
+	CREATE INDEX IF NOT EXISTS idx_closure_to ON closure(project_id, to_id);`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
