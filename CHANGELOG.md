@@ -7,10 +7,28 @@ minors.
 
 ## [Unreleased]
 
+## [v0.54.0] — 2026-05-13 — closure tables + streamable-HTTP transport: structural perf + cluster-friendly
+
+Phase 1 — release 3 of 9. First beta-tag-shape release exercising v0.53's release-channel infrastructure end-to-end (`v0.54.0-beta.1`). Three deliverables that turn pincher from a single-tenant local primitive into a cluster-mountable backend with materialized perf:
+
+- **Closure tables** materialize the depth-3 transitive closure of the edges graph at index time so `trace` becomes a single indexed SELECT (~1ms) instead of a recursive CTE (5–50ms). Off by default; opt-in via `PINCHER_CLOSURE_TABLES=1` while phase 1 collects field validation.
+- **Streamable-HTTP MCP transport** mounts on the existing HTTP server at a configurable path. Stdio + HTTP transports share the same in-process `*mcp.Server` — same registered tool set, same `_meta` envelope. Routers (zelos, bifrost) deployed in k8s skip per-backend stdio sub-process spawning.
+- **Closure-table storage measurement tool** (`cmd/closurebench/`) — the decision-blocking measurement that validated default depth=3 (~325 MB worst-case at 10k files; well under the 500 MB phase-1 budget).
+
+Schema **v25** — adds the `closure(project_id, from_id, to_id, depth)` table.
+
 ### Added
 - **Closure tables phase 1 ([#652](https://github.com/kwad77/pincher/issues/652), [#403](https://github.com/kwad77/pincher/issues/403)).** Schema **v25** — new `closure(project_id, from_id, to_id, depth) WITHOUT ROWID` table with `idx_closure_to(project_id, to_id)` for inbound queries. Off by default; opt-in via `PINCHER_CLOSURE_TABLES=1` (env: `PINCHER_CLOSURE_MAX_DEPTH`, default 3, clamped to [1, 8]). When enabled, the indexer's tail-pass materializes the depth-N transitive closure of the edges graph; the `trace` tool then routes to a single indexed SELECT (~1ms) instead of a recursive CTE (5–50ms). Phase-1 trade-off: closure rows don't store per-hop edge kind, so the `via` field on trace results is empty when the fast-path fires — callers needing `via` get the CTE path automatically by passing a non-default `kinds` filter. Capability `closure_tables` advertised in `_meta.capabilities` when the table has rows. Storage cost validated by [#639](https://github.com/kwad77/pincher/issues/639) — pincher-repo at depth=3 = 10.8 MB, linear-worst-case extrapolation to a 10k-file repo = ~325 MB (under the 500 MB phase-1 budget).
 - **Closure-table storage measurement tool ([#639](https://github.com/kwad77/pincher/issues/639)).** New `cmd/closurebench/` Go binary + `scripts/closure-table-bench.sh` wrapper. Builds the depth-N transitive closure of a project's edge graph into a fresh side-DB, vacuums via `wal_checkpoint(TRUNCATE)`, stats the file. Closure-only bytes — no other rows polluting the size measurement. Pincher-repo result: 14,244 edges → 50,274 rows / 10.8 MB at depth=3, 116,204 rows / 24.7 MB at depth=5. Decision (informs [#652](https://github.com/kwad77/pincher/issues/652) phase 1): ship default depth=3 (worst-case ~325 MB on a 10k-file repo, well under the 500 MB threshold); depth=5 should not be the default. Tool reusable for follow-up measurements on Kubernetes / Linux subsets.
 - **Streamable-HTTP MCP transport ([#651](https://github.com/kwad77/pincher/issues/651)).** First v0.54 deliverable, paired with v0.53's capability + complexity-tier router-integration contract. New `--mcp-http-path /mcp` flag (env: `PINCHER_MCP_HTTP_PATH`) mounts the MCP SDK's `StreamableHTTPHandler` on the existing HTTP server. Stdio and streamable-HTTP can run simultaneously and share the same in-process `*mcp.Server` — same registered tool set, same `_meta` envelope. The transport inherits `--http-key` bearer auth, rate limiting, and basepath stripping. Capability `streamable_http` advertised in `_meta.capabilities` when the transport is active. Routers (zelos, bifrost) deployed in k8s skip per-backend stdio sub-process spawning. Documented in [`docs/streamable-http.md`](docs/streamable-http.md).
+
+### Why now
+v0.52 reset the surface (every tool reachable everywhere). v0.53 made it self-describing (capabilities + tier + channel). v0.54 makes it **cluster-mountable + structurally fast** — pincher becomes the kind of backend a routing-shaped consumer (zelos, bifrost, detour-shape) can deploy as a fleet. First beta tag (`v0.54.0-beta.1`) validates the release-channel pipeline against a real beta channel before any stable promotion ramp.
+
+### Phase-1 trade-offs (deliberate; phase-2 follow-ups filed)
+- Closure rows don't store per-hop edge kind — `trace`'s `Via` field is empty when fast-path fires. Workaround: pass non-default `kinds` filter for CTE path. Resolved in [#685](https://github.com/kwad77/pincher/issues/685) (v0.65).
+- Storage measurement validated only at pincher-repo scale. At-scale validation (Kubernetes / Linux / VSCode subsets) tracked in [#686](https://github.com/kwad77/pincher/issues/686) (v0.55).
+- Streamable-HTTP wiring contract tested but no concurrent-session loadtest. Tracked in [#687](https://github.com/kwad77/pincher/issues/687) (v0.56).
 
 ## [v0.53.0] — 2026-05-13 — router-integration contract: capabilities, complexity tiers, release channels
 
