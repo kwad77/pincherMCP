@@ -7,6 +7,9 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- **Streamable-HTTP MCP transport ([#651](https://github.com/kwad77/pincher/issues/651)).** First v0.54 deliverable, paired with v0.53's capability + complexity-tier router-integration contract. New `--mcp-http-path /mcp` flag (env: `PINCHER_MCP_HTTP_PATH`) mounts the MCP SDK's `StreamableHTTPHandler` on the existing HTTP server. Stdio and streamable-HTTP can run simultaneously and share the same in-process `*mcp.Server` — same registered tool set, same `_meta` envelope. The transport inherits `--http-key` bearer auth, rate limiting, and basepath stripping. Capability `streamable_http` advertised in `_meta.capabilities` when the transport is active. Routers (zelos, bifrost) deployed in k8s skip per-backend stdio sub-process spawning. Documented in [`docs/streamable-http.md`](docs/streamable-http.md).
+
 ## [v0.53.0] — 2026-05-13 — router-integration contract: capabilities, complexity tiers, release channels
 
 Phase 1 — release 2 of 9. Three deliverables that together make pincher a first-class backend for routing-shaped consumers (zelos / bifrost / detour-shape). Every tool response now declares what it can do (`_meta.capabilities`), what kind of model should handle its output (`_meta.complexity_tier`), and which channel produced it (release-channel infrastructure). Routers can plan calls, route follow-up steps, and pick install paths without scraping version strings or trial-and-error calls.

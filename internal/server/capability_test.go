@@ -128,6 +128,25 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		tag: "streamable_http",
+		probe: func(t *testing.T, srv *Server) {
+			if srv.mcpHTTPPath == "" {
+				t.Errorf("streamable_http advertised but mcpHTTPPath is empty")
+			}
+			// Hit the mounted handler with a minimal initialize so we
+			// exercise the SDK construction + path routing path.
+			body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"capability-probe","version":"v0"}}}`)
+			req := httptest.NewRequest("POST", srv.mcpHTTPPath, body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != 200 {
+				t.Errorf("streamable_http advertised but POST %s returned %d: %s", srv.mcpHTTPPath, rr.Code, rr.Body.String())
+			}
+		},
+	},
+	{
 		tag: "standardized_error_envelope",
 		probe: func(t *testing.T, srv *Server) {
 			req := httptest.NewRequest("POST", "/v1/nonexistent-tool", strings.NewReader("{}"))
@@ -180,7 +199,7 @@ func TestCapability_EveryAdvertisedTagHasRuntimeProbe(t *testing.T) {
 
 	for tag := range probed {
 		// Skip conditional capabilities not present on this server.
-		if tag == "http_auth" {
+		if tag == "http_auth" || tag == "streamable_http" {
 			continue
 		}
 		if !advertised[tag] {

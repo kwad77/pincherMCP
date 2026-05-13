@@ -98,6 +98,7 @@ func main() {
 		dbReaders   = flag.Int("db-readers", db.DefaultReaderPoolSize, "Maximum concurrent SQLite read connections. Higher = more parallel tool calls behind a busy server; capped at 32. Falls back to $PINCHER_DB_READERS.")
 		maxFileMB   = flag.Int("max-file-size-mb", int(index.DefaultMaxFileSize/(1024*1024)), "Per-file size cap during indexing (MB). Files larger than this are recorded as `file_too_large` failures and skipped without being read into memory (#111). 0 disables the cap. Falls back to $PINCHER_MAX_FILE_SIZE_MB.")
 		noStdio     = flag.Bool("no-stdio", false, "Don't run the MCP stdio loop. Used by `pincher web` when spawning a detached HTTP-only child on Windows, where the child has no inherited console and the stdio reader would error immediately and tear down the in-flight HTTP server (#232). Requires --http or the process has nothing to do.")
+		mcpHTTPPath = flag.String("mcp-http-path", "", "Mount the MCP streamable-HTTP transport on the existing HTTP server at this path (e.g. /mcp). Empty disables — pincher serves MCP over stdio only. Requires --http. Routers (zelos/bifrost) deployed in k8s prefer this over per-backend stdio sub-process spawning. Falls back to $PINCHER_MCP_HTTP_PATH. (#651)")
 	)
 	// Custom usage banner: subcommand summary + the standard flag list.
 	// Without this, `pincher --help` only shows flags — and a new user has
@@ -128,6 +129,9 @@ func main() {
 	if !*httpAllowOpen && os.Getenv("PINCHER_HTTP_ALLOW_OPEN") == "1" {
 		*httpAllowOpen = true
 	}
+	if *mcpHTTPPath == "" {
+		*mcpHTTPPath = os.Getenv("PINCHER_MCP_HTTP_PATH")
+	}
 
 	if *showVersion {
 		fmt.Printf("pincherMCP v%s\n", version)
@@ -141,6 +145,10 @@ func main() {
 	// Failing fast on bad flags is independent of any DB state.
 	if *noStdio && *httpAddr == "" && os.Getenv("PINCHER_HTTP_ADDR") == "" {
 		fmt.Fprintln(os.Stderr, "pincher: --no-stdio requires --http (otherwise the process has nothing to do)")
+		os.Exit(1)
+	}
+	if *mcpHTTPPath != "" && *httpAddr == "" {
+		fmt.Fprintln(os.Stderr, "pincher: --mcp-http-path requires --http (the streamable-HTTP MCP transport mounts on the existing HTTP server)")
 		os.Exit(1)
 	}
 
@@ -221,6 +229,9 @@ func main() {
 		}
 		if *httpAllowOpen {
 			srv.SetHTTPAllowOpen(true)
+		}
+		if *mcpHTTPPath != "" {
+			srv.SetMCPHTTPPath(*mcpHTTPPath)
 		}
 		go func() {
 			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {

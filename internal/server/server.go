@@ -106,6 +106,18 @@ type Server struct {
 	// dashboard fetches). See SetBasePath.
 	basePath string
 
+	// mcpHTTPPath, when non-empty, mounts the MCP streamable-HTTP transport
+	// (#651, v0.54) on the existing HTTP server at this path. Empty (the
+	// default) disables the transport entirely — pincher continues to serve
+	// MCP over stdio only. Always normalized: starts with "/" and has no
+	// trailing "/". Honors basePath at request time so a reverse proxy
+	// stripping "/pincher" still routes "/pincher/mcp" to the handler.
+	// Set via SetMCPHTTPPath; lazily wired in ServeHTTP so the SDK
+	// dependency on http.Handler is paid only when the feature is on.
+	mcpHTTPPath        string
+	mcpHTTPHandlerOnce sync.Once
+	mcpHTTPHandler     http.Handler
+
 	// trustProxy controls whether X-Forwarded-Prefix / X-Forwarded-Proto /
 	// X-Forwarded-Host headers are honored. Off by default so a direct
 	// (non-proxied) caller can't spoof headers to manipulate generated URLs.
@@ -1042,6 +1054,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #651: streamable-HTTP MCP transport. When SetMCPHTTPPath is set,
+	// requests at that path (or any sub-path) delegate to the MCP SDK's
+	// streamable-HTTP handler. Mounted post-basepath-strip so reverse-proxy
+	// /pincher/mcp routes correctly. Auth + rate-limiting above already
+	// applied — the SDK handler sees only authenticated requests.
+	if s.mcpHTTPPath != "" && (r.URL.Path == s.mcpHTTPPath || strings.HasPrefix(r.URL.Path, s.mcpHTTPPath+"/")) {
+		s.streamableHTTPHandler().ServeHTTP(w, r)
+		return
+	}
+
 	// #590: root URL → dashboard. A user typing the bare URL in a
 	// browser shouldn't see "method not allowed — use POST /v1/{tool}";
 	// the dashboard IS the front door. 302 redirect (NOT 301) so we
@@ -1642,6 +1664,38 @@ func (s *Server) SetHTTPAllowOpen(allow bool) { s.httpAllowOpen = allow }
 // handler. The OpenAPI spec and embedded dashboard also pick up the prefix
 // so generated links and fetches go through the proxy correctly.
 func (s *Server) SetBasePath(p string) { s.basePath = normalizeBasePath(p) }
+
+// SetMCPHTTPPath enables the MCP streamable-HTTP transport on the existing
+// HTTP server (#651, v0.54). Empty disables. Path is normalized to start
+// with "/" and have no trailing slash; "/mcp" is the conventional default.
+// Re-uses the HTTP server's --http-key auth, rate limiting, and basepath
+// stripping — pincher only needs to be told *where* to mount, not how to
+// secure it. Capability `streamable_http` is advertised in _meta.capabilities
+// when this is set.
+func (s *Server) SetMCPHTTPPath(p string) {
+	s.mcpHTTPPath = normalizeBasePath(p)
+	// Re-compute capabilities so streamable_http surfaces immediately
+	// when the setter is called post-New (matches the New-time path
+	// for callers that wire the flag before constructing the server).
+	s.capabilities = computeCapabilities(s)
+}
+
+// streamableHTTPHandler returns the lazily-constructed MCP streamable-HTTP
+// handler. The SDK's NewStreamableHTTPHandler takes a per-request resolver
+// that returns the *mcp.Server to handle that request — we always return
+// the same singleton, since pincher is a single-tenant primitive (no
+// per-session state beyond the SDK's own session table). Built once via
+// sync.Once so the SDK construction cost is paid the first time the
+// transport is hit, not at startup.
+func (s *Server) streamableHTTPHandler() http.Handler {
+	s.mcpHTTPHandlerOnce.Do(func() {
+		s.mcpHTTPHandler = mcp.NewStreamableHTTPHandler(
+			func(*http.Request) *mcp.Server { return s.mcp },
+			nil, // default options — text/event-stream responses, stateful sessions
+		)
+	})
+	return s.mcpHTTPHandler
+}
 
 // SetTrustProxy enables honoring X-Forwarded-Prefix / X-Forwarded-Proto /
 // X-Forwarded-Host headers for prefix detection and OpenAPI server URL
@@ -2263,6 +2317,14 @@ func computeCapabilities(s *Server) []string {
 	// detect that pincher itself enforces auth and act accordingly.
 	if s.httpKey != "" {
 		caps = append(caps, "http_auth")
+	}
+
+	// Streamable-HTTP MCP transport (#651, v0.54). Present when the
+	// operator has mounted the MCP transport on the HTTP server via
+	// SetMCPHTTPPath. Routers (zelos, bifrost) deployed in k8s can
+	// detect this and skip stdio sub-process spawning.
+	if s.mcpHTTPPath != "" {
+		caps = append(caps, "streamable_http")
 	}
 
 	return caps
