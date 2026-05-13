@@ -2,7 +2,7 @@
 
 The long-form reference. The [README](../README.md) is the pitch + quickstart; this file is the manual. For 10-minute end-to-end walkthroughs, see [`tutorials/`](tutorials/) — [Claude Code](tutorials/claude-code.md), [Cursor](tutorials/cursor.md), [HTTP dashboard](tutorials/http-dashboard.md).
 
-**Schema version:** v25 · **MCP tools:** 22 · **Languages with extractors:** ~19 (8 AST/parser, 11 regex)
+**Schema version:** v25 · **MCP tools:** 22 · **Languages detected:** ~25 (10 AST/parser-tier, 15 regex-tier, plus 7 stub-tier with no extractor — see [Language support](#language-support))
 
 ## Contents
 
