@@ -220,6 +220,67 @@ func TestLint_RealRepoWorkflowsClean(t *testing.T) {
 	}
 }
 
+func TestRun_CleanScan(t *testing.T) {
+	dir := t.TempDir()
+	// Empty workflow dir → no violations.
+	var stdout, stderr strings.Builder
+	code := run([]string{dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit 0 on empty dir; got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "clean") {
+		t.Errorf("expected 'clean' in stdout; got %q", stdout.String())
+	}
+}
+
+func TestRun_ReportsViolations(t *testing.T) {
+	dir := t.TempDir()
+	wf := `name: bad
+on: { push: { branches: [master] } }
+jobs:
+  no-checkout:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash scripts/release-channel.sh v1.0.0
+`
+	if err := os.WriteFile(filepath.Join(dir, "bad.yml"), []byte(wf), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var stdout, stderr strings.Builder
+	code := run([]string{dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit 1 with violation; got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "violation") {
+		t.Errorf("expected violation report on stderr; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "actions/checkout") {
+		t.Errorf("expected fix hint mentioning checkout; got %q", stderr.String())
+	}
+}
+
+func TestRun_WalkErrorReturns2(t *testing.T) {
+	// Nonexistent path → walk fails → exit 2.
+	var stdout, stderr strings.Builder
+	code := run([]string{"/path/that/should/not/exist/anywhere"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("expected exit 2 on walk error; got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "workflow-lint:") {
+		t.Errorf("expected error tag in stderr; got %q", stderr.String())
+	}
+}
+
+func TestLint_BadYAMLReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bad.yml"), []byte("this: is: not: valid: yaml: ::"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := lintTree(dir); err == nil {
+		t.Errorf("expected lintTree to surface YAML parse error")
+	}
+}
+
 func TestFirstNonEmptyLine_TruncatesLongLines(t *testing.T) {
 	long := strings.Repeat("x", 200)
 	got := firstNonEmptyLine(long)

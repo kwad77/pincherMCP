@@ -30,6 +30,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -77,26 +78,34 @@ type violation struct {
 }
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run is main's testable body. Returns the process exit code; never
+// calls os.Exit so tests can call run() repeatedly. stdout receives
+// the clean-state message; stderr receives violation reports + the
+// walk-error message.
+func run(args []string, stdout, stderr io.Writer) int {
 	root := ".github/workflows"
-	if len(os.Args) > 1 {
-		root = os.Args[1]
+	if len(args) > 0 {
+		root = args[0]
 	}
 	violations, err := lintTree(root)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "workflow-lint: %v\n", err)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "workflow-lint: %v\n", err)
+		return 2
 	}
 	if len(violations) == 0 {
-		fmt.Printf("workflow-lint: clean (scanned %s)\n", root)
-		return
+		fmt.Fprintf(stdout, "workflow-lint: clean (scanned %s)\n", root)
+		return 0
 	}
-	fmt.Fprintf(os.Stderr, "workflow-lint: %d violation(s):\n\n", len(violations))
+	fmt.Fprintf(stderr, "workflow-lint: %d violation(s):\n\n", len(violations))
 	for _, v := range violations {
-		fmt.Fprintf(os.Stderr, "  %s :: job=%s (%s) :: step %d\n    references repo without prior actions/checkout@vN:\n      %s\n\n",
+		fmt.Fprintf(stderr, "  %s :: job=%s (%s) :: step %d\n    references repo without prior actions/checkout@vN:\n      %s\n\n",
 			v.File, v.JobID, v.JobName, v.StepIdx, v.Snippet)
 	}
-	fmt.Fprintln(os.Stderr, "fix: add `- uses: actions/checkout@v4` as a step before the run-script reference.")
-	os.Exit(1)
+	fmt.Fprintln(stderr, "fix: add `- uses: actions/checkout@v4` as a step before the run-script reference.")
+	return 1
 }
 
 // lintTree walks `root` looking for *.yml/*.yaml files and lints each.
