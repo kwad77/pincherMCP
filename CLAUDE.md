@@ -104,7 +104,7 @@ make corpus-snapshot-update       # regenerate after intentional changes
 # Performance benchmarks (#50)
 make bench                        # local feedback
 make bench-index | make bench-server   # narrow scope
-make corpus-bench                 # gate vs committed baseline (advisory in CI)
+make corpus-bench                 # gate vs committed baseline (local-only since #692; not gated in CI)
 make corpus-bench-update          # regen baselines (intentional perf changes only)
 
 # Diagnostics & admin
