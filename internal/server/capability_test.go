@@ -117,6 +117,17 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		tag: "complexity_tier",
+		probe: func(t *testing.T, srv *Server) {
+			if tier := toolComplexityTier("search"); tier == "" {
+				t.Errorf("complexity_tier advertised but search has no classification")
+			}
+			if tier := toolComplexityTier("guide"); tier != "heavy" {
+				t.Errorf("complexity_tier advertised but guide=%q, want heavy", tier)
+			}
+		},
+	},
+	{
 		tag: "standardized_error_envelope",
 		probe: func(t *testing.T, srv *Server) {
 			req := httptest.NewRequest("POST", "/v1/nonexistent-tool", strings.NewReader("{}"))
