@@ -119,6 +119,18 @@ jobs:
       - name: Verify pinned-corpus snapshots
         run: make corpus-test
 
+  # #642: validate the release-channel detection rule. Tiny shell test
+  # exercises the modulo-10 rule + pre-release suffixes so a future
+  # workflow edit can't silently break the dev/stable promotion pattern.
+  release-channel:
+    name: Release channel rule
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify channel detection
+        run: bash scripts/release-channel_test.sh
+
   # bench-smoke runs the #50 benchmark harness at a small benchtime to
   # prove benchmarks stay COMPILABLE and don't crash. Always required.
   bench-smoke:

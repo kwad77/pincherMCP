@@ -110,6 +110,30 @@ jobs:
           cd dist
           sha256sum pincher-*.tar.gz pincher-*.zip > SHA256SUMS
 
+      # #642: stable-channel rule — minor version divisible by 10 is a
+      # stable promotion (v0.60, v0.70, ..., v1.0, v1.10, ...). Everything
+      # else (v0.53, v0.54, ..., v0.59, v0.61, ...) is dev channel.
+      # Pre-release suffixes (-beta.N, -alpha.N, -rc.N) override and are
+      # always dev. Patch releases inherit their minor's channel
+      # (v0.60.1 = stable; v0.53.1 = dev).
+      - name: Determine release channel
+        id: channel
+        run: |
+          REF="${GITHUB_REF_NAME}"
+          # Default: dev. Promote to stable when (a) no pre-release suffix
+          # AND (b) minor version % 10 == 0.
+          CHANNEL="dev"
+          if [[ ! "$REF" =~ - ]]; then
+            # Strip leading v, split semver, parse the minor.
+            VER="${REF#v}"
+            MINOR="$(echo "$VER" | awk -F. '{print $2}')"
+            if [[ "$MINOR" =~ ^[0-9]+$ ]] && [[ $((MINOR % 10)) -eq 0 ]]; then
+              CHANNEL="stable"
+            fi
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Release channel for $REF: $CHANNEL"
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -119,7 +143,10 @@ jobs:
             dist/SHA256SUMS
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          # Mark dev releases as prerelease so the GitHub UI shows them
+          # under the "Pre-release" badge and `gh release list --latest`
+          # skips them. Stable promotions stay unmarked.
+          prerelease: ${{ steps.channel.outputs.channel != 'stable' }}
 
   docker:
     name: Docker image
@@ -143,8 +170,28 @@ jobs:
           IMG="ghcr.io/${GITHUB_REPOSITORY,,}"
           VERSION=${GITHUB_REF_NAME#v}
           TAGS="${IMG}:${GITHUB_REF_NAME},${IMG}:${VERSION}"
-          if [[ ! "${GITHUB_REF_NAME}" =~ -(rc|beta|alpha) ]]; then
-            TAGS="${TAGS},${IMG}:latest"
+          # #642: latest tag follows stable-channel rule (minor % 10 == 0,
+          # no pre-release suffix). Pre-release suffixes never get latest;
+          # dev-channel stable releases (v0.53..v0.59, v0.61..v0.69, etc.)
+          # get a `dev` tag instead so users can opt into the rolling-dev
+          # channel via `docker pull ghcr.io/.../pincher:dev`.
+          if [[ ! "${GITHUB_REF_NAME}" =~ - ]]; then
+            MINOR="$(echo "$VERSION" | awk -F. '{print $2}')"
+            if [[ "$MINOR" =~ ^[0-9]+$ ]] && [[ $((MINOR % 10)) -eq 0 ]]; then
+              TAGS="${TAGS},${IMG}:latest,${IMG}:stable"
+            else
+              TAGS="${TAGS},${IMG}:dev"
+            fi
+          else
+            # Pre-release suffixes (-beta.N, -alpha.N, -rc.N) get the
+            # respective channel tag so consumers can opt in.
+            if [[ "${GITHUB_REF_NAME}" =~ -beta\. ]]; then
+              TAGS="${TAGS},${IMG}:beta"
+            elif [[ "${GITHUB_REF_NAME}" =~ -alpha\. ]]; then
+              TAGS="${TAGS},${IMG}:alpha"
+            elif [[ "${GITHUB_REF_NAME}" =~ -rc\. ]]; then
+              TAGS="${TAGS},${IMG}:rc"
+            fi
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
@@ -166,14 +213,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # #642: Homebrew formula tracks the stable channel only. Dev releases
+    # (v0.53..v0.59, etc.) and pre-release suffixes (-beta.N) never bump
+    # the formula. Users wanting dev/beta channels install via the
+    # ghcr Docker `dev`/`beta` tags or `go install @vX.Y.Z` against the
+    # specific dev tag.
+    if: ${{ !contains(github.ref_name, '-') }}
     steps:
+      # Verify the channel rule once more inside the job (defense in depth)
+      # so a misconfigured `if:` above doesn't silently bump the formula
+      # for a dev release.
+      - name: Verify stable-channel rule
+        run: |
+          REF="${GITHUB_REF_NAME}"
+          VER="${REF#v}"
+          MINOR="$(echo "$VER" | awk -F. '{print $2}')"
+          if ! [[ "$MINOR" =~ ^[0-9]+$ ]] || [[ $((MINOR % 10)) -ne 0 ]]; then
+            echo "::warning::Skipping Homebrew bump for $REF — minor=$MINOR is not a stable promotion (minor % 10 != 0)."
+            echo "SKIP_HOMEBREW=1" >> "$GITHUB_ENV"
+          fi
+
       - uses: actions/checkout@v4
+        if: env.SKIP_HOMEBREW != '1'
         with:
           ref: master
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch release SHA256SUMS
         id: hashes
+        if: env.SKIP_HOMEBREW != '1'
         run: |
           set -euo pipefail
           URL="https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/SHA256SUMS"
@@ -208,6 +276,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Patch formula
+        if: env.SKIP_HOMEBREW != '1'
         env:
           VERSION: ${{ steps.hashes.outputs.version }}
           DARWIN_ARM: ${{ steps.hashes.outputs.darwin_arm }}
@@ -239,6 +308,7 @@ jobs:
           git diff --stat packaging/homebrew/pincher.rb
 
       - name: Commit to main repo
+        if: env.SKIP_HOMEBREW != '1'
         run: |
           set -euo pipefail
           if git diff --quiet packaging/homebrew/pincher.rb; then
@@ -255,6 +325,7 @@ jobs:
           git push origin HEAD:master
 
       - name: Mirror to tap repo
+        if: env.SKIP_HOMEBREW != '1'
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
