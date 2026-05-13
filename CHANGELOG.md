@@ -7,6 +7,9 @@ minors.
 
 ## [Unreleased]
 
+### Added
+- **Workflow-isolation lint ([#690](https://github.com/kwad77/pincher/issues/690), [#681](https://github.com/kwad77/pincher/issues/681) follow-up).** New `cmd/workflow-lint/` Go binary catches the "missing checkout before script reference" bug shape that bit `v0.54.0-beta.1` at tag time (`bash: scripts/release-channel.sh: No such file or directory` because the checksums job ran on a fresh runner with no checkout). Walks every job in `.github/workflows/`, flags any `run:` block referencing repo-local scripts (`bash scripts/`, `./scripts/`, `make <target>`, `go run ./...`) without an earlier `actions/checkout@vN` step in the same job. Pre-tag-time gate via new `Workflow isolation lint` CI job — workflow bugs of this shape now caught at PR-merge time instead of tag-push time. 10 unit tests cover the v0.54 failure shape, all canonical script-reference forms, per-job isolation, and version-agnostic checkout matching. Third v0.55 deliverable.
+
 ## [v0.54.0] — 2026-05-13 — closure tables + streamable-HTTP transport: structural perf + cluster-friendly
 
 Phase 1 — release 3 of 9. First beta-tag-shape release exercising v0.53's release-channel infrastructure end-to-end (`v0.54.0-beta.1`). Three deliverables that turn pincher from a single-tenant local primitive into a cluster-mountable backend with materialized perf:

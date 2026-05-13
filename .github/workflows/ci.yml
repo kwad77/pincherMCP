@@ -131,6 +131,29 @@ jobs:
       - name: Verify channel detection
         run: bash scripts/release-channel_test.sh
 
+  # #690: workflow-isolation lint (#681 follow-up). Catches the recurring
+  # "missing-checkout before script ref" bug shape that bit v0.54.0-beta.1
+  # at tag time. cmd/workflow-lint walks every job in .github/workflows/,
+  # flags any `run:` block referencing repo-local scripts (bash scripts/,
+  # ./scripts/, make <target>, go run ./...) without an earlier
+  # actions/checkout@vN step in the same job.
+  #
+  # Pre-tag-time gate: workflow bugs of this shape only fire when a real
+  # tag pushes; this job catches them at PR-merge time instead.
+  workflow-lint:
+    name: Workflow isolation lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run workflow-lint
+        run: go run ./cmd/workflow-lint
+
   # bench-smoke runs the #50 benchmark harness at a small benchtime to
   # prove benchmarks stay COMPILABLE and don't crash. Always required.
   bench-smoke:
