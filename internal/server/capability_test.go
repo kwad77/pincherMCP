@@ -27,11 +27,11 @@ type capProbe struct {
 
 var capabilityProbes = []capProbe{
 	{
-		tag: "schema_v24",
+		tag: "schema_v25",
 		probe: func(t *testing.T, srv *Server) {
 			ver := db.CurrentSchemaVersion()
-			if ver != 24 {
-				t.Errorf("schema_v24 advertised but CurrentSchemaVersion()=%d", ver)
+			if ver != 25 {
+				t.Errorf("schema_v25 advertised but CurrentSchemaVersion()=%d", ver)
 			}
 		},
 	},
@@ -128,6 +128,18 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		tag: "closure_tables",
+		probe: func(t *testing.T, srv *Server) {
+			var n int64
+			if err := srv.store.DB().QueryRow("SELECT COUNT(*) FROM closure").Scan(&n); err != nil {
+				t.Errorf("closure_tables advertised but closure table missing: %v", err)
+			}
+			if n == 0 {
+				t.Errorf("closure_tables advertised but closure table is empty")
+			}
+		},
+	},
+	{
 		tag: "streamable_http",
 		probe: func(t *testing.T, srv *Server) {
 			if srv.mcpHTTPPath == "" {
@@ -199,7 +211,7 @@ func TestCapability_EveryAdvertisedTagHasRuntimeProbe(t *testing.T) {
 
 	for tag := range probed {
 		// Skip conditional capabilities not present on this server.
-		if tag == "http_auth" || tag == "streamable_http" {
+		if tag == "http_auth" || tag == "streamable_http" || tag == "closure_tables" {
 			continue
 		}
 		if !advertised[tag] {
@@ -258,13 +270,13 @@ func TestCapability_PresentInMetaEnvelope(t *testing.T) {
 	}
 	found := false
 	for _, c := range caps {
-		if c == "schema_v24" {
+		if c == "schema_v25" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("_meta.capabilities missing schema_v24; got %v", caps)
+		t.Errorf("_meta.capabilities missing schema_v25; got %v", caps)
 	}
 }
 

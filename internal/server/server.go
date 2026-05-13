@@ -2264,7 +2264,7 @@ func computeCapabilities(s *Server) []string {
 		// Schema version — always reflects the current migration head.
 		// Routers can pin a minimum schema or refuse to talk to older
 		// pincher binaries via this tag.
-		"schema_v24",
+		"schema_v25",
 
 		// PreToolUse hook intercept (#625, #626, #627, v0.36).
 		// `pincher hook-check` is built into every binary post-v0.36;
@@ -2325,6 +2325,25 @@ func computeCapabilities(s *Server) []string {
 	// detect this and skip stdio sub-process spawning.
 	if s.mcpHTTPPath != "" {
 		caps = append(caps, "streamable_http")
+	}
+
+	// Closure-table fast-path for trace (#652 phase 1, v0.54). Present
+	// when PINCHER_CLOSURE_TABLES=1 was set at indexer time AND the
+	// closure table has rows for at least one project. Routers can
+	// surface this to agents as "trace queries on this backend hit
+	// closure-table speed (single SELECT, ~1ms) instead of recursive
+	// CTE (5–50ms)". Phase 1 trade-off documented: closure rows don't
+	// store per-hop edge kind, so the `via` field on trace results is
+	// empty when the fast-path fires.
+	if db.ClosureEnabled() {
+		// Sample any project — we don't need exact-per-project here,
+		// just a "is there closure data this binary could serve from"
+		// signal. Cheap LIMIT 1 query.
+		var n int64
+		_ = s.store.DB().QueryRow("SELECT COUNT(*) FROM closure LIMIT 1").Scan(&n)
+		if n > 0 {
+			caps = append(caps, "closure_tables")
+		}
 	}
 
 	return caps
