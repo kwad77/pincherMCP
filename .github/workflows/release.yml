@@ -100,6 +100,13 @@ jobs:
     needs: binaries
     runs-on: ubuntu-latest
     steps:
+      # Checkout needed so the channel-detection step can shell out to
+      # scripts/release-channel.sh — discovered the hard way on the
+      # v0.54.0-beta.1 release run, which failed at the channel step
+      # with "scripts/release-channel.sh: No such file or directory"
+      # because this job runs on a fresh runner with no repo.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
