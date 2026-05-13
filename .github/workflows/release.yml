@@ -119,20 +119,19 @@ jobs:
       - name: Determine release channel
         id: channel
         run: |
-          REF="${GITHUB_REF_NAME}"
-          # Default: dev. Promote to stable when (a) no pre-release suffix
-          # AND (b) minor version % 10 == 0.
-          CHANNEL="dev"
-          if [[ ! "$REF" =~ - ]]; then
-            # Strip leading v, split semver, parse the minor.
-            VER="${REF#v}"
-            MINOR="$(echo "$VER" | awk -F. '{print $2}')"
-            if [[ "$MINOR" =~ ^[0-9]+$ ]] && [[ $((MINOR % 10)) -eq 0 ]]; then
-              CHANNEL="stable"
-            fi
-          fi
+          # Delegate to the canonical detector (#642). The inline-duplicate
+          # logic that lived here before the fix mis-labelled all pre-release
+          # suffixes as "dev" — beta/alpha/rc tags showed up in the log as
+          # "Release channel for v0.54.0-beta.1: dev" even though Docker
+          # correctly tagged ghcr.io/.../pincher:beta and the GitHub release
+          # was correctly marked prerelease. The downstream effects were
+          # right; only the labelling was wrong. Now that
+          # scripts/release-channel.sh is the canonical implementation
+          # (CI-tested via scripts/release-channel_test.sh), the workflow
+          # shells out to it instead of reimplementing in bash inline.
+          CHANNEL="$(bash scripts/release-channel.sh "${GITHUB_REF_NAME}")"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
-          echo "Release channel for $REF: $CHANNEL"
+          echo "Release channel for ${GITHUB_REF_NAME}: $CHANNEL"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -167,33 +166,27 @@ jobs:
       - name: Compute tags
         id: tags
         run: |
+          # #642: Docker tags follow scripts/release-channel.sh routing.
+          # stable → latest + stable; dev → dev; beta/alpha/rc → matching
+          # channel tag. The full tag (vX.Y.Z[-suffix]) and bare-version
+          # tag always ship so consumers can pin to a specific release.
           IMG="ghcr.io/${GITHUB_REPOSITORY,,}"
           VERSION=${GITHUB_REF_NAME#v}
           TAGS="${IMG}:${GITHUB_REF_NAME},${IMG}:${VERSION}"
-          # #642: latest tag follows stable-channel rule (minor % 10 == 0,
-          # no pre-release suffix). Pre-release suffixes never get latest;
-          # dev-channel stable releases (v0.53..v0.59, v0.61..v0.69, etc.)
-          # get a `dev` tag instead so users can opt into the rolling-dev
-          # channel via `docker pull ghcr.io/.../pincher:dev`.
-          if [[ ! "${GITHUB_REF_NAME}" =~ - ]]; then
-            MINOR="$(echo "$VERSION" | awk -F. '{print $2}')"
-            if [[ "$MINOR" =~ ^[0-9]+$ ]] && [[ $((MINOR % 10)) -eq 0 ]]; then
-              TAGS="${TAGS},${IMG}:latest,${IMG}:stable"
-            else
-              TAGS="${TAGS},${IMG}:dev"
-            fi
-          else
-            # Pre-release suffixes (-beta.N, -alpha.N, -rc.N) get the
-            # respective channel tag so consumers can opt in.
-            if [[ "${GITHUB_REF_NAME}" =~ -beta\. ]]; then
-              TAGS="${TAGS},${IMG}:beta"
-            elif [[ "${GITHUB_REF_NAME}" =~ -alpha\. ]]; then
-              TAGS="${TAGS},${IMG}:alpha"
-            elif [[ "${GITHUB_REF_NAME}" =~ -rc\. ]]; then
-              TAGS="${TAGS},${IMG}:rc"
-            fi
-          fi
+          CHANNEL="$(bash scripts/release-channel.sh "${GITHUB_REF_NAME}")"
+          case "$CHANNEL" in
+            stable) TAGS="${TAGS},${IMG}:latest,${IMG}:stable" ;;
+            dev)    TAGS="${TAGS},${IMG}:dev"   ;;
+            beta)   TAGS="${TAGS},${IMG}:beta"  ;;
+            alpha)  TAGS="${TAGS},${IMG}:alpha" ;;
+            rc)     TAGS="${TAGS},${IMG}:rc"    ;;
+            *)
+              echo "::error::unrecognised channel '$CHANNEL' for ${GITHUB_REF_NAME}"
+              exit 1
+              ;;
+          esac
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Docker tags for ${GITHUB_REF_NAME} (channel=$CHANNEL): ${TAGS}"
 
       - uses: docker/build-push-action@v6
         with:
