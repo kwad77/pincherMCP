@@ -1560,10 +1560,19 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 				responseSchema = parsed
 			}
 		}
+		// #650: per-tool x-pincher-tier annotation. Static classification
+		// available at planning time so router-shaped consumers (detour-
+		// shape model routing in particular) can decide which model
+		// tier handles the next agent step before the call happens.
+		// Also injected into _meta.complexity_tier on every response
+		// for consumers reading at call time. Gate test enforces every
+		// registered tool has a classification.
+		tier := toolComplexityTier(t)
 		paths[prefix+"/v1/"+t] = map[string]any{
 			"post": map[string]any{
-				"operationId": t,
-				"summary":     summary,
+				"operationId":     t,
+				"summary":         summary,
+				"x-pincher-tier":  tier,
 				"requestBody": map[string]any{
 					"required": true,
 					"content":  map[string]any{"application/json": map[string]any{"schema": requestSchema}},
@@ -1582,7 +1591,12 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 		}
 	}
 	paths[prefix+"/v1/health"] = map[string]any{
-		"get": map[string]any{"operationId": "health", "summary": "Liveness probe", "responses": map[string]any{"200": map[string]any{"description": "ok"}}},
+		"get": map[string]any{
+			"operationId":    "health",
+			"summary":        "Liveness probe",
+			"x-pincher-tier": toolComplexityTier("health"),
+			"responses":      map[string]any{"200": map[string]any{"description": "ok"}},
+		},
 	}
 	spec := map[string]any{
 		"openapi":    "3.1.0",
@@ -2120,6 +2134,61 @@ func (s *Server) invalidateProjectIDCache() {
 	})
 }
 
+// Per-tool complexity tier classification (#650). Used by:
+//   - openAPISpec to inject `x-pincher-tier` per-endpoint at planning time
+//   - jsonResultWithMeta to inject `_meta.complexity_tier` per-response
+//
+// Tiers (router-routability framing — about response shape, not work cost):
+//   - lite:     small structured response, fits in any model context window;
+//               pure data; safe to consume from a 7B local model.
+//   - standard: medium structured response, agent reasons over it; fine on
+//               most frontier models; may strain small local models.
+//   - heavy:    synthesis-style output requiring frontier-model parsing
+//               (e.g. recommendation paragraphs from `guide`).
+//
+// Gate test capability_test.go enforces every registered tool has a
+// classification — no missing entries, no defaults applied silently.
+//
+// Adding a new tool requires adding it here in the same PR; CI fails
+// otherwise.
+var toolComplexityTiers = map[string]string{
+	// lite — pure-data, small response
+	"search":      "lite",
+	"symbol":      "lite",
+	"symbols":     "lite",
+	"health":      "lite",
+	"stats":       "lite",
+	"schema":      "lite",
+	"list":        "lite",
+	"doctor":      "lite",
+	"adr":         "lite",
+	"index":       "lite",
+	"rebuild_fts": "lite",
+	"init":        "lite",
+	"self_test":   "lite",
+
+	// standard — pure-data, medium response (agent reasons over)
+	"context":      "standard",
+	"trace":        "standard",
+	"query":        "standard",
+	"changes":      "standard",
+	"neighborhood": "standard",
+	"dead_code":    "standard",
+	"architecture": "standard",
+	"fetch":        "standard",
+
+	// heavy — synthesis-style output requiring frontier parsing
+	"guide": "heavy",
+}
+
+// toolComplexityTier returns the registered tier for a tool, or the
+// empty string if none is registered. The empty case is what the
+// gate test catches — production code should never see an unclassified
+// tool.
+func toolComplexityTier(tool string) string {
+	return toolComplexityTiers[tool]
+}
+
 // computeCapabilities builds the per-server capability advertisement
 // slice published in _meta.capabilities (#649). Each tag corresponds
 // to a feature with a runtime probe in capability_test.go; the
@@ -2181,6 +2250,12 @@ func computeCapabilities(s *Server) []string {
 		// (#537, v0.25). Routers can rely on the {error: {code,
 		// message, details}} shape rather than parsing a string.
 		"standardized_error_envelope",
+
+		// Per-tool complexity tier in OpenAPI (x-pincher-tier) and
+		// _meta.complexity_tier (#650, v0.53). Routers (especially
+		// detour-shape model-tier routers) consume to decide which
+		// model handles the agent step that consumes the response.
+		"complexity_tier",
 	}
 
 	// Conditional capability — present when the operator has wired
@@ -7056,6 +7131,15 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// calls. Sized small (~10 short strings, < 200 bytes); cost
 	// negligible vs the discoverability win.
 	meta["capabilities"] = s.capabilities
+
+	// #650: per-response complexity_tier — confirms the static
+	// x-pincher-tier classification at call time. Routers reading
+	// _meta can decide on the fly which model handles the next
+	// agent step. Empty string when tool isn't classified (gate
+	// test catches; production should never hit this branch).
+	if tier := toolComplexityTier(tool); tier != "" {
+		meta["complexity_tier"] = tier
+	}
 
 	// #499: surface unknown args from this call. The fix is to teach
 	// the agent that pincher saw the typo'd / made-up arg and ignored
