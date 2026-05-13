@@ -27,21 +27,22 @@ This is pincher's own repo, so the running MCP server is frequently stale relati
 - **Patch** (`0.X.Y`) — bug fixes only. No features, no schema changes.
 - **Major** — reserved for 1.0+.
 
-**Every PR must be assigned to a milestone at PR-create time.** Milestones live at https://github.com/kwad77/pincher/milestones. Default to the next milestone (currently `v0.10.0`); don't leave a PR unassigned. A release ships when its milestone hits 100% closed.
+**Every PR must be assigned to a milestone at PR-create time.** Milestones live at https://github.com/kwad77/pincher/milestones. Default to the next milestone (check the milestones page for the current target); don't leave a PR unassigned. A release ships when its milestone hits 100% closed.
 
 ```bash
-gh pr create --milestone v0.10.0 ...
-gh issue edit <PR#> --milestone v0.10.0  # after the fact
+gh pr create --milestone v0.55.0 ...
+gh issue edit <PR#> --milestone v0.55.0  # after the fact
 ```
 
 ### Release-prep checklist (every release, no skipping)
 
-The release-prep PR (the one before tagging) MUST touch all four below. CHANGELOG-only is the historical mistake — the README is what users hit first via the GitHub repo landing page, and stale roadmap claims erode trust faster than missing CHANGELOG entries.
+The release-prep PR (the one before tagging) MUST touch all five below. CHANGELOG-only is the historical mistake — the README is what users hit first via the GitHub repo landing page, and stale roadmap claims erode trust faster than missing CHANGELOG entries.
 
-1. **`CHANGELOG.md`** — new section under `[Unreleased]` with the version's headline + Added/Fixed entries linking issues.
+1. **`CHANGELOG.md`** — run `bash scripts/changelog-assemble.sh --apply` to fold per-PR `CHANGELOG.d/<num>.<type>.md` stubs into the `[Unreleased]` section, then convert `[Unreleased]` → versioned heading with the release's theme one-liner. Stub-file convention shipped #694; legacy direct-edit still works for in-flight PRs that predate it.
 2. **`README.md` roadmap table** — bump the previous `🚧 in flight` row to `✅ shipped`, add a new row for the version about to ship with its theme one-liner, optionally add the next `🚧 in flight` row.
 3. **`README.md` Known limitations** — rewrite any item whose fix lands in this version into past tense; recommend the upgrade.
 4. **Version-sensitive claims in README leading paragraph** — tool count, schema version, coverage badge if it moved meaningfully (>1%).
+5. **`docs/REFERENCE.md` — leading metadata line** (`**Schema version:** vN · **MCP tools:** N · **Languages detected:** ~N`). Bump every release that moves any of those numbers. Per #688: the leading line is what users see first when they click into the reference doc from README; stale numbers there make every subsequent claim look distrust-by-default. Drift was 12 schema versions before #698 caught it.
 
 If a release ships without README touched, the user's first reaction is "the README didn't say anything about it" and follow-up cleanup PRs read as forgetting, not catching up. Do it inline.
 
@@ -49,9 +50,10 @@ After tag pushes, the auto-bump workflow handles the Homebrew formula and Docker
 
 ## CI conventions
 
-- **Always-ignore advisory job:** `Benchmark regression (advisory)` runs with `continue-on-error: true` and fails on most PRs (variance on shared runners). **Do not re-check, do not re-run, do not block on it** unless this PR intentionally changes a hot path.
-- **Real gates:** `Test (mac/ubuntu/windows)`, `Coverage`, `Corpus snapshot`, `Benchmark smoke`. Merge requires all four green.
+- **Required gates:** `Test (mac/ubuntu/windows)`, `Coverage`, `Corpus snapshot`, `Benchmark smoke`, `Release channel rule`, `Workflow isolation lint`, `CHANGELOG stub check`. Merge requires all green (the stub check is skipped on doc-only PRs).
+- **Removed in v0.55:** `Benchmark regression (advisory)` (#692) — failed on most PRs from runner variance and signal-to-noise hit zero. `make corpus-bench` survives for local perf validation.
 - **Wakeup timing:** Windows test queues 4–7 min behind ubuntu/mac. When polling CI, schedule a 270s wakeup (not 60s) — fits inside the 5-min cache TTL twice.
+- **Stub-file convention for CHANGELOG (#694):** instead of editing `CHANGELOG.md` `[Unreleased]` directly, drop a `CHANGELOG.d/<num>.<type>.md` file with one bullet (no leading dash; assembler adds it). `<type>` ∈ {added, changed, fixed, removed}. Eliminates the rebase-conflict source that bit every concurrent-PR pair pre-v0.55.
 
 ## Repo-specific test gates
 
