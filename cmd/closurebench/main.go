@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,33 +38,47 @@ import (
 )
 
 func main() {
-	var (
-		dbPath    = flag.String("db", defaultDBPath(), "Path to pincher.db")
-		projectID = flag.String("project", "", "Project ID to measure (default: first project in DB)")
-		depths    = flag.String("depth", "3,5", "Comma-separated max-depth values to measure")
-		mdRow     = flag.Bool("md", false, "Print one Markdown table row instead of multi-line summary")
-	)
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stderr))
+}
+
+// run is main's testable body. Returns the process exit code; never calls
+// os.Exit directly (so tests can call run() repeatedly without tearing
+// down the test process). errOut receives any error message; stdout
+// receives the result table via printSummary / printMarkdownRow.
+func run(args []string, errOut io.Writer) int {
+	fs := flag.NewFlagSet("closurebench", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	dbPath := fs.String("db", defaultDBPath(), "Path to pincher.db")
+	projectID := fs.String("project", "", "Project ID to measure (default: first project in DB)")
+	depths := fs.String("depth", "3,5", "Comma-separated max-depth values to measure")
+	mdRow := fs.Bool("md", false, "Print one Markdown table row instead of multi-line summary")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	src, err := sql.Open("sqlite", "file:"+*dbPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
-		fatal("open source db: %v", err)
+		fmt.Fprintf(errOut, "closurebench: open source db: %v\n", err)
+		return 1
 	}
 	defer src.Close()
 
 	pid, err := resolveProject(src, *projectID)
 	if err != nil {
-		fatal("%v", err)
+		fmt.Fprintf(errOut, "closurebench: %v\n", err)
+		return 1
 	}
 
 	srcSize, err := fileSize(*dbPath)
 	if err != nil {
-		fatal("stat source db: %v", err)
+		fmt.Fprintf(errOut, "closurebench: stat source db: %v\n", err)
+		return 1
 	}
 
 	files, edges, err := projectStats(src, pid)
 	if err != nil {
-		fatal("project stats: %v", err)
+		fmt.Fprintf(errOut, "closurebench: project stats: %v\n", err)
+		return 1
 	}
 
 	results := make(map[int]closureMeasurement)
@@ -74,20 +89,23 @@ func main() {
 		}
 		d, err := strconv.Atoi(ds)
 		if err != nil || d < 1 {
-			fatal("invalid depth %q (must be positive integer)", ds)
+			fmt.Fprintf(errOut, "closurebench: invalid depth %q (must be positive integer)\n", ds)
+			return 1
 		}
 		m, err := measureClosure(src, pid, d)
 		if err != nil {
-			fatal("depth=%d: %v", d, err)
+			fmt.Fprintf(errOut, "closurebench: depth=%d: %v\n", d, err)
+			return 1
 		}
 		results[d] = m
 	}
 
 	if *mdRow {
 		printMarkdownRow(*dbPath, pid, files, edges, srcSize, results)
-		return
+		return 0
 	}
 	printSummary(*dbPath, pid, files, edges, srcSize, results)
+	return 0
 }
 
 func defaultDBPath() string {
@@ -317,7 +335,3 @@ func sortedDepths(m map[int]closureMeasurement) []int {
 	return out
 }
 
-func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "closurebench: "+format+"\n", args...)
-	os.Exit(1)
-}
