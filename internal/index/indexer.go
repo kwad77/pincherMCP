@@ -65,6 +65,13 @@ type Indexer struct {
 	// is called — pre-existing rows then keep their stored version
 	// rather than getting overwritten with "".
 	binaryVersion string
+
+	// onEvent, when set, is invoked at index_started and index_complete
+	// so a subscriber (the MCP server's /v1/events SSE bus, #654) can
+	// stream lifecycle events. nil for the bare `pincher index` CLI,
+	// which has no subscriber — emitEvent guards the nil. The callback
+	// must not block: the server's bus does a non-blocking fan-out.
+	onEvent func(eventType string, payload map[string]any)
 }
 
 // New creates a new Indexer with the default per-file size cap.
@@ -82,6 +89,23 @@ func New(store *db.Store) *Indexer {
 // before or after `New`; idempotent.
 func (idx *Indexer) SetBinaryVersion(v string) {
 	idx.binaryVersion = v
+}
+
+// SetEventHook registers a callback invoked at index_started and
+// index_complete (#654). The MCP server wires its /v1/events SSE bus
+// here; the bare CLI leaves it nil. The callback runs on the indexing
+// goroutine, so it must return promptly — the server's bus fan-out is
+// non-blocking by design.
+func (idx *Indexer) SetEventHook(fn func(eventType string, payload map[string]any)) {
+	idx.onEvent = fn
+}
+
+// emitEvent invokes the registered event hook, if any. nil-safe so the
+// CLI path (no subscriber) is a no-op.
+func (idx *Indexer) emitEvent(eventType string, payload map[string]any) {
+	if idx.onEvent != nil {
+		idx.onEvent(eventType, payload)
+	}
 }
 
 // SetMaxFileSize overrides the per-file size cap. Pass 0 (or negative) to
@@ -197,6 +221,22 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	defer releaseLock()
 
 	start := time.Now()
+
+	// #654: index_started — emitted before UpsertProject so the
+	// file_count_estimate can carry the prior run's count (UpsertProject
+	// would otherwise overwrite it). Best-effort; a missing prior row
+	// just yields estimate 0.
+	var fileCountEstimate int
+	if prev, _ := idx.store.GetProject(projectID); prev != nil {
+		fileCountEstimate = prev.FileCount
+	}
+	idx.emitEvent("index_started", map[string]any{
+		"project_id":          projectID,
+		"project":             projectName,
+		"path":                absPath,
+		"started_at":          start.UTC().Format(time.RFC3339),
+		"file_count_estimate": fileCountEstimate,
+	})
 
 	// Ensure project record exists. #304: stamp the running binary
 	// version so health can detect drift later — empty when the
@@ -703,7 +743,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// + manual CLI, etc.).
 	_ = idx.store.CheckpointTruncate()
 
-	return &IndexResult{
+	result := &IndexResult{
 		ProjectID:  projectID,
 		Project:    projectName,
 		Path:       absPath,
@@ -714,7 +754,25 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		Blocked:    totalBlocked,
 		Deleted:    totalDeleted,
 		DurationMS: duration.Milliseconds(),
-	}, nil
+	}
+
+	// #654: index_complete — the single success return, so this fires
+	// exactly once per completed run (error paths return earlier and
+	// never reach here).
+	idx.emitEvent("index_complete", map[string]any{
+		"project_id":  projectID,
+		"project":     projectName,
+		"path":        absPath,
+		"files":       totalFiles,
+		"symbols":     totalSymbols,
+		"edges":       totalEdges,
+		"skipped":     totalSkipped,
+		"blocked":     totalBlocked,
+		"deleted":     totalDeleted,
+		"duration_ms": duration.Milliseconds(),
+	})
+
+	return result, nil
 }
 
 // flushBuffers writes accumulated symbols and edges to the DB then resets the slices.

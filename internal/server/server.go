@@ -285,6 +285,12 @@ type Server struct {
 	// PINCHER_DIFF_CONTEXT at New(); default-off in v0.56 until perf
 	// validates, then default-on.
 	diffContext bool
+
+	// events is the SSE fan-out bus for GET /v1/events (#654). The
+	// indexer publishes index_started / index_complete through it via
+	// the hook wired in New(); /v1/events subscribers drain it. Always
+	// non-nil after New().
+	events *eventBus
 }
 
 // contextDiffEntry is one cached `context` fetch (#655): the backing
@@ -321,6 +327,16 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		exitFn:              os.Exit, // #352: substituted by tests
 		autoRestartDelay:    autoRestartExitDelay,
 		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
+		events:              newEventBus(),                           // #654
+	}
+	// #654: wire the indexer's lifecycle hook to the SSE bus so
+	// index_started / index_complete reach /v1/events subscribers. The
+	// bus fan-out is non-blocking, so this never stalls indexing.
+	if indexer != nil {
+		indexer.SetEventHook(func(eventType string, payload map[string]any) {
+			pid, _ := payload["project_id"].(string)
+			s.events.publish(sseEvent{Type: eventType, ProjectID: pid, Payload: payload})
+		})
 	}
 	// Capture the running binary's path + initial mtime so the
 	// health stale-binary check (#278) can compare against the
@@ -1153,6 +1169,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #654: /v1/events SSE stream. Routed before the gzip wrap for the
+	// same reason as the MCP transport above — gzipResponseWriter buffers
+	// and isn't an http.Flusher, so wrapping a long-lived event stream
+	// strands every frame. Auth + rate-limiting + basepath-strip have
+	// already run; the GET-only gate is inline here since the route is
+	// handled before the httpGetOnlyRoutes map below.
+	if r.URL.Path == "/v1/events" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				"/v1/events requires GET")
+			return
+		}
+		s.handleEvents(w, r)
+		return
+	}
+
 	// Transparently compress responses when the client supports it.
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
@@ -1767,6 +1800,46 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 			"summary":        "Liveness probe",
 			"x-pincher-tier": toolComplexityTier("health"),
 			"responses":      map[string]any{"200": map[string]any{"description": "ok"}},
+		},
+	}
+	// #654: GET /v1/events — Server-Sent Events stream. Declared as a
+	// streaming endpoint so generated clients know the response is a
+	// long-lived text/event-stream, not a single JSON body.
+	paths[prefix+"/v1/events"] = map[string]any{
+		"get": map[string]any{
+			"operationId": "events",
+			"summary":     "Subscribe to index lifecycle events via Server-Sent Events",
+			"description": "Long-lived text/event-stream emitting index_started, index_complete, " +
+				"and binary_drift events. On connect, a binary_drift snapshot is sent for every " +
+				"currently-drifted project. Honors the --http-key bearer when set.",
+			"parameters": []any{
+				map[string]any{
+					"name":        "project",
+					"in":          "query",
+					"required":    false,
+					"schema":      map[string]any{"type": "string"},
+					"description": "Filter the stream to a single project ID.",
+				},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Server-Sent Events stream",
+					"content": map[string]any{
+						"text/event-stream": map[string]any{
+							"schema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"type": map[string]any{
+										"type": "string",
+										"enum": []string{"index_started", "index_complete", "binary_drift"},
+									},
+									"project_id": map[string]any{"type": "string"},
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 	spec := map[string]any{
@@ -2459,6 +2532,12 @@ func computeCapabilities(s *Server) []string {
 		// detour-shape model-tier routers) consume to decide which
 		// model handles the agent step that consumes the response.
 		"complexity_tier",
+
+		// SSE event stream at GET /v1/events (#654, v0.56). Dashboards
+		// and CI bots can subscribe to index_started / index_complete /
+		// binary_drift instead of polling /v1/health or
+		// /v1/index-progress. Always wired when the HTTP gateway is up.
+		"sse",
 	}
 
 	// Conditional capability — present when the operator has wired

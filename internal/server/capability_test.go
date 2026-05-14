@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -180,6 +181,26 @@ var capabilityProbes = []capProbe{
 			}
 			if _, ok := errObj["message"]; !ok {
 				t.Errorf("error envelope missing 'message' field")
+			}
+		},
+	},
+	{
+		tag: "sse",
+		probe: func(t *testing.T, srv *Server) {
+			// GET /v1/events must answer 200 with a text/event-stream
+			// body. The handler blocks until the request context is
+			// done, so use a short-deadline context: it returns cleanly
+			// once headers + the drift snapshot are written.
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+			defer cancel()
+			req := httptest.NewRequest("GET", "/v1/events", nil).WithContext(ctx)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != 200 {
+				t.Errorf("sse advertised but GET /v1/events returned %d: %s", rr.Code, rr.Body.String())
+			}
+			if ct := rr.Header().Get("Content-Type"); ct != "text/event-stream" {
+				t.Errorf("sse advertised but Content-Type = %q, want text/event-stream", ct)
 			}
 		},
 	},
