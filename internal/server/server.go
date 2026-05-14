@@ -3053,6 +3053,15 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
+	// #766: for a Document the content is returned in `source`; its
+	// Docstring holds the *same* bytes, so echoing both doubles the
+	// payload. A Document has no doc-comment distinct from its content —
+	// blank the docstring field and let `source` be the canonical text.
+	docstring := sym.Docstring
+	if sym.Kind == "Document" {
+		docstring = ""
+	}
+
 	// Estimate token savings vs. reading the whole file.
 	// Baseline: agent would read the entire file to find this symbol on
 	// first access. On repeat access this session, the file is already in
@@ -3082,7 +3091,7 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"end_byte":              sym.EndByte,
 		"signature":             sym.Signature,
 		"return_type":           sym.ReturnType,
-		"docstring":             sym.Docstring,
+		"docstring":             docstring,
 		"complexity":            sym.Complexity,
 		"is_exported":           sym.IsExported,
 		"extraction_confidence": sym.ExtractionConfidence,
@@ -3257,6 +3266,12 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 				source = sym.Docstring
 			}
 		}
+		// #766: blank a Document's docstring — its text is already in
+		// `source`; echoing both doubles the payload. Mirrors handleSymbol.
+		docstring := sym.Docstring
+		if sym.Kind == "Document" {
+			docstring = ""
+		}
 		// #336: project the same field set as handleSymbol so a one-ID
 		// `symbols` batch returns the same shape as a single `symbol` call.
 		// Without parity, callers had to know which tool to use to access
@@ -3274,7 +3289,7 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			"end_byte":              sym.EndByte,
 			"signature":             sym.Signature,
 			"return_type":           sym.ReturnType,
-			"docstring":             sym.Docstring,
+			"docstring":             docstring,
 			"complexity":            sym.Complexity,
 			"is_exported":           sym.IsExported,
 			"extraction_confidence": sym.ExtractionConfidence,
@@ -3777,8 +3792,20 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		// snippet — otherwise we'd read kilobytes per result and discard them.
 		includeSnippet := fieldSet == nil || fieldSet["snippet"]
 		snippet := ""
-		if includeSnippet && root != "" && r.Symbol.Kind != "Variable" && r.Symbol.Kind != "Type" {
-			if src, err := index.ReadSymbolSourceCapped(root, r.Symbol, snippetReadCap); err == nil && src != "" {
+		if includeSnippet && r.Symbol.Kind != "Variable" && r.Symbol.Kind != "Type" {
+			var src string
+			if r.Symbol.Kind == "Document" {
+				// #766: Documents (fetched URLs) have no on-disk file to
+				// byte-seek — their text lives in Docstring. Without this
+				// the snippet was always empty for Document hits, breaking
+				// the "skip a follow-up call" contract search advertises.
+				src = r.Symbol.Docstring
+			} else if root != "" {
+				if s, err := index.ReadSymbolSourceCapped(root, r.Symbol, snippetReadCap); err == nil {
+					src = s
+				}
+			}
+			if src != "" {
 				lines := strings.SplitN(src, "\n", snippetLines+1)
 				if len(lines) > snippetLines {
 					lines = lines[:snippetLines]
@@ -6661,15 +6688,21 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 
 	symID := db.MakeSymbolID(normURL, normURL, "Document")
 	sym := db.Symbol{
-		ID:                   symID,
-		ProjectID:            projectID,
-		FilePath:             normURL,
-		Name:                 pageTitle,
-		QualifiedName:        normURL,
-		Kind:                 "Document",
-		Language:             "text",
-		Docstring:            text,
-		Signature:            normURL,
+		ID:        symID,
+		ProjectID: projectID,
+		FilePath:  normURL,
+		Name:      pageTitle,
+		// QualifiedName must stay == normURL: it's the stable per-URL
+		// key the #733 re-fetch dedup relies on (a page title can
+		// change between fetches; the normalized URL can't).
+		QualifiedName: normURL,
+		Kind:          "Document",
+		Language:      "text",
+		Docstring:     text,
+		// #766: signature == file_path == qualified_name was pure
+		// redundancy. The page title gives `search` a meaningful
+		// one-line signature instead of a third copy of the URL.
+		Signature:            pageTitle,
 		ExtractionConfidence: 1.0,
 	}
 	if err := s.store.BulkUpsertSymbols([]db.Symbol{sym}); err != nil {
