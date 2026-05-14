@@ -2918,7 +2918,18 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 	if sym == nil {
-		return errResult(fmt.Sprintf("symbol %q not found", id)), nil
+		// #704: not-found path teaches the next move. The natural
+		// remediation is `search` by short name (handles typos, case,
+		// and stale IDs that didn't make symbol_moves).
+		return s.errResultRich(
+			fmt.Sprintf("symbol %q not found", id),
+			[]map[string]string{
+				{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, shortNameFromID(id)),
+					"why": "id resolution failed (also tried symbol_moves redirect) — search by short name"},
+				{"tool": "list", "args": "{}",
+					"why": "if no project matches, the right project may not be indexed"},
+			},
+		), nil
 	}
 
 	// projectID drives byte-offset root resolution. When the caller
@@ -4535,6 +4546,17 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		direction = "both"
 	}
 	depth := intArg(args, "depth", 3)
+	// #703: clamp negative/zero depth. Schema declares depth 1-5; callers
+	// passing depth<1 previously got `{hops:[], total:N>0, risk_summary
+	// populated}` — the depth-grouping loop's `for d:=1; d<=depth` never
+	// executed, but the upstream BFS output still populated `total` and
+	// `riskCounts`. Internal-consistency violation. Clamp + emit
+	// `_meta.warnings` so the caller learns instead of guessing.
+	var traceDepthClampMsg string
+	if depth < 1 {
+		traceDepthClampMsg = fmt.Sprintf("trace: depth=%d clamped to 1 (valid range 1-5)", depth)
+		depth = 1
+	}
 	// #402: detect whether the caller passed depth explicitly. When
 	// they did, honor it exactly. When they didn't (auto mode), the
 	// post-filter below trims the result down to the smallest depth
@@ -4589,7 +4611,18 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if id != "" {
 		seed, lookupErr := s.store.GetSymbol(id)
 		if lookupErr != nil || seed == nil {
-			return errResult(fmt.Sprintf("trace: symbol id %q not found", id)), nil
+			// #704: not-found errors carry remediation hints. Without
+			// them the caller is stuck — the obvious next move is search
+			// by short name, surfaced explicitly.
+			return s.errResultRich(
+				fmt.Sprintf("trace: symbol id %q not found", id),
+				[]map[string]string{
+					{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, shortNameFromID(id)),
+						"why": "id resolution failed — search by short name to find similar / case-correct matches"},
+					{"tool": "list", "args": "{}",
+						"why": "if no project matches, the right project may not be indexed"},
+				},
+			), nil
 		}
 		starts = []db.Symbol{*seed}
 		seedID = seed.ID
@@ -4601,7 +4634,16 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			return errResult(fmt.Sprintf("trace lookup: %v", err)), nil
 		}
 		if len(starts) == 0 {
-			return errResult(fmt.Sprintf("symbol %q not found in project", name)), nil
+			// #704: same shape as the id-not-found path above.
+			return s.errResultRich(
+				fmt.Sprintf("symbol %q not found in project", name),
+				[]map[string]string{
+					{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, name),
+						"why": "name resolution failed — search by short name to find similar / case-correct matches"},
+					{"tool": "list", "args": "{}",
+						"why": "if no project matches, the right project may not be indexed"},
+				},
+			), nil
 		}
 		// #319: rank candidates so the picked target is the most useful
 		// trace seed. Precedence:
@@ -4713,6 +4755,12 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	traceRoot, _ := s.resolveProjectRoot(projectID)
 	meta := map[string]any{
 		"confidence_distribution": confidenceDistribution(confs),
+	}
+	// #703: surface the depth clamp in _meta.warnings when negative/zero
+	// depth was passed. jsonResultWithMeta's unknown-args merge appends to
+	// this same key (see beneath); pre-seed here so it doesn't get clobbered.
+	if traceDepthClampMsg != "" {
+		meta["warnings"] = []string{traceDepthClampMsg}
 	}
 	// #402: when auto-deepen trimmed the result below the requested
 	// depth, tell the agent so depth_used vs depth_requested is
@@ -7487,6 +7535,51 @@ func humanInt(n int) string {
 func errResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
+		IsError: true,
+	}
+}
+
+// shortNameFromID extracts the bare name from a symbol ID for use in
+// search-by-name remediation hints (#704). Symbol ID format is
+// {file_path}::{qualified_name}#{kind}; the short name is the last
+// dotted segment of the qualified name (e.g. `db.Open` → `Open`,
+// `server.*Server.handleTrace` → `handleTrace`). Returns the input
+// unchanged if parsing fails — better to over-search than to lose
+// the only signal the caller had about what they were looking for.
+func shortNameFromID(id string) string {
+	if i := strings.Index(id, "::"); i >= 0 {
+		qn := id[i+2:]
+		if j := strings.Index(qn, "#"); j >= 0 {
+			qn = qn[:j]
+		}
+		if k := strings.LastIndex(qn, "."); k >= 0 {
+			return qn[k+1:]
+		}
+		return qn
+	}
+	return id
+}
+
+// errResultRich is errResult plus a JSON body carrying the error message
+// and a _meta.next_steps remediation hint (#704). The bare errResult text
+// envelope leaves agents staring at a wall — when a `symbol not found` is
+// returnable, the obvious next move (`search` for the short name) belongs
+// in the response so the failure teaches instead of stalls. Capabilities
+// list is included so failure responses match success-response shape.
+// Clients that only parse text content still see the error message — JSON
+// is a superset of text in their renderers — but JSON-aware clients pick
+// up the structured remediation.
+func (s *Server) errResultRich(msg string, nextSteps []map[string]string) *mcp.CallToolResult {
+	body := map[string]any{
+		"error": msg,
+		"_meta": map[string]any{
+			"capabilities": s.capabilities,
+			"next_steps":   nextSteps,
+		},
+	}
+	b, _ := json.Marshal(body)
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(b)}},
 		IsError: true,
 	}
 }
