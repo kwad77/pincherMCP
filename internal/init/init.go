@@ -163,6 +163,14 @@ func MergePolicyBlockBare(existing, policy string) (string, string) {
 		return block + "\n", "wrote"
 	}
 
+	// #778: init used to inject the LF-built policy block straight into a
+	// CRLF file, leaving mixed line endings (and TrimRight(existing,"\n")
+	// left a dangling lone \r on the append path). Normalize to LF for
+	// all the merge logic below, remember the original convention, and
+	// restore it on output.
+	crlf := strings.Contains(existing, "\r\n")
+	existing = strings.ReplaceAll(existing, "\r\n", "\n")
+
 	// #243: when no markers exist but the file already contains a
 	// hand-rolled pincher policy section (heading-bounded), wrap the
 	// detected block with markers in-memory so the replace path below
@@ -196,11 +204,23 @@ func MergePolicyBlockBare(existing, policy string) (string, string) {
 		} else {
 			b.WriteString("\n")
 		}
-		return b.String(), "updated"
+		return restoreLineEndings(crlf, b.String()), "updated"
 	}
 
 	trimmed := strings.TrimRight(existing, "\n")
-	return trimmed + "\n\n" + block + "\n", "appended"
+	return restoreLineEndings(crlf, trimmed+"\n\n"+block+"\n"), "appended"
+}
+
+// restoreLineEndings converts an LF-built string back to CRLF when the
+// original file used CRLF (#778). Input must be pure-LF — callers
+// normalize `existing` to LF before any merge logic, and the policy
+// block is LF-built — so this is a clean one-way \n → \r\n conversion
+// with no double-up or lone-\r edge cases.
+func restoreLineEndings(crlf bool, s string) string {
+	if !crlf {
+		return s
+	}
+	return strings.ReplaceAll(s, "\n", "\r\n")
 }
 
 // BuildPolicyBlock wraps policy in the start/end markers plus the

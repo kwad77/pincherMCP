@@ -51,6 +51,55 @@ func TestMergePolicyBlock_AppendToExisting(t *testing.T) {
 	}
 }
 
+// #778: init used to inject the LF-built policy block into a CRLF file,
+// leaving mixed line endings (and a dangling lone \r on the append
+// path). Every CRLF-input path must produce uniform-CRLF output; LF
+// input must stay LF.
+func TestMergePolicyBlock_PreservesLineEndings(t *testing.T) {
+	noMixed := func(t *testing.T, label, out string) {
+		t.Helper()
+		// A uniform-CRLF string has no bare \n (one not preceded by \r)
+		// and no bare \r (one not followed by \n).
+		lf := strings.ReplaceAll(out, "\r\n", "")
+		if strings.ContainsAny(lf, "\r\n") {
+			t.Errorf("%s: output has mixed/bare line endings — every \\n must be part of a \\r\\n pair", label)
+		}
+	}
+
+	t.Run("CRLF append path", func(t *testing.T) {
+		existing := "# Project rules\r\n\r\nFollow our internal docs.\r\n"
+		out, action := MergePolicyBlock(existing, "## Pincher\n")
+		if action != "appended" {
+			t.Fatalf("action=%q, want appended", action)
+		}
+		noMixed(t, "append", out)
+	})
+
+	t.Run("CRLF replace path", func(t *testing.T) {
+		existing := "# CLAUDE.md\r\n\r\nIntro.\r\n\r\n" +
+			MarkerStart + "\r\n" + "OLD\r\n" + MarkerEnd + "\r\n\r\nTrailing.\r\n"
+		out, action := MergePolicyBlock(existing, "## NEW\n")
+		if action != "updated" {
+			t.Fatalf("action=%q, want updated", action)
+		}
+		noMixed(t, "replace", out)
+		if strings.Contains(out, "OLD") {
+			t.Error("old block content should be gone")
+		}
+		if !strings.Contains(out, "Trailing.") {
+			t.Error("trailing content should survive")
+		}
+	})
+
+	t.Run("LF input stays LF", func(t *testing.T) {
+		existing := "# Project rules\n\nDocs.\n"
+		out, _ := MergePolicyBlock(existing, "## Pincher\n")
+		if strings.Contains(out, "\r") {
+			t.Error("LF-origin file must not gain CRLF endings")
+		}
+	})
+}
+
 func TestMergePolicyBlock_ReplaceExistingBlock(t *testing.T) {
 	existing := "# CLAUDE.md\n\nIntro.\n\n" +
 		MarkerStart + "\n" +
