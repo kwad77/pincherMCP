@@ -82,7 +82,19 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 		}
 	}
 	if seed == nil {
-		return errResult(fmt.Sprintf("symbol %q not found", id)), nil
+		// #704: not-found path carries `search` + `list` remediation,
+		// matching handleSymbol and handleTrace. Stale-ID redirect via
+		// symbol_moves was already attempted above; if it failed, the
+		// next move is name-based discovery.
+		return s.errResultRich(
+			fmt.Sprintf("symbol %q not found", id),
+			[]map[string]string{
+				{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, shortNameFromID(id)),
+					"why": "id resolution failed (also tried symbol_moves redirect) — search by short name"},
+				{"tool": "list", "args": "{}",
+					"why": "if no project matches, the right project may not be indexed"},
+			},
+		), nil
 	}
 
 	// All symbols in the file the seed lives in. Already ordered by
