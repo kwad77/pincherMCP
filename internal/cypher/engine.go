@@ -115,7 +115,7 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 // unknown-property warning text for NODE variables. Sourced from the
 // cypherPropToCol switch — keep in sync if a new column is added there.
 var knownPropertyList = []string{
-	"id", "name", "qualified_name (qn)", "kind (label)", "file_path",
+	"id", "project_id (project)", "name", "qualified_name (qn)", "kind (label)", "file_path",
 	"language", "start_line", "end_line", "start_byte", "end_byte",
 	"complexity", "extraction_confidence (confidence)",
 	"is_exported", "is_entry_point", "is_test",
@@ -2432,6 +2432,7 @@ func symRowToMap(varName string, n *symRow) map[string]any {
 	prefix := varName + "."
 	m := map[string]any{
 		prefix + "id":             n.ID,
+		prefix + "project_id":     n.ProjectID,
 		prefix + "name":           n.Name,
 		prefix + "qualified_name": n.QualifiedName,
 		prefix + "kind":           n.Kind,
@@ -2711,6 +2712,11 @@ func cypherPropToCol(prop string) string {
 	switch prop {
 	case "id":
 		return "id"
+	case "project_id", "project":
+		// #746: addressable so project=* cross-project queries can
+		// disambiguate which repo a row came from — file_path is
+		// project-relative and collides across repos.
+		return "project_id"
 	case "name":
 		return "name"
 	case "qualified_name", "qn":
