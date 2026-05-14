@@ -852,11 +852,24 @@ func tokenize(s string) []token {
 			i++
 			continue
 		}
-		// Number
+		// Number — integer or decimal. #752: the scanner used to consume
+		// digits only, so `0.5` tokenized as NUMBER(0) PUNCT(.) NUMBER(5)
+		// and the WHERE parser read `< 0.5` as a column reference `0.5`
+		// — a `WHERE r.confidence < 0.5` predicate got misclassified as
+		// a column-vs-column comparison and silently ignored.
 		if c >= '0' && c <= '9' {
 			j := i
 			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
 				j++
+			}
+			// Consume a single decimal point + fractional digits, but
+			// only when a digit actually follows — so `1..3` (a hop
+			// range) and a trailing `.` stay as separate tokens.
+			if j+1 < len(s) && s[j] == '.' && s[j+1] >= '0' && s[j+1] <= '9' {
+				j++
+				for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+					j++
+				}
 			}
 			tokens = append(tokens, token{kind: "NUMBER", value: s[i:j]})
 			i = j
