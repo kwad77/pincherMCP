@@ -796,6 +796,50 @@ type token struct {
 	value string
 }
 
+// unescapeString resolves backslash escapes in a tokenized string
+// literal. The tokenizer's scan loop already treats `\` as an escape
+// (it skips the char after `\` so `\"` doesn't terminate the literal),
+// so the escape contract is already implied — this just completes it on
+// the value. #775: without it a Windows path literal "D:\\proj"
+// compared as the literal double-backslash string and never matched the
+// single-backslash stored value, so exact-match WHERE on file_path /
+// project_id / id silently returned nothing on Windows.
+//
+// Recognised: \\ \" \' \n \t \r. An unrecognised escape (`\d` in a
+// regex literal, say) keeps the backslash verbatim — degrade gracefully
+// rather than silently drop a character and break the user's regex.
+func unescapeString(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '\\', '"', '\'':
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			case 'n':
+				b.WriteByte('\n')
+				i++
+				continue
+			case 't':
+				b.WriteByte('\t')
+				i++
+				continue
+			case 'r':
+				b.WriteByte('\r')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 func tokenize(s string) []token {
 	var tokens []token
 	i := 0
@@ -815,7 +859,14 @@ func tokenize(s string) []token {
 				}
 				j++
 			}
-			tokens = append(tokens, token{kind: "STRING", value: s[i+1 : j]})
+			// #775: the scan loop above already treats `\` as an escape
+			// (it skips `\"` so the literal doesn't terminate early), but
+			// the value used to be the raw substring — backslashes and
+			// all. A Windows path literal "D:\\proj" then compared as the
+			// double-backslash string and never matched the single-
+			// backslash stored value. unescapeString completes the escape
+			// the scanner already committed to.
+			tokens = append(tokens, token{kind: "STRING", value: unescapeString(s[i+1 : j])})
 			i = j + 1
 			continue
 		}
