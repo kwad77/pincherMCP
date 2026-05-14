@@ -113,6 +113,27 @@ func TestExecute_OrderByLimitAfterReturn_StillParse(t *testing.T) {
 	}
 }
 
+// #794: `RETURN *` — the tokenizer reads `*` as an empty HOPS token,
+// so pre-fix it became a returnVar with an empty variable name and the
+// runner projected a single garbage `{"": null}` row with total:1 —
+// the caller reads it as a real match. pinchQL has no RETURN-*
+// projection; the parser now rejects it.
+func TestExecute_ReturnStar_RejectedNotGarbageRow(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Open", "Function", "Go")
+
+	e := &Executor{DB: db, MaxRows: 100, ProjectID: "proj1"}
+	_, err := e.Execute(context.Background(),
+		`MATCH (n:Function) WHERE n.name = "Open" RETURN *`)
+	if err == nil {
+		t.Fatal("expected a parse error for RETURN *; got nil (garbage {\"\": null} row returned with total:1)")
+	}
+	if !strings.Contains(err.Error(), "RETURN *") {
+		t.Errorf("error should name the RETURN * construct; got %q", err.Error())
+	}
+}
+
 // editDistanceAtMost1 unit coverage — the did-you-mean engine.
 func TestEditDistanceAtMost1(t *testing.T) {
 	cases := []struct {
