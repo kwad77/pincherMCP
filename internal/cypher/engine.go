@@ -971,6 +971,27 @@ func (p *parser) skip(val string) {
 	}
 }
 
+// expect consumes the current token only if it matches val, otherwise
+// returns a syntax error. Unlike skip (which silently no-ops on a
+// mismatch — correct for genuinely optional tokens like ORDER BY's
+// "BY"), expect is for structural delimiters that pair with a consumed
+// opener: a `(` / `[` / `{` that was consumed MUST be closed. #845:
+// using skip for those closers let an unbalanced query like
+// `MATCH (n:Function WHERE ... RETURN ...` (no `)`) parse and run
+// silently — the same "silent confidently wrong" trap a clause-keyword
+// typo already avoids.
+func (p *parser) expect(val string) error {
+	if p.peek().value != val {
+		got := p.peek().value
+		if p.peek().kind == "EOF" {
+			got = "end of query"
+		}
+		return fmt.Errorf("pinchQL: expected %q, got %q — check for an unbalanced delimiter", val, got)
+	}
+	p.pos++
+	return nil
+}
+
 // topLevelClauseKeywords are the tokens parseQuery accepts at the start
 // of a clause. Any other token at that position means the query is
 // malformed — see the #748 default-case rejection in parseQuery.
@@ -1120,7 +1141,9 @@ func (p *parser) parseQuery() (*queryAST, error) {
 					p.next()
 					v += "." + p.next().value
 				}
-				p.skip(")")
+				if err := p.expect(")"); err != nil {
+					return nil, err
+				}
 				q.orderBy = fn + "(" + v + ")"
 			} else {
 				q.orderBy = p.next().value
@@ -1200,9 +1223,15 @@ func (p *parser) parsePattern() (pattern, error) {
 		pat.fromKind = p.next().value
 	}
 	if p.peek().value == "{" {
-		pat.fromProps = p.parseProps()
+		props, err := p.parseProps()
+		if err != nil {
+			return pat, err
+		}
+		pat.fromProps = props
 	}
-	p.skip(")")
+	if err := p.expect(")"); err != nil {
+		return pat, err
+	}
 
 	// Optional edge: -[r:KIND]-> or -[:KIND*1..3]->
 	if p.peek().value == "-" || p.peek().value == "<" {
@@ -1227,7 +1256,9 @@ func (p *parser) parsePattern() (pattern, error) {
 				t := p.next()
 				pat.minHops, pat.maxHops = parseHops(t.value)
 			}
-			p.skip("]")
+			if err := p.expect("]"); err != nil {
+				return pat, err
+			}
 		}
 		// consume -> (tokenizer emits it as a two-char token after "]")
 		switch p.peek().value {
@@ -1251,15 +1282,21 @@ func (p *parser) parsePattern() (pattern, error) {
 				pat.toKind = p.next().value
 			}
 			if p.peek().value == "{" {
-				pat.toProps = p.parseProps()
+				props, err := p.parseProps()
+				if err != nil {
+					return pat, err
+				}
+				pat.toProps = props
 			}
-			p.skip(")")
+			if err := p.expect(")"); err != nil {
+				return pat, err
+			}
 		}
 	}
 	return pat, nil
 }
 
-func (p *parser) parseProps() map[string]string {
+func (p *parser) parseProps() (map[string]string, error) {
 	props := make(map[string]string)
 	p.skip("{")
 	for p.peek().value != "}" && p.peek().kind != "EOF" {
@@ -1269,8 +1306,13 @@ func (p *parser) parseProps() map[string]string {
 		props[key] = val
 		p.skip(",")
 	}
-	p.skip("}")
-	return props
+	// #845: the loop above exits on `}` OR EOF — a missing `}` would
+	// otherwise let the inline-props block silently swallow the rest of
+	// the query (RETURN, LIMIT, ...). expect rejects the unbalanced `{`.
+	if err := p.expect("}"); err != nil {
+		return nil, err
+	}
+	return props, nil
 }
 
 // parseWhere parses a WHERE clause and returns the recursive-descent tree
@@ -1488,7 +1530,9 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 				p.next()
 				rv.property = p.next().value
 			}
-			p.skip(")")
+			if err := p.expect(")"); err != nil {
+				return nil, err
+			}
 		} else {
 			// #578: catch unknown function calls (typo'd or unsupported)
 			// before they parse as bare variable refs and silently

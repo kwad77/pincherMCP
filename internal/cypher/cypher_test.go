@@ -1237,6 +1237,53 @@ func TestExecute_ParseError(t *testing.T) {
 	_ = err
 }
 
+// #845: the parser's lenient skip() silently no-op'd on a missing
+// closing delimiter, so an unbalanced query parsed and ran instead of
+// erroring — the same "silent confidently wrong" trap a clause-keyword
+// typo already avoids. Every structural closer (`)`, `]`, `}`) that
+// pairs with a consumed opener must now reject.
+func TestParse_RejectsUnbalancedDelimiters(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"missing node close paren", `MATCH (n:Function WHERE n.complexity > 50 RETURN n.name`},
+		{"missing to-node close paren", `MATCH (a)-[:CALLS]->(b WHERE a.name="main" RETURN b.name`},
+		{"missing edge close bracket", `MATCH (a)-[:CALLS->(b) RETURN b.name`},
+		{"missing inline-props close brace", `MATCH (n {name:"main" RETURN n.name`},
+		{"missing return-aggregate close paren", `MATCH (n:Function) RETURN COUNT(n`},
+		{"missing order-by-aggregate close paren", `MATCH (n:Function) RETURN n.name ORDER BY COUNT(n`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := parse(c.query)
+			if err == nil {
+				t.Errorf("parse(%q) = nil error — an unbalanced delimiter must be rejected, not silently recovered", c.query)
+			}
+		})
+	}
+}
+
+// Balanced queries with the same shapes must still parse cleanly — the
+// strict closers must not over-reject.
+func TestParse_AcceptsBalancedDelimiters(t *testing.T) {
+	cases := []string{
+		`MATCH (n:Function) WHERE n.complexity > 50 RETURN n.name`,
+		`MATCH (a)-[:CALLS]->(b) WHERE a.name="main" RETURN b.name`,
+		`MATCH (a)-[:CALLS*1..3]->(b) RETURN b.name`,
+		`MATCH (n {name:"main"}) RETURN n.name`,
+		`MATCH (n:Function) RETURN COUNT(n)`,
+		`MATCH (n:Function) RETURN n.name ORDER BY COUNT(n)`,
+	}
+	for _, q := range cases {
+		t.Run(q, func(t *testing.T) {
+			if _, err := parse(q); err != nil {
+				t.Errorf("parse(%q) = %v — a balanced query must parse cleanly", q, err)
+			}
+		})
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // buildResult: ORDER BY + return whole variable (no property)
 // ─────────────────────────────────────────────────────────────────────────────
