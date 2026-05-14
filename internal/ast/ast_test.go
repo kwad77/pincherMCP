@@ -655,6 +655,36 @@ func TestExtractClass_ParentHasNoTrailingSpace(t *testing.T) {
 	}
 }
 
+// #819: a member declared inside an interface must be scoped to it —
+// Kind=Method, Parent=<interface> — not emitted as a top-level
+// Function with Parent="". The Interface case in extract() now sets
+// currentClass/currentClassEnd like the Class case does.
+func TestExtractInterface_MembersScopedToInterface(t *testing.T) {
+	cases := []struct{ lang, src, iface string }{
+		{"Java", "public interface Handler {\n    void handle();\n    int count();\n}\n", "Handler"},
+		{"C#", "public interface IRepo {\n    void Save();\n}\n", "IRepo"},
+	}
+	for _, c := range cases {
+		result := Extract([]byte(c.src), c.lang, "m/f."+c.lang)
+		members := 0
+		for _, s := range result.Symbols {
+			if s.Kind == "Interface" {
+				continue
+			}
+			members++
+			if s.Kind != "Method" {
+				t.Errorf("%s: %s.Kind = %q, want Method", c.lang, s.Name, s.Kind)
+			}
+			if !strings.HasSuffix(s.Parent, c.iface) {
+				t.Errorf("%s: %s.Parent = %q, want it to end with %q", c.lang, s.Name, s.Parent, c.iface)
+			}
+		}
+		if members == 0 {
+			t.Errorf("%s: expected at least one interface member symbol", c.lang)
+		}
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // C extractor
 // ─────────────────────────────────────────────────────────────────────────────
