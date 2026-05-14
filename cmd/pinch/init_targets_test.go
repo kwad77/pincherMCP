@@ -78,8 +78,9 @@ func TestRunInitTarget_DryRunDoesNotWrite(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); !os.IsNotExist(err) {
 		t.Errorf("dry run should NOT create file; stat err=%v", err)
 	}
-	if !strings.Contains(buf.String(), "would wrote") {
-		t.Errorf("expected 'would wrote' in dry-run output, got: %s", buf.String())
+	// #803: present-tense verb — "would write", not "would wrote".
+	if !strings.Contains(buf.String(), "would write") {
+		t.Errorf("expected 'would write' in dry-run output, got: %s", buf.String())
 	}
 }
 
