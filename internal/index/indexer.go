@@ -1870,6 +1870,19 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		}
 		structQN := pkg + "." + bareRecv
 		segments := strings.Split(toName, ".")
+		// #758: segments[0] is the receiver expression as written. If it
+		// looks like a Go stdlib package (`strings`, `bytes`, `time`, ...)
+		// this is a package-function call, not a receiver-method call —
+		// binding it by the *enclosing* method's receiver type produces a
+		// false edge (e.g. `strings.Index(...)` inside
+		// `*Indexer.resolveCalls` false-bound to `*Indexer.Index`). The
+		// same stoplist guards the #410 receiver-method fallback below.
+		// The complete fix threads the receiver *variable name* through
+		// ExtractedEdge (a schema migration) so segments[0] can be checked
+		// against the actual receiver var rather than a stoplist.
+		if len(segments) > 0 && isStdlibReceiver(segments[0]) {
+			return ""
+		}
 		switch len(segments) {
 		case 2:
 			// recv.Method — Method's QN is `pkg.<recvType>.<method>`
