@@ -5917,7 +5917,15 @@ func (s *Server) handleADR(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 			return errResult(err.Error()), nil
 		}
 		if !ok {
-			return errResult(fmt.Sprintf("ADR key %q not found", key)), nil
+			// #712: failure-as-pedagogy — a missing key is most often a
+			// typo or a wrong-project scope. `list` shows what keys DO
+			// exist so the caller can correct rather than guess.
+			return s.errResultRich(
+				fmt.Sprintf("ADR key %q not found", key),
+				[]map[string]string{
+					{"tool": "adr", "args": `{"action":"list"}`,
+						"why": "shows every key stored for this project — check for a typo or wrong-project scope"},
+				}), nil
 		}
 		data = map[string]any{"key": key, "value": val}
 

@@ -290,3 +290,29 @@ func TestQuery_BothPinchqlAndCypher_Warns(t *testing.T) {
 		t.Errorf("warning should name both params; got %q", w)
 	}
 }
+
+// #712: adr action=get on a key that doesn't exist used a bare
+// errResult. It now returns the rich envelope pointing at adr list so
+// the caller can spot a typo or wrong-project scope.
+func TestAdr_GetMissingKeyRichError(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "adrp"
+	srv.sessionRoot = "/tmp/adrp"
+	store.UpsertProject(db.Project{ID: "adrp", Path: "/tmp/adrp", Name: "adrp", IndexedAt: time.Now()})
+
+	res, err := srv.handleADR(context.Background(), makeReq(map[string]any{
+		"action": "get", "key": "NO_SUCH_KEY",
+	}))
+	if err != nil {
+		t.Fatalf("handleADR: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError; got %s", textOf(t, res))
+	}
+	steps := decodeRichErr(t, textOf(t, res))
+	first, _ := steps[0].(map[string]any)
+	if first["tool"] != "adr" {
+		t.Errorf("first next_step tool = %v, want adr", first["tool"])
+	}
+}
