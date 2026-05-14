@@ -3513,6 +3513,16 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			"query contains regex sequence %q that FTS5 doesn't understand. For pattern matching use the `query` tool: MATCH (n:Function) WHERE n.name =~ '%s' RETURN n.name. Or search a literal keyword instead.",
 			seq, query)), nil
 	}
+	// #736: a stem-less prefix wildcard ("*", "**") is not a valid FTS5
+	// query — SQLite rejects it with the raw "unknown special query"
+	// logic error. The natural agent instinct "search for everything"
+	// lands here; surface the stem requirement and redirect to the
+	// query tool for an actual list-all, instead of leaking SQL noise.
+	if strings.Trim(query, "*") == "" {
+		return errResult(fmt.Sprintf(
+			"%q is not a valid search — FTS5 prefix wildcards need a stem, e.g. query=\"auth*\". To list everything, use the query tool: MATCH (n) RETURN n.name LIMIT 50.",
+			query)), nil
+	}
 	projectArg := str(args, "project")
 	kind := str(args, "kind")
 	language := str(args, "language")
