@@ -1622,7 +1622,13 @@ func extractRust(source []byte, relPath string) *FileResult {
 }
 
 var javaRE = &regexExtractor{
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:\w+\s+)+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*\(`),
+	// The return-type token allows an optional generic arg list and
+	// array brackets — `(?:\w+\s+)+` alone dropped every method
+	// returning `List<String>` / `int[]` because the `<...>`/`[]`
+	// breaks the bare-word run before any whitespace (#823). Nested
+	// generics (`Map<String,List<Int>>`) are still a residual: the
+	// `<[^>]*>` stops at the first `>`.
+	funcRE:      regexp.MustCompile(`(?m)^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:[\w.]+(?:<[^>]*>)?(?:\[\])?\s+)+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*\(`),
 	classRE:     regexp.MustCompile(`(?m)^(?:public\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:\s+extends\s+(?P<parent>[A-Z][A-Za-z0-9_]*))?`),
 	interfaceRE: regexp.MustCompile(`(?m)^(?:public\s+)?interface\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 	enumRE:      regexp.MustCompile(`(?m)^(?:public\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),

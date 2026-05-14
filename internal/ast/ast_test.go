@@ -509,6 +509,31 @@ func TestExtractJava_LowercaseMethodIsExported(t *testing.T) {
 	}
 }
 
+// #823: a Java method with a generic or array return type was dropped
+// — `(?:\w+\s+)+` couldn't match `List<String> ` / `int[] ` as the
+// return-type run.
+func TestExtractJava_GenericAndArrayReturnTypes(t *testing.T) {
+	src := []byte(`public class Repo {
+    public List<String> getNames() { return null; }
+    public Map<String, Integer> counts() { return null; }
+    public int[] getArray() { return null; }
+    public int plain() { return 0; }
+}
+`)
+	result := Extract(src, "Java", "src/Repo.java")
+	got := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "Method" {
+			got[s.Name] = true
+		}
+	}
+	for _, want := range []string{"getNames", "counts", "getArray", "plain"} {
+		if !got[want] {
+			t.Errorf("expected Java method %q to be extracted (got %v)", want, got)
+		}
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Ruby extractor
 // ─────────────────────────────────────────────────────────────────────────────
