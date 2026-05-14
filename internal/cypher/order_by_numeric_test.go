@@ -123,6 +123,74 @@ func TestCypherLessThan_TypeMatrix(t *testing.T) {
 	}
 }
 
+// insertSymInFile is insertSym with a caller-chosen file_path — needed
+// for the aggregate ORDER BY tests, which group by file_path.
+func insertSymInFile(t *testing.T, db *sql.DB, id, name, file string) {
+	t.Helper()
+	_, err := db.Exec(
+		`INSERT INTO symbols(id, project_id, file_path, name, qualified_name, kind, language,
+			start_byte, end_byte, start_line, end_line) VALUES (?,?,?,?,?,?,?, 0,100,1,5)`,
+		id, "proj1", file, name, name, "Function", "Go",
+	)
+	if err != nil {
+		t.Fatalf("insert symbol %q: %v", id, err)
+	}
+}
+
+// ORDER BY on an aggregate column was silently ignored: the parser
+// only read the bare "COUNT" token, leaving "(n)" + any trailing
+// DESC unconsumed, so q.orderBy ("COUNT") never matched the grouped
+// row key ("COUNT(n)"). Found during v0.55 dogfooding — `RETURN
+// n.file_path, COUNT(n) ORDER BY COUNT(n) DESC` returned arbitrary
+// (smallest-first) rows instead of the top-N.
+func TestGroupBy_OrderByAggregate_Descending(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	// big.go: 4 funcs, mid.go: 2, small.go: 1.
+	for i := 0; i < 4; i++ {
+		insertSymInFile(t, db, fmt.Sprintf("b%d", i), fmt.Sprintf("B%d", i), "big.go")
+	}
+	for i := 0; i < 2; i++ {
+		insertSymInFile(t, db, fmt.Sprintf("m%d", i), fmt.Sprintf("M%d", i), "mid.go")
+	}
+	insertSymInFile(t, db, "s0", "S0", "small.go")
+
+	r := exec(t, db, "MATCH (n:Function) RETURN n.file_path, COUNT(n) ORDER BY COUNT(n) DESC")
+	if len(r.Rows) != 3 {
+		t.Fatalf("got %d grouped rows, want 3", len(r.Rows))
+	}
+	wantFiles := []string{"big.go", "mid.go", "small.go"}
+	wantCounts := []int{4, 2, 1}
+	for i := range wantFiles {
+		if f, _ := r.Rows[i]["n.file_path"].(string); f != wantFiles[i] {
+			t.Errorf("rows[%d].file_path = %q, want %q (DESC by COUNT)", i, f, wantFiles[i])
+		}
+		if c := toInt(t, r.Rows[i]["COUNT(n)"]); c != wantCounts[i] {
+			t.Errorf("rows[%d].COUNT(n) = %d, want %d", i, c, wantCounts[i])
+		}
+	}
+}
+
+func TestGroupBy_OrderByAggregate_Ascending(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	for i := 0; i < 3; i++ {
+		insertSymInFile(t, db, fmt.Sprintf("a%d", i), fmt.Sprintf("A%d", i), "three.go")
+	}
+	insertSymInFile(t, db, "o0", "O0", "one.go")
+
+	r := exec(t, db, "MATCH (n:Function) RETURN n.file_path, COUNT(n) ORDER BY COUNT(n) ASC")
+	if len(r.Rows) != 2 {
+		t.Fatalf("got %d grouped rows, want 2", len(r.Rows))
+	}
+	if c := toInt(t, r.Rows[0]["COUNT(n)"]); c != 1 {
+		t.Errorf("rows[0].COUNT(n) = %d, want 1 (ASC — smallest first)", c)
+	}
+	if c := toInt(t, r.Rows[1]["COUNT(n)"]); c != 3 {
+		t.Errorf("rows[1].COUNT(n) = %d, want 3", c)
+	}
+}
+
 // toInt converts any of the numeric shapes the test DB might return
 // (int / int64 / float64) into a comparable int. Centralised here
 // so the ORDER BY assertions don't have to type-switch inline.
