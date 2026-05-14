@@ -1588,6 +1588,28 @@ func preferNonFixtureSyms(syms []db.Symbol) []db.Symbol {
 	return out
 }
 
+// excludeMethodSyms drops Method-kind symbols. #754: the bare-name
+// resolution fallbacks (resolveCalls's lookupName, resolveReads's
+// lookupNameInLang) are only reached for unqualified identifiers like
+// `Foo()` — and a bare call/reference in Go is syntactically never a
+// method invocation (methods always require a receiver). When a
+// project has both `func Extract(...)` and several `(x).Extract(...)`
+// methods, picking the lex-smallest ID over the mixed set funnelled
+// every bare `Extract()` call onto `bashExtractor.Extract` and left
+// the real package-level `ast.Extract` with zero inbound edges. This
+// filter CAN empty the set — when it does, the bare call has no valid
+// Function/Variable target and should resolve to "" (unresolved is
+// correct; a false bind to an arbitrary same-named method is not).
+func excludeMethodSyms(syms []db.Symbol) []db.Symbol {
+	out := make([]db.Symbol, 0, len(syms))
+	for _, s := range syms {
+		if s.Kind != "Method" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // resolveMethodByName is the #285 receiver-method fallback. Looks up
 // every project symbol with the given short name; returns the ID
 // only when exactly one is of kind=Method. Multiple matches are
@@ -1744,6 +1766,15 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		// before picking the canonical target (and its build-tag
 		// siblings) — keeps them only if every candidate is a fixture.
 		syms = preferNonFixtureSyms(syms)
+		// #754: a bare `Foo()` call is never a method invocation —
+		// drop Method-kind candidates so an ambiguous name shared by a
+		// package function and same-named methods resolves to the
+		// function, not the lex-smallest method.
+		syms = excludeMethodSyms(syms)
+		if len(syms) == 0 {
+			nameCache[name] = ""
+			return ""
+		}
 		canonical := pickCanonical(syms)
 		nameCache[name] = canonical
 		// #566: same fan-out cache as lookupQN, keyed by the bare
@@ -2070,21 +2101,42 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		// candidates unless every match is a fixture.
 		syms = preferNonFixtureSyms(syms)
 		// #436: only match symbols of the same language as the source.
-		// Variable matches preferred within that scoped set; Function/
-		// Method matches recorded for #565 function-value-binding edges
-		// when no Variable is found.
-		var v lookup
+		// #754: priority is Variable > Function > Method. Method
+		// candidates are kept (the reads pass emits the bare trailing
+		// component of a selector — `w.defaultDo` surfaces as
+		// `defaultDo` — so a bare-name read CAN denote a method value;
+		// #565's `w.doFn = w.defaultDo` binding edge needs that). But a
+		// Function with the same name wins over a Method: a bare
+		// `Process()` call-subject ident that also appears in the reads
+		// stream must not bind the binding-pass CALLS edge onto an
+		// arbitrary same-named method when the real package-level
+		// function exists.
+		var v, fnCand, methodCand lookup
 		for _, s := range syms {
 			if lang != "" && s.Language != lang {
 				continue
 			}
-			if s.Kind == "Variable" {
+			switch s.Kind {
+			case "Variable":
 				v = lookup{id: s.ID, lang: s.Language, isVar: true}
-				break
+			case "Function":
+				if fnCand.id == "" {
+					fnCand = lookup{id: s.ID, lang: s.Language, isFunc: true}
+				}
+			case "Method":
+				if methodCand.id == "" {
+					methodCand = lookup{id: s.ID, lang: s.Language, isFunc: true}
+				}
 			}
-			if v.id == "" {
-				isFn := s.Kind == "Function" || s.Kind == "Method"
-				v = lookup{id: s.ID, lang: s.Language, isVar: false, isFunc: isFn}
+			if v.id != "" {
+				break // Variable is the strongest match — stop.
+			}
+		}
+		if v.id == "" {
+			if fnCand.id != "" {
+				v = fnCand
+			} else {
+				v = methodCand
 			}
 		}
 		nameCache[k] = v
