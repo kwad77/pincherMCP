@@ -1502,6 +1502,16 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 			if p.peek().value == "(" {
 				return nil, fmt.Errorf("pinchQL: unknown function %q in RETURN. Supported: COUNT, AVG, MIN, MAX, SUM (aggregators only). For per-row computations use a property reference like %s.docstring instead.", tok.value, strings.ToLower(tok.value))
 			}
+			// #794: `RETURN *` — the tokenizer reads `*` as an empty
+			// HOPS token (the `*1..3` variable-length path scanner with
+			// no digits). Pre-fix that became a returnVar with an empty
+			// variable name, and the runner projected a single garbage
+			// `{"": null}` row — total:1, so the caller reads it as a
+			// real match. pinchQL has no RETURN-* projection; reject it
+			// with the explicit-properties redirect.
+			if tok.kind == "HOPS" || tok.value == "" {
+				return nil, fmt.Errorf("pinchQL: RETURN * is not supported — list the properties you need explicitly, e.g. RETURN n.name, n.file_path")
+			}
 			rv.variable = tok.value
 			if p.peek().value == "." {
 				p.next()
