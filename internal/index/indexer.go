@@ -1628,6 +1628,31 @@ func excludeMethodSyms(syms []db.Symbol) []db.Symbol {
 	return out
 }
 
+// excludeNonCodeSyms drops config/docs symbols (Setting, Section,
+// Document, Resource, Output, Local, Provider, Block, DataSource) from a
+// candidate set. #762: a CALLS-edge participant is always a code symbol
+// — a bare call name (`build`, `test`, `run`) can collide with a
+// config-file key whose QN is literally that string (npm script keys,
+// top-level YAML/JSON keys all extract as Setting with QN = the key
+// name). Without this filter resolveCalls's lookupQN/lookupName resolve
+// a Go call to the Setting. Like excludeMethodSyms this CAN empty the
+// set; when it does, the QN lookup correctly returns "" so the bare-name
+// fallback runs (and is itself filtered) — a false bind to a JSON
+// Setting is never the right answer for a CALLS edge.
+func excludeNonCodeSyms(syms []db.Symbol) []db.Symbol {
+	out := make([]db.Symbol, 0, len(syms))
+	for _, s := range syms {
+		switch s.Kind {
+		case "Setting", "Section", "Document", "Resource",
+			"Output", "Local", "Provider", "Block", "DataSource":
+			// non-code — skip
+		default:
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // resolveMethodByName is the #285 receiver-method fallback. Looks up
 // every project symbol with the given short name; returns the ID
 // only when exactly one is of kind=Method. Multiple matches are
@@ -1719,6 +1744,15 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 			qnCache[qn] = ""
 			return ""
 		}
+		// #762: a CALLS participant is always a code symbol — drop
+		// config/doc candidates so a bare Go call name colliding with a
+		// config-file key QN doesn't resolve the call to a Setting. If
+		// that empties the set, return "" so the bare-name fallback runs.
+		syms = excludeNonCodeSyms(syms)
+		if len(syms) == 0 {
+			qnCache[qn] = ""
+			return ""
+		}
 		canonical := pickCanonical(syms)
 		qnCache[qn] = canonical
 		// #566: cache build-tag siblings for the fan-out emission below.
@@ -1789,6 +1823,10 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		// package function and same-named methods resolves to the
 		// function, not the lex-smallest method.
 		syms = excludeMethodSyms(syms)
+		// #762: a bare call name can also collide with a config-file key
+		// (`build`, `test`) — drop non-code candidates so the name
+		// fallback can't resolve a Go call to a Setting/Section.
+		syms = excludeNonCodeSyms(syms)
 		if len(syms) == 0 {
 			nameCache[name] = ""
 			return ""
