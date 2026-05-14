@@ -6414,6 +6414,35 @@ const maxDocstringBytes = 32 * 1024
 // can't redirect into RFC1918 / loopback / link-local ranges.
 const maxFetchRedirects = 5
 
+// normalizeFetchURL canonicalizes a fetch URL so the same resource keyed
+// different ways produces one Document symbol instead of duplicates.
+// Found during v0.56 dogfooding: `fetch https://example.com` and
+// `fetch https://example.com/` created two separate Document rows
+// because the symbol ID is keyed on the raw input string.
+//
+// Normalization: lowercase scheme + host, drop the default port, empty
+// path → "/", drop the fragment (never sent to the server). The query
+// string is preserved — distinct queries are distinct resources. On
+// parse failure the raw string is returned unchanged (the caller has
+// already validated it; this is belt-and-suspenders).
+func normalizeFetchURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	if (u.Scheme == "http" && strings.HasSuffix(u.Host, ":80")) ||
+		(u.Scheme == "https" && strings.HasSuffix(u.Host, ":443")) {
+		u.Host = u.Host[:strings.LastIndex(u.Host, ":")]
+	}
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	u.Fragment = ""
+	return u.String()
+}
+
 // validateFetchURL parses rawURL and returns an error if it is unsafe to
 // fetch. Two gates: scheme allow-list (http/https only) and SSRF block-list
 // against the resolved IPs. DNS resolution happens here — before any TCP
@@ -6508,6 +6537,13 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		return errRes, nil
 	}
 
+	// #733: key the stored Document symbol on a normalized URL so that
+	// trivially-different spellings of the same resource (case-folded
+	// scheme/host, default :80/:443 port, missing trailing path,
+	// fragment) collapse to one symbol instead of accumulating
+	// duplicates. The raw URL is still used for the actual HTTP request.
+	normURL := normalizeFetchURL(rawURL)
+
 	// Fetch with a 15-second deadline scoped to this call's context.
 	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -6569,23 +6605,23 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		pageTitle = titleOverride
 	}
 	if pageTitle == "" {
-		pageTitle = rawURL
+		pageTitle = normURL
 	}
 	if len(text) > maxDocstringBytes {
 		text = text[:maxDocstringBytes] + "\n[truncated]"
 	}
 
-	symID := db.MakeSymbolID(rawURL, rawURL, "Document")
+	symID := db.MakeSymbolID(normURL, normURL, "Document")
 	sym := db.Symbol{
 		ID:                   symID,
 		ProjectID:            projectID,
-		FilePath:             rawURL,
+		FilePath:             normURL,
 		Name:                 pageTitle,
-		QualifiedName:        rawURL,
+		QualifiedName:        normURL,
 		Kind:                 "Document",
 		Language:             "text",
 		Docstring:            text,
-		Signature:            rawURL,
+		Signature:            normURL,
 		ExtractionConfidence: 1.0,
 	}
 	if err := s.store.BulkUpsertSymbols([]db.Symbol{sym}); err != nil {
@@ -6598,7 +6634,7 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 
 	data := map[string]any{
 		"id":        symID,
-		"url":       rawURL,
+		"url":       normURL,
 		"title":     pageTitle,
 		"text":      text,
 		"raw_bytes": len(rawBytes),
