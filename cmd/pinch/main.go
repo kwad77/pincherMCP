@@ -76,6 +76,10 @@ func main() {
 		runSupervisedCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "vacuum" {
+		runVacuumCLI(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "health-check" {
 		runHealthCheckCLI(os.Args[2:])
 		return
@@ -310,6 +314,8 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher init [--target=NAME]   Inject the pincher usage policy block into editor rules files")
 	fmt.Fprintln(out, "  pincher project list           List indexed projects (alias: ls)")
 	fmt.Fprintln(out, "  pincher project rm <name>      Remove an indexed project (alias: remove, delete)")
+	fmt.Fprintln(out, "  pincher project prune-stale    Drop projects indexed by an old schema and untouched for N days")
+	fmt.Fprintln(out, "  pincher vacuum                 Reclaim disk space after project removal (rewrites the DB file)")
 	fmt.Fprintln(out, "  pincher --version              Print version and exit")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")

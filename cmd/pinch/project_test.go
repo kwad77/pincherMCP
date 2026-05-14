@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kwad77/pincher/internal/db"
 )
@@ -199,6 +200,195 @@ func TestFormatProjectList_StaleMarker(t *testing.T) {
 	}
 	if !strings.Contains(got, "2 stale") {
 		t.Errorf("footer should report stale count; got:\n%s", got)
+	}
+}
+
+// ── prunableStale ────────────────────────────────────────────────────────────
+
+// prunableStale requires BOTH conditions: schema-stale AND idle past the
+// cutoff. Each test case isolates one axis so a future change that
+// collapses the AND into an OR is caught.
+func TestPrunableStale(t *testing.T) {
+	current := db.CurrentSchemaVersion()
+	older := current - 1
+	cutoff := time.Now().AddDate(0, 0, -30)
+	recent := time.Now().AddDate(0, 0, -1) // touched yesterday
+	ancient := time.Now().AddDate(0, 0, -90)
+
+	cases := []struct {
+		name string
+		p    db.Project
+		want bool
+	}{
+		{"stale schema + idle → prunable",
+			db.Project{SchemaVersionAtIndex: &older, IndexedAt: ancient}, true},
+		{"nil schema (pre-v15) + idle → prunable",
+			db.Project{SchemaVersionAtIndex: nil, IndexedAt: ancient}, true},
+		{"stale schema but touched recently → keep",
+			db.Project{SchemaVersionAtIndex: &older, IndexedAt: recent}, false},
+		{"fresh schema even if idle → keep (just needs no action)",
+			db.Project{SchemaVersionAtIndex: &current, IndexedAt: ancient}, false},
+		{"fresh schema + recent → keep",
+			db.Project{SchemaVersionAtIndex: &current, IndexedAt: recent}, false},
+	}
+	for _, c := range cases {
+		if got := prunableStale(c.p, current, cutoff); got != c.want {
+			t.Errorf("%s: prunableStale = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// seedStaleProject writes a project row and then raw-SQL-downgrades its
+// schema_version_at_index and back-dates indexed_at so it satisfies
+// prunableStale. UpsertProject always stamps the *current* schema, so a
+// stale row can only be constructed by a direct UPDATE — which is fine
+// for a test fixture (it mirrors exactly the real-world state #732
+// describes: a project indexed by an old binary, never touched since).
+func seedStaleProject(t *testing.T, dataDir, name, path string, schemaAt int, indexedAt time.Time) string {
+	t.Helper()
+	id := seedProject(t, dataDir, name, path)
+	store, err := db.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.DB().Exec(
+		`UPDATE projects SET schema_version_at_index=?, indexed_at=? WHERE id=?`,
+		schemaAt, indexedAt.Unix(), id); err != nil {
+		t.Fatalf("downgrade project: %v", err)
+	}
+	return id
+}
+
+func TestProjectCLI_PruneStale_RemovesStaleKeepsFresh(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	current := db.CurrentSchemaVersion()
+
+	stalePath := filepath.Join(t.TempDir(), "stale")
+	freshPath := filepath.Join(t.TempDir(), "fresh")
+	for _, p := range []string{stalePath, freshPath} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleID := seedStaleProject(t, dataDir, "stale-proj", stalePath, current-1, time.Now().AddDate(0, 0, -90))
+	freshID := seedProject(t, dataDir, "fresh-proj", freshPath) // current schema, indexed now
+
+	cmd := exec.Command(exe, "project", "prune-stale", "--force", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-stale failed: %v\n%s", err, out)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(out, &receipt); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if cnt, _ := receipt["count"].(float64); cnt != 1 {
+		t.Errorf("count=%v, want 1", receipt["count"])
+	}
+
+	store, _ := db.Open(dataDir)
+	defer store.Close()
+	if got, _ := store.GetProject(staleID); got != nil {
+		t.Errorf("stale project still exists after prune-stale")
+	}
+	if got, _ := store.GetProject(freshID); got == nil {
+		t.Errorf("fresh project was pruned — should have been kept")
+	}
+}
+
+func TestProjectCLI_PruneStale_RecentStaleKept(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	current := db.CurrentSchemaVersion()
+
+	p := filepath.Join(t.TempDir(), "recent-stale")
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Schema-stale, but indexed yesterday — must NOT be pruned at the
+	// default 30-day cutoff (the user is clearly still using it).
+	id := seedStaleProject(t, dataDir, "recent-stale", p, current-1, time.Now().AddDate(0, 0, -1))
+
+	cmd := exec.Command(exe, "project", "prune-stale", "--force", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-stale failed: %v\n%s", err, out)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(out, &receipt); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if cnt, _ := receipt["count"].(float64); cnt != 0 {
+		t.Errorf("count=%v, want 0 (recently-indexed stale project must be kept)", receipt["count"])
+	}
+
+	store, _ := db.Open(dataDir)
+	defer store.Close()
+	if got, _ := store.GetProject(id); got == nil {
+		t.Errorf("recently-indexed stale project was pruned — should have been kept")
+	}
+}
+
+func TestProjectCLI_PruneStale_JSONRequiresForce(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	cmd := exec.Command(exe, "project", "prune-stale", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for --json without --force; got: %s", out)
+	}
+	if !strings.Contains(string(out), "--json requires --force") {
+		t.Errorf("expected '--json requires --force' message, got: %s", out)
+	}
+}
+
+func TestProjectCLI_PruneStale_NoCandidates(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	cmd := exec.Command(exe, "project", "prune-stale", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-stale on empty DB should succeed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "No stale projects to prune") {
+		t.Errorf("expected 'No stale projects to prune', got: %s", out)
+	}
+}
+
+// ── vacuum ───────────────────────────────────────────────────────────────────
+
+func TestVacuumCLI_EmitsJSONReceipt(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	p := filepath.Join(t.TempDir(), "v")
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedProject(t, dataDir, "v", p)
+
+	cmd := exec.Command(exe, "vacuum", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vacuum failed: %v\n%s", err, out)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(out, &receipt); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if vacuumed, _ := receipt["vacuumed"].(bool); !vacuumed {
+		t.Errorf("vacuumed=%v, want true", receipt["vacuumed"])
+	}
+	for _, k := range []string{"bytes_before", "bytes_after", "bytes_reclaimed"} {
+		if _, ok := receipt[k]; !ok {
+			t.Errorf("receipt missing %q", k)
+		}
 	}
 }
 

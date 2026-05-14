@@ -215,6 +215,62 @@ func TestOpen_WALGuardrailEngaged(t *testing.T) {
 	}
 }
 
+// TestVacuum_Idempotent ensures Vacuum is safe to call repeatedly and on
+// an empty DB — the `pincher vacuum` CLI is a deliberate user step but
+// must not error if there's nothing to reclaim.
+func TestVacuum_Idempotent(t *testing.T) {
+	s := newTestStore(t)
+	for i := 0; i < 3; i++ {
+		if err := s.Vacuum(); err != nil {
+			t.Fatalf("Vacuum (call %d): %v", i+1, err)
+		}
+	}
+}
+
+// TestVacuum_ReclaimsAfterDelete is the core #732 guarantee: after a
+// large DeleteProject the freed pages sit in the file until VACUUM
+// rewrites it. Seed a project with enough symbols to grow the file,
+// delete it, and assert Vacuum shrinks the file back down.
+func TestVacuum_ReclaimsAfterDelete(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertProject(testProject("bloat")); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	syms := make([]Symbol, 0, 5000)
+	for i := 0; i < 5000; i++ {
+		id := fmt.Sprintf("bloat::sym%d#Function", i)
+		syms = append(syms, testSymbol(id, fmt.Sprintf("sym%d", i), "Function", "bloat", "internal/x/x.go"))
+	}
+	if err := s.BulkUpsertSymbols(syms); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+	if err := s.CheckpointTruncate(); err != nil {
+		t.Fatalf("CheckpointTruncate: %v", err)
+	}
+	grown := dbFileSizeForTest(t, s.Path)
+
+	if err := s.DeleteProject("bloat"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if err := s.Vacuum(); err != nil {
+		t.Fatalf("Vacuum: %v", err)
+	}
+	shrunk := dbFileSizeForTest(t, s.Path)
+
+	if shrunk >= grown {
+		t.Errorf("Vacuum did not reclaim space: grown=%d, after vacuum=%d", grown, shrunk)
+	}
+}
+
+func dbFileSizeForTest(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat db file %q: %v", path, err)
+	}
+	return fi.Size()
+}
+
 // TestCheckpointTruncate_Idempotent ensures CheckpointTruncate is safe to
 // call repeatedly — the indexer invokes it at every Index() tail, so a
 // silent failure here would compound across re-indexes.
@@ -513,6 +569,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"Optimize":           true,
 	"CheckpointTruncate": true,
 	"RebuildFTS":         true,
+	"Vacuum":             true,
 	"Close":              true,
 	"DB":                 true,
 	// Configuration (operates on the reader pool but is itself a write
