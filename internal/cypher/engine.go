@@ -1788,6 +1788,26 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 		}
 	}
 
+	// #847: push ORDER BY into the SQL SELECT so the DB sorts the FULL
+	// match set BEFORE the safety LIMIT truncates it. Without this, the
+	// LIMIT grabs an arbitrary maxRows-sized sample and buildResult sorts
+	// only that sample — `ORDER BY complexity DESC LIMIT 5` returned the
+	// top 5 of a random 200-row slice, not the global top 5. Only a bare
+	// var.property ORDER BY is pushed (aggregate ORDER BY like COUNT(n)
+	// is handled in buildResult; orderByCol returns "" for those and for
+	// unknown columns). buildResult re-sorts in Go — harmless, the SQL
+	// pre-sort just guarantees the right rows survive the LIMIT.
+	if !hasAggregation(q) && q.orderBy != "" {
+		if col := orderByCol(q.orderBy, pat.fromVar); col != "" {
+			sqlQ += " ORDER BY " + col
+			if strings.EqualFold(q.orderDir, "DESC") {
+				sqlQ += " DESC"
+			} else {
+				sqlQ += " ASC"
+			}
+		}
+	}
+
 	// #308: skip the SQL LIMIT when the query is aggregating
 	// (COUNT projection). The pre-fix path clamped the row scan to
 	// `max_rows * 2` even for COUNT queries, so `RETURN COUNT(n)`
@@ -1823,6 +1843,51 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 	}
 
 	return buildResult(nodes, q)
+}
+
+// orderByCol resolves an ORDER BY target to a real symbols-table column
+// for SQL pushdown (#847). Returns "" for anything not pushable as a
+// plain column: aggregate targets (COUNT(n) — contains "("), and
+// property names cypherPropToCol doesn't recognise. The result is a
+// fixed whitelisted column name from cypherPropToCol, never caller
+// input, so it is safe to concatenate into the SQL string.
+func orderByCol(orderBy, fromVar string) string {
+	ob := orderBy
+	if i := strings.Index(ob, "."); i >= 0 {
+		ob = ob[i+1:] // strip the "var." prefix
+	}
+	if strings.Contains(ob, "(") {
+		return "" // aggregate target — not a plain column
+	}
+	return cypherPropToCol(ob)
+}
+
+// joinOrderByCol resolves a JOIN-query ORDER BY target to its table
+// alias ("a." for fromVar, "b." for toVar) and a whitelisted column
+// (#847). Returns "","" for aggregate targets, unrecognised columns,
+// and bare (var-less) ORDER BY — those are left for buildResult's
+// post-scan sort. The column comes from cypherPropToCol (a fixed
+// whitelist), never caller input, so it is safe to concatenate.
+func joinOrderByCol(orderBy string, pat pattern) (alias, col string) {
+	v, prop := "", orderBy
+	if i := strings.Index(orderBy, "."); i >= 0 {
+		v, prop = orderBy[:i], orderBy[i+1:]
+	}
+	if strings.Contains(prop, "(") {
+		return "", "" // aggregate target
+	}
+	c := cypherPropToCol(prop)
+	if c == "" {
+		return "", ""
+	}
+	switch v {
+	case pat.fromVar:
+		return "a.", c
+	case pat.toVar:
+		return "b.", c
+	default:
+		return "", "" // bare or unknown var — don't guess which table
+	}
 }
 
 // hasAggregation reports whether any RETURN variable in q is an
@@ -2033,6 +2098,23 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 			filter = nil
 		} else {
 			filter = q.where
+		}
+	}
+
+	// #847: push ORDER BY into SQL before the scan cap — same fix as
+	// runNodeScan, with the JOIN alias mapping (a. for fromVar, b. for
+	// toVar). Without it the LIMIT truncates an arbitrary sample and
+	// buildResult sorts only that. A bare ORDER BY with no var prefix is
+	// left unpushed (ambiguous across the two joined tables); buildResult
+	// still sorts it post-scan, the pre-fix behaviour.
+	if !hasAggregation(q) && q.orderBy != "" {
+		if alias, col := joinOrderByCol(q.orderBy, pat); col != "" {
+			sqlQ += " ORDER BY " + alias + col
+			if strings.EqualFold(q.orderDir, "DESC") {
+				sqlQ += " DESC"
+			} else {
+				sqlQ += " ASC"
+			}
 		}
 	}
 
