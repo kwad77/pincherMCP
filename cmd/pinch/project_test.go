@@ -234,6 +234,31 @@ func TestProjectCLI_UnknownVerbExits2(t *testing.T) {
 	}
 }
 
+// #801: `project rm --json` printed plain text on the no-match /
+// ambiguous / store-error paths, so a scripted caller got unparseable
+// output on exactly the cases it most needs to branch on. Every error
+// path must emit a JSON error object under --json.
+func TestProjectCLI_RmJSONError_NoMatch(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	cmd := exec.Command(exe, "project", "rm", "no-such-project-xyz", "--json", "--force", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for no-match; got success\n%s", out)
+	}
+	var obj map[string]any
+	if jsonErr := json.Unmarshal(out, &obj); jsonErr != nil {
+		t.Fatalf("--json error output is not valid JSON: %v\n%s", jsonErr, out)
+	}
+	if obj["removed"] != false {
+		t.Errorf("expected removed=false, got %v", obj["removed"])
+	}
+	if s, _ := obj["error"].(string); !strings.Contains(s, "no project matches") {
+		t.Errorf("expected a no-match error string, got %q", s)
+	}
+}
+
 func TestProjectCLI_ListEmptyJSON(t *testing.T) {
 	exe := buildPincherBinary(t)
 	dataDir := t.TempDir()

@@ -189,39 +189,66 @@ func runProjectRMCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
 	}
 	positional := parseFlagsInterspersed(fs, args)
 
+	// #801: every error path must honor --json. Pre-fix the no-match /
+	// ambiguous / store-error paths printed plain text even under
+	// --json, so a scripted `project rm --json` got unparseable output
+	// on exactly the cases a script most needs to branch on. fail emits
+	// a JSON error object in JSON mode, plain text otherwise.
+	fail := func(code int, extra map[string]any, format string, a ...any) {
+		msg := fmt.Sprintf(format, a...)
+		if *asJSON {
+			obj := map[string]any{"removed": false, "error": msg}
+			for k, v := range extra {
+				obj[k] = v
+			}
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(obj)
+		} else {
+			fmt.Fprintln(stderr, "pincher project rm: "+msg)
+		}
+		os.Exit(code)
+	}
+
 	if len(positional) == 0 {
-		fmt.Fprintln(stderr, "pincher project rm: <name|id|substring> required")
-		fs.Usage()
-		os.Exit(2)
+		if !*asJSON {
+			fs.Usage()
+		}
+		fail(2, nil, "<name|id|substring> required")
 	}
 	target := positional[0]
 
 	store, dir, err := openProjectStore(*dataDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "pincher project rm: %v\n", err)
-		os.Exit(1)
+		fail(1, nil, "%v", err)
 	}
 	defer store.Close()
 	_ = dir
 
 	projects, err := store.ListProjects()
 	if err != nil {
-		fmt.Fprintf(stderr, "pincher project rm: %v\n", err)
-		os.Exit(1)
+		fail(1, nil, "%v", err)
 	}
 
 	match, status := matchProject(projects, target)
 	switch status {
 	case matchNone:
-		fmt.Fprintf(stderr, "pincher project rm: no project matches %q\n", target)
-		os.Exit(1)
+		fail(1, nil, "no project matches %q", target)
 	case matchAmbiguous:
-		fmt.Fprintf(stderr, "pincher project rm: %q matches multiple projects:\n\n", target)
+		candidates := make([]map[string]any, 0, len(match))
 		for _, p := range match {
-			fmt.Fprintf(stderr, "  %-32s  %s\n", p.Name, p.Path)
+			candidates = append(candidates, map[string]any{"id": p.ID, "name": p.Name, "path": p.Path})
 		}
-		fmt.Fprintln(stderr, "\nNarrow with a longer substring, the full name, or the project id.")
-		os.Exit(1)
+		if !*asJSON {
+			fmt.Fprintf(stderr, "pincher project rm: %q matches multiple projects:\n\n", target)
+			for _, p := range match {
+				fmt.Fprintf(stderr, "  %-32s  %s\n", p.Name, p.Path)
+			}
+			fmt.Fprintln(stderr, "\nNarrow with a longer substring, the full name, or the project id.")
+			os.Exit(1)
+		}
+		fail(1, map[string]any{"matches": candidates},
+			"%q matches multiple projects — narrow with a longer substring, the full name, or the project id", target)
 	}
 	chosen := match[0]
 
@@ -230,8 +257,7 @@ func runProjectRMCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
 	// y/N prompt and would either hang or get silently deleted; both
 	// are worse than an explicit error nudging the user toward --force.
 	if *asJSON && !*force {
-		fmt.Fprintln(stderr, "pincher project rm: --json requires --force (no interactive confirmation in JSON mode)")
-		os.Exit(2)
+		fail(2, nil, "--json requires --force (no interactive confirmation in JSON mode)")
 	}
 	if !*force {
 		fmt.Fprintf(stdout, "Remove project %q (%s) — %d files, %d symbols, %d edges? [y/N]: ",
@@ -243,8 +269,7 @@ func runProjectRMCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
 	}
 
 	if err := store.DeleteProject(chosen.ID); err != nil {
-		fmt.Fprintf(stderr, "pincher project rm: delete %s: %v\n", chosen.ID, err)
-		os.Exit(1)
+		fail(1, map[string]any{"id": chosen.ID}, "delete %s: %v", chosen.ID, err)
 	}
 
 	if *asJSON {
