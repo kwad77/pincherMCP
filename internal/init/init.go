@@ -157,7 +157,11 @@ func MergePolicyBlock(existing, policy string) (string, string) {
 // misleading. On fresh writes it emits just the marker block;
 // otherwise it behaves identically to MergePolicyBlock.
 func MergePolicyBlockBare(existing, policy string) (string, string) {
-	block := BuildPolicyBlock(policy)
+	// #778/#779: the embedded policy.md is checked out CRLF on Windows,
+	// so BuildPolicyBlock's output can already contain \r\n. Normalize
+	// the block to LF up front — restoreLineEndings only ever sees pure
+	// LF, so it can't double-convert \r\n into \r\r\n.
+	block := normalizeLF(BuildPolicyBlock(policy))
 
 	if existing == "" {
 		return block + "\n", "wrote"
@@ -169,7 +173,7 @@ func MergePolicyBlockBare(existing, policy string) (string, string) {
 	// all the merge logic below, remember the original convention, and
 	// restore it on output.
 	crlf := strings.Contains(existing, "\r\n")
-	existing = strings.ReplaceAll(existing, "\r\n", "\n")
+	existing = normalizeLF(existing)
 
 	// #243: when no markers exist but the file already contains a
 	// hand-rolled pincher policy section (heading-bounded), wrap the
@@ -211,11 +215,20 @@ func MergePolicyBlockBare(existing, policy string) (string, string) {
 	return restoreLineEndings(crlf, trimmed+"\n\n"+block+"\n"), "appended"
 }
 
+// normalizeLF collapses any line-ending convention (CRLF, or a stray
+// lone CR) down to LF. Both the `existing` file contents and the
+// freshly built policy block run through this before any merge logic,
+// so the merge operates on a single uniform convention (#778/#779).
+func normalizeLF(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
 // restoreLineEndings converts an LF-built string back to CRLF when the
-// original file used CRLF (#778). Input must be pure-LF — callers
-// normalize `existing` to LF before any merge logic, and the policy
-// block is LF-built — so this is a clean one-way \n → \r\n conversion
-// with no double-up or lone-\r edge cases.
+// original file used CRLF (#778). Input must be pure-LF — callers run
+// both `existing` and the policy block through normalizeLF before any
+// merge logic — so this is a clean one-way \n → \r\n conversion with
+// no double-up or lone-\r edge cases.
 func restoreLineEndings(crlf bool, s string) string {
 	if !crlf {
 		return s

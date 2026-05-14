@@ -98,6 +98,31 @@ func TestMergePolicyBlock_PreservesLineEndings(t *testing.T) {
 			t.Error("LF-origin file must not gain CRLF endings")
 		}
 	})
+
+	// #779: the embedded policy.md is checked out CRLF on Windows, so the
+	// policy arg itself can carry \r\n. A naive \n→\r\n restore turned
+	// those into \r\r\n and the bad-\r count drifted between runs,
+	// breaking idempotency. Drive the regression with a CRLF policy.
+	t.Run("CRLF policy input does not double-convert", func(t *testing.T) {
+		crlfPolicy := "## Pincher\r\nuse pincher.\r\n"
+
+		t.Run("CRLF file stays uniform CRLF", func(t *testing.T) {
+			existing := "# Project rules\r\n\r\nDocs.\r\n"
+			out, _ := MergePolicyBlock(existing, crlfPolicy)
+			noMixed(t, "crlf-policy", out)
+			if strings.Contains(out, "\r\r") {
+				t.Error("output has \\r\\r — policy block was double-converted")
+			}
+		})
+
+		t.Run("idempotent across reruns", func(t *testing.T) {
+			first, _ := MergePolicyBlock("", crlfPolicy)
+			second, _ := MergePolicyBlock(first, crlfPolicy)
+			if first != second {
+				t.Errorf("re-run not idempotent with CRLF policy\n--- first ---\n%q\n--- second ---\n%q", first, second)
+			}
+		})
+	})
 }
 
 func TestMergePolicyBlock_ReplaceExistingBlock(t *testing.T) {
