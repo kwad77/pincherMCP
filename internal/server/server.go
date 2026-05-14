@@ -6838,7 +6838,14 @@ func classifyTaskShape(task string) guideShape {
 	// so a plain dead-code survey lands here.
 	case contains("dead code", "dead-code", "unused function", "unused method",
 		"unused code", "unreachable", "zero callers", "no callers",
-		"never called", "uncalled"):
+		"never called", "uncalled",
+		// #768: "no callers" misses the more technical phrasings a dev
+		// actually types — "no inbound callers/edges" (the exact
+		// language dead_code's own docs use) has a word between "no"
+		// and "callers", so the substring check fell through to
+		// shapeUnknown. "nothing calls" / "never used" are the same
+		// survey intent.
+		"no inbound caller", "no inbound edge", "nothing calls", "never used"):
 		return shapeDeadCode
 	case contains("test", "spec ", "coverage"):
 		return shapeTest

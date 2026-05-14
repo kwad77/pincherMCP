@@ -20,6 +20,12 @@ func TestClassifyTaskShape_DeadCode(t *testing.T) {
 		"which methods are never called",
 		"surface unreachable code",
 		"find uncalled helpers",
+		// #768: "no callers" missed these because a word sits between
+		// "no" and "callers" / the phrasing is a synonym.
+		"which methods have no inbound callers",
+		"functions with no inbound edges",
+		"find helpers that nothing calls",
+		"list types that are never used",
 	}
 	for _, task := range cases {
 		t.Run(task, func(t *testing.T) {
