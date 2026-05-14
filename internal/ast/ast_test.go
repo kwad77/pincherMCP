@@ -630,6 +630,31 @@ func TestExtractClass_NoSuperclassHasEmptyParent(t *testing.T) {
 	}
 }
 
+// #817: Swift/C# classRE parent groups use a `[..., ]*` char class, so
+// the capture greedily eats the trailing space before `{`. The shared
+// extract() loop must TrimSpace it — `parent` is "Base", not "Base ".
+func TestExtractClass_ParentHasNoTrailingSpace(t *testing.T) {
+	cases := []struct{ lang, src, want string }{
+		{"Swift", "class Circle: Drawable {\n}\n", "Drawable"},
+		{"C#", "public class Repo : IRepo {\n}\n", "IRepo"},
+	}
+	for _, c := range cases {
+		result := Extract([]byte(c.src), c.lang, "m/f."+c.lang)
+		var found bool
+		for _, s := range result.Symbols {
+			if s.Kind == "Class" {
+				found = true
+				if s.Parent != c.want {
+					t.Errorf("%s: Class.Parent = %q, want %q (no trailing space)", c.lang, s.Parent, c.want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: expected a Class symbol", c.lang)
+		}
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // C extractor
 // ─────────────────────────────────────────────────────────────────────────────
