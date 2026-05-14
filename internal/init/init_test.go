@@ -243,3 +243,23 @@ func TestHasMarkers_RequiresPair(t *testing.T) {
 		})
 	}
 }
+
+// #803/#849: a dry-run reports "would <verb>" — Action is past tense
+// ("wrote"/"updated"/"appended"), so it must be mapped to the base verb
+// or it reads ungrammatically ("would wrote", "would_updated"). Shared
+// by the CLI text path and the MCP JSON `action` field.
+func TestPresentTenseAction(t *testing.T) {
+	cases := map[string]string{
+		"wrote":     "write",
+		"updated":   "update",
+		"appended":  "append",
+		"unchanged": "unchanged", // pass-through
+		"error":     "error",     // pass-through
+		"":          "",          // pass-through
+	}
+	for in, want := range cases {
+		if got := PresentTenseAction(in); got != want {
+			t.Errorf("PresentTenseAction(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

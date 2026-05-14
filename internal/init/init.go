@@ -69,6 +69,25 @@ type TargetPlan struct {
 	BytesOut int
 }
 
+// PresentTenseAction maps a past-tense plan action ("wrote" / "updated"
+// / "appended") to its base verb so a dry-run "would <verb>" reads
+// grammatically — "would write", not "would wrote" / "would_updated".
+// Lives here so the CLI's text output and the MCP handler's JSON
+// `action` field share one source of truth; #803 fixed the CLI but the
+// MCP path drifted back to the ungrammatical form (#849). Unknown
+// values (e.g. "error", "unchanged") pass through unchanged.
+func PresentTenseAction(action string) string {
+	switch action {
+	case "wrote":
+		return "write"
+	case "updated":
+		return "update"
+	case "appended":
+		return "append"
+	}
+	return action
+}
+
 // Plan resolves a target into a TargetPlan without touching the
 // filesystem (apart from reading the existing file, if any). cwd is
 // the project root paths resolve relative to; CLI passes os.Getwd(),

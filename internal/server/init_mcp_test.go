@@ -46,8 +46,13 @@ func TestHandleInit_DefaultIsDryRun(t *testing.T) {
 		t.Fatalf("results length = %d, want 1", len(results))
 	}
 	first := results[0].(map[string]any)
-	if action, _ := first["action"].(string); !strings.HasPrefix(action, "would_") {
-		t.Errorf("action = %q, want prefix \"would_\" on dry-run", action)
+	// #849: the dry-run action must be the GRAMMATICAL present-tense
+	// form — would_write / would_update / would_append — never the
+	// ungrammatical "would_" + past-tense (would_wrote / would_updated).
+	action, _ := first["action"].(string)
+	grammatical := map[string]bool{"would_write": true, "would_update": true, "would_append": true}
+	if !grammatical[action] {
+		t.Errorf("action = %q, want one of would_write/would_update/would_append (grammatical present tense)", action)
 	}
 	// Disk untouched.
 	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); !os.IsNotExist(err) {

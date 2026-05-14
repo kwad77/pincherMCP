@@ -107,7 +107,10 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 		if plan.Existing == plan.Updated {
 			action = "unchanged"
 		} else if !write {
-			action = "would_" + action
+			// #849: present-tense so the JSON reads "would_update", not
+			// the ungrammatical "would_updated" — shares pinit's helper
+			// with the CLI's dry-run text (fixed there in #803).
+			action = "would_" + pinit.PresentTenseAction(action)
 		}
 
 		entry := map[string]any{

@@ -95,22 +95,9 @@ func runInitCLI(args []string) {
 // user's --global flag; for targets that don't support it, the
 // underlying Plan call silently ignores rather than errors so that
 // --target=all keeps working with --global set.
-// presentTenseAction maps a past-tense plan action ("wrote" /
-// "updated" / "appended") to its base verb so the dry-run "would
-// <verb>" line reads grammatically — pre-#803 it printed the
-// ungrammatical "would wrote". Unknown values pass through.
-func presentTenseAction(action string) string {
-	switch action {
-	case "wrote":
-		return "write"
-	case "updated":
-		return "update"
-	case "appended":
-		return "append"
-	}
-	return action
-}
-
+//
+// Dry-run action grammar (#803) is handled by pinit.PresentTenseAction,
+// shared with the MCP handler's JSON `action` field (#849).
 func runInitTarget(out io.Writer, t pinit.Target, cwd string, global, dryRun bool) error {
 	plan, err := pinit.Plan(t, cwd, global)
 	if err != nil {
@@ -118,7 +105,7 @@ func runInitTarget(out io.Writer, t pinit.Target, cwd string, global, dryRun boo
 	}
 
 	if dryRun {
-		fmt.Fprintf(out, "pincher init [%s]: would %s %s\n\n", plan.Target, presentTenseAction(plan.Action), plan.Path)
+		fmt.Fprintf(out, "pincher init [%s]: would %s %s\n\n", plan.Target, pinit.PresentTenseAction(plan.Action), plan.Path)
 		fmt.Fprintln(out, "--- new file content ---")
 		fmt.Fprintln(out, plan.Updated)
 		return nil
