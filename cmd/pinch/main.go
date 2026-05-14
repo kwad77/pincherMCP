@@ -209,6 +209,16 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// #724: a stdio MCP server is a child of an MCP client or the
+	// supervisor — if that parent dies abnormally (SIGKILL, crash) our
+	// stdin may never EOF, leaving us an orphan whose Watch() loop
+	// corrupts shared project metadata. Reap ourselves when the parent
+	// is gone. Exempt --no-stdio: that's the intentionally-detached
+	// HTTP server, which is *supposed* to outlive its spawner.
+	if !*noStdio {
+		watchParent(ctx, cancel)
+	}
+
 	// Start background file watcher and session persistence flusher
 	go idx.Watch(ctx)
 	srv.StartSessionFlusher(ctx)

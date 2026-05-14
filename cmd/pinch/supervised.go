@@ -64,6 +64,13 @@ func runSupervisedCLI(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// #724: the supervisor detects a graceful client disconnect via
+	// stdin EOF, but a client killed abnormally may not close the pipe.
+	// Reap the supervisor (and, via Run's shutdownInner, its child) when
+	// the MCP client is gone — otherwise the whole supervised tree
+	// orphans and keeps Watch()ing the shared DB.
+	watchParent(ctx, cancel)
+
 	if err := sup.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "pincher supervised: %v\n", err)
 		os.Exit(1)
