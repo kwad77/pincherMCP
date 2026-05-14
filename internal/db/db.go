@@ -363,6 +363,28 @@ func (s *Store) CheckpointTruncate() error {
 	return err
 }
 
+// Vacuum runs SQLite's VACUUM — it rewrites the entire database file,
+// reclaiming pages freed by DeleteProject / DeleteSymbolsForFile so the
+// file on disk actually shrinks. This is the sharp edge: VACUUM holds an
+// exclusive lock for the duration and on a multi-GB DB can take a while,
+// which is exactly why it lives behind a deliberate `pincher vacuum` CLI
+// step (#732) rather than in the hot MCP path. CheckpointTruncate runs
+// first so the WAL is folded in before the rewrite.
+func (s *Store) Vacuum() error {
+	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("VACUUM"); err != nil {
+		return err
+	}
+	// In WAL mode the VACUUM rewrite lands in the WAL, not the main file.
+	// Checkpoint again so the on-disk `pincher.db` actually shrinks — the
+	// whole point of the command — rather than just shuffling the bytes
+	// into a fat WAL the caller can't see.
+	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
 // RebuildFTS drops every per-corpus FTS5 vtab (`symbols_code_fts` /
 // `symbols_config_fts` / `symbols_docs_fts`) and their sync triggers,
 // recreates them from canonical DDL, and bulk-loads them from the

@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kwad77/pincher/internal/db"
 )
@@ -33,6 +34,8 @@ func runProjectCLI(args []string) {
 		runProjectListCLI(args[1:], os.Stdout, os.Stderr)
 	case "rm", "remove", "delete":
 		runProjectRMCLI(args[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "prune-stale":
+		runProjectPruneStaleCLI(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "-h", "--help", "help":
 		printProjectUsage(os.Stdout)
 	default:
@@ -48,6 +51,7 @@ func printProjectUsage(out io.Writer) {
 	fmt.Fprintln(out, "Verbs:")
 	fmt.Fprintln(out, "  list                List every indexed project (alias: ls)")
 	fmt.Fprintln(out, "  rm <name|id|substr> Remove one project from the index (alias: remove, delete)")
+	fmt.Fprintln(out, "  prune-stale         Drop projects indexed by an old schema and untouched for N days")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Common flags:")
 	fmt.Fprintln(out, "  --json              Emit structured output instead of human-readable text")
@@ -55,6 +59,11 @@ func printProjectUsage(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "rm flags:")
 	fmt.Fprintln(out, "  --force             Skip the Y/n confirmation prompt")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "prune-stale flags:")
+	fmt.Fprintln(out, "  --days N            Min idle days since last index (default 30)")
+	fmt.Fprintln(out, "  --force             Skip the Y/n confirmation prompt")
+	fmt.Fprintln(out, "  Run `pincher vacuum` afterward to reclaim the freed disk space.")
 }
 
 // ── list ─────────────────────────────────────────────────────────────────────
@@ -288,6 +297,145 @@ func runProjectRMCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
 	}
 	fmt.Fprintf(stdout, "Removed project %q (%s) — %d files, %d symbols, %d edges.\n",
 		chosen.Name, chosen.Path, chosen.FileCount, chosen.SymCount, chosen.EdgeCount)
+}
+
+// ── prune-stale ──────────────────────────────────────────────────────────────
+
+// prunableStale reports whether a project is safe to drop in a bulk
+// prune: it must be BOTH schema-stale (indexed by an older binary, or
+// pre-v15) AND idle — not re-indexed since the cutoff. The schema check
+// alone would also catch a project a user touched yesterday that just
+// needs a re-index; pairing it with the idle cutoff scopes the prune to
+// genuinely-abandoned projects (#732 design note).
+func prunableStale(p db.Project, current int, cutoff time.Time) bool {
+	stale, _ := staleness(p.SchemaVersionAtIndex, current)
+	if !stale {
+		return false
+	}
+	return p.IndexedAt.Before(cutoff)
+}
+
+func runProjectPruneStaleCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
+	fs := flag.NewFlagSet("project prune-stale", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "Override data directory")
+	asJSON := fs.Bool("json", false, "Emit a structured JSON receipt")
+	force := fs.Bool("force", false, "Skip the Y/n confirmation prompt")
+	days := fs.Int("days", 30, "Minimum idle days since last index for a project to be prunable")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: pincher project prune-stale [--days N] [--force] [--json] [--data-dir DIR]")
+		fmt.Fprintln(stderr, "  Drops every project that is BOTH schema-stale AND not re-indexed in --days days.")
+		fmt.Fprintln(stderr, "  Run `pincher vacuum` afterward to reclaim the freed disk space.")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	fail := func(code int, format string, a ...any) {
+		msg := fmt.Sprintf(format, a...)
+		if *asJSON {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"pruned": false, "error": msg})
+		} else {
+			fmt.Fprintln(stderr, "pincher project prune-stale: "+msg)
+		}
+		os.Exit(code)
+	}
+
+	if *days < 0 {
+		fail(2, "--days must be >= 0")
+	}
+
+	// JSON callers must pass --force — there's no way to answer an
+	// interactive prompt in a scripted invocation. Checked up front
+	// (before any DB work) so the contract is the same regardless of
+	// whether the DB happens to have candidates. Same posture as
+	// `project rm --json`.
+	if *asJSON && !*force {
+		fail(2, "--json requires --force (no interactive confirmation in JSON mode)")
+	}
+
+	store, _, err := openProjectStore(*dataDir)
+	if err != nil {
+		fail(1, "%v", err)
+	}
+	defer store.Close()
+
+	projects, err := store.ListProjects()
+	if err != nil {
+		fail(1, "%v", err)
+	}
+
+	current := db.CurrentSchemaVersion()
+	cutoff := time.Now().AddDate(0, 0, -*days)
+	var candidates []db.Project
+	for _, p := range projects {
+		if prunableStale(p, current, cutoff) {
+			candidates = append(candidates, p)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
+
+	if len(candidates) == 0 {
+		if *asJSON {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"pruned": true, "removed": []any{}, "count": 0})
+			return
+		}
+		fmt.Fprintf(stdout, "No stale projects to prune (idle >= %d days AND schema-stale).\n", *days)
+		return
+	}
+
+	if !*force {
+		fmt.Fprintf(stdout, "%d stale project(s) eligible for prune (idle >= %d days):\n\n", len(candidates), *days)
+		for _, p := range candidates {
+			_, reason := staleness(p.SchemaVersionAtIndex, current)
+			fmt.Fprintf(stdout, "  %-32s  %d symbols  indexed %s  (%s)\n",
+				p.Name, p.SymCount, p.IndexedAt.Format("2006-01-02"), reason)
+		}
+		fmt.Fprintf(stdout, "\nRemove all %d? [y/N]: ", len(candidates))
+		if !confirmYesFrom(stdin) {
+			fmt.Fprintln(stdout, "Aborted.")
+			return
+		}
+	}
+
+	removed := make([]map[string]any, 0, len(candidates))
+	var failures []string
+	for _, p := range candidates {
+		if delErr := store.DeleteProject(p.ID); delErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", p.ID, delErr))
+			continue
+		}
+		removed = append(removed, map[string]any{
+			"id": p.ID, "name": p.Name, "path": p.Path,
+			"symbols": p.SymCount, "edges": p.EdgeCount,
+		})
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		out := map[string]any{"pruned": true, "removed": removed, "count": len(removed)}
+		if len(failures) > 0 {
+			out["failures"] = failures
+		}
+		_ = enc.Encode(out)
+		if len(failures) > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Fprintf(stdout, "Removed %d stale project(s).\n", len(removed))
+	for _, f := range failures {
+		fmt.Fprintln(stderr, "  failed: "+f)
+	}
+	if len(removed) > 0 {
+		fmt.Fprintln(stdout, "Run `pincher vacuum` to reclaim the freed disk space.")
+	}
+	if len(failures) > 0 {
+		os.Exit(1)
+	}
 }
 
 // confirmYesFrom reads one line from r and reports whether it starts

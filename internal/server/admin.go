@@ -64,9 +64,9 @@ func largeDBAdvisory(dbSizeBytes int64, projects []doctorProjectSummary) string 
 			h.Name, h.Symbols, h.Files)
 	}
 	msg += " Remediation: `list prune_dead=true` removes projects whose on-disk path is gone; " +
-		"projects still on disk but indexed long ago have no automatic reclamation — re-index or " +
-		"remove them. SQLite does not shrink the file on row deletion, so a VACUUM is needed to " +
-		"actually reclaim the space afterward."
+		"`pincher project prune-stale` drops projects indexed by an old schema and untouched for " +
+		"30+ days. SQLite does not shrink the file on row deletion, so run `pincher vacuum` " +
+		"afterward to actually reclaim the space."
 	return msg
 }
 

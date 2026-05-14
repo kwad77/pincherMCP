@@ -73,7 +73,7 @@ func TestLargeDBAdvisory(t *testing.T) {
 	if got == "" {
 		t.Fatal("5 GB DB should produce an advisory")
 	}
-	for _, want := range []string{"5.0 GB", "warp_rc", "1453923", "prune_dead", "VACUUM"} {
+	for _, want := range []string{"5.0 GB", "warp_rc", "1453923", "prune_dead", "prune-stale", "vacuum"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("advisory missing %q\n  got: %s", want, got)
 		}
