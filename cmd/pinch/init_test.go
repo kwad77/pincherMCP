@@ -280,3 +280,20 @@ func TestInitCLI_Binary_UnknownTargetExits(t *testing.T) {
 		t.Errorf("expected 'unknown --target' message; got: %s", out)
 	}
 }
+
+// #803: the dry-run line did `"would " + plan.Action`, but Action is
+// past tense ("wrote"/"updated"/"appended"), producing the
+// ungrammatical "would wrote". presentTenseAction maps to the base verb.
+func TestPresentTenseAction(t *testing.T) {
+	cases := map[string]string{
+		"wrote":    "write",
+		"updated":  "update",
+		"appended": "append",
+		"unknown":  "unknown", // pass-through
+	}
+	for in, want := range cases {
+		if got := presentTenseAction(in); got != want {
+			t.Errorf("presentTenseAction(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
