@@ -2912,12 +2912,24 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// instead of waiting for the 60s TTL.
 	s.invalidateProjectIDCache()
 
+	// #734: IndexResult.Symbols/.Edges/.Files are per-run accumulators —
+	// .Symbols/.Files count only files reprocessed this run, and .Edges is
+	// further inflated by the whole-project resolve passes (resolveImports/
+	// resolveCalls/resolveReads rebuild the entire cross-file edge set every
+	// run and add their full count to totalEdges). Reporting the raw struct
+	// fields made `index` disagree with `health` after every incremental
+	// re-index (observed: edges 12275 vs health's 15032, symbols 0 vs 5126).
+	// The CLI json/text path already fetches true totals from GraphStats
+	// (see cmd/pinch/main.go) — do the same here so the MCP surface agrees.
+	totalSyms, totalEdges, _, _, _ := s.store.GraphStats(result.ProjectID)
+
 	data := map[string]any{
 		"project":     result.Project,
 		"path":        result.Path,
-		"files":       result.Files,
-		"symbols":     result.Symbols,
-		"edges":       result.Edges,
+		"files":       result.Skipped + result.Files, // total files in the graph (matches health + CLI)
+		"symbols":     totalSyms,                      // DB graph total, not this run's delta
+		"edges":       totalEdges,                     // DB graph total, not this run's delta
+		"reprocessed": result.Files,                   // files actually re-extracted this run
 		"skipped":     result.Skipped,
 		"blocked":     result.Blocked,
 		"deleted":     result.Deleted, // #326: files removed from disk since last run, GC'd this index
