@@ -1682,13 +1682,7 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 		sqlQ += " AND kind=?"
 		args = append(args, pat.fromKind)
 	}
-	for k, v := range pat.fromProps {
-		col := cypherPropToCol(k)
-		if col != "" {
-			sqlQ += " AND " + col + "=?"
-			args = append(args, v)
-		}
-	}
+	appendInlinePropFilters(&sqlQ, &args, "", pat.fromProps)
 
 	// Push down simple WHERE conditions. #358 + #362: pushdown is only
 	// safe when the WHERE tree is a pure AND chain of leaves — anything
@@ -1923,6 +1917,11 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 		sqlQ += " AND b.kind=?"
 		args = append(args, pat.toKind)
 	}
+	// #792: inline brace props on either pattern end. Pre-fix runJoinQuery
+	// dropped them entirely — (a)-[:CALLS]->(b:Function {name:"X"}) ignored
+	// the {name:"X"} and returned callers of every Function.
+	appendInlinePropFilters(&sqlQ, &args, "a.", pat.fromProps)
+	appendInlinePropFilters(&sqlQ, &args, "b.", pat.toProps)
 
 	// Push down WHERE conditions. #358 + #362: tree-aware pushdown gate —
 	// only AND-chains-of-leaves push to SQL; richer trees are fully
@@ -2071,9 +2070,15 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 	inverted := shouldInvertBFS(q, pat)
 	startVar := pat.fromVar
 	startKind := pat.fromKind
+	startProps := pat.fromProps
+	destVar := pat.toVar
+	destProps := pat.toProps
 	if inverted {
 		startVar = pat.toVar
 		startKind = pat.toKind
+		startProps = pat.toProps
+		destVar = pat.fromVar
+		destProps = pat.fromProps
 	}
 
 	// Find start nodes
@@ -2088,6 +2093,10 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 		startQ += " AND kind=?"
 		startArgs = append(startArgs, startKind)
 	}
+	// #792: inline brace props on the start end push straight into the
+	// start-node SQL. The destination end's props are applied per-hop
+	// below — its nodes come from graph traversal, not this query.
+	appendInlinePropFilters(&startQ, &startArgs, "", startProps)
 	// Start-node prefilter pushes start-var equalities into SQL. Only safe
 	// when pushdownAllowed(q) — otherwise an OR or paren-grouped WHERE
 	// could incorrectly exclude valid start nodes (e.g.
@@ -2162,6 +2171,12 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 			}
 			m["_hop"] = hop.depth
 			if !matchesWhere(m, q.where, reCache) {
+				continue
+			}
+			// #792: the destination end's inline brace props — its nodes
+			// are discovered by traversal, so they're filtered here, not
+			// in the start SQL.
+			if !matchesInlineProps(m, destVar, destProps) {
 				continue
 			}
 			resultRows = append(resultRows, m)
@@ -2711,6 +2726,52 @@ func coerceBoolLiteral(v string) string {
 		return "0"
 	}
 	return v
+}
+
+// appendInlinePropFilters appends `prefix.col=?` SQL predicates for a
+// pattern's inline brace props — the `{name:"x", is_exported:true}`
+// form in MATCH (n:Kind {...}). Bool columns route through
+// coerceBoolLiteral so `{is_exported:true}` matches the INTEGER column
+// (#792): the tokenizer hands `true` over as the keyword "TRUE", which
+// the pre-fix raw loop bound verbatim and silently matched zero rows.
+// Unknown property keys are skipped (the unknown-property warning
+// collector flags them separately). prefix is "" for single-table
+// scans or "a."/"b." for JOIN queries.
+func appendInlinePropFilters(sqlQ *string, args *[]any, prefix string, props map[string]string) {
+	for k, v := range props {
+		col := cypherPropToCol(k)
+		if col == "" {
+			continue
+		}
+		if isBoolCol(col) {
+			v = coerceBoolLiteral(v)
+		}
+		*sqlQ += " AND " + prefix + col + "=?"
+		*args = append(*args, v)
+	}
+}
+
+// matchesInlineProps reports whether a projected BFS result row matches
+// a pattern end's inline brace props. Used for the BFS destination end,
+// whose nodes are discovered by graph traversal rather than the start
+// SQL — pre-#792 those props were dropped entirely, so a query like
+// (a)-[:CALLS]->(b:Function {name:"X"}) returned callers of *anything*.
+func matchesInlineProps(m map[string]any, variable string, props map[string]string) bool {
+	for k, want := range props {
+		col := cypherPropToCol(k)
+		if col == "" {
+			continue // unknown key — don't filter on it
+		}
+		got := fmt.Sprint(m[variable+"."+k])
+		if isBoolCol(col) {
+			if !boolCoerceEqual(got, want) {
+				return false
+			}
+		} else if got != want {
+			return false
+		}
+	}
+	return true
 }
 
 // isZeroValuePredicate reports whether a `col=val` predicate is
