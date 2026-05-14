@@ -1367,6 +1367,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// availableTools builds the sorted live-registry tool list for 404
+	// payloads. Defined here so both the non-POST and POST branches below
+	// emit an identical "unknown tool" shape (#714).
+	availableTools := func() []string {
+		out := make([]string, 0, len(s.handlers))
+		for name := range s.handlers {
+			out = append(out, name)
+		}
+		sort.Strings(out)
+		return out
+	}
+
 	if r.Method != http.MethodPost {
 		// #609: when the path is a known GET-only endpoint, surface a
 		// targeted 405 with `Allow: GET, HEAD` instead of the generic
@@ -1377,6 +1389,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", "GET, HEAD")
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 				fmt.Sprintf("endpoint /v1/%s requires GET or HEAD", path))
+			return
+		}
+		// #714: a non-POST request to a path that isn't even a known
+		// tool is a 404, not a 405 — "use POST" misleads the caller into
+		// a round-trip that would ALSO fail (POST on an unknown tool
+		// 404s). Only paths that ARE known POST tools get the 405.
+		if _, isKnownTool := s.handlers[path]; !isKnownTool {
+			writeError(w, http.StatusNotFound, "not_found",
+				fmt.Sprintf("unknown tool %q", path),
+				map[string]any{"available_tools": availableTools()},
+			)
 			return
 		}
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
@@ -1394,18 +1417,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("endpoint /v1/%s requires GET or HEAD", path))
 			return
 		}
-		// Build the available-tools list from the live registry so a new
-		// tool added in registerTools() shows up here automatically — keeps
-		// this error from drifting (it claimed 14 tools after `fetch` was
-		// added to make 15).
-		available := make([]string, 0, len(s.handlers))
-		for name := range s.handlers {
-			available = append(available, name)
-		}
-		sort.Strings(available)
 		writeError(w, http.StatusNotFound, "not_found",
 			fmt.Sprintf("unknown tool %q", path),
-			map[string]any{"available_tools": available},
+			map[string]any{"available_tools": availableTools()},
 		)
 		return
 	}
@@ -1417,6 +1431,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(body) == 0 {
 		body = []byte("{}")
+	}
+	// #714: validate the body is well-formed JSON before handing it to
+	// the tool handler. Pre-fix, malformed JSON fell through to
+	// parseArgs, which logged a warning and returned an empty args map —
+	// so the caller saw a misleading "query is required" (or similar
+	// missing-field error) instead of "your JSON is broken." json.Valid
+	// is allocation-free; cheap to run on every request.
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, "invalid_json_body",
+			"request body is not valid JSON — check your serialization")
+		return
 	}
 
 	req := &mcp.CallToolRequest{

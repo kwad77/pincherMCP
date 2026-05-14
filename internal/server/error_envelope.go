@@ -24,6 +24,7 @@ import (
 //
 // Standard codes (see CHANGELOG for full list):
 //   - bad_request       — malformed input, missing required field
+//   - invalid_json_body — request body is not well-formed JSON (#714)
 //   - not_found         — resource doesn't exist
 //   - unauthorized      — missing/invalid bearer token
 //   - method_not_allowed

@@ -164,3 +164,83 @@ func TestHTTP_PostOnUnknownTool_StillReturns404(t *testing.T) {
 		t.Errorf("message should mention the missing tool name; got %v", errObj["message"])
 	}
 }
+
+// #714: GET on a path that isn't even a known tool must 404, not 405.
+// Pre-fix, the non-POST branch checked method before tool existence, so
+// `GET /v1/never_existed` returned "method not allowed — use POST",
+// sending the caller into a round-trip that would also fail.
+func TestHTTP_GetOnUnknownTool_Returns404(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	rr := httpDo(t, srv, http.MethodGet, "/v1/never_existed")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/never_existed status = %d, want 404; body=%s", rr.Code, readBody(t, rr))
+	}
+	body := readBody(t, rr)
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, body)
+	}
+	errObj, _ := resp["error"].(map[string]any)
+	if errObj["code"] != "not_found" {
+		t.Errorf("error.code = %v, want not_found; body=%s", errObj["code"], body)
+	}
+	// Must NOT tell the caller to "use POST" — POSTing would also 404.
+	if msg, _ := errObj["message"].(string); strings.Contains(msg, "use POST") {
+		t.Errorf("404 for unknown tool must not advise 'use POST'; got %q", msg)
+	}
+	// Should still surface the available_tools list like the POST path.
+	if errObj["details"] == nil {
+		t.Errorf("expected available_tools in details; body=%s", body)
+	}
+}
+
+// #714: a POST with a malformed JSON body must return a distinct
+// invalid_json_body 400 — not be silently coerced to empty args and
+// surface as a misleading "<field> is required" tool error.
+func TestHTTP_MalformedJSONBody_Returns400InvalidJSON(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/search", strings.NewReader("{bad json"))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body status = %d, want 400; body=%s", rr.Code, readBody(t, rr))
+	}
+	body := readBody(t, rr)
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, body)
+	}
+	errObj, _ := resp["error"].(map[string]any)
+	if errObj["code"] != "invalid_json_body" {
+		t.Errorf("error.code = %v, want invalid_json_body; body=%s", errObj["code"], body)
+	}
+	// The pre-fix bug: must NOT surface as a phantom "query is required".
+	if msg, _ := errObj["message"].(string); strings.Contains(msg, "query is required") {
+		t.Errorf("malformed JSON masked as missing-field error — pre-#714 regression: %q", msg)
+	}
+}
+
+// #714 guard: a well-formed empty body still works (defaults to {}).
+func TestHTTP_EmptyBody_StillDefaultsToEmptyArgs(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/list", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	// list with no args is valid — should not 400 on the JSON check.
+	if rr.Code == http.StatusBadRequest {
+		body := readBody(t, rr)
+		var resp map[string]any
+		json.Unmarshal(body, &resp)
+		if errObj, _ := resp["error"].(map[string]any); errObj["code"] == "invalid_json_body" {
+			t.Errorf("empty body must not trip the invalid_json_body check; body=%s", body)
+		}
+	}
+}
