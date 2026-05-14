@@ -459,6 +459,13 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 	// Intra-module imports are rewritten to within-module paths so they
 	// resolve against other Module symbols. External imports keep their
 	// full path and will stay unresolved (no matching symbol indexed).
+	//
+	// #764: importPkgs is the set of package identifiers usable as a
+	// selector base in this file (`db` in `db.CorpusCode`). extractGoReads
+	// uses it to emit a *qualified* ToName for package selectors so they
+	// resolve via lookupQN instead of flattening to a bare `CorpusCode`
+	// read that the package-scoped name fallback would (correctly) drop.
+	importPkgs := make(map[string]bool)
 	for _, imp := range f.Imports {
 		if imp.Path == nil {
 			continue
@@ -474,6 +481,21 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 			Kind:       "IMPORTS",
 			Confidence: 1.0,
 		})
+		// Record the in-code identifier for this import. Explicit alias
+		// wins; otherwise the conventional name = last path segment
+		// (correct for the vast majority; packages whose name differs
+		// from the last segment just don't get the qualified-emit
+		// optimisation and fall back to the old bare-read behaviour).
+		switch {
+		case imp.Name == nil:
+			if i := strings.LastIndex(path, "/"); i >= 0 {
+				importPkgs[path[i+1:]] = true
+			} else {
+				importPkgs[path] = true
+			}
+		case imp.Name.Name != "_" && imp.Name.Name != ".":
+			importPkgs[imp.Name.Name] = true
+		}
 	}
 
 	// Walk top-level declarations
@@ -497,7 +519,7 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 				// #247 #3: identifier references for READS edges. Walks
 				// the same body — costs an extra ast.Inspect pass per
 				// function, dwarfed by the parser cost itself.
-				reads := extractGoReads(d.Body, sym.QualifiedName)
+				reads := extractGoReads(d.Body, sym.QualifiedName, importPkgs)
 				result.Edges = append(result.Edges, reads...)
 			}
 
@@ -514,7 +536,7 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 			// walker; uses fileModuleQN as the anchor since the
 			// reference lives at file scope, not in a function body.
 			if d.Tok == token.VAR || d.Tok == token.CONST {
-				edges := extractGoFileLevelReads(d, fileModuleQN)
+				edges := extractGoFileLevelReads(d, fileModuleQN, importPkgs)
 				result.Edges = append(result.Edges, edges...)
 			}
 		}
@@ -730,7 +752,7 @@ func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string) []Extrac
 // at a known Function/Method/Variable symbol, so type-name idents
 // inside the composite literal (`Target` in `var X = Target{...}`)
 // and short package-qualified refs are filtered out at resolve time.
-func extractGoFileLevelReads(d *ast.GenDecl, callerQN string) []ExtractedEdge {
+func extractGoFileLevelReads(d *ast.GenDecl, callerQN string, importPkgs map[string]bool) []ExtractedEdge {
 	if d == nil {
 		return nil
 	}
@@ -748,24 +770,37 @@ func extractGoFileLevelReads(d *ast.GenDecl, callerQN string) []ExtractedEdge {
 			Confidence: 0.5,
 		})
 	}
+	// #764: same imported-package-selector rule as extractGoReads — emit
+	// `db.CorpusCode` qualified rather than flattening to bare `db` +
+	// `CorpusCode`, so resolveReads' package-scoped fallback doesn't drop
+	// a legitimate cross-package file-level read.
+	var inspect func(n ast.Node) bool
+	inspect = func(n ast.Node) bool {
+		switch e := n.(type) {
+		case *ast.Ident:
+			emit(e.Name)
+			return false
+		case *ast.SelectorExpr:
+			if base, ok := e.X.(*ast.Ident); ok && importPkgs[base.Name] {
+				emit(base.Name + "." + e.Sel.Name)
+				return false
+			}
+		}
+		return true
+	}
 	for _, spec := range d.Specs {
 		vs, ok := spec.(*ast.ValueSpec)
 		if !ok {
 			continue
 		}
 		for _, val := range vs.Values {
-			ast.Inspect(val, func(n ast.Node) bool {
-				if id, ok := n.(*ast.Ident); ok {
-					emit(id.Name)
-				}
-				return true
-			})
+			ast.Inspect(val, inspect)
 		}
 	}
 	return edges
 }
 
-func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
+func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]bool) []ExtractedEdge {
 	if body == nil {
 		return nil
 	}
@@ -799,17 +834,23 @@ func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
 	}
 
 	// walkRead recursively walks any expression tree as a read context —
-	// every Ident inside is a READS, with one exception: the call
-	// subject of a CallExpr is NOT a read. extractGoCalls already emits
-	// a CALLS edge for it; walking it here as a read would emit the
-	// trailing selector component as a bare identifier — `strings.Index(
-	// ...)` would emit a read of `Index` that false-binds to any project
-	// Method named `Index` via the binding pass (#758). So for a call we
-	// walk only the receiver side of a selector-call (`strings` in
-	// `strings.Index`) and the arguments; the call subject itself is
-	// left to extractGoCalls. Non-call selectors (`w.defaultDo` as a
-	// value) still emit their `.Sel` so #565 function-value bindings
-	// keep working.
+	// every Ident inside is a READS, with two exceptions.
+	//
+	// (1) The call subject of a CallExpr is NOT a read. extractGoCalls
+	// already emits a CALLS edge for it; walking it here as a read would
+	// emit the trailing selector component as a bare identifier —
+	// `strings.Index(...)` would emit a read of `Index` that false-binds
+	// to any project Method named `Index` via the binding pass (#758).
+	// So for a call we walk only the receiver side of a selector-call
+	// (`strings` in `strings.Index`) and the arguments.
+	//
+	// (2) A non-call SelectorExpr whose base is an imported package
+	// (`db.CorpusCode`) emits the *qualified* name `db.CorpusCode` as a
+	// single read (#764), so resolveReads resolves it via lookupQN
+	// instead of flattening to a bare `CorpusCode` that the package-
+	// scoped name fallback would drop. Non-package selectors
+	// (`w.defaultDo` as a value) still emit their bare `.Sel` so #565
+	// function-value bindings keep working.
 	var walkRead func(n ast.Node)
 	walkRead = func(n ast.Node) {
 		if n == nil {
@@ -827,6 +868,17 @@ func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
 			for _, arg := range e.Args {
 				walkRead(arg)
 			}
+		case *ast.SelectorExpr:
+			if base, ok := e.X.(*ast.Ident); ok && importPkgs[base.Name] {
+				// Imported-package selector — emit qualified, don't
+				// recurse into the package ident itself.
+				emitRead(base.Name + "." + e.Sel.Name)
+				return
+			}
+			// Receiver/struct selector — preserve the legacy shape:
+			// walk the base as a read, emit the trailing `.Sel` bare.
+			walkRead(e.X)
+			emitRead(e.Sel.Name)
 		default:
 			ast.Inspect(n, func(child ast.Node) bool {
 				if child == n {
@@ -837,6 +889,12 @@ func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
 					emitRead(c.Name)
 					return false
 				case *ast.CallExpr:
+					walkRead(c)
+					return false
+				case *ast.SelectorExpr:
+					// Route selectors back through walkRead so the #764
+					// imported-package-qualified-emit rule applies even
+					// when the selector is nested inside another expr.
 					walkRead(c)
 					return false
 				}

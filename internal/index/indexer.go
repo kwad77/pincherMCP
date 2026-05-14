@@ -2109,16 +2109,28 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		return v
 	}
 
-	// Name lookups are scoped to the source language. Cache key includes
-	// the language so two source languages asking for the same name
-	// don't collide on the cached entry from the first one in.
-	type nameKey struct{ name, lang string }
+	// Name lookups are scoped to the source language AND, for the
+	// to-side, the source Go package. Cache key includes both so callers
+	// asking for the same name from different languages / packages don't
+	// collide on the first one in.
+	//
+	// #764: pkgDir scopes the bare-name fallback to the reader's Go
+	// package. A bare unqualified Go read is *always* same-package — a
+	// cross-package read is written `pkg.Name` (a selector, now emitted
+	// qualified by extractGoReads). Without this scope, every bare
+	// `version` / `result` / `name` read funnels onto the single
+	// project-wide Go symbol of that name (`main.version` collected 37
+	// inbound READS edges, ~30 false, pre-fix). Package identity is
+	// approximated by source-file directory: same dir == same Go
+	// package. Empty pkgDir disables scoping (used for from-side
+	// discovery, where the package isn't known yet).
+	type nameKey struct{ name, lang, pkgDir string }
 	nameCache := make(map[nameKey]lookup)
-	lookupNameInLang := func(name, lang string) lookup {
+	lookupNameInLang := func(name, lang, pkgDir string) lookup {
 		if name == "" {
 			return lookup{}
 		}
-		k := nameKey{name: name, lang: lang}
+		k := nameKey{name: name, lang: lang, pkgDir: pkgDir}
 		if v, ok := nameCache[k]; ok {
 			return v
 		}
@@ -2131,6 +2143,21 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		// must not target an isolated testdata fixture. Drop fixture
 		// candidates unless every match is a fixture.
 		syms = preferNonFixtureSyms(syms)
+		// #764: drop candidates outside the reader's package (= source
+		// file directory). Skipped when pkgDir is empty.
+		if pkgDir != "" {
+			scoped := make([]db.Symbol, 0, len(syms))
+			for _, s := range syms {
+				if filepath.ToSlash(filepath.Dir(s.FilePath)) == pkgDir {
+					scoped = append(scoped, s)
+				}
+			}
+			if len(scoped) == 0 {
+				nameCache[k] = lookup{}
+				return lookup{}
+			}
+			syms = scoped
+		}
 		// #436: only match symbols of the same language as the source.
 		// #754: priority is Variable > Function > Method. Method
 		// candidates are kept (the reads pass emits the bare trailing
@@ -2209,14 +2236,22 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		from := lookupFromQN(e.FromQN, e.FromFile)
 		fromID := from.id
 		if fromID == "" && !strings.Contains(e.FromQN, ".") {
-			// From-side name lookup — no language scope yet (we're
-			// trying to discover it). The from symbol's language
+			// From-side name lookup — no language or package scope yet
+			// (we're trying to discover it). The from symbol's language
 			// becomes the gate for the to-side lookup below.
-			from = lookupNameInLang(e.FromQN, "")
+			from = lookupNameInLang(e.FromQN, "", "")
 			fromID = from.id
 		}
 		if fromID == "" {
 			continue
+		}
+		// #764: the reader's package, approximated by source-file
+		// directory — scopes the bare-name to-side fallback so a bare
+		// `version` read can't bind to a same-named symbol in another
+		// package. Empty when FromFile is unknown (scoping then skipped).
+		readerPkgDir := ""
+		if e.FromFile != "" {
+			readerPkgDir = filepath.ToSlash(filepath.Dir(e.FromFile))
 		}
 		to := lookupQN(e.ToName)
 		// #731: a bare ToName (`version`) can collide with a *qualified
@@ -2231,7 +2266,7 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		// nothing better (the #436 guard then correctly drops it).
 		qnLangMismatch := to.id != "" && from.lang != "" && to.lang != "" && to.lang != from.lang
 		if (to.id == "" || qnLangMismatch) && !strings.Contains(e.ToName, ".") {
-			if nameTo := lookupNameInLang(e.ToName, from.lang); nameTo.id != "" {
+			if nameTo := lookupNameInLang(e.ToName, from.lang, readerPkgDir); nameTo.id != "" {
 				to = nameTo
 			}
 		}
