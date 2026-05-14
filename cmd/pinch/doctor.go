@@ -137,6 +137,13 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*Do
 		BinaryVersion:        version,
 		LookbackHours:        lookbackHours,
 		BinarySupportsSchema: true, // assumption: the binary that opened the DB supports its schema
+		// JSON slice invariant: these are append-only below and must
+		// marshal to `[]`, not `null`, when empty so consumers can
+		// iterate without a null-check. Advisories is initialised the
+		// same way further down; ExtractionFailures/SlowQueries were
+		// missed and marshalled to `null` on a clean install (#832).
+		ExtractionFailures: []DoctorFailureRow{},
+		SlowQueries:        []DoctorSlowQueryRow{},
 	}
 
 	// Schema version

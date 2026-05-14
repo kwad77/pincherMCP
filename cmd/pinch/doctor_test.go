@@ -39,6 +39,19 @@ func TestDoctorReport_EmptyDatabase(t *testing.T) {
 		t.Errorf("expected 0 slow queries, got %d", len(r.SlowQueries))
 	}
 
+	// #832: empty append-only slices must marshal to `[]`, not `null`,
+	// so JSON consumers can iterate without a null-check. len()==0 is
+	// true for a nil slice too, so assert the marshalled shape.
+	blob, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	for _, field := range []string{`"extraction_failures":[]`, `"slow_queries":[]`, `"advisories":[]`} {
+		if !strings.Contains(string(blob), field) {
+			t.Errorf("empty-DB doctor JSON missing %s — a nil slice marshalled to null:\n%s", field, blob)
+		}
+	}
+
 	md := formatDoctorMarkdown(r)
 	if !strings.Contains(md, "No diagnostic issues to report") {
 		t.Errorf("empty-state Markdown missing healthy footer:\n%s", md)
