@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -269,10 +270,34 @@ func TestHandleDeadCode_EmptyDiagnosis(t *testing.T) {
 	if meta == nil {
 		t.Fatal("_meta missing")
 	}
-	if _, hasNext := meta["next_steps"]; hasNext {
-		t.Errorf("empty result should not suggest next_steps; got %v", meta)
-	}
 	if _, hasDiag := meta["diagnosis"]; !hasDiag {
 		t.Errorf("empty result should set _meta.diagnosis; got %v", meta)
+	}
+	// #712: an empty dead_code result now carries a next_steps hint —
+	// failure-as-pedagogy. The right next move when nothing surfaced at
+	// the default 0.95 floor is to LOWER min_confidence so regex-extracted
+	// (sub-1.0) symbols enter the candidate pool. (The pre-#712 test
+	// asserted next_steps should be absent; that was the wrong default —
+	// a silent empty result with no remediation is exactly the
+	// anti-pattern the v0.17 theme set out to kill.)
+	steps, hasNext := meta["next_steps"].([]any)
+	if !hasNext || len(steps) == 0 {
+		t.Errorf("empty result should suggest next_steps (lower min_confidence); got %v", meta)
+	}
+	first, _ := steps[0].(map[string]any)
+	if first["tool"] != "dead_code" {
+		t.Errorf("first next_step should re-invoke dead_code with a lower floor; got %v", first)
+	}
+	if argsStr, _ := first["args"].(string); !strings.Contains(argsStr, "min_confidence") {
+		t.Errorf("next_step args should lower min_confidence; got %v", argsStr)
+	}
+	// The diagnosis text must not tell the caller to "tighten" — that
+	// raises the floor and surfaces FEWER candidates (the #712 inversion).
+	diag, _ := meta["diagnosis"].(string)
+	if strings.Contains(diag, "tighten") {
+		t.Errorf("diagnosis must not say 'tighten' (inverted advice — #712); got: %q", diag)
+	}
+	if !strings.Contains(diag, "lower") {
+		t.Errorf("diagnosis should advise lowering min_confidence; got: %q", diag)
 	}
 }

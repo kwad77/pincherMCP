@@ -3390,6 +3390,11 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		corpus = ""
 	}
 	limit := intArg(args, "limit", 20)
+	// #712: collect clamp warnings so the caller learns its input was
+	// adjusted instead of silently getting a different page size than
+	// it asked for. Surfaced in _meta.warnings below.
+	var searchClampWarnings []string
+	rawLimit := limit
 	// #532: cap limit at 500. Pre-cap a caller asking for limit=10000 would
 	// pin a goroutine on FTS5 + the projection loop. Server-side cap also
 	// bounds the "Load more" payload growth in the dashboard.
@@ -3399,15 +3404,24 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if limit <= 0 {
 		limit = 20
 	}
+	if rawLimit != limit && args["limit"] != nil {
+		searchClampWarnings = append(searchClampWarnings,
+			fmt.Sprintf("limit=%d clamped to %d (valid range 1-500)", rawLimit, limit))
+	}
 	// #532: offset for paginated "Load more" UX. Default 0, cap 5000 —
 	// past 5000 results the BM25 tail isn't useful; agents should refine
 	// the query instead of paging deeper.
 	offset := intArg(args, "offset", 0)
+	rawOffset := offset
 	if offset < 0 {
 		offset = 0
 	}
 	if offset > 5000 {
 		offset = 5000
+	}
+	if rawOffset != offset && args["offset"] != nil {
+		searchClampWarnings = append(searchClampWarnings,
+			fmt.Sprintf("offset=%d clamped to %d (valid range 0-5000)", rawOffset, offset))
 	}
 	fieldsArg := str(args, "fields")
 	// #34 Phase 4 + #112 calibration baseline: 0.71 filters the
@@ -3733,6 +3747,13 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			meta["diagnosis"] = diagnoseEmptySearch(query, kind, language, corpus, minConfidence)
 			meta["next_steps"] = suggestEmptySearchNextSteps(query, kind, language, minConfidence)
 		}
+	}
+	// #712: surface limit/offset clamps so the caller learns its page
+	// params were adjusted. jsonResultWithMeta's unknown-args merge
+	// appends to the same key — pre-seed, don't clobber.
+	if len(searchClampWarnings) > 0 {
+		existing, _ := meta["warnings"].([]string)
+		meta["warnings"] = append(existing, searchClampWarnings...)
 	}
 	data := map[string]any{
 		"results":  rows,
@@ -4556,6 +4577,13 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if depth < 1 {
 		traceDepthClampMsg = fmt.Sprintf("trace: depth=%d clamped to 1 (valid range 1-5)", depth)
 		depth = 1
+	} else if depth > 5 {
+		// #712: schema declares depth 1-5; depth>5 was silently honored,
+		// which can dump very large traversals. Clamp to 5 + warn rather
+		// than letting an off-by-typo (depth=50) pin a goroutine on a
+		// hotspot BFS.
+		traceDepthClampMsg = fmt.Sprintf("trace: depth=%d clamped to 5 (valid range 1-5)", depth)
+		depth = 5
 	}
 	// #402: detect whether the caller passed depth explicitly. When
 	// they did, honor it exactly. When they didn't (auto mode), the
@@ -4585,10 +4613,25 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// caller passing "reads, writes" matches the same as "READS,WRITES".
 	kindsArg := str(args, "kinds")
 	var edgeKinds []string
+	// #712: validate edge kinds. An unrecognized kind (typo, made-up
+	// name) previously produced a silent 0-hop traversal — the caller
+	// can't tell "no edges of this kind" from "I typo'd the kind". Warn
+	// on unknown kinds so the failure teaches. knownEdgeKinds is the
+	// full traversable set; keep in sync with the edge-kind taxonomy.
+	knownEdgeKinds := map[string]bool{
+		"CALLS": true, "HTTP_CALLS": true, "ASYNC_CALLS": true,
+		"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
+	}
+	var traceKindWarnings []string
 	if kindsArg != "" {
 		for _, k := range strings.Split(kindsArg, ",") {
 			k = strings.ToUpper(strings.TrimSpace(k))
 			if k != "" {
+				if !knownEdgeKinds[k] {
+					traceKindWarnings = append(traceKindWarnings,
+						fmt.Sprintf("unknown edge kind %q ignored — valid kinds: CALLS, HTTP_CALLS, ASYNC_CALLS, READS, WRITES, IMPORTS, REFERENCES", k))
+					continue
+				}
 				edgeKinds = append(edgeKinds, k)
 			}
 		}
@@ -4759,8 +4802,16 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// #703: surface the depth clamp in _meta.warnings when negative/zero
 	// depth was passed. jsonResultWithMeta's unknown-args merge appends to
 	// this same key (see beneath); pre-seed here so it doesn't get clobbered.
+	// #703 + #712: surface depth clamp and unknown-edge-kind warnings.
+	// jsonResultWithMeta's unknown-args merge appends to this same key,
+	// so pre-seed the slice rather than overwriting it later.
+	var traceWarnings []string
 	if traceDepthClampMsg != "" {
-		meta["warnings"] = []string{traceDepthClampMsg}
+		traceWarnings = append(traceWarnings, traceDepthClampMsg)
+	}
+	traceWarnings = append(traceWarnings, traceKindWarnings...)
+	if len(traceWarnings) > 0 {
+		meta["warnings"] = traceWarnings
 	}
 	// #402: when auto-deepen trimmed the result below the requested
 	// depth, tell the agent so depth_used vs depth_requested is
@@ -5234,8 +5285,17 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			},
 		}
 	} else {
+		// #712: the advice was inverted — "tighten min_confidence" RAISES
+		// the floor, which surfaces FEWER candidates. dead_code's
+		// min_confidence gates which symbols enter the candidate pool;
+		// LOWERING it (e.g. 0.95 → 0.7) lets lower-confidence symbols
+		// also be considered, surfacing more potential dead code.
 		data["_meta"] = map[string]any{
-			"diagnosis": "no dead code at this confidence floor — tighten min_confidence or broaden kinds to find more candidates",
+			"diagnosis": fmt.Sprintf("no dead code at min_confidence ≥ %.2f — lower min_confidence (e.g. 0.7) or broaden kinds to surface more candidates", minConfidence),
+			"next_steps": []map[string]string{
+				{"tool": "dead_code", "args": `{"min_confidence":0.7}`,
+					"why": "lower the confidence floor so regex-extracted (sub-1.0) symbols enter the candidate pool"},
+			},
 		}
 	}
 
@@ -5490,26 +5550,44 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	// adjacent tools) returned a 10K-token response for what's almost
 	// always a yes/no orientation lookup. Default to 50; the caller
 	// can ask for more via explicit `limit`.
+	// #712: collect input-clamp warnings so callers learn when a
+	// negative arg was silently coerced. Surfaced in _meta.warnings.
+	var listClampWarnings []string
 	limit := 50
 	if v, ok := args["limit"].(float64); ok {
 		if v > 0 {
 			limit = int(v)
+		} else if v == 0 {
+			// limit=0 is the documented "all rows" sentinel.
+			limit = -1
 		} else {
-			// limit=0 (or negative) was the legacy "all rows" sentinel —
-			// preserve it so existing scripts still work without hitting
-			// the new default cap.
-			limit = -1 // sentinel: no cap
+			// Negative is NOT the documented sentinel — almost certainly
+			// a caller mistake. Treat as unbounded for back-compat but
+			// warn so the caller learns the right shape.
+			listClampWarnings = append(listClampWarnings,
+				fmt.Sprintf("limit=%d treated as unbounded — pass limit=0 for the documented 'all rows' sentinel, or limit>0 for a page size", int(v)))
+			limit = -1
 		}
 	}
 	offset := 0
-	if v, ok := args["offset"].(float64); ok && v > 0 {
-		offset = int(v)
+	if v, ok := args["offset"].(float64); ok {
+		if v > 0 {
+			offset = int(v)
+		} else if v < 0 {
+			listClampWarnings = append(listClampWarnings,
+				fmt.Sprintf("offset=%d clamped to 0 (must be >= 0)", int(v)))
+		}
 	}
 	// Default activity threshold: 14 days. Configurable per-call via
 	// `active_within_days` for users who want the broader view.
 	activeWithinDays := 14
-	if v, ok := args["active_within_days"].(float64); ok && v > 0 {
-		activeWithinDays = int(v)
+	if v, ok := args["active_within_days"].(float64); ok {
+		if v > 0 {
+			activeWithinDays = int(v)
+		} else {
+			listClampWarnings = append(listClampWarnings,
+				fmt.Sprintf("active_within_days=%d ignored (must be > 0) — using default 14", int(v)))
+		}
 	}
 	cutoff := time.Now().Add(-time.Duration(activeWithinDays) * 24 * time.Hour)
 	// #419: drop projects without a usable graph by default. On
@@ -5647,6 +5725,18 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			meta = map[string]any{}
 		}
 		meta["filter_diagnosis"] = "filtered: " + strings.Join(hints, ", ")
+		data["_meta"] = meta
+	}
+	// #712: surface input-clamp warnings (negative limit/offset/
+	// active_within_days). Merge into _meta.warnings, never clobber —
+	// jsonResultWithMeta's unknown-args path appends to the same key.
+	if len(listClampWarnings) > 0 {
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		existing, _ := meta["warnings"].([]string)
+		meta["warnings"] = append(existing, listClampWarnings...)
 		data["_meta"] = meta
 	}
 	// #302: surface what got pruned (only when the caller asked).
