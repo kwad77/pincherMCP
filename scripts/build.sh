@@ -62,7 +62,15 @@ SIDE="${OUT}.new"
 rm -f "$SIDE" 2>/dev/null || true
 
 LDFLAGS="-s -w -X main.version=$VERSION"
-go build -trimpath -ldflags="$LDFLAGS" -o "$SIDE" "${EXTRA_ARGS[@]}" ./cmd/pinch/
+# macOS CI runners ship bash 3.2, where "${EMPTY_ARRAY[@]}" under `set -u`
+# throws "unbound variable". Guard the expansion: only splice EXTRA_ARGS
+# when it's non-empty. (bash 4.4+ handles the bare form fine, but we
+# can't assume that on the macOS test job.)
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    go build -trimpath -ldflags="$LDFLAGS" -o "$SIDE" "${EXTRA_ARGS[@]}" ./cmd/pinch/
+else
+    go build -trimpath -ldflags="$LDFLAGS" -o "$SIDE" ./cmd/pinch/
+fi
 
 # Now move the new build over the target. Rename works on Windows even
 # when $OUT is locked (open handles follow inode). On POSIX, plain mv
