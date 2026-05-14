@@ -884,12 +884,14 @@ func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) {
 		if result, err := session.ListRoots(ctx, nil); err == nil && len(result.Roots) > 0 {
 			if path, ok := parseFileURI(result.Roots[0].URI); ok {
 				s.setRoot(path)
+				s.maybeReindexOnDrift()
 				return
 			}
 		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		s.setRoot(cwd)
+		s.maybeReindexOnDrift()
 	}
 }
 
@@ -897,6 +899,61 @@ func (s *Server) setRoot(path string) {
 	s.sessionRoot = path
 	s.sessionProject = db.ProjectNameFromPath(path)
 	s.sessionID = db.ProjectIDFromPath(path)
+}
+
+// maybeReindexOnDrift kicks off a background force re-index of the
+// session project when the binary that indexed it differs from the
+// running binary (#719).
+//
+// Why: the supervisor's auto-restart-on-drift respawns the inner onto
+// a swapped binary, but the index on disk was still built by the OLD
+// binary's extraction rules. `health` detects and surfaces this, but
+// nothing *heals* it — search/query/trace silently serve a stale graph
+// (a v0.55 dogfood run saw a 3× symbol gap) until a manual
+// `index force=true`. For the AFK autonomous loop that manual step is
+// the gap: the swap + respawn is automated, the re-index was not.
+//
+// Runs once per session (detectRoot is sessionOnce-guarded). Best
+// effort and non-blocking: a not-yet-indexed project (resolveProjectID
+// auto-indexes that on first use) or a matching version is a no-op,
+// and the re-index runs on a background context so it outlives the
+// initialize request. The existing `_meta.binary_version_warning`
+// already tells the agent results may shift while it converges.
+func (s *Server) maybeReindexOnDrift() {
+	indexedBy, drifted := s.driftReindexNeeded()
+	if !drifted {
+		return
+	}
+	slog.Info("pincher.drift_reindex.start",
+		"project", s.sessionProject,
+		"indexed_by", indexedBy,
+		"running", s.version)
+	go func() {
+		if _, err := s.indexer.Index(context.Background(), s.sessionRoot, true); err != nil {
+			slog.Warn("pincher.drift_reindex.err", "project", s.sessionProject, "err", err)
+			return
+		}
+		slog.Info("pincher.drift_reindex.done", "project", s.sessionProject)
+	}()
+}
+
+// driftReindexNeeded reports whether the session project's index was
+// built by a different binary than the one now running — and returns
+// the indexing binary's version for the log line. A not-yet-indexed
+// project (resolveProjectID auto-indexes that on first use) or a
+// matching version is not drift.
+func (s *Server) driftReindexNeeded() (indexedBy string, drifted bool) {
+	if s.sessionID == "" || s.sessionRoot == "" {
+		return "", false
+	}
+	p, err := s.store.GetProject(s.sessionID)
+	if err != nil || p == nil {
+		return "", false
+	}
+	if p.BinaryVersion == "" || p.BinaryVersion == s.version {
+		return p.BinaryVersion, false
+	}
+	return p.BinaryVersion, true
 }
 
 // gzipResponseWriter wraps an http.ResponseWriter, routing writes through a gzip.Writer.
