@@ -1058,7 +1058,7 @@ function renderProjects() {
     return;
   }
 
-  const emptyCount = _allProjects.filter(p => (p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
+  const emptyCount = _allProjects.filter(p => (p.symbol_count||p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
   if (cleanupBtn) {
     cleanupBtn.disabled = emptyCount === 0;
     cleanupBtn.textContent = emptyCount > 0 ? 'Remove '+emptyCount+' empty' : 'Remove all empty';
@@ -1067,7 +1067,7 @@ function renderProjects() {
   const shown = _allProjects.filter(p => {
     const name=(p.Name||p.name||'').toLowerCase();
     const path=(p.Path||p.path||'').toLowerCase();
-    const syms=p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0;
+    const syms=p.symbol_count||p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0;
     if (hideEmpty && syms===0 && edges===0) return false;
     if (filter && !name.includes(filter) && !path.includes(filter)) return false;
     return true;
@@ -1082,7 +1082,7 @@ function renderProjects() {
 
   grid.innerHTML = shown.map(p => {
     const id=p.ID||p.id||'', name=p.Name||p.name||'—', path=p.Path||p.path||'';
-    const syms=p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0, files=p.FileCount||p.file_count||0;
+    const syms=p.symbol_count||p.SymCount||p.sym_count||0, edges=p.EdgeCount||p.edge_count||0, files=p.FileCount||p.file_count||0;
     const ts=p.IndexedAt||p.indexed_at||'';
     const isEmpty=syms===0&&edges===0;
       const ageHours=ts?(Date.now()-new Date(ts))/3600000:0;
@@ -1116,7 +1116,7 @@ function renderProjects() {
 }
 
 async function cleanupEmpty() {
-  const emptyCount = _allProjects.filter(p => (p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
+  const emptyCount = _allProjects.filter(p => (p.symbol_count||p.SymCount||p.sym_count||0)===0 && (p.EdgeCount||p.edge_count||0)===0).length;
   if (!emptyCount) { showToast('No empty projects to remove.'); return; }
   const ok = await showConfirmDialog(
     'Remove '+emptyCount+' empty project'+(emptyCount>1?'s':'')+'?',
@@ -1894,7 +1894,7 @@ function exportTable(format, kind) {
       p.Name || p.name || '',
       p.Path || p.path || '',
       p.FileCount || p.file_count || 0,
-      p.SymCount || p.sym_count || 0,
+      p.symbol_count || p.SymCount || p.sym_count || 0,
       p.EdgeCount || p.edge_count || 0,
       p.IndexedAt || p.indexed_at || '',
     ]);
