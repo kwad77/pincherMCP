@@ -112,6 +112,61 @@ func TestHandleSearch_RegexInsideQuotedPhrase_AllowedThrough(t *testing.T) {
 	}
 }
 
+// #736: a stem-less prefix wildcard ("*", "**") is not a valid FTS5
+// query — SQLite rejects it with the raw "unknown special query"
+// logic error. The pre-flight must catch it and return a friendly
+// error redirecting to a real list-all, not leak the SQL noise.
+func TestHandleSearch_BareWildcard_RejectedWithFriendlyError(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.sessionID = "bare-wildcard-test"
+
+	for _, q := range []string{"*", "**", "***"} {
+		t.Run(q, func(t *testing.T) {
+			req := makeReq(map[string]any{"query": q})
+			req.Params.Name = "search"
+			result, err := srv.handleSearch(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handleSearch: %v", err)
+			}
+			if !result.IsError {
+				t.Fatalf("expected IsError=true on bare wildcard %q; got success", q)
+			}
+			body := errorBody(result)
+			// Raw SQL leaks must NOT appear.
+			if strings.Contains(body, "SQL logic error") || strings.Contains(body, "unknown special query") {
+				t.Errorf("raw SQL error must not leak for %q; got %q", q, body)
+			}
+			// Must point at the stem requirement and the query-tool fallback.
+			if !strings.Contains(body, "stem") {
+				t.Errorf("error should mention the prefix-wildcard 'stem' requirement; got %q", body)
+			}
+			if !strings.Contains(body, "MATCH (n)") {
+				t.Errorf("error should redirect to the query tool for list-all; got %q", body)
+			}
+		})
+	}
+}
+
+// A real prefix wildcard with a stem (auth*) must still work — the
+// #736 pre-flight only fires on stem-less wildcards.
+func TestHandleSearch_StemmedWildcard_NotRejectedByBareWildcardPreflight(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.sessionID = "stemmed-wildcard-test"
+
+	req := makeReq(map[string]any{"query": "auth*"})
+	req.Params.Name = "search"
+	result, err := srv.handleSearch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	body := errorBody(result)
+	if strings.Contains(body, "stem") {
+		t.Errorf("stemmed wildcard 'auth*' must not trigger the bare-wildcard pre-flight; got %q", body)
+	}
+}
+
 // Pure unit test for the helper.
 func TestFirstFTS5IncompatibleRegexChar_Coverage(t *testing.T) {
 	t.Parallel()
