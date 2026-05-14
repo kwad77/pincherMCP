@@ -1100,14 +1100,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Transparently compress responses when the client supports it.
-	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-		w.Header().Set("Content-Encoding", "gzip")
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
-		w = &gzipResponseWriter{ResponseWriter: w, gz: gz}
-	}
-
 	// Reverse-proxy basepath: when configured (or advertised via
 	// X-Forwarded-Prefix with trustProxy on), strip the prefix from the
 	// request path so /pincher/v1/health and /v1/health both route to the
@@ -1121,14 +1113,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// #651: streamable-HTTP MCP transport. When SetMCPHTTPPath is set,
+	// #651/#687: streamable-HTTP MCP transport. When SetMCPHTTPPath is set,
 	// requests at that path (or any sub-path) delegate to the MCP SDK's
 	// streamable-HTTP handler. Mounted post-basepath-strip so reverse-proxy
 	// /pincher/mcp routes correctly. Auth + rate-limiting above already
 	// applied — the SDK handler sees only authenticated requests.
+	//
+	// Routed BEFORE the gzip wrap on purpose: the SDK serves a long-lived
+	// text/event-stream and flushes per SSE event, but gzipResponseWriter
+	// buffers and doesn't implement http.Flusher — wrapping it strands
+	// every event in the gzip buffer and the client's SSE read (and
+	// session.Close) hangs forever. The MCP transport frames its own
+	// payloads; it neither needs nor tolerates the gateway's gzip layer.
 	if s.mcpHTTPPath != "" && (r.URL.Path == s.mcpHTTPPath || strings.HasPrefix(r.URL.Path, s.mcpHTTPPath+"/")) {
 		s.streamableHTTPHandler().ServeHTTP(w, r)
 		return
+	}
+
+	// Transparently compress responses when the client supports it.
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		w = &gzipResponseWriter{ResponseWriter: w, gz: gz}
 	}
 
 	// #590: root URL → dashboard. A user typing the bare URL in a
