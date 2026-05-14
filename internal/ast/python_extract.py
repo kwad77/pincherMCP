@@ -201,6 +201,28 @@ def main():
     line_offsets = build_line_offsets(source)
     dunder_all = collect_dunder_all(tree)
     symbols = []
+
+    # Emit one Module symbol per file so IMPORTS edges have a stable
+    # endpoint on both sides (matches the Go extractor's convention at
+    # extractor.go:432-448). Without this, every Python IMPORTS edge
+    # would lack a resolvable from-side and stay in pending_edges.
+    last_line = max(1, len(line_offsets) - 1)
+    short_name = module.rsplit(".", 1)[-1] if module else ""
+    symbols.append({
+        "name": short_name,
+        "qualified_name": module,
+        "kind": "Module",
+        "parent": "",
+        "signature": "",
+        "docstring": ast.get_docstring(tree, clean=True) or "",
+        "is_exported": True,
+        "is_test": False,
+        "start_byte": 0,
+        "end_byte": len(source),
+        "start_line": 1,
+        "end_line": last_line,
+    })
+
     collect(
         tree, parent_qn=module, dunder_all=dunder_all,
         line_offsets=line_offsets, source_len=len(source),

@@ -90,10 +90,18 @@ func TestPyAST_AsyncSignature(t *testing.T) {
     return {}
 `)
 	r, ok := extractPythonAST(src, "m.py")
-	if !ok || len(r.Symbols) != 1 {
-		t.Fatalf("expected 1 symbol, got %d", len(r.Symbols))
+	if !ok {
+		t.Fatal("parse failed")
 	}
-	sig := r.Symbols[0].Signature
+	var sig string
+	for _, s := range r.Symbols {
+		if s.Name == "fetch" {
+			sig = s.Signature
+		}
+	}
+	if sig == "" {
+		t.Fatal("missing 'fetch' symbol")
+	}
 	if !strings.Contains(sig, "async def") {
 		t.Errorf("signature missing 'async def': %q", sig)
 	}
@@ -280,8 +288,14 @@ func TestPyAST_ByteOffsetsMatchSource(t *testing.T) {
 			t.Errorf("invalid byte span for %q: [%d, %d) (len=%d)", s.Name, s.StartByte, s.EndByte, len(src))
 			continue
 		}
+		// The Module symbol spans the whole file; per-def bodies start with `def`.
+		if s.Kind == "Module" {
+			if s.StartByte != 0 || s.EndByte != len(src) {
+				t.Errorf("Module span = [%d, %d), want [0, %d)", s.StartByte, s.EndByte, len(src))
+			}
+			continue
+		}
 		body := string(src[s.StartByte:s.EndByte])
-		// The body must start with the def keyword and contain the symbol name.
 		if !strings.HasPrefix(body, "def ") {
 			t.Errorf("body for %q should start with 'def ': %q", s.Name, body)
 		}

@@ -217,6 +217,12 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// the rewrite — external imports stay unresolved as before.
 	modulePath := readGoModulePath(absPath)
 
+	// Python source-root prefixes (e.g. "src" for a src-layout repo).
+	// Bridges Python's module-path imports and pincher's file-path-derived
+	// QNs in resolveImports. Empty slice (only "") for non-Python projects
+	// is harmless: resolveImports still tries the identity candidate.
+	pythonRoots := ast.PythonSourceRoots(absPath)
+
 	// Walk source files using gocodewalker (respects .gitignore)
 	fileListQueue := make(chan *gocodewalker.File, 256)
 	walker := gocodewalker.NewFileWalker(absPath, fileListQueue)
@@ -574,7 +580,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// LoadPendingEdges returns nil/[] on the first index (no prior
 	// rows), at which point the resolve passes are effectively no-ops.
 	allImports := loadOrFallback(idx, projectID, "IMPORTS", pendingImport)
-	if n := idx.resolveImports(projectID, allImports); n > 0 {
+	if n := idx.resolveImports(projectID, allImports, pythonRoots); n > 0 {
 		totalEdges += n
 	}
 
@@ -1165,6 +1171,14 @@ func isSkippedDir(name string) bool {
 	return skippedDirs[name] || strings.HasPrefix(name, ".")
 }
 
+// isPythonFile reports whether path is a Python source file. Used by
+// resolveImports to decide whether to expand to_name via Python's
+// source-root-aware candidate generator vs the literal lookup that
+// works for Go/Rust/Java/etc.
+func isPythonFile(path string) bool {
+	return strings.HasSuffix(path, ".py") || strings.HasSuffix(path, ".pyw")
+}
+
 // safeExtractWithModule wraps ast.ExtractWithModule in a recover() that
 // persists an "extractor_panicked" failure row instead of crashing the
 // per-file goroutine. Returns nil on panic so the caller skips the file.
@@ -1278,7 +1292,7 @@ func readGoModulePath(repoPath string) string {
 // by matching both endpoints against Module symbols in the project. Edges
 // with no matching Module on either side are dropped. Returns the number
 // of edges actually persisted.
-func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge) int {
+func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge, pythonRoots []string) int {
 	if len(pending) == 0 {
 		return 0
 	}
@@ -1314,13 +1328,33 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 		return canonical
 	}
 
+	// Python imports use dotted module paths ("zelosmcp.config"), but
+	// pincher's QNs are file-path-derived ("src.zelosmcp.config" for a
+	// src-layout repo). PythonImportCandidates expands toName with each
+	// detected source-root prefix plus the identity fallback; lookupPython
+	// returns the first hit. Non-Python edges keep the cheap single-lookup
+	// path. See internal/ast/python_resolve.go.
+	lookupPython := func(toName, fromFile string) string {
+		for _, c := range ast.PythonImportCandidates(toName, fromFile, pythonRoots) {
+			if id := lookup(c); id != "" {
+				return id
+			}
+		}
+		return ""
+	}
+
 	// Dedupe by (fromID, toID) — one pair of files can appear many times
 	// when there are multiple Module rows per package.
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
 	for _, e := range pending {
 		fromID := lookup(e.FromQN)
-		toID := lookup(e.ToName)
+		var toID string
+		if isPythonFile(e.FromFile) {
+			toID = lookupPython(e.ToName, e.FromFile)
+		} else {
+			toID = lookup(e.ToName)
+		}
 		if fromID == "" || toID == "" {
 			continue
 		}
