@@ -1547,6 +1547,47 @@ func isPolymorphicInterfaceMethodName(name string) bool {
 	return false
 }
 
+// isFixturePath reports whether filePath is inside an isolated test-
+// fixture corpus (testdata/, __fixtures__/, etc.). #750: name-fallback
+// call/binding resolution must not pick a fixture symbol as the target
+// of an edge from real project code — testdata corpora are isolated
+// mini-projects, not real call targets, so binding `Open()` to a
+// `testdata/corpus/.../auth.Open` fixture is always a false positive.
+// Mirror of server.isTestFixturePath (the index package can't import
+// server). Note: when a corpus is indexed as its OWN project root
+// (the pinned-corpus snapshot path), file paths are relative to the
+// corpus dir and this returns false — so snapshots are unaffected.
+func isFixturePath(filePath string) bool {
+	low := strings.ToLower(strings.ReplaceAll(filePath, `\`, `/`))
+	for _, dir := range []string{"/testdata/", "/test-fixtures/", "/test_fixtures/", "/__fixtures__/", "/fixtures/"} {
+		if strings.Contains(low, dir) {
+			return true
+		}
+	}
+	for _, prefix := range []string{"testdata/", "test-fixtures/", "test_fixtures/", "__fixtures__/", "fixtures/"} {
+		if strings.HasPrefix(low, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// preferNonFixtureSyms returns syms with fixture-path entries removed,
+// unless that would empty the set (in which case the original is
+// returned so intra-fixture resolution still works). #750.
+func preferNonFixtureSyms(syms []db.Symbol) []db.Symbol {
+	out := make([]db.Symbol, 0, len(syms))
+	for _, s := range syms {
+		if !isFixturePath(s.FilePath) {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return syms
+	}
+	return out
+}
+
 // resolveMethodByName is the #285 receiver-method fallback. Looks up
 // every project symbol with the given short name; returns the ID
 // only when exactly one is of kind=Method. Multiple matches are
@@ -1559,6 +1600,9 @@ func resolveMethodByName(store *db.Store, projectID, name string) string {
 	if err != nil {
 		return ""
 	}
+	// #750: drop fixture-corpus symbols before counting — a real
+	// receiver-method call must not bind into testdata/.
+	syms = preferNonFixtureSyms(syms)
 	var only string
 	for _, s := range syms {
 		if s.Kind != "Method" {
@@ -1695,6 +1739,11 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 			nameCache[name] = ""
 			return ""
 		}
+		// #750: a bare-name call from real project code must not bind
+		// into an isolated testdata fixture. Drop fixture candidates
+		// before picking the canonical target (and its build-tag
+		// siblings) — keeps them only if every candidate is a fixture.
+		syms = preferNonFixtureSyms(syms)
 		canonical := pickCanonical(syms)
 		nameCache[name] = canonical
 		// #566: same fan-out cache as lookupQN, keyed by the bare
@@ -2016,6 +2065,10 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 			nameCache[k] = lookup{}
 			return lookup{}
 		}
+		// #750: a name-fallback binding edge from real project code
+		// must not target an isolated testdata fixture. Drop fixture
+		// candidates unless every match is a fixture.
+		syms = preferNonFixtureSyms(syms)
 		// #436: only match symbols of the same language as the source.
 		// Variable matches preferred within that scoped set; Function/
 		// Method matches recorded for #565 function-value-binding edges
