@@ -5247,6 +5247,27 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 			"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "file_path": sym.FilePath,
 		})
 	}
+	// #740: #730 capped `impacted` and `tests_to_run` but missed
+	// `changed_symbols` — on a large diff (a wide rename, or scope=all
+	// over a tree with many untracked multi-symbol files) this list is
+	// unbounded and reopens the same response-bloat problem #730 closed.
+	// Cap it the same way: sort by (file_path, id) so the trim is
+	// deterministic, keep the first changesMaxList, and warn.
+	// summary.changed_symbols already carries the true full count.
+	fullChangedSyms := len(changedSymNames)
+	if fullChangedSyms > changesMaxList {
+		sort.SliceStable(changedSymNames, func(i, j int) bool {
+			fi, fj := fmt.Sprint(changedSymNames[i]["file_path"]), fmt.Sprint(changedSymNames[j]["file_path"])
+			if fi != fj {
+				return fi < fj
+			}
+			return fmt.Sprint(changedSymNames[i]["id"]) < fmt.Sprint(changedSymNames[j]["id"])
+		})
+		changesTrimWarnings = append(changesTrimWarnings, fmt.Sprintf(
+			"changed_symbols trimmed to %d of %d — see summary.changed_symbols for the full count, or pass fields=summary,tests_to_run to drop the lists",
+			changesMaxList, fullChangedSyms))
+		changedSymNames = changedSymNames[:changesMaxList]
+	}
 
 	responseJSON, _ := json.Marshal(impacted)
 	data := map[string]any{

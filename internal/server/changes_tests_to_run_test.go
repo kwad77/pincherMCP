@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,6 +241,67 @@ func TestHandleChanges_ImpactedListTrimmedWhenHuge(t *testing.T) {
 	warns, _ := meta["warnings"].([]any)
 	if len(warns) == 0 {
 		t.Fatalf("expected a _meta.warnings entry naming the trim; got _meta %v", meta)
+	}
+}
+
+// #740: #730 capped `impacted` and `tests_to_run` but missed
+// `changed_symbols`. On a large diff (or scope=all over a tree with
+// many untracked multi-symbol files) `changed_symbols` was unbounded,
+// reopening the response-bloat problem #730 closed. It must be capped
+// the same way: trimmed to changesMaxList, true count kept in
+// summary.changed_symbols, trim surfaced in _meta.warnings.
+func TestHandleChanges_ChangedSymbolsListTrimmedWhenHuge(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	repoDir := setupChangesGitRepo(t)
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "trim-cs", IndexedAt: time.Now()})
+	srv.sessionID = repoDir
+	srv.sessionRoot = repoDir
+
+	// An untracked file has no diff hunks, so handleChanges falls back
+	// to "all symbols in file" — the cheapest way to manufacture a huge
+	// changed_symbols list. Put changesMaxList + 10 symbols in it.
+	untracked := filepath.Join(repoDir, "untracked.go")
+	os.WriteFile(untracked, []byte("package main\n"), 0o644)
+
+	nSyms := changesMaxList + 10
+	syms := make([]db.Symbol, 0, nSyms)
+	for i := 0; i < nSyms; i++ {
+		syms = append(syms, db.Symbol{
+			ID: "p::main.U" + itoaPad(i) + "#Function", ProjectID: repoDir,
+			FilePath: "untracked.go", Name: "U" + itoaPad(i),
+			QualifiedName: "main.U" + itoaPad(i), Kind: "Function", Language: "Go",
+			ExtractionConfidence: 1.0,
+		})
+	}
+	mustUpsertSymbols(t, store, syms)
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{"scope": "all"}))
+	if err != nil {
+		t.Fatalf("handleChanges: %v", err)
+	}
+	body := decode(t, result)
+
+	changed, _ := body["changed_symbols"].([]any)
+	if len(changed) != changesMaxList {
+		t.Errorf("changed_symbols list = %d, want capped at %d", len(changed), changesMaxList)
+	}
+	// Summary keeps the TRUE total, not the trimmed length.
+	summary, _ := body["summary"].(map[string]any)
+	if total, _ := summary["changed_symbols"].(float64); int(total) != nSyms {
+		t.Errorf("summary.changed_symbols = %v, want %d (true count, not trimmed)", total, nSyms)
+	}
+	// The trim is surfaced, not silent.
+	meta, _ := body["_meta"].(map[string]any)
+	warns, _ := meta["warnings"].([]any)
+	foundTrimWarning := false
+	for _, w := range warns {
+		if s, _ := w.(string); strings.Contains(s, "changed_symbols trimmed") {
+			foundTrimWarning = true
+		}
+	}
+	if !foundTrimWarning {
+		t.Errorf("expected a _meta.warnings entry naming the changed_symbols trim; got %v", warns)
 	}
 }
 
