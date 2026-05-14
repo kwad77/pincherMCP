@@ -25,7 +25,18 @@ jobs:
             # job from ~7min toward ~4min. Revert to -p 1 if flakes
             # emerge from WAL-file lock contention or runner memory
             # pressure.
-            test-flags: -timeout 300s -p 2
+            #
+            # #770: -timeout is per-package. The process-spawn-heavy
+            # packages (cmd/pinch, internal/supervisor/cmd/probe) run
+            # real `pincher` child processes serially; under -p 2 they
+            # contend with a concurrent package for the runner's CPU
+            # headroom and cmd/pinch tripped the 300s per-package
+            # deadline (`panic: test timed out after 5m0s`) 3x in one
+            # session. 600s absorbs the contention slowness without
+            # masking a genuine hang — a healthy cmd/pinch run is well
+            # under a minute; only the loaded-runner tail needs the
+            # slack. Cheap packages are unaffected (per-package).
+            test-flags: -timeout 600s -p 2
 
     steps:
       - uses: actions/checkout@v4
