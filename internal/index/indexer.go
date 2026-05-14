@@ -894,6 +894,7 @@ func (idx *Indexer) hasChanges(p db.Project) bool {
 // vendor/.git/node_modules dominating the walk.
 func (idx *Indexer) changedFiles(p db.Project) []string {
 	var changed []string
+	seen := map[string]bool{}
 	_ = filepath.WalkDir(p.Path, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() {
@@ -914,17 +915,34 @@ func (idx *Indexer) changedFiles(p db.Project) []string {
 		if !ast.IsSourceFile(name) && !ast.MayHaveShebang(name) {
 			return nil
 		}
+		rel, relErr := filepath.Rel(p.Path, path)
+		if relErr != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
+		seen[relSlash] = true
 		info, infoErr := d.Info()
 		if infoErr != nil {
 			return nil
 		}
 		if info.ModTime().After(p.IndexedAt) {
-			if rel, relErr := filepath.Rel(p.Path, path); relErr == nil {
-				changed = append(changed, filepath.ToSlash(rel))
-			}
+			changed = append(changed, relSlash)
 		}
 		return nil
 	})
+	// #828: a pure deletion produces no file with a new mtime, so the
+	// mtime scan above can't see it — the deleted file is just gone.
+	// Compare the walked set against the files table; any indexed path
+	// no longer on disk counts as a change so the watcher re-indexes
+	// (which lets the #326 tail-GC prune the orphaned symbols, and
+	// feeds invalidateReferencers for files with edges into it).
+	if stored, err := idx.store.ListFilesForProject(p.ID); err == nil {
+		for _, sp := range stored {
+			if !seen[sp] {
+				changed = append(changed, sp)
+			}
+		}
+	}
 	return changed
 }
 
