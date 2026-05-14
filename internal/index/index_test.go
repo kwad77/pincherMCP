@@ -369,6 +369,63 @@ func TestIndex_IncrementalReindex_PreservesCrossFileEdges(t *testing.T) {
 	}
 }
 
+// #828: a pure file deletion produces no file with a new mtime, so
+// the mtime-only scan in changedFiles couldn't see it — the watcher
+// never re-indexed and the deleted file's symbols stayed orphaned.
+// changedFiles now also diffs the walked set against the files table.
+func TestIndex_ChangedFiles_DetectsDeletion(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "go.mod", "module probe\n")
+	writeFile(t, dir, "a.go", "package probe\n\nfunc A() {}\n")
+	writeFile(t, dir, "b.go", "package probe\n\nfunc B() {}\n")
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("first Index: %v", err)
+	}
+	projectID := db.ProjectIDFromPath(dir)
+	p, err := store.GetProject(projectID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+
+	// Settle: push every file's mtime clearly before IndexedAt so the
+	// steady state of changedFiles is empty.
+	past := p.IndexedAt.Add(-time.Hour)
+	for _, f := range []string{"go.mod", "a.go", "b.go"} {
+		if err := os.Chtimes(filepath.Join(dir, f), past, past); err != nil {
+			t.Fatalf("chtimes %s: %v", f, err)
+		}
+	}
+	if c := idx.changedFiles(*p); len(c) != 0 {
+		t.Fatalf("expected empty changedFiles at steady state, got %v", c)
+	}
+
+	// Delete b.go and touch nothing else.
+	if err := os.Remove(filepath.Join(dir, "b.go")); err != nil {
+		t.Fatalf("remove b.go: %v", err)
+	}
+	changed := idx.changedFiles(*p)
+	found := false
+	for _, c := range changed {
+		if c == "b.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("changedFiles must report the deleted b.go so the watcher re-indexes; got %v", changed)
+	}
+
+	// And the re-index must actually prune the orphaned symbols.
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("re-index: %v", err)
+	}
+	if syms, _ := store.GetSymbolsForFile(projectID, "b.go"); len(syms) != 0 {
+		t.Errorf("expected b.go symbols pruned after re-index, got %d", len(syms))
+	}
+}
+
 func TestIndex_CrossFileGoCALLS_CrossPackage(t *testing.T) {
 	idx, store := newTestIndexer(t)
 	dir := t.TempDir()
