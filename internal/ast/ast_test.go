@@ -483,6 +483,32 @@ func TestExtractJava(t *testing.T) {
 	}
 }
 
+// #820: the old exportedFn used Go's uppercase rule, so a public but
+// lowercase Java method was reported not-exported. Java methods are
+// conventionally lowercase — they must not be flagged not-exported
+// just for that.
+func TestExtractJava_LowercaseMethodIsExported(t *testing.T) {
+	src := []byte(`public class Calc {
+    public int add(int a, int b) {
+        return a + b;
+    }
+}
+`)
+	result := Extract(src, "Java", "src/Calc.java")
+	var found bool
+	for _, s := range result.Symbols {
+		if s.Name == "add" {
+			found = true
+			if !s.IsExported {
+				t.Error("add (a public Java method) should be IsExported, not flagged by capitalization")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected method symbol 'add'")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Ruby extractor
 // ─────────────────────────────────────────────────────────────────────────────

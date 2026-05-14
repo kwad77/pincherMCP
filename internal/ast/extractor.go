@@ -1627,10 +1627,16 @@ func extractJava(source []byte, relPath string) *FileResult {
 	opts := extractOpts{
 		modSep:    ".",
 		blockChar: '{',
-		exportedFn: func(name string) bool {
-			return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
-		},
-		isTest: func(name string) bool { return false },
+		// #820: Java visibility is keyword-based (`public`/`private`),
+		// not capitalization. The old rule (name starts uppercase)
+		// reported every lowercase method — i.e. ~every Java method —
+		// as not-exported, which made `dead_code` flag them all.
+		// Regex-tier extraction can't reliably parse the modifier, so
+		// match the other regex extractors (PHP/Rust/C#/Kotlin/Swift,
+		// all `return true`): conservatively treat symbols as exported
+		// rather than mislabel public ones.
+		exportedFn: func(name string) bool { return true },
+		isTest:     func(name string) bool { return false },
 	}
 	return javaRE.extract(source, relPath, "Java", opts)
 }
