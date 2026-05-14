@@ -6573,8 +6573,9 @@ const (
 	shapeFind       guideShape = "find"       // find/where is — search-leaning (#284)
 	shapeTraceIn    guideShape = "trace_in"   // who calls / what calls — trace inbound (#284)
 	shapeTraceOut   guideShape = "trace_out"  // what does X call — trace outbound (#284)
-	shapeAudit      guideShape = "audit"      // structural audit (#467) — undocumented/untested/dead-code surveys
+	shapeAudit      guideShape = "audit"      // structural audit (#467) — undocumented/untested surveys (pinchQL predicate)
 	shapeToolAudit  guideShape = "tool_audit" // empirical audit of a tool's OUTPUT quality (#497) — "find FPs in dead_code", "audit search results"
+	shapeDeadCode   guideShape = "dead_code"  // unreachable / zero-caller / unused-function surveys — routes to the dead_code tool
 	shapeUnknown    guideShape = "unknown"    // fallback
 )
 
@@ -6637,6 +6638,17 @@ func classifyTaskShape(task string) guideShape {
 			"audit", "noise", "noisy", "wrong result", "incorrect",
 			"precision", "verify output", "characterize"):
 		return shapeToolAudit
+	// Dead-code surveys route to the `dead_code` tool — the canonical
+	// answer for "which functions have zero callers". Checked before
+	// shapeTest/shapeFind so "find unused functions with no test
+	// coverage" doesn't match "coverage" and route to a search+context
+	// flow that never mentions dead_code. The shapeToolAudit case above
+	// already claimed "find FPs in dead_code" (it carries the tool name),
+	// so a plain dead-code survey lands here.
+	case contains("dead code", "dead-code", "unused function", "unused method",
+		"unused code", "unreachable", "zero callers", "no callers",
+		"never called", "uncalled"):
+		return shapeDeadCode
 	case contains("test", "spec ", "coverage"):
 		return shapeTest
 	case contains("review", "diff", "before commit", "blast radius", "pre-commit", "impact"):
@@ -6783,7 +6795,13 @@ var domainConcepts = []struct {
 		why:      "every tool response wraps via jsonResultWithMeta which atomically increments session stats — read it before adding a new tool",
 	},
 	{
-		patterns: []string{"trace", "callers", "call graph", "bfs depth", "trace risk"},
+		// #616-style tighten: bare "trace" / "callers" matched any task
+		// mentioning callers (e.g. "find functions with zero callers")
+		// and wrongly prepended a trace-internals source pointer. These
+		// patterns now only fire when the user is investigating trace's
+		// OWN implementation, not just using the concept.
+		patterns: []string{"traceviacte", "trace internals", "trace bfs",
+			"how does trace", "trace implementation", "trace recursive cte"},
 		tool:     "search",
 		args:     `{"query":"traceViaCTE"}`,
 		why:      "trace BFS uses a recursive CTE in internal/db/db.go (traceViaCTE) — that's the SQL doing the work",
@@ -6924,6 +6942,20 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool string) []map[
 				"why": "structural audit — pinchQL filters on docstring/is_exported directly. BM25 search of the literal phrase wouldn't surface anything"},
 			{"tool": "context", "args": `{"id":"<from-query>"}`,
 				"why": "read each candidate's surrounding context to confirm it warrants a docstring"},
+		}
+	case shapeDeadCode:
+		// The dead_code tool IS the answer here — zero-inbound-edge
+		// detection is exactly what it does. search/context would make
+		// the agent reinvent it by hand. trace inbound on a candidate
+		// confirms it (a true dead symbol has no callers; a false
+		// positive has callers the static graph missed).
+		return []map[string]string{
+			{"tool": "dead_code", "args": `{"language":"Go"}`,
+				"why": "purpose-built — finds non-exported functions/methods with zero inbound CALLS/READS/WRITES/REFERENCES edges"},
+			{"tool": "trace", "args": `{"name":"<candidate-from-dead_code>","direction":"inbound"}`,
+				"why": "verify a candidate — a real dead symbol traces to zero callers; callers here mean a missed edge (interface dispatch, reflection)"},
+			{"tool": "context", "args": `{"id":"<candidate-from-dead_code>"}`,
+				"why": "read the symbol before deleting — confirm it's not an entry point the graph can't see"},
 		}
 	case shapeToolAudit:
 		// #497: tool-output audit recipe. The user is asking "is this
