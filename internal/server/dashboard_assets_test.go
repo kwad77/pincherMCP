@@ -2,13 +2,52 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kwad77/pincher/internal/db"
 )
+
+// #815: the dashboard JS read project symbol counts as `p.SymCount` /
+// `p.sym_count`, but db.Project.SymCount marshals to JSON as
+// `symbol_count`. Neither key matched, so every project rendered "0
+// symbols" — and any project that also had 0 edges (a Go-free repo,
+// say) tripped the `isEmpty` heuristic and got flagged "no data — may
+// be a ghost project". A zelosMCP user hit exactly this on a 2040-
+// symbol repo. This test pins the JS to whatever key db.Project
+// actually marshals to, so a future json-tag rename can't silently
+// reintroduce the mismatch.
+func TestDashboardJS_ReadsCanonicalSymbolCountKey(t *testing.T) {
+	b, err := json.Marshal(db.Project{SymCount: 2040})
+	if err != nil {
+		t.Fatalf("marshal Project: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal Project: %v", err)
+	}
+	var symKey string
+	for k, v := range m {
+		if n, ok := v.(float64); ok && n == 2040 {
+			symKey = k
+			break
+		}
+	}
+	if symKey == "" {
+		t.Fatal("could not determine the JSON key db.Project.SymCount marshals to")
+	}
+	js := renderDashboardJS("")
+	if !strings.Contains(js, "p."+symKey) {
+		t.Errorf("dashboard JS never reads project symbol count via p.%s — "+
+			"every project will render 0 symbols and 0-edge repos will be "+
+			"mislabelled ghost projects (#815)", symKey)
+	}
+}
 
 // #522 + #523 (umbrella #519): regression tests for the dashboard's
 // non-HTML assets — /v1/dashboard.css and /v1/dashboard.js. Pre-tests
