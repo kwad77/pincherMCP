@@ -71,6 +71,48 @@ func TestExecute_WellFormedQuery_StillParses(t *testing.T) {
 	}
 }
 
+// A WHERE after RETURN is HAVING-style aggregate filtering, which
+// pinchQL doesn't support. Pre-fix the parser folded it into q.where
+// as another pre-aggregation node filter, so
+// `RETURN count(*) AS c WHERE c > 40` silently filtered on the
+// non-existent property `c` and returned every group unfiltered — a
+// confidently-wrong result. The parser now rejects it.
+func TestExecute_WhereAfterReturn_RejectedNotSilentlyFolded(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Open", "Function", "Go")
+	insertSym(t, db, "s2", "Close", "Function", "Go")
+
+	e := &Executor{DB: db, MaxRows: 100, ProjectID: "proj1"}
+	_, err := e.Execute(context.Background(),
+		`MATCH (n:Function) RETURN n.file_path, count(*) AS c WHERE c > 40`)
+	if err == nil {
+		t.Fatal("expected a parse error for WHERE after RETURN; got nil (HAVING-style filter silently folded into pre-aggregation WHERE)")
+	}
+	if !strings.Contains(err.Error(), "WHERE after RETURN") {
+		t.Errorf("error should name the WHERE-after-RETURN ordering violation; got %q", err.Error())
+	}
+}
+
+// The legitimate ORDER BY / LIMIT clauses after RETURN are unaffected
+// by the WHERE-after-RETURN rejection.
+func TestExecute_OrderByLimitAfterReturn_StillParse(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "s1", "Open", "Function", "Go")
+	insertSym(t, db, "s2", "Close", "Function", "Go")
+
+	e := &Executor{DB: db, MaxRows: 100, ProjectID: "proj1"}
+	r, err := e.Execute(context.Background(),
+		`MATCH (n:Function) RETURN n.name ORDER BY n.name DESC LIMIT 5`)
+	if err != nil {
+		t.Fatalf("ORDER BY / LIMIT after RETURN must still parse: %v", err)
+	}
+	if len(r.Rows) != 2 {
+		t.Errorf("rows=%d, want 2", len(r.Rows))
+	}
+}
+
 // editDistanceAtMost1 unit coverage — the did-you-mean engine.
 func TestEditDistanceAtMost1(t *testing.T) {
 	cases := []struct {

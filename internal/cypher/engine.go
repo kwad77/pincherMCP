@@ -1034,6 +1034,15 @@ func (p *parser) parseQuery() (*queryAST, error) {
 	// returned the default.
 	q := &queryAST{limit: -1}
 
+	// seenReturn gates clause ordering: once RETURN is parsed, only
+	// ORDER BY and LIMIT may follow. A WHERE after RETURN is the
+	// HAVING-style filter pinchQL doesn't support — pre-fix the parser
+	// folded it into q.where as another pre-aggregation node filter, so
+	// `RETURN count(*) AS c WHERE c > 40` silently filtered on the
+	// non-existent property `c` and returned every row unfiltered (the
+	// #748 confidently-wrong-result trap). Reject it explicitly.
+	seenReturn := false
+
 	for p.pos < len(p.tokens) {
 		t := p.peek()
 		switch t.value {
@@ -1055,6 +1064,11 @@ func (p *parser) parseQuery() (*queryAST, error) {
 			q.patterns = append(q.patterns, pat)
 
 		case "WHERE":
+			if seenReturn {
+				return nil, fmt.Errorf(
+					"pinchQL: WHERE after RETURN (HAVING-style filtering on aggregates) is not supported. " +
+						"Move the predicate before RETURN, or filter the aggregate result client-side")
+			}
 			p.next()
 			where, err := p.parseWhere()
 			if err != nil {
@@ -1087,6 +1101,7 @@ func (p *parser) parseQuery() (*queryAST, error) {
 				return nil, err
 			}
 			q.returnVars = vars
+			seenReturn = true
 
 		case "ORDER":
 			p.next()
