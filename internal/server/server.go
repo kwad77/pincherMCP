@@ -3149,6 +3149,14 @@ func fileHashOnDisk(absPath string) (string, bool) {
 // to prevent unbounded DB query loops and excessive memory usage.
 const maxBatchSymbols = 100
 
+// changesMaxList caps the `impacted` and `tests_to_run` lists in a
+// `changes` response. A change to a hot file (e.g. cypher/engine.go's
+// parseQuery) blast-radiuses into 100+ symbols + 100+ tests; the full
+// response then exceeds the MCP token limit and the tool fails by
+// default. The summary keeps the true totals; the lists keep the
+// highest-signal entries (impacted by risk, tests by overlap).
+const changesMaxList = 50
+
 // adrKeyMaxLen + adrValueMaxLen bound the ADR set action's input
 // (#534). The dashboard's input/textarea elements set matching
 // maxlength attributes so the bounds enforce uniformly across UI
@@ -5181,12 +5189,43 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		return testsToRun[i].ID < testsToRun[j].ID
 	})
 
-	// Build risk summary
+	// Build risk summary — count the FULL impacted set before any trim.
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
 	for _, item := range impacted {
 		if r, ok := item["risk"].(string); ok {
 			riskCounts[r]++
 		}
+	}
+
+	// #729 follow-up: a change to a hot file (e.g. cypher/engine.go's
+	// parseQuery) can blast-radius into 100+ impacted symbols + 100+
+	// tests — the full response then exceeds the MCP token limit and
+	// `changes` fails by default, exactly when it's most needed. Cap
+	// both lists like neighborhood (#293): keep the highest-signal
+	// entries (impacted sorted by risk severity, tests already sorted
+	// by overlap desc), surface the true totals in `summary`, and warn.
+	fullImpacted, fullTests := len(impacted), len(testsToRun)
+	riskRank := map[string]int{"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+	sort.SliceStable(impacted, func(i, j int) bool {
+		ri := riskRank[fmt.Sprint(impacted[i]["risk"])]
+		rj := riskRank[fmt.Sprint(impacted[j]["risk"])]
+		if ri != rj {
+			return ri < rj
+		}
+		return fmt.Sprint(impacted[i]["id"]) < fmt.Sprint(impacted[j]["id"])
+	})
+	var changesTrimWarnings []string
+	if len(impacted) > changesMaxList {
+		changesTrimWarnings = append(changesTrimWarnings, fmt.Sprintf(
+			"impacted trimmed to the %d highest-risk of %d — see summary.total_impacted for the full count, or pass fields=summary,tests_to_run to drop the lists",
+			changesMaxList, fullImpacted))
+		impacted = impacted[:changesMaxList]
+	}
+	if len(testsToRun) > changesMaxList {
+		changesTrimWarnings = append(changesTrimWarnings, fmt.Sprintf(
+			"tests_to_run trimmed to the %d highest-overlap of %d — re-run those first",
+			changesMaxList, fullTests))
+		testsToRun = testsToRun[:changesMaxList]
 	}
 
 	// #330: zero-len init so the JSON field is [] when no symbols changed.
@@ -5206,20 +5245,29 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		"summary": map[string]any{
 			"changed_files":   len(changedFiles),
 			"changed_symbols": len(changedSymbols),
-			"total_impacted":  len(impacted),
-			"tests_to_run":    len(testsToRun),
-			"critical":        riskCounts["CRITICAL"],
-			"high":            riskCounts["HIGH"],
-			"medium":          riskCounts["MEDIUM"],
-			"low":             riskCounts["LOW"],
+			// total_impacted / tests_to_run report the FULL counts even
+			// when the lists themselves were trimmed for response budget.
+			"total_impacted": fullImpacted,
+			"tests_to_run":   fullTests,
+			"critical":       riskCounts["CRITICAL"],
+			"high":           riskCounts["HIGH"],
+			"medium":         riskCounts["MEDIUM"],
+			"low":            riskCounts["LOW"],
 		},
 	}
 	// Suggest the next move based on what changes found. CRITICAL impact
 	// → trace the affected callers to inspect the chain. Non-zero impact
 	// without CRITICAL → read context on the most-impacted symbol.
 	// No impact → the change is local; suggest writing tests.
+	meta := map[string]any{}
 	if nextSteps := suggestChangesNextSteps(impacted, changedSymNames, riskCounts); len(nextSteps) > 0 {
-		data["_meta"] = map[string]any{"next_steps": nextSteps}
+		meta["next_steps"] = nextSteps
+	}
+	if len(changesTrimWarnings) > 0 {
+		meta["warnings"] = changesTrimWarnings
+	}
+	if len(meta) > 0 {
+		data["_meta"] = meta
 	}
 	// #400: response-level field projection. Common shape on chained
 	// PR-prep flow: caller wants summary + tests_to_run, skips

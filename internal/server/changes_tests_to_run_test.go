@@ -187,3 +187,68 @@ func mustUpsertEdges(t *testing.T, store *db.Store, projectID string, edges []db
 		t.Fatalf("BulkUpsertEdges: %v", err)
 	}
 }
+
+// #729 follow-up: a change to a hot file blast-radiuses into 100+
+// impacted symbols; the full `changes` response then exceeds the MCP
+// token limit and the tool fails by default. The `impacted` list is
+// now capped at changesMaxList, the summary keeps the true total, and
+// a _meta.warnings entry names the trim.
+func TestHandleChanges_ImpactedListTrimmedWhenHuge(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	repoDir := setupChangesGitRepo(t)
+	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "trim", IndexedAt: time.Now()})
+	srv.sessionID = repoDir
+	srv.sessionRoot = repoDir
+
+	// Changed function Foo + (changesMaxList + 10) callers, all inbound.
+	syms := []db.Symbol{
+		{ID: "p::main.Foo#Function", ProjectID: repoDir, FilePath: "main.go", Name: "Foo",
+			QualifiedName: "main.Foo", Kind: "Function", Language: "Go",
+			StartByte: 13, EndByte: 30, StartLine: 2, EndLine: 2, ExtractionConfidence: 1.0},
+	}
+	edges := []db.Edge{}
+	nCallers := changesMaxList + 10
+	for i := 0; i < nCallers; i++ {
+		id := "p::main.C" + itoaPad(i) + "#Function"
+		syms = append(syms, db.Symbol{
+			ID: id, ProjectID: repoDir, FilePath: "callers.go",
+			Name: "C" + itoaPad(i), QualifiedName: "main.C" + itoaPad(i),
+			Kind: "Function", Language: "Go", ExtractionConfidence: 1.0,
+		})
+		edges = append(edges, db.Edge{FromID: id, ToID: "p::main.Foo#Function", Kind: "CALLS"})
+	}
+	mustUpsertSymbols(t, store, syms)
+	mustUpsertEdges(t, store, repoDir, edges)
+
+	result, err := srv.handleChanges(context.Background(), makeReq(map[string]any{"scope": "all"}))
+	if err != nil {
+		t.Fatalf("handleChanges: %v", err)
+	}
+	body := decode(t, result)
+	impacted, _ := body["impacted"].([]any)
+	if len(impacted) != changesMaxList {
+		t.Errorf("impacted list = %d, want capped at %d", len(impacted), changesMaxList)
+	}
+	// Summary keeps the TRUE total, not the trimmed length.
+	summary, _ := body["summary"].(map[string]any)
+	if total, _ := summary["total_impacted"].(float64); int(total) != nCallers {
+		t.Errorf("summary.total_impacted = %v, want %d (true count, not trimmed)", total, nCallers)
+	}
+	// The trim is surfaced, not silent.
+	meta, _ := body["_meta"].(map[string]any)
+	warns, _ := meta["warnings"].([]any)
+	if len(warns) == 0 {
+		t.Fatalf("expected a _meta.warnings entry naming the trim; got _meta %v", meta)
+	}
+}
+
+// itoaPad zero-pads to 3 digits so caller symbol IDs sort stably and
+// the risk-then-id ordering in handleChanges is deterministic.
+func itoaPad(n int) string {
+	s := ""
+	for _, d := range []int{100, 10, 1} {
+		s += string(rune('0' + (n/d)%10))
+	}
+	return s
+}
