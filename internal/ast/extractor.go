@@ -1291,6 +1291,12 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 				name := namedGroup(rx.interfaceRE, m, "name")
 				if name != "" {
 					endByte := blockEnd(source, lineStart, opts)
+					endLine := offsetToLine(lineOffsets, endByte)
+					// #819: scope the interface like a class so its
+					// member declarations come out as Method/parent=Iface
+					// rather than top-level Function/parent="".
+					currentClass = name
+					currentClassEnd = endLine
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
 						Name:          name,
@@ -1299,7 +1305,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 						StartByte:     lineStart,
 						EndByte:       endByte,
 						StartLine:     lineNum,
-						EndLine:       offsetToLine(lineOffsets, endByte),
+						EndLine:       endLine,
 						IsExported:    isExported(name, opts.exportedFn),
 					})
 				}
