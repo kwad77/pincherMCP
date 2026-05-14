@@ -2790,7 +2790,7 @@ func (s *Server) registerTools() {
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"lookback_hours":{"type":"integer","description":"Hours of history to include in failures + slow-query lists. Default 168 (7 days)."},
-				"top":{"type":"integer","description":"Maximum failures + slow queries returned per section. Default 10."}
+				"top":{"type":"integer","description":"Maximum entries returned per section — caps the extraction-failures list, the slow-queries list, AND the projects list (#575, response-size bound on multi-project installs). Projects are sorted by symbol count desc, so the largest are kept; projects_truncated reports the count omitted. Use the list tool for full project enumeration. Default 10."}
 			}
 		}`),
 	}, s.handleDoctor)
