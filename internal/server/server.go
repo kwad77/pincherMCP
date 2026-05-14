@@ -3140,10 +3140,22 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 
 	ids := strSlice(args, "ids")
 	if len(ids) == 0 {
-		return errResult("ids array is required"), nil
+		// #712: failure-as-pedagogy — an empty batch is most often "I
+		// don't have IDs yet". Point at the tools that produce them.
+		return s.errResultRich("ids array is required", []map[string]string{
+			{"tool": "search", "args": `{"query":"<symbol name>"}`,
+				"why": "search returns symbol IDs — feed them back into symbols as the ids array"},
+			{"tool": "query", "args": `{"pinchql":"MATCH (n:Function) RETURN n.id LIMIT 20"}`,
+				"why": "a pinchQL query projecting n.id yields a batch of IDs to fetch"},
+		}), nil
 	}
 	if len(ids) > maxBatchSymbols {
-		return errResult(fmt.Sprintf("too many ids: max %d per call, got %d", maxBatchSymbols, len(ids))), nil
+		return s.errResultRich(
+			fmt.Sprintf("too many ids: max %d per call, got %d", maxBatchSymbols, len(ids)),
+			[]map[string]string{
+				{"tool": "symbols", "args": fmt.Sprintf(`{"ids":[ ...first %d... ]}`, maxBatchSymbols),
+					"why": fmt.Sprintf("split the batch — call symbols repeatedly in pages of %d", maxBatchSymbols)},
+			}), nil
 	}
 
 	projectArg := str(args, "project")
@@ -4420,8 +4432,18 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// for one release per #206). New callers should use `pinchql`; the
 	// alias is honored silently so existing scripts keep working.
 	cql := str(args, "pinchql")
+	cypherAlias := str(args, "cypher")
+	// #712: when a caller passes BOTH `pinchql` and the legacy `cypher`
+	// alias, `pinchql` wins and `cypher` is silently dropped. Silent
+	// ignore is the bug (same class as #473's unknown-property warning) —
+	// surface it so the caller learns which one ran.
+	var queryWarnings []string
+	if cql != "" && cypherAlias != "" {
+		queryWarnings = append(queryWarnings,
+			"both `pinchql` and the legacy `cypher` alias were passed — `pinchql` was used and `cypher` ignored; pass only one")
+	}
 	if cql == "" {
-		cql = str(args, "cypher")
+		cql = cypherAlias
 	}
 	if cql == "" {
 		// #712: failure-as-pedagogy — pinchQL is unfamiliar; show a
@@ -4512,7 +4534,10 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// silently return 0 rows; surfacing the engine's warning gives the
 	// agent a remediation instead of a misleading empty result.
 	if len(result.Warnings) > 0 {
-		meta["warnings"] = result.Warnings
+		queryWarnings = append(queryWarnings, result.Warnings...)
+	}
+	if len(queryWarnings) > 0 {
+		meta["warnings"] = queryWarnings
 	}
 	// #338: when the result rows expose an `id` column (RETURN n.id, f.id,
 	// etc.), suggest a `context` follow-up on the top row. Mirrors the

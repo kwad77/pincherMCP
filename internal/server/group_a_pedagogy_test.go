@@ -222,3 +222,71 @@ func TestGroupA_Index_NoPathRichError(t *testing.T) {
 	}
 	decodeRichErr(t, textOf(t, res))
 }
+
+// #712 follow-up: handleSymbols empty-ids and over-cap rejections were
+// missed by the original Group A sweep — they used bare errResult. Pin
+// the rich envelope.
+func TestSymbols_EmptyIdsRichError(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	res, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{"ids": []string{}}))
+	if err != nil {
+		t.Fatalf("handleSymbols: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError; got %s", textOf(t, res))
+	}
+	steps := decodeRichErr(t, textOf(t, res))
+	first, _ := steps[0].(map[string]any)
+	if first["tool"] != "search" {
+		t.Errorf("first next_step tool = %v, want search", first["tool"])
+	}
+}
+
+func TestSymbols_TooManyIdsRichError(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	ids := make([]string, maxBatchSymbols+1)
+	for i := range ids {
+		ids[i] = "x"
+	}
+	res, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{"ids": ids}))
+	if err != nil {
+		t.Fatalf("handleSymbols: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError; got %s", textOf(t, res))
+	}
+	decodeRichErr(t, textOf(t, res))
+}
+
+// #712: passing both `pinchql` and the legacy `cypher` alias silently
+// dropped `cypher`. It now runs `pinchql` and warns in _meta.warnings.
+func TestQuery_BothPinchqlAndCypher_Warns(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "qbp"
+	srv.sessionRoot = "/tmp/qbp"
+	store.UpsertProject(db.Project{ID: "qbp", Path: "/tmp/qbp", Name: "qbp", IndexedAt: time.Now()})
+
+	res, err := srv.handleQuery(context.Background(), makeReq(map[string]any{
+		"pinchql": "MATCH (n:Function) RETURN n.name LIMIT 1",
+		"cypher":  "MATCH (n:Class) RETURN n.name LIMIT 1",
+	}))
+	if err != nil {
+		t.Fatalf("handleQuery: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("expected success; got error %s", textOf(t, res))
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	warns, _ := meta["warnings"].([]any)
+	if len(warns) == 0 {
+		t.Fatalf("expected a warning about both params; got _meta %v", meta)
+	}
+	w, _ := warns[0].(string)
+	if !strings.Contains(w, "cypher") || !strings.Contains(w, "pinchql") {
+		t.Errorf("warning should name both params; got %q", w)
+	}
+}
