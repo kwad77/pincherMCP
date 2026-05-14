@@ -217,6 +217,51 @@ func TestJSAST_BlankLineBeforeMethodNoZeroSpan(t *testing.T) {
 	}
 }
 
+// #826: locateFunc's inter-token whitespace was `\s` (spans newlines),
+// so `function\nsplitName()` landed startByte on the `function` keyword
+// and findBraceBlock — hitting a newline before the param list — handed
+// back a ~8-byte span instead of the whole body. Tightened to `[ \t]`:
+// the common single-line shapes still span correctly, and the rare
+// `function`-on-its-own-line case is skipped rather than mis-spanned.
+func TestJSAST_FunctionKeywordWhitespace(t *testing.T) {
+	t.Setenv("PINCHER_EXPERIMENTAL_JS_AST", "1")
+	src := []byte("function splitName() { return 1; }\n" +
+		"function\ttabbed()  { return 2; }\n" +
+		"function\nonOwnLine() { return 3; }\n")
+	r, ok := extractJavaScriptAST(src, "src/f.js")
+	if !ok {
+		t.Fatal("expected AST parse to succeed")
+	}
+	byName := map[string]ExtractedSymbol{}
+	for _, s := range r.Symbols {
+		byName[s.Name] = s
+		// No symbol may have a span shorter than its own name — the
+		// ~8-byte mis-span bug produced exactly that shape.
+		if s.EndByte-s.StartByte < len(s.Name) {
+			t.Errorf("%s span %d-%d is shorter than its name (%d bytes) — mis-span regression",
+				s.Name, s.StartByte, s.EndByte, len(s.Name))
+		}
+	}
+	// Common single-line shapes must span their full body.
+	if got, ok := byName["splitName"]; !ok {
+		t.Error("splitName not extracted")
+	} else if !strings.Contains(string(src[got.StartByte:got.EndByte]), "return 1") {
+		t.Errorf("splitName span %d-%d missing its body", got.StartByte, got.EndByte)
+	}
+	if got, ok := byName["tabbed"]; !ok {
+		t.Error("tabbed not extracted — tab between `function` and name should still match")
+	} else if !strings.Contains(string(src[got.StartByte:got.EndByte]), "return 2") {
+		t.Errorf("tabbed span %d-%d missing its body", got.StartByte, got.EndByte)
+	}
+	// `function` on its own line: either skipped or correctly spanned —
+	// never the ~8-byte mis-span (already asserted in the loop above).
+	if got, ok := byName["onOwnLine"]; ok {
+		if !strings.Contains(string(src[got.StartByte:got.EndByte]), "return 3") {
+			t.Errorf("onOwnLine span %d-%d missing its body — if extracted, it must span correctly", got.StartByte, got.EndByte)
+		}
+	}
+}
+
 // Flag off → AST extractor not invoked; falls through to regex via the
 // registry's adapter. Verifies the dispatch in extractor.go's init().
 func TestJSAST_FlagOff_FallsThroughToRegex(t *testing.T) {
