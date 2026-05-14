@@ -272,6 +272,28 @@ type Server struct {
 	// projects disjoint. Values are struct{}{}. Process-lifetime; never
 	// pruned — sessions die on respawn.
 	accessedFiles sync.Map
+
+	// contextDiffCache backs the #655 diff-encoded-context feature
+	// (PINCHER_DIFF_CONTEXT=1). It records the last `context` payload
+	// served per (project, symbol) this process so a repeat call can
+	// short-circuit: file hash unchanged → {unchanged:true}; changed →
+	// the symbol's source as a line diff. Keyed "{projectID}|{symbolID}",
+	// value *contextDiffEntry. Process-lifetime like accessedFiles — the
+	// "session" ends when the process respawns.
+	contextDiffCache sync.Map
+	// diffContext gates contextDiffCache. Read once from
+	// PINCHER_DIFF_CONTEXT at New(); default-off in v0.56 until perf
+	// validates, then default-on.
+	diffContext bool
+}
+
+// contextDiffEntry is one cached `context` fetch (#655): the backing
+// file's content hash at fetch time plus the primary symbol's source we
+// served. A repeat fetch compares the live hash against fileHash to
+// decide unchanged-vs-diff, and diffs against source when changed.
+type contextDiffEntry struct {
+	fileHash string
+	source   string
 }
 
 // projectIDCacheEntry is the cached resolution of a project arg.
@@ -298,6 +320,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		sessionStartedAt:    now,
 		exitFn:              os.Exit, // #352: substituted by tests
 		autoRestartDelay:    autoRestartExitDelay,
+		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
 	}
 	// Capture the running binary's path + initial mtime so the
 	// health stale-binary check (#278) can compare against the
@@ -3463,6 +3486,45 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 			s.savedVsFileSizesSession(sym.ProjectID, root, []string{sym.FilePath}, liteResponseJSON)), nil
 	}
 
+	// #655: diff-encoded context for repeat reads (PINCHER_DIFF_CONTEXT=1).
+	// On a repeat context(id=X) call this process, short-circuit on the
+	// backing file's content hash. Unchanged → return {unchanged:true}
+	// and skip the whole imports/callees rebuild (the agent already has
+	// it). Changed → fall through, but ship the primary symbol's source
+	// as a line diff against what we last served instead of the full
+	// body. diffMode is "" (normal), "changed" by the end of this block.
+	var diffMode, sinceHash string
+	if s.diffContext && root != "" {
+		diffKey := sym.ProjectID + "|" + sym.ID
+		curHash, hashOK := fileHashOnDisk(filepath.Join(root, filepath.FromSlash(sym.FilePath)))
+		if hashOK {
+			if prevRaw, ok := s.contextDiffCache.Load(diffKey); ok {
+				prev := prevRaw.(*contextDiffEntry)
+				if prev.fileHash == curHash {
+					// File untouched since the last fetch — the agent's
+					// context window still holds everything we'd resend.
+					unchanged := map[string]any{
+						"symbol":     map[string]any{"id": sym.ID, "name": sym.Name, "kind": sym.Kind},
+						"unchanged":  true,
+						"since_hash": prev.fileHash,
+					}
+					return s.jsonResultWithMeta(unchanged, start, tool, args, db.ApproxTokens(prev.source)), nil
+				}
+				// File changed — ship the symbol body as a line diff
+				// against what we last served, and refresh the cache so
+				// the next call diffs from this revision.
+				sinceHash = prev.fileHash
+				diffMode = "changed"
+				diff := lineDiff(prev.source, source)
+				s.contextDiffCache.Store(diffKey, &contextDiffEntry{fileHash: curHash, source: source})
+				source = diff
+			} else {
+				// First fetch this session — remember it for next time.
+				s.contextDiffCache.Store(diffKey, &contextDiffEntry{fileHash: curHash, source: source})
+			}
+		}
+	}
+
 	// Find IMPORTS edges from this symbol — cross-package dependencies.
 	importEdges, _ := s.store.EdgesFrom(sym.ID, []string{"IMPORTS"})
 	// #332: zero-len init so JSON shape is stable when the symbol has
@@ -3525,8 +3587,18 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// file in the baseline.
 	allPaths := append([]string{sym.FilePath}, importPaths...)
 	allPaths = append(allPaths, calleePaths...)
+	symMap := map[string]any{"id": sym.ID, "name": sym.Name, "kind": sym.Kind}
+	if diffMode == "changed" {
+		// #655: `source` holds a line diff against the last-served body,
+		// not the full source. Surface it under a distinct key + the hash
+		// it diffs from so a consumer never mistakes a diff for source.
+		symMap["diff"] = source
+		symMap["since_hash"] = sinceHash
+	} else {
+		symMap["source"] = source
+	}
 	data := map[string]any{
-		"symbol":  map[string]any{"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "source": source},
+		"symbol":  symMap,
 		"imports": imports,
 		"callees": callees,
 	}
@@ -3570,6 +3642,56 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	responseJSON, _ := json.Marshal(data)
 	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(sym.ProjectID, root, allPaths, responseJSON)), nil
+}
+
+// lineDiff returns a compact line-level diff from oldSrc to newSrc for
+// #655's diff-encoded context: unchanged lines are prefixed "  ",
+// removals "- ", additions "+ ". It is not a full unified diff — there
+// are no @@ hunk headers — because the consumer already has the symbol
+// identified and only needs the delta. Classic LCS; O(m·n) time and
+// space, which is fine for a single symbol body (bounded by extraction).
+func lineDiff(oldSrc, newSrc string) string {
+	o := strings.Split(oldSrc, "\n")
+	n := strings.Split(newSrc, "\n")
+	// lcs[i][j] = length of the longest common subsequence of o[i:] and n[j:].
+	lcs := make([][]int, len(o)+1)
+	for i := range lcs {
+		lcs[i] = make([]int, len(n)+1)
+	}
+	for i := len(o) - 1; i >= 0; i-- {
+		for j := len(n) - 1; j >= 0; j-- {
+			if o[i] == n[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else if lcs[i+1][j] >= lcs[i][j+1] {
+				lcs[i][j] = lcs[i+1][j]
+			} else {
+				lcs[i][j] = lcs[i][j+1]
+			}
+		}
+	}
+	var b strings.Builder
+	i, j := 0, 0
+	for i < len(o) && j < len(n) {
+		switch {
+		case o[i] == n[j]:
+			b.WriteString("  " + o[i] + "\n")
+			i++
+			j++
+		case lcs[i+1][j] >= lcs[i][j+1]:
+			b.WriteString("- " + o[i] + "\n")
+			i++
+		default:
+			b.WriteString("+ " + n[j] + "\n")
+			j++
+		}
+	}
+	for ; i < len(o); i++ {
+		b.WriteString("- " + o[i] + "\n")
+	}
+	for ; j < len(n); j++ {
+		b.WriteString("+ " + n[j] + "\n")
+	}
+	return b.String()
 }
 
 func suggestContextNextSteps(sym db.Symbol) []map[string]string {
