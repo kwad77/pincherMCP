@@ -71,6 +71,22 @@ if [[ "$(realpath "$SOURCE" 2>/dev/null || echo "$SOURCE")" == "$(realpath "$TAR
     exit 0
 fi
 
+# Pre-swap safety: refuse to swap a binary that can't even print --version
+# (#710 follow-up). If we shipped a bad build into the active path, the
+# next supervisor respawn would crash-loop and the autonomous (AFK) user
+# would come back to a dead MCP. The probe costs ~50ms and prevents that
+# class of footgun. Run via `--skip-probe` to bypass when intentionally
+# swapping a binary that legitimately can't --version (rare; would need
+# a downstream tool to test).
+if [[ "${SKIP_PROBE:-0}" != "1" ]]; then
+    if ! "$SOURCE" --version >/dev/null 2>&1; then
+        echo "swap-active-binary: REFUSING swap — $SOURCE failed --version (broken binary?)" >&2
+        "$SOURCE" --version 2>&1 | sed 's/^/  /' >&2 || true
+        echo "  No swap performed. Existing $TARGET unchanged. Investigate the build before retrying." >&2
+        exit 1
+    fi
+fi
+
 OLD_VERSION="$("$TARGET" --version 2>&1 || echo "(unable to invoke)")"
 
 if [[ "$IS_WINDOWS" == "1" ]]; then
