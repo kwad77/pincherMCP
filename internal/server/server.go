@@ -1002,7 +1002,16 @@ var httpGetOnlyRoutes = map[string]bool{
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept-Encoding")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept-Encoding, X-Request-ID")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
+
+	// #657: correlation ID. Read X-Request-ID (or mint a UUID v7), echo
+	// it on the response header, and thread it through ctx so the tool-
+	// handler wrapper can stamp _meta.request_id. Resolved before auth
+	// and rate limiting so even 401/429 responses carry a traceable ID.
+	reqID := sanitizeRequestID(r.Header.Get(requestIDHeader))
+	w.Header().Set(requestIDHeader, reqID)
+	r = r.WithContext(withRequestIDContext(r.Context(), reqID))
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -1611,8 +1620,9 @@ func openAPIComponentSchemas() map[string]any {
 				},
 				"warnings":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Non-fatal advisories — typo'd args, unknown property names, etc. (#473, #499, #501)."},
 				"celebration": map[string]any{"type": "string", "description": "One-shot tier-milestone line, fired exactly once per installation per tier (#494)."},
+				"request_id":  map[string]any{"type": "string", "description": "Correlation ID for end-to-end request tracing (#657). Echoes the inbound X-Request-ID header, or a freshly minted UUID v7 when the request carries none. Also returned in the X-Request-ID response header."},
 			},
-			"required": []any{"latency_ms", "tokens_used"},
+			"required": []any{"latency_ms", "tokens_used", "request_id"},
 		},
 		"Error": map[string]any{
 			"type":        "object",
@@ -2474,8 +2484,11 @@ func (s *Server) resolveProjectRoot(projectID string) (string, error) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
-	s.mcp.AddTool(tool, handler)
-	s.handlers[tool.Name] = handler
+	// #657: wrap once at the single registration chokepoint so every
+	// tool — over stdio AND streamable-HTTP — stamps _meta.request_id.
+	wrapped := s.withRequestID(handler)
+	s.mcp.AddTool(tool, wrapped)
+	s.handlers[tool.Name] = wrapped
 	s.tools[tool.Name] = tool
 }
 
