@@ -2219,8 +2219,21 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 			continue
 		}
 		to := lookupQN(e.ToName)
-		if to.id == "" && !strings.Contains(e.ToName, ".") {
-			to = lookupNameInLang(e.ToName, from.lang)
+		// #731: a bare ToName (`version`) can collide with a *qualified
+		// name* in another language — JSON/YAML config files have a
+		// top-level `version` key whose QN is literally "version", while
+		// the Go package var's QN is `main.version`. So lookupQN
+		// "succeeds" with the cross-language Setting, which used to
+		// suppress the name fallback below — and then the #436 guard
+		// dropped the edge entirely. Fall through to the same-language
+		// name lookup whenever the QN match is empty OR a language
+		// mismatch; keep the QN result only if the name lookup finds
+		// nothing better (the #436 guard then correctly drops it).
+		qnLangMismatch := to.id != "" && from.lang != "" && to.lang != "" && to.lang != from.lang
+		if (to.id == "" || qnLangMismatch) && !strings.Contains(e.ToName, ".") {
+			if nameTo := lookupNameInLang(e.ToName, from.lang); nameTo.id != "" {
+				to = nameTo
+			}
 		}
 		// #436: belt-and-suspenders — even when QN matched, drop the
 		// edge if the target is a different language than the source.
