@@ -5459,6 +5459,10 @@ func TestClassifyTaskShape_KeywordMatching(t *testing.T) {
 		{"crash on startup", shapeFix},
 		{"refactor the auth middleware", shapeRefactor},
 		{"rename Open to Connect", shapeRefactor},
+		// #784: refactor intent wins over the noun "error" in shapeFix's
+		// keyword list — "refactor the error handling" is not a bug fix.
+		{"refactor the error handling in the indexer", shapeRefactor},
+		{"extract the error-wrapping helper", shapeRefactor},
 		{"add caching to the gateway", shapeAdd},
 		{"implement OAuth", shapeAdd},
 		{"understand how indexing works", shapeUnderstand},

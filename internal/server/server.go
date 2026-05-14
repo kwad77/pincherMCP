@@ -6793,6 +6793,13 @@ var auditShapePattern = regexp.MustCompile(
 		` (without|missing|lacking|lacks|has no|have no|doesn't have|does not have|with no|with zero|where there's no)\b`,
 )
 
+// refactorExtractWord word-bounds the "extract" refactor verb so it
+// doesn't substring-match the nouns "extraction" / "extractor" /
+// "extracted" — all common in this codebase (#784). The other refactor
+// keywords ("refactor", "rename", "restructure", "clean up") are
+// distinctive enough to stay plain substring checks.
+var refactorExtractWord = regexp.MustCompile(`\bextract\b`)
+
 // classifyTaskShape inspects a task description and returns the most
 // likely intent. Keyword-based heuristic — no parsing or NLP. Order
 // matters: the first matching shape wins because some keywords
@@ -6854,13 +6861,22 @@ func classifyTaskShape(task string) guideShape {
 		return shapeTest
 	case contains("review", "diff", "before commit", "blast radius", "pre-commit", "impact"):
 		return shapeReview
-	case contains("fix", "bug", "broken", "error", "regression", "crash", "wrong"):
-		return shapeFix
-	case contains("refactor", "rename", "restructure", "extract", "clean up"):
+	// #784: shapeRefactor runs before shapeFix. "refactor"/"rename"/
+	// "restructure"/"extract" are explicit leading-verb intent signals;
+	// shapeFix's keyword list includes the noun "error", which collides
+	// with common refactor phrasings ("refactor the error handling",
+	// "extract the error-wrapping helper"). Pre-fix those routed to
+	// shapeFix and guide recommended a bug-hunt search flow.
+	case contains("refactor", "rename", "restructure", "clean up") ||
+		refactorExtractWord.MatchString(t):
 		// Note: "split", "move" intentionally NOT in this list — both are
 		// also nouns ("FTS5 split", "the move detector") and would over-
 		// match. Lose those signal words rather than false-positive.
+		// "extract" is word-bounded (refactorExtractWord) so it doesn't
+		// catch "extraction"/"extractor" (#784).
 		return shapeRefactor
+	case contains("fix", "bug", "broken", "error", "regression", "crash", "wrong"):
+		return shapeFix
 	case contains("add", "implement", "build", "new feature", "support for", "introduce"):
 		return shapeAdd
 	// #284: trace-shape questions explicitly mention who/what calls a
