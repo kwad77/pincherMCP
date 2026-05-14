@@ -851,10 +851,28 @@ func (p *parser) parseQuery() (*queryAST, error) {
 		case "ORDER":
 			p.next()
 			p.skip("BY")
-			q.orderBy = p.next().value
-			if p.peek().value == "." {
-				p.next()
-				q.orderBy += "." + p.next().value
+			// Aggregate target: ORDER BY COUNT(n) / AVG(n.complexity).
+			// buildResult keys grouped rows by aggColName ("COUNT(n)"),
+			// so q.orderBy must match that exact string — the pre-fix
+			// parser only read the bare "COUNT" token, leaving "(n)"
+			// (and any trailing DESC) unconsumed, so ORDER BY on an
+			// aggregate silently no-op'd.
+			if isAggFn(p.peek().value) {
+				fn := strings.ToUpper(p.next().value)
+				p.skip("(")
+				v := p.next().value
+				if p.peek().value == "." {
+					p.next()
+					v += "." + p.next().value
+				}
+				p.skip(")")
+				q.orderBy = fn + "(" + v + ")"
+			} else {
+				q.orderBy = p.next().value
+				if p.peek().value == "." {
+					p.next()
+					q.orderBy += "." + p.next().value
+				}
 			}
 			if p.peek().value == "DESC" {
 				q.orderDir = "DESC"
