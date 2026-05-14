@@ -52,16 +52,43 @@ When `--http-key <token>` is set, the streamable-HTTP transport requires `Author
 
 Stdio and streamable-HTTP share the same in-process `*mcp.Server` with the same registered tool set. Tool registration, capability advertisement, and per-tool complexity tier (`#650`) apply identically across both transports. There is no router-visible difference between calling `health` over stdio vs HTTP — same input schema, same output shape, same `_meta` envelope.
 
+## Request correlation (`X-Request-ID`)
+
+Pincher accepts an `X-Request-ID` header on every HTTP and streamable-HTTP request and echoes the resolved ID three ways so a router can trace one request end-to-end:
+
+- **`X-Request-ID` response header** — echoed back on every response, including `401`/`429` error responses (the ID is resolved before auth and rate limiting).
+- **`_meta.request_id`** — present on every tool response, over stdio *and* HTTP. Stdio calls carry no headers, so they get a freshly minted ID.
+- **Structured logs** — the resolved ID is logged with each tool call.
+
+If the request carries no `X-Request-ID` (or a junk value — non-printable, CRLF, or over 200 chars), pincher mints a **UUID v7**. v7 is time-ordered, so a router sorting captured IDs gets chronological order for free. Inbound IDs are length-bounded and printable-ASCII-only — a caller-supplied value can't inject a response header or poison logs.
+
+```bash
+curl -sD - -X POST http://127.0.0.1:8081/v1/health \
+  -H 'X-Request-ID: router-trace-42' | grep -i x-request-id
+# → X-Request-ID: router-trace-42
+```
+
+```json
+{
+  "ok": true,
+  "_meta": { "request_id": "router-trace-42", "latency_ms": 1, ... }
+}
+```
+
+Full distributed tracing (OTLP spans) lands in v0.67's observability standardization; `X-Request-ID` is the minimal "trace through me" contract until then.
+
 ## Capability composition
 
 The streamable-HTTP transport composes with the rest of v0.53's router-integration contract:
 
 - **`_meta.capabilities`** (#649) — declares `streamable_http` so routers can discover the transport
 - **`_meta.complexity_tier`** (#650) — every response carries its tier regardless of transport
+- **`_meta.request_id`** (#657) — every response carries a correlation ID echoed from `X-Request-ID`
 - **Release channels** (#642) — pincher binaries served on the `dev` channel can be tested alongside the stable channel by pointing routers at different `--mcp-http-path` mounts
 
 ## See also
 
 - [#651](https://github.com/kwad77/pincher/issues/651) — streamable-HTTP MCP transport
 - [#649](https://github.com/kwad77/pincher/issues/649) — `_meta.capabilities` advertisement
+- [#657](https://github.com/kwad77/pincher/issues/657) — `X-Request-ID` correlation echo
 - [`docs/release-channels.md`](release-channels.md) — channel discipline for transport rollout
