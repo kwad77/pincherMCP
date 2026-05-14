@@ -799,18 +799,50 @@ func extractGoReads(body *ast.BlockStmt, callerQN string) []ExtractedEdge {
 	}
 
 	// walkRead recursively walks any expression tree as a read context —
-	// every Ident inside is a READS.
+	// every Ident inside is a READS, with one exception: the call
+	// subject of a CallExpr is NOT a read. extractGoCalls already emits
+	// a CALLS edge for it; walking it here as a read would emit the
+	// trailing selector component as a bare identifier — `strings.Index(
+	// ...)` would emit a read of `Index` that false-binds to any project
+	// Method named `Index` via the binding pass (#758). So for a call we
+	// walk only the receiver side of a selector-call (`strings` in
+	// `strings.Index`) and the arguments; the call subject itself is
+	// left to extractGoCalls. Non-call selectors (`w.defaultDo` as a
+	// value) still emit their `.Sel` so #565 function-value bindings
+	// keep working.
 	var walkRead func(n ast.Node)
 	walkRead = func(n ast.Node) {
 		if n == nil {
 			return
 		}
-		ast.Inspect(n, func(child ast.Node) bool {
-			if id, ok := child.(*ast.Ident); ok {
-				emitRead(id.Name)
+		switch e := n.(type) {
+		case *ast.Ident:
+			emitRead(e.Name)
+		case *ast.CallExpr:
+			if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+				walkRead(sel.X)
 			}
-			return true
-		})
+			// Bare-Ident call subject (`Foo()`) is skipped — extractGoCalls
+			// owns it. Only the args are reads.
+			for _, arg := range e.Args {
+				walkRead(arg)
+			}
+		default:
+			ast.Inspect(n, func(child ast.Node) bool {
+				if child == n {
+					return true
+				}
+				switch c := child.(type) {
+				case *ast.Ident:
+					emitRead(c.Name)
+					return false
+				case *ast.CallExpr:
+					walkRead(c)
+					return false
+				}
+				return true
+			})
+		}
 	}
 
 	// Custom recursive walker that recognises AssignStmt and IncDecStmt
