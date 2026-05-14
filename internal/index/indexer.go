@@ -443,7 +443,11 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 				}
 				toID := nameToID[e.ToName]
 				if fromID == "" || toID == "" {
-					if e.Kind == "CALLS" && lang == "Go" {
+					// Python CALLS are AST-grade (the regex extractor doesn't
+					// emit any), so they're as trustworthy as Go's for cross-
+					// file resolution. Other regex extractors still get the
+					// drop-on-per-file-miss policy to keep noise out.
+					if e.Kind == "CALLS" && (lang == "Go" || lang == "Python") {
 						deferredCalls = append(deferredCalls, e)
 					}
 					continue
@@ -585,7 +589,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	}
 
 	allCalls := loadOrFallback(idx, projectID, "CALLS", pendingCalls)
-	if n := idx.resolveCalls(projectID, allCalls); n > 0 {
+	if n := idx.resolveCalls(projectID, allCalls, pythonRoots); n > 0 {
 		totalEdges += n
 	}
 
@@ -1743,7 +1747,7 @@ func resolveMethodByName(store *db.Store, projectID, name string) string {
 //
 // Only Go CALLS reach this path; non-Go regex extractors emit noisy ToName
 // values that would create false-positive cross-package edges.
-func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) int {
+func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, pythonRoots []string) int {
 	if len(pending) == 0 {
 		return 0
 	}
@@ -2004,6 +2008,20 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		return ""
 	}
 
+	// lookupPythonCall expands a Python call's to_name through every
+	// source-root candidate, returning the first hit. The extractor has
+	// already alias-rewritten imported names and self.X → class.X, so
+	// what we get here is either a bare local name, a dotted path that
+	// might need a src-prefix, or a relative-import path (rare for calls).
+	lookupPythonCall := func(toName, fromFile string) string {
+		for _, c := range ast.PythonImportCandidates(toName, fromFile, pythonRoots) {
+			if id := lookupQN(c); id != "" {
+				return id
+			}
+		}
+		return ""
+	}
+
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
 	for _, e := range pending {
@@ -2014,9 +2032,17 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge) 
 		if fromID == "" {
 			continue
 		}
-		toID := lookupQN(e.ToName)
-		if toID == "" && !strings.Contains(e.ToName, ".") {
-			toID = lookupName(e.ToName)
+		var toID string
+		if isPythonFile(e.FromFile) {
+			toID = lookupPythonCall(e.ToName, e.FromFile)
+			if toID == "" && !strings.Contains(e.ToName, ".") {
+				toID = lookupName(e.ToName)
+			}
+		} else {
+			toID = lookupQN(e.ToName)
+			if toID == "" && !strings.Contains(e.ToName, ".") {
+				toID = lookupName(e.ToName)
+			}
 		}
 		// #423 piece 3: precise receiver-type binding before the
 		// looser project-wide receiver-method fallback.

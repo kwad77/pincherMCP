@@ -78,6 +78,108 @@ def run():
 	}
 }
 
+// Python CALLS resolution across files: a function in main.py imports a
+// helper from another module and calls it. The extractor's import-alias
+// rewrite produces a to_name dotted at Python's module path; the resolver's
+// PythonImportCandidates expansion prepends the source root to find the
+// real helper symbol QN.
+func TestIndex_PythonCallsResolveAcrossFiles(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH; Python CALLS resolution test skipped")
+	}
+
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "src/myproj/__init__.py", "")
+	writeFile(t, dir, "src/myproj/util.py", `def helper():
+    return 1
+`)
+	writeFile(t, dir, "src/myproj/main.py", `from myproj.util import helper
+
+def run():
+    return helper()
+`)
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	projectID := db.ProjectIDFromPath(dir)
+
+	runSyms, err := store.GetSymbolsByQN(projectID, "src.myproj.main.run")
+	if err != nil || len(runSyms) == 0 {
+		t.Fatalf("expected src.myproj.main.run symbol, got %d (err=%v)", len(runSyms), err)
+	}
+	helperSyms, err := store.GetSymbolsByQN(projectID, "src.myproj.util.helper")
+	if err != nil || len(helperSyms) == 0 {
+		t.Fatalf("expected src.myproj.util.helper symbol, got %d (err=%v)", len(helperSyms), err)
+	}
+
+	edges, err := store.EdgesFrom(runSyms[0].ID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom: %v", err)
+	}
+	var found bool
+	for _, e := range edges {
+		if e.Kind == "CALLS" && e.ToID == helperSyms[0].ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected CALLS edge run→helper across files; got edges=%+v", edges)
+	}
+}
+
+// Same-class self.X() call: the extractor rewrites `self.helper()` to the
+// class-qualified target so the resolver can match the method's actual QN.
+func TestIndex_PythonCallsResolveSelfMethod(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "src/myproj/__init__.py", "")
+	writeFile(t, dir, "src/myproj/svc.py", `class Svc:
+    def helper(self):
+        return 1
+
+    def run(self):
+        return self.helper()
+`)
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	projectID := db.ProjectIDFromPath(dir)
+
+	runSyms, err := store.GetSymbolsByQN(projectID, "src.myproj.svc.Svc.run")
+	if err != nil || len(runSyms) == 0 {
+		t.Fatalf("expected Svc.run symbol, got %d (err=%v)", len(runSyms), err)
+	}
+	helperSyms, err := store.GetSymbolsByQN(projectID, "src.myproj.svc.Svc.helper")
+	if err != nil || len(helperSyms) == 0 {
+		t.Fatalf("expected Svc.helper symbol, got %d (err=%v)", len(helperSyms), err)
+	}
+
+	edges, err := store.EdgesFrom(runSyms[0].ID, nil)
+	if err != nil {
+		t.Fatalf("EdgesFrom: %v", err)
+	}
+	var found bool
+	for _, e := range edges {
+		if e.Kind == "CALLS" && e.ToID == helperSyms[0].ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected CALLS edge Svc.run→Svc.helper via self.helper(); got edges=%+v", edges)
+	}
+}
+
 // Without source-root awareness, the resolver can't bridge "myproj.config"
 // (Python import path) and "src.myproj.config" (pincher's file-path QN).
 // Setting PINCHER_DISABLE_PY_AST=1 forces the regex path, which doesn't

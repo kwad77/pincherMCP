@@ -313,3 +313,133 @@ func keys[V any](m map[string]V) []string {
 	}
 	return out
 }
+
+func TestPyAST_CallsEmitsEdges(t *testing.T) {
+	pythonASTOrSkip(t)
+	src := []byte(`def helper():
+    pass
+
+def caller():
+    helper()
+    other()
+`)
+	r, ok := extractPythonAST(src, "m.py")
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	calls := callEdgesByFrom(r.Edges, "m.caller")
+	if !calls["helper"] && !calls["m.helper"] {
+		t.Errorf("expected call edge from m.caller to helper (or m.helper); got %v", calls)
+	}
+	if !calls["other"] && !calls["m.other"] {
+		t.Errorf("expected call edge from m.caller to other; got %v", calls)
+	}
+}
+
+func TestPyAST_CallsRewriteImportedNames(t *testing.T) {
+	pythonASTOrSkip(t)
+	src := []byte(`from pkg.sub import widget
+from foo import bar as b
+
+def caller():
+    widget()
+    b()
+`)
+	r, ok := extractPythonAST(src, "m.py")
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	calls := callEdgesByFrom(r.Edges, "m.caller")
+	// `widget()` → from-import resolved to its dotted source.
+	if !calls["pkg.sub.widget"] {
+		t.Errorf("expected call to pkg.sub.widget; got %v", calls)
+	}
+	// `b()` (aliased) → original dotted target.
+	if !calls["foo.bar"] {
+		t.Errorf("expected call to foo.bar via alias b; got %v", calls)
+	}
+}
+
+func TestPyAST_CallsRewriteAttributeChain(t *testing.T) {
+	pythonASTOrSkip(t)
+	src := []byte(`import requests
+import os.path as op
+
+def caller():
+    requests.get("https://example.com")
+    op.exists("/tmp")
+`)
+	r, ok := extractPythonAST(src, "m.py")
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	calls := callEdgesByFrom(r.Edges, "m.caller")
+	// Plain `import requests` keeps the local name on the chain.
+	if !calls["requests.get"] {
+		t.Errorf("expected call to requests.get; got %v", calls)
+	}
+	// `import os.path as op` rewrites op.* → os.path.*
+	if !calls["os.path.exists"] {
+		t.Errorf("expected call to os.path.exists via alias op; got %v", calls)
+	}
+}
+
+func TestPyAST_CallsRewriteSelfToClass(t *testing.T) {
+	pythonASTOrSkip(t)
+	// `self.helper()` inside a method should resolve to the class's helper —
+	// that's what the resolver can match against the real method QN.
+	src := []byte(`class C:
+    def helper(self):
+        pass
+
+    def caller(self):
+        self.helper()
+`)
+	r, ok := extractPythonAST(src, "m.py")
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	calls := callEdgesByFrom(r.Edges, "m.C.caller")
+	if !calls["m.C.helper"] {
+		t.Errorf("expected self.helper rewritten to m.C.helper; got %v", calls)
+	}
+}
+
+func TestPyAST_CallsScopedToEnclosingFunction(t *testing.T) {
+	pythonASTOrSkip(t)
+	// Nested functions get their own from_qn — a call in inner() must NOT
+	// appear under outer()'s edges (collect_calls_in_body stops at the
+	// nested def boundary).
+	src := []byte(`def outer():
+    def inner():
+        helper()
+    inner()
+`)
+	r, ok := extractPythonAST(src, "m.py")
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	outer := callEdgesByFrom(r.Edges, "m.outer")
+	inner := callEdgesByFrom(r.Edges, "m.outer.inner")
+	if outer["helper"] {
+		t.Errorf("outer should not contain inner's helper() call; got %v", outer)
+	}
+	if !inner["helper"] {
+		t.Errorf("inner should contain its helper() call; got %v", inner)
+	}
+	if !outer["m.outer.inner"] && !outer["inner"] {
+		t.Errorf("outer should record its inner() call; got %v", outer)
+	}
+}
+
+// callEdgesByFrom collects CALLS edges whose FromQN matches fromQN,
+// returning a set of ToNames for easy assertion.
+func callEdgesByFrom(edges []ExtractedEdge, fromQN string) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range edges {
+		if e.Kind == "CALLS" && e.FromQN == fromQN {
+			out[e.ToName] = true
+		}
+	}
+	return out
+}
