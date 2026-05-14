@@ -4744,6 +4744,49 @@ func TestValidateFetchURL_NoHost(t *testing.T) {
 	}
 }
 
+// #843: fetchDialControl is the net.Dialer.Control hook that closes the
+// DNS-rebinding TOCTOU window — it runs with the literal ip:port being
+// dialed, so a host that passed validateFetchURL but resolves to a
+// private IP at dial time is still blocked. Tested directly because the
+// rebinding race itself can't be reproduced without a controllable
+// resolver.
+func TestFetchDialControl(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	cases := []struct {
+		name      string
+		address   string
+		wantBlock bool
+		reasonHas string
+	}{
+		{"loopback v4", "127.0.0.1:80", true, "loopback"},
+		{"loopback v6", "[::1]:443", true, "loopback"},
+		{"cloud metadata", "169.254.169.254:80", true, "link-local"},
+		{"rfc1918 10/8", "10.0.0.1:8080", true, "private"},
+		{"rfc1918 192.168", "192.168.1.1:80", true, "private"},
+		{"multicast", "224.0.0.1:80", true, "multicast"},
+		{"public ip passes", "8.8.8.8:443", false, ""},
+		{"public ip v6 passes", "[2001:4860:4860::8888]:443", false, ""},
+		{"unparseable address", "not-an-address", true, "cannot split"},
+		{"non-ip host slips past split", "example.com:80", true, "cannot parse IP"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := srv.fetchDialControl("tcp", c.address, nil)
+			if c.wantBlock {
+				if err == nil {
+					t.Fatalf("fetchDialControl(%q) = nil, want block", c.address)
+				}
+				if !strings.Contains(err.Error(), c.reasonHas) {
+					t.Errorf("fetchDialControl(%q) error = %q, want substring %q", c.address, err, c.reasonHas)
+				}
+			} else if err != nil {
+				t.Errorf("fetchDialControl(%q) = %v, want nil (public IP must pass)", c.address, err)
+			}
+		})
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dashboard XSS protection (#41 item 4)
 //

@@ -38,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -6705,6 +6706,26 @@ func (s *Server) fetchIPBlockReason(ip net.IP) string {
 	return ""
 }
 
+// fetchDialControl is the net.Dialer.Control hook for handleFetch's HTTP
+// client (#843). It runs after DNS resolution, immediately before
+// connect(2), with the literal ip:port being dialed — closing the
+// DNS-rebinding TOCTOU window between validateFetchURL's lookup and the
+// transport's own lookup. The IP checked here IS the IP connected to.
+func (s *Server) fetchDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("dial: cannot split %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("dial: cannot parse IP %q", host)
+	}
+	if reason := s.fetchIPBlockReason(ip); reason != "" {
+		return fmt.Errorf("blocked at dial: %s (%s)", reason, ip)
+	}
+	return nil
+}
+
 func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
@@ -6755,6 +6776,17 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// redirects with no per-hop validation — a malicious site could
 	// redirect into RFC1918 or to 169.254.169.254 (cloud metadata)
 	// undetected.
+	//
+	// #843: validateFetchURL and the transport's dial do INDEPENDENT DNS
+	// lookups, so a host the attacker controls can answer the validation
+	// lookup with a public IP and the dial lookup with a private one
+	// (classic DNS-rebinding TOCTOU). The net.Dialer.Control hook runs
+	// after resolution, immediately before connect(2), with the literal
+	// ip:port being dialed — so the IP that is checked IS the IP that is
+	// connected to. validateFetchURL + CheckRedirect stay as the fast,
+	// friendly pre-flight; Control is the belt-and-suspenders that makes
+	// rebinding impossible regardless of how many lookups happen.
+	dialer := &net.Dialer{Control: s.fetchDialControl}
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxFetchRedirects {
@@ -6764,6 +6796,13 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				return fmt.Errorf("redirect target blocked: %w", err)
 			}
 			return nil
+		},
+		Transport: &http.Transport{
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       30 * time.Second,
 		},
 	}
 	resp, err := client.Do(httpReq)
