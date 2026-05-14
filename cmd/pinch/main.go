@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +83,19 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "hook-check" {
 		runHookCheckCLI(os.Args[2:])
 		return
+	}
+
+	// #796: a first arg that isn't a flag and isn't a recognized
+	// subcommand is a typo (`pincher doctr`, `pincher stat`). Pre-fix it
+	// fell through to flag.Parse() — which leaves the unknown token in
+	// flag.Args() without erroring — and pincher ran as the MCP stdio
+	// server. On a non-tty stdin that reads EOF immediately and exits 0,
+	// so the typo looked like it silently succeeded. Reject it loudly
+	// with the usage banner (which lists every valid subcommand).
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		fmt.Fprintf(os.Stderr, "pincher: unknown subcommand %q\n\n", os.Args[1])
+		printHelpBanner(os.Stderr)
+		os.Exit(1)
 	}
 
 	var (

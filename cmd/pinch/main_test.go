@@ -184,6 +184,38 @@ func TestVersionFlag(t *testing.T) {
 	}
 }
 
+// #796: an unrecognized first arg (a typo'd subcommand) used to fall
+// through to flag.Parse() and run the MCP stdio server, which on a
+// non-tty stdin reads EOF and exits 0 — so `pincher doctr` looked like
+// it silently succeeded. It now errors with the usage banner and
+// exits non-zero.
+func TestUnknownSubcommand_RejectedWithExit1(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	cmd := exec.Command(bin, "bogus-subcommand")
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for an unknown subcommand; got success\n%s", out)
+	}
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+		t.Errorf("expected exit code 1, got %v", err)
+	}
+	if !strings.Contains(string(out), "unknown subcommand") {
+		t.Errorf("expected 'unknown subcommand' in output, got: %s", out)
+	}
+	if !strings.Contains(string(out), `"bogus-subcommand"`) {
+		t.Errorf("error should name the offending token, got: %s", out)
+	}
+	// The usage banner must follow so the user sees the valid set.
+	if !strings.Contains(string(out), "pincher doctor") {
+		t.Errorf("expected the usage banner after the error, got: %s", out)
+	}
+}
+
 // TestHelpFlag exercises the --help dispatch through the binary so the
 // flag.Usage hook + os.Exit path get coverage credit. The banner content
 // is pinned by TestPrintHelpBanner_ListsAllSubcommands above.
