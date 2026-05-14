@@ -1311,6 +1311,48 @@ func TestRunNodeScan_OrderByPushedBeforeScanCap(t *testing.T) {
 	}
 }
 
+// #847: runJoinQuery had the same cap-before-sort bug as runNodeScan —
+// the JOIN's SQL LIMIT truncated an arbitrary sample before buildResult
+// sorted it. ORDER BY on a JOIN var is now pushed into the SQL with the
+// correct table alias.
+func TestRunJoinQuery_OrderByPushedBeforeScanCap(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	// One caller + 15 callees with complexity == index, callees inserted
+	// in ascending-complexity order so a cap-before-sort misses the top.
+	insertSym(t, db, "src", "Caller", "Function", "Go")
+	for i := 0; i < 15; i++ {
+		id := fmt.Sprintf("f%02d", i)
+		_, err := db.Exec(
+			`INSERT INTO symbols(id, project_id, file_path, name, qualified_name,
+				kind, language, complexity, start_byte, end_byte, start_line, end_line)
+			 VALUES (?,?,?,?,?,?,?,?, 0,100,1,5)`,
+			id, "proj1", "file.go", fmt.Sprintf("Fn%02d", i), fmt.Sprintf("Fn%02d", i),
+			"Function", "Go", i,
+		)
+		if err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+		insertEdge(t, db, "src", id, "CALLS")
+	}
+	e := &Executor{DB: db, MaxRows: 3, ProjectID: "proj1"}
+	r, err := e.Execute(context.Background(),
+		"MATCH (a)-[:CALLS]->(b) RETURN b.name, b.complexity ORDER BY b.complexity DESC LIMIT 3")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(r.Rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(r.Rows), r.Rows)
+	}
+	want := []string{"Fn14", "Fn13", "Fn12"}
+	for i, wantName := range want {
+		if got := fmt.Sprint(r.Rows[i]["b.name"]); got != wantName {
+			t.Errorf("row %d: got %q, want %q — JOIN ORDER BY must sort the full set before the scan cap (full: %+v)",
+				i, got, wantName, r.Rows)
+		}
+	}
+}
+
 // Balanced queries with the same shapes must still parse cleanly — the
 // strict closers must not over-reject.
 func TestParse_AcceptsBalancedDelimiters(t *testing.T) {

@@ -1862,6 +1862,34 @@ func orderByCol(orderBy, fromVar string) string {
 	return cypherPropToCol(ob)
 }
 
+// joinOrderByCol resolves a JOIN-query ORDER BY target to its table
+// alias ("a." for fromVar, "b." for toVar) and a whitelisted column
+// (#847). Returns "","" for aggregate targets, unrecognised columns,
+// and bare (var-less) ORDER BY — those are left for buildResult's
+// post-scan sort. The column comes from cypherPropToCol (a fixed
+// whitelist), never caller input, so it is safe to concatenate.
+func joinOrderByCol(orderBy string, pat pattern) (alias, col string) {
+	v, prop := "", orderBy
+	if i := strings.Index(orderBy, "."); i >= 0 {
+		v, prop = orderBy[:i], orderBy[i+1:]
+	}
+	if strings.Contains(prop, "(") {
+		return "", "" // aggregate target
+	}
+	c := cypherPropToCol(prop)
+	if c == "" {
+		return "", ""
+	}
+	switch v {
+	case pat.fromVar:
+		return "a.", c
+	case pat.toVar:
+		return "b.", c
+	default:
+		return "", "" // bare or unknown var — don't guess which table
+	}
+}
+
 // hasAggregation reports whether any RETURN variable in q is an
 // aggregation (currently only COUNT). Aggregating queries must scan
 // the full match set so the COUNT reflects cardinality, not the
@@ -2070,6 +2098,23 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 			filter = nil
 		} else {
 			filter = q.where
+		}
+	}
+
+	// #847: push ORDER BY into SQL before the scan cap — same fix as
+	// runNodeScan, with the JOIN alias mapping (a. for fromVar, b. for
+	// toVar). Without it the LIMIT truncates an arbitrary sample and
+	// buildResult sorts only that. A bare ORDER BY with no var prefix is
+	// left unpushed (ambiguous across the two joined tables); buildResult
+	// still sorts it post-scan, the pre-fix behaviour.
+	if !hasAggregation(q) && q.orderBy != "" {
+		if alias, col := joinOrderByCol(q.orderBy, pat); col != "" {
+			sqlQ += " ORDER BY " + alias + col
+			if strings.EqualFold(q.orderDir, "DESC") {
+				sqlQ += " DESC"
+			} else {
+				sqlQ += " ASC"
+			}
 		}
 	}
 
