@@ -140,8 +140,10 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*Do
 		// JSON slice invariant: these are append-only below and must
 		// marshal to `[]`, not `null`, when empty so consumers can
 		// iterate without a null-check. Advisories is initialised the
-		// same way further down; ExtractionFailures/SlowQueries were
-		// missed and marshalled to `null` on a clean install (#832).
+		// same way further down. ExtractionFailures/SlowQueries were
+		// missed in #832; Projects was missed there too — a clean
+		// install (no indexed projects) marshalled `"projects": null`.
+		Projects:           []DoctorProjectSummary{},
 		ExtractionFailures: []DoctorFailureRow{},
 		SlowQueries:        []DoctorSlowQueryRow{},
 	}

@@ -46,7 +46,7 @@ func TestDoctorReport_EmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	for _, field := range []string{`"extraction_failures":[]`, `"slow_queries":[]`, `"advisories":[]`} {
+	for _, field := range []string{`"projects":[]`, `"extraction_failures":[]`, `"slow_queries":[]`, `"advisories":[]`} {
 		if !strings.Contains(string(blob), field) {
 			t.Errorf("empty-DB doctor JSON missing %s — a nil slice marshalled to null:\n%s", field, blob)
 		}
