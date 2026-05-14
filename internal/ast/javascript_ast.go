@@ -534,7 +534,18 @@ func (w *jsASTWalker) regexFor(pattern string) *regexp.Regexp {
 
 func (w *jsASTWalker) locateFunc(name string) (int, int, bool) {
 	// `function NAME(`, optionally `function*`, optionally preceded by `async`.
-	pattern := `\bfunction\s*\*?\s*` + regexp.QuoteMeta(name) + `\s*\(`
+	//
+	// #826: inter-token whitespace is `[ \t]`, not `\s` — `\s` spans
+	// newlines, so `function\nsplitName()` would land startByte on the
+	// `function` keyword with the name a line below, and findBraceBlock
+	// (seeing a newline before the param list) would return a ~8-byte
+	// span instead of the whole body. A function declaration's keyword,
+	// name, and `(` are a single-line shape; matching only spaces/tabs
+	// between them keeps the located span honest. Same `\s`-spans-
+	// newlines fix as #809's locateMethodInRange. The rare genuine
+	// `function`-on-its-own-line case is skipped rather than mis-spanned
+	// — a dropped symbol is safer than confidently-wrong byte offsets.
+	pattern := `\bfunction[ \t]*\*?[ \t]*` + regexp.QuoteMeta(name) + `[ \t]*\(`
 	loc := w.regexFor(pattern).FindIndex(w.source[w.cursor:])
 	if loc == nil {
 		return 0, 0, false
