@@ -1256,7 +1256,12 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 				if name != "" {
 					endByte := blockEnd(source, lineStart, opts)
 					endLine := offsetToLine(lineOffsets, endByte)
-					parent := namedGroup(rx.classRE, m, "parent")
+					// Swift/C# classRE parent groups use a `[..., ]*`
+					// char class (to allow multi-inheritance lists), so
+					// the capture greedily eats the trailing space
+					// before `{`. Trim so `parent` is "Base", not
+					// "Base " (#817).
+					parent := strings.TrimSpace(namedGroup(rx.classRE, m, "parent"))
 					currentClass = name
 					currentClassEnd = endLine
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
