@@ -124,6 +124,22 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+// #830: Open must create a not-yet-existing data dir, the same way
+// DataDir() does for the default + PINCHER_DATA_DIR paths. Before this,
+// a `--data-dir` flag pointing at a missing dir reached Open uncreated
+// and SQLite failed with a misleading SQLITE_CANTOPEN.
+func TestOpen_CreatesMissingDataDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "deep", "nested", "datadir")
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open on missing data dir should create it, got: %v", err)
+	}
+	defer s.Close()
+	if _, statErr := os.Stat(filepath.Join(dir, "pincher.db")); statErr != nil {
+		t.Errorf("pincher.db not created in the auto-created data dir: %v", statErr)
+	}
+}
+
 // TestOpen_DSNPragmasApplied is the regression test for the DSN-syntax bug
 // where modernc/sqlite-style `_pragma=name(value)` was written as the
 // mattn-style `_name=value` and silently ignored. If WAL ever falls back

@@ -117,6 +117,15 @@ func DataDir() (string, error) {
 // journal_mode=WAL — leaving every database in default `delete` (rollback
 // journal) mode. The post-Open assertion below catches any future regression.
 func Open(dir string) (*Store, error) {
+	// #830: create the data dir if it's missing. DataDir() already
+	// MkdirAll's the default + PINCHER_DATA_DIR paths, but a `--data-dir`
+	// flag pointing at a not-yet-existing dir reached here uncreated and
+	// SQLite failed with a misleading SQLITE_CANTOPEN ("out of memory
+	// (14)" in modernc's wording). Creating it here makes all three
+	// data-dir sources consistent.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create data dir %q: %w", dir, err)
+	}
 	path := filepath.Join(dir, "pincher.db")
 	// WAL mode + normal sync = best throughput/durability tradeoff.
 	// cache_size=-65536 = 64 MB page cache.
