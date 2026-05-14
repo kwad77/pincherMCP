@@ -5607,6 +5607,33 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			}
 		}
 	}
+	// #851: validate kinds against the symbol-kind taxonomy actually
+	// present in the project, mirroring trace's edge-kind validation
+	// (traceKindWarnings). A typo'd kind otherwise matches zero rows
+	// silently — the caller can't tell "Funktion isn't a kind" from
+	// "those kinds are all clean". Unknown kinds are dropped (not failed)
+	// so the rest of the filter still works, exactly like trace.
+	var kindWarnings []string
+	if len(kinds) > 0 {
+		if _, _, kindCounts, _, statErr := s.store.GraphStats(projectID); statErr == nil && len(kindCounts) > 0 {
+			validKinds := make([]string, 0, len(kindCounts))
+			for k := range kindCounts {
+				validKinds = append(validKinds, k)
+			}
+			sort.Strings(validKinds)
+			validated := []string{}
+			for _, k := range kinds {
+				if _, ok := kindCounts[k]; ok {
+					validated = append(validated, k)
+				} else {
+					kindWarnings = append(kindWarnings, fmt.Sprintf(
+						"unknown kind %q ignored — no symbol in this project has that kind; valid kinds: %s",
+						k, strings.Join(validKinds, ", ")))
+				}
+			}
+			kinds = validated
+		}
+	}
 	// 0.95 default biases toward AST-extracted languages (Go=1.0,
 	// JSON/YAML/HCL parser-backed). Caller can drop to 0.0 to include
 	// regex-tier languages at known false-positive cost (their CALLS
@@ -5686,6 +5713,15 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 				{"tool": "dead_code", "args": `{"min_confidence":0.7}`,
 					"why": "lower the confidence floor so regex-extracted (sub-1.0) symbols enter the candidate pool"},
 			},
+		}
+	}
+
+	// #851: attach unknown-kind warnings to whichever _meta map the
+	// branches above built. jsonResultWithMeta's unknown-args merge
+	// appends to this same key, so set rather than risk a clobber.
+	if len(kindWarnings) > 0 {
+		if m, ok := data["_meta"].(map[string]any); ok {
+			m["warnings"] = kindWarnings
 		}
 	}
 

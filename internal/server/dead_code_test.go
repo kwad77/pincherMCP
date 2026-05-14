@@ -184,6 +184,57 @@ func TestHandleDeadCode_KindsFilter(t *testing.T) {
 	}
 }
 
+// #851: an unknown kind in the `kinds` filter must surface a _meta.warning
+// rather than silently filtering to nothing. A typo'd kind ("Funktion")
+// previously produced an empty-but-valid-looking dead_symbols list — the
+// "silent confidently wrong" class. Valid kinds still pass through.
+func TestHandleDeadCode_UnknownKindWarns(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
+
+	mustUpsertSymbols(t, store, []db.Symbol{
+		{ID: "p1::pkg.lonelyClass#Class", ProjectID: "p1", FilePath: "internal/svc/svc.go",
+			Name: "lonelyClass", QualifiedName: "pkg.lonelyClass", Kind: "Class", Language: "Go",
+			ExtractionConfidence: 1.0},
+	})
+
+	result, err := srv.handleDeadCode(context.Background(), makeReq(map[string]any{
+		"kinds": "Funktion,Class",
+	}))
+	if err != nil {
+		t.Fatalf("handleDeadCode: %v", err)
+	}
+	body := decode(t, result)
+
+	meta, _ := body["_meta"].(map[string]any)
+	warnings, _ := meta["warnings"].([]any)
+	foundFunktion := false
+	for _, w := range warnings {
+		s, _ := w.(string)
+		if strings.Contains(s, `unknown kind "Funktion"`) {
+			foundFunktion = true
+		}
+		if strings.Contains(s, `unknown kind "Class"`) {
+			t.Errorf("valid kind \"Class\" flagged as unknown: %q", s)
+		}
+	}
+	if !foundFunktion {
+		t.Errorf("expected a _meta.warning naming the unknown kind \"Funktion\"; got %v", warnings)
+	}
+
+	// The valid kind still works — the Class symbol surfaces as dead.
+	dead, _ := body["dead_symbols"].([]any)
+	if len(dead) != 1 {
+		t.Fatalf("dead_symbols length = %d, want 1 (the lonely Class)", len(dead))
+	}
+	entry, _ := dead[0].(map[string]any)
+	if kind, _ := entry["kind"].(string); kind != "Class" {
+		t.Errorf("dead symbol kind = %q, want \"Class\"", kind)
+	}
+}
+
 // #738: filters.kinds must be a JSON array, never null. A nil []string
 // marshals to `null`, and consumers iterating filters.kinds without a
 // null-check break — the recurring nil-slice-in-response class. The
