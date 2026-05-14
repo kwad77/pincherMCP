@@ -16,6 +16,7 @@ import (
 // stats rolled into ALL-TIME".
 
 func TestHandleStats_SurfacesProcessUptime(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionStartedAt = time.Now().Add(-7 * time.Minute)
 
@@ -33,6 +34,7 @@ func TestHandleStats_SurfacesProcessUptime(t *testing.T) {
 }
 
 func TestHumanDuration(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		d    time.Duration
 		want string

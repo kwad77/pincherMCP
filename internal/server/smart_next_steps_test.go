@@ -16,6 +16,7 @@ import (
 // Many results spread across many files: agent should orient before
 // drilling. Architecture suggestion gets prepended.
 func TestSuggestNextStepsForResults_ManyFilesPrependsArchitecture(t *testing.T) {
+	t.Parallel()
 	results := make([]db.SearchResult, 12)
 	for i := 0; i < 12; i++ {
 		// Each result lives in a different file → 12 distinct files,
@@ -46,6 +47,7 @@ func TestSuggestNextStepsForResults_ManyFilesPrependsArchitecture(t *testing.T) 
 // many-files case. Should pass through to per-kind defaults without
 // prepending architecture.
 func TestSuggestNextStepsForResults_ManyResultsFewFilesNoArchitecture(t *testing.T) {
+	t.Parallel()
 	results := make([]db.SearchResult, 12)
 	for i := 0; i < 12; i++ {
 		results[i] = db.SearchResult{
@@ -70,6 +72,7 @@ func TestSuggestNextStepsForResults_ManyResultsFewFilesNoArchitecture(t *testing
 // suggestions (context + trace). Single-hit-high-conf trims to the
 // most useful one (context — returns symbol + imports).
 func TestSuggestNextStepsForResults_SingleHighConfTrimsSecondary(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{{
 		Symbol: db.Symbol{
 			ID: "p::pkg.UniqueFunc#Function", Name: "UniqueFunc",
@@ -90,6 +93,7 @@ func TestSuggestNextStepsForResults_SingleHighConfTrimsSecondary(t *testing.T) {
 // suggestions. The agent may need both context (read it) and trace
 // (verify it's the right symbol given the low confidence).
 func TestSuggestNextStepsForResults_SingleLowConfKeepsBoth(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{{
 		Symbol: db.Symbol{
 			ID: "p::pkg.MaybeFunc#Function", Name: "MaybeFunc",
@@ -107,6 +111,7 @@ func TestSuggestNextStepsForResults_SingleLowConfKeepsBoth(t *testing.T) {
 // The shape doesn't trigger architecture (too few files) or single-
 // hit trimming (too many results).
 func TestSuggestNextStepsForResults_PassThroughForOrdinaryShape(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{
 		{Symbol: db.Symbol{ID: "p::pkg.A#Function", Name: "A", Kind: "Function", FilePath: "a.go", ExtractionConfidence: 1.0}},
 		{Symbol: db.Symbol{ID: "p::pkg.B#Function", Name: "B", Kind: "Function", FilePath: "b.go", ExtractionConfidence: 1.0}},
@@ -127,6 +132,7 @@ func TestSuggestNextStepsForResults_PassThroughForOrdinaryShape(t *testing.T) {
 // result branch is what actually fires; this is just the helper's
 // boundary behavior.
 func TestSuggestNextStepsForResults_EmptyReturnsNil(t *testing.T) {
+	t.Parallel()
 	steps := suggestNextStepsForResults(nil)
 	if steps != nil {
 		t.Errorf("empty input should return nil; got %v", steps)
@@ -136,6 +142,7 @@ func TestSuggestNextStepsForResults_EmptyReturnsNil(t *testing.T) {
 // Section/Document kinds get a single suggestion from the per-kind
 // path. Single-hit trim is a no-op for them (only 1 step already).
 func TestSuggestNextStepsForResults_SectionSingleHitNoChange(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{{
 		Symbol: db.Symbol{
 			ID: "p::docs/x.md::H1#Section", Name: "H1",

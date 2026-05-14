@@ -42,6 +42,7 @@ func setupChangesGitRepo(t *testing.T) string {
 // The output must rank TestBoth first, then TestBar, then TestFoo
 // (the IDs are the lex tiebreaker so TestBar < TestFoo by IDs alpha).
 func TestHandleChanges_TestsToRun_OrderedByOverlap(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := setupChangesGitRepo(t)
 	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "tests-to-run", IndexedAt: time.Now()})
@@ -105,6 +106,7 @@ func TestHandleChanges_TestsToRun_OrderedByOverlap(t *testing.T) {
 // count without parsing the array. Keeps the response shape consistent
 // with the existing summary fields (changed_files, total_impacted, etc).
 func TestHandleChanges_SummaryIncludesTestsToRunCount(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := setupChangesGitRepo(t)
 	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "summary-count", IndexedAt: time.Now()})
@@ -144,6 +146,7 @@ func TestHandleChanges_SummaryIncludesTestsToRunCount(t *testing.T) {
 // writing one" — but the existing next_steps logic already covers
 // the recommendation; we just need the array to be safely consumable.
 func TestHandleChanges_TestsToRun_EmptyWhenNoTestEdges(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := setupChangesGitRepo(t)
 	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "no-tests", IndexedAt: time.Now()})

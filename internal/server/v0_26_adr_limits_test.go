@@ -17,6 +17,7 @@ import (
 // validation is consistent across surfaces.
 
 func TestADR_Set_RejectsOverlongKey(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1"})
@@ -46,6 +47,7 @@ func TestADR_Set_RejectsOverlongKey(t *testing.T) {
 }
 
 func TestADR_Set_RejectsOverlongValue(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1"})
@@ -75,6 +77,7 @@ func TestADR_Set_RejectsOverlongValue(t *testing.T) {
 }
 
 func TestADR_Set_AcceptsExactlyAtLimit(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1"})
@@ -101,6 +104,7 @@ func TestADR_Set_AcceptsExactlyAtLimit(t *testing.T) {
 // If they drift, server-side rejection turns into a confusing UX where
 // the form silently accepts then errors on submit.
 func TestDashboard_ADRFormMaxlengthMatchesBackend(t *testing.T) {
+	t.Parallel()
 	html := renderDashboard("")
 	if !strings.Contains(html, `id="adr-key" type="text" maxlength="256"`) {
 		t.Errorf("dashboard ADR key input missing maxlength=256 (#534)")

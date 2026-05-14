@@ -14,6 +14,7 @@ import (
 // JSON-shape contracts; HTTP wire-up is covered by the parity test.
 
 func TestHandleDoctor_HealthyEmptyDB(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.21.0-test"
 
@@ -50,6 +51,7 @@ func TestHandleDoctor_HealthyEmptyDB(t *testing.T) {
 // `projects_truncated` / `extraction_failures_truncated` so the
 // caller knows.
 func TestHandleDoctor_CapsProjectsAndFailuresGlobally(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	// Seed 50 projects to repro the multi-project bloat shape.
 	for i := 0; i < 50; i++ {
@@ -84,6 +86,7 @@ func TestHandleDoctor_CapsProjectsAndFailuresGlobally(t *testing.T) {
 }
 
 func TestHandleDoctor_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{
 		ID: "p1", Path: "/tmp/p1", Name: "p1",
@@ -107,6 +110,7 @@ func TestHandleDoctor_WithProject(t *testing.T) {
 }
 
 func TestHandleRebuildFTS_DryRunByDefault(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleRebuildFTS(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -122,6 +126,7 @@ func TestHandleRebuildFTS_DryRunByDefault(t *testing.T) {
 }
 
 func TestHandleRebuildFTS_ConfirmedRebuilds(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleRebuildFTS(context.Background(), makeReq(map[string]any{"confirm": true}))
 	if err != nil {
@@ -140,6 +145,7 @@ func TestHandleRebuildFTS_ConfirmedRebuilds(t *testing.T) {
 }
 
 func TestHandleSelfTest_HealthyInstall(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleSelfTest(context.Background(), makeReq(map[string]any{}))
 	if err != nil {

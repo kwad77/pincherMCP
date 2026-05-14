@@ -9,6 +9,7 @@ import (
 // (#540/#541/#542/#543/#552/#553). All six touch dashboard JS/CSS.
 
 func TestDashboardJS_EmptyStateCTA(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function emptyStateCTA",
@@ -35,6 +36,7 @@ func TestDashboardJS_EmptyStateCTA(t *testing.T) {
 }
 
 func TestDashboardJS_LoadingSkeletons(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	if !strings.Contains(js, "function skeletonRows") {
 		t.Errorf("dashboard JS missing skeletonRows helper — #541")
@@ -56,6 +58,7 @@ func TestDashboardJS_LoadingSkeletons(t *testing.T) {
 }
 
 func TestDashboardJS_ToastVariants(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	// showToast must support both legacy (msg, ok) and new (msg, kind, opts) forms.
 	for _, needle := range []string{
@@ -70,6 +73,7 @@ func TestDashboardJS_ToastVariants(t *testing.T) {
 }
 
 func TestDashboardJS_CustomConfirmDialog(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function showConfirmDialog",
@@ -93,6 +97,7 @@ func TestDashboardJS_CustomConfirmDialog(t *testing.T) {
 }
 
 func TestDashboardJS_ConfigurableRefresh(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"REFRESH_STORAGE",
@@ -118,6 +123,7 @@ func TestDashboardJS_ConfigurableRefresh(t *testing.T) {
 }
 
 func TestDashboardJS_ADRRichRender(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	// ADR value must be wrapped in <pre> with class adr-val (was <div>).
 	if !strings.Contains(js, `'<pre class="adr-val">'+esc(e.value||'')+'</pre>'`) {

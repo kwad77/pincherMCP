@@ -16,6 +16,7 @@ import (
 // scratch-file Function second, and a real cmd/pinch Function
 // third. Resolution must land on cmd/pinch.
 func TestSortTraceCandidates_PrefersProductionFunction(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: ".scratch_lang_test.go::main#Module", Name: "main",
 			FilePath: ".scratch_lang_test.go", Kind: "Module"},
@@ -35,6 +36,7 @@ func TestSortTraceCandidates_PrefersProductionFunction(t *testing.T) {
 
 // Module shouldn't outrank Function in the same file.
 func TestSortTraceCandidates_FunctionBeatsModuleSameFile(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: "a.go::main#Module", Name: "main", FilePath: "a.go", Kind: "Module"},
 		{ID: "a.go::main.main#Function", Name: "main", FilePath: "a.go", Kind: "Function"},
@@ -47,6 +49,7 @@ func TestSortTraceCandidates_FunctionBeatsModuleSameFile(t *testing.T) {
 
 // Production beats test even when test has the same kind.
 func TestSortTraceCandidates_ProductionBeatsTest(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: "internal/foo/foo_test.go::pkg.Compute#Function", Name: "Compute",
 			FilePath: "internal/foo/foo_test.go", Kind: "Function"},
@@ -66,6 +69,7 @@ func TestSortTraceCandidates_ProductionBeatsTest(t *testing.T) {
 // the same kind (Function) and the path filter only knew about
 // scratch + test, not testdata fixtures.
 func TestSortTraceCandidates_ProductionBeatsFixture(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: "testdata/corpus/go-project/internal/auth/auth.go::auth.Open#Function",
 			Name: "Open", FilePath: "testdata/corpus/go-project/internal/auth/auth.go",
@@ -82,6 +86,7 @@ func TestSortTraceCandidates_ProductionBeatsFixture(t *testing.T) {
 // All-test result still works (the test helpers ARE the only
 // matches; resolve to one of them, in stable order).
 func TestSortTraceCandidates_AllTestStableOrder(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: "a_test.go::pkg.helper#Function", Name: "helper",
 			FilePath: "a_test.go", Kind: "Function"},
@@ -96,6 +101,7 @@ func TestSortTraceCandidates_AllTestStableOrder(t *testing.T) {
 
 // Callable kind ladder: Function > Method > Class > everything else.
 func TestSortTraceCandidates_KindLadder(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: "a::Setting", Name: "x", FilePath: "a.yaml", Kind: "Setting"},
 		{ID: "a::Class", Name: "x", FilePath: "a.go", Kind: "Class"},
@@ -113,6 +119,7 @@ func TestSortTraceCandidates_KindLadder(t *testing.T) {
 
 // Single-element slice — sortTraceCandidates must not panic.
 func TestSortTraceCandidates_SingleElementOk(t *testing.T) {
+	t.Parallel()
 	syms := []db.Symbol{
 		{ID: "x", Name: "x", FilePath: "x.go", Kind: "Function"},
 	}

@@ -7,6 +7,7 @@ import "testing"
 // subject. The hint extractor must surface that token verbatim
 // instead of picking a generic noun like "indexer" or "codebase".
 func TestTaskHintFromString_PrefersQualifiedIdentifier(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want string
@@ -43,6 +44,7 @@ func TestTaskHintFromString_PrefersQualifiedIdentifier(t *testing.T) {
 // circuits through. Pin its behaviour separately so the helper can
 // evolve without surprising the caller.
 func TestQualifiedIdentifierHint(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want string
@@ -93,6 +95,7 @@ func TestQualifiedIdentifierHint(t *testing.T) {
 // qualified identifier and matches no explicit shape keyword (#290).
 // Better than `unknown` which routes to a generic recommendation.
 func TestClassifyTaskShape_QualifiedIdentifierFallsBackToFind(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want guideShape

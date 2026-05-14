@@ -11,6 +11,7 @@ import (
 // rather than silently ignoring them. Same failure-as-pedagogy contract
 // as #473 (unknown pinchQL property warnings).
 func TestUnknownArgs_NeighborhoodDepthArg_Warns(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 
@@ -35,6 +36,7 @@ func TestUnknownArgs_NeighborhoodDepthArg_Warns(t *testing.T) {
 }
 
 func TestUnknownArgs_AllValidArgs_Silent(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	got := srv.unknownArgs("neighborhood", map[string]any{
@@ -48,6 +50,7 @@ func TestUnknownArgs_AllValidArgs_Silent(t *testing.T) {
 }
 
 func TestUnknownArgs_SchemaToolWithToolArg_Warns(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	got := srv.unknownArgs("schema", map[string]any{"tool": "neighborhood"})
@@ -60,6 +63,7 @@ func TestUnknownArgs_SchemaToolWithToolArg_Warns(t *testing.T) {
 }
 
 func TestUnknownArgs_UnknownTool_Skipped(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	got := srv.unknownArgs("nonexistent", map[string]any{"foo": 1})
 	if got != nil {
@@ -71,6 +75,7 @@ func TestUnknownArgs_UnknownTool_Skipped(t *testing.T) {
 // makeReq doesn't set Params.Name; do it explicitly here so beginCall
 // captures the tool name and unknownArgs can resolve the schema.
 func TestHandleSchema_UnknownArg_SurfacesWarning(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 

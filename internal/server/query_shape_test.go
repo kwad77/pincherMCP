@@ -15,6 +15,7 @@ import (
 // to nil and being passed through directly to the JSON map.
 
 func TestHandleQuery_EmptyRows_RowsIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "query-empty"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})
@@ -44,6 +45,7 @@ func TestHandleQuery_EmptyRows_RowsIsEmptyArrayNotNull(t *testing.T) {
 // suggest a `context` follow-up on the top result. Mirrors the
 // next_steps pattern in search/trace/changes/architecture.
 func TestHandleQuery_NonEmptyRowsWithID_NextStepsSuggestsContext(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "query-next"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})
@@ -85,6 +87,7 @@ func TestHandleQuery_NonEmptyRowsWithID_NextStepsSuggestsContext(t *testing.T) {
 // as search's project=*. Returns rows from every indexed project,
 // not just the session/default one.
 func TestHandleQuery_ProjectStarReturnsCrossProjectRows(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 
@@ -152,6 +155,7 @@ func TestHandleQuery_ProjectStarReturnsCrossProjectRows(t *testing.T) {
 // firstRowID unit-tests: handles `id`, `n.id`, missing, and non-string
 // values.
 func TestFirstRowID(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		rows []map[string]any
@@ -176,6 +180,7 @@ func TestFirstRowID(t *testing.T) {
 // warnings as _meta.warnings so the agent gets a remediation hint
 // instead of a misleading empty result.
 func TestHandleQuery_UnknownProperty_SurfacesWarning(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "query-warn"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})

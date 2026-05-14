@@ -14,6 +14,7 @@ import (
 // Pass min_edges=0 to opt back into the legacy unfiltered shape.
 
 func TestHandleList_DefaultHidesEmptyGraphProjects(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	now := time.Now()
 
@@ -50,6 +51,7 @@ func TestHandleList_DefaultHidesEmptyGraphProjects(t *testing.T) {
 
 // Caller can opt back into the unfiltered view via min_edges=0.
 func TestHandleList_MinEdgesZeroIncludesEmpty(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	now := time.Now()
 	withEdges := t.TempDir()

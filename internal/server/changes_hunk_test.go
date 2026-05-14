@@ -6,6 +6,7 @@ import (
 )
 
 func TestParseHunkHeader_StandardForm(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		header     string
 		wantStart  int
@@ -27,6 +28,7 @@ func TestParseHunkHeader_StandardForm(t *testing.T) {
 }
 
 func TestParseHunkHeader_Malformed_ReturnsZero(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"@@ no plus marker @@",
 		"+++ b/file.go", // not a hunk header
@@ -43,6 +45,7 @@ func TestParseHunkHeader_Malformed_ReturnsZero(t *testing.T) {
 }
 
 func TestParseGitDiffHunks_SingleFileMultipleHunks(t *testing.T) {
+	t.Parallel()
 	diff := "diff --git a/foo.go b/foo.go\nindex abc..def 100644\n--- a/foo.go\n+++ b/foo.go\n@@ -10,3 +10,5 @@\n+new line\n+new line\n@@ -50,1 +52,2 @@\n+another\n"
 	got := parseGitDiffHunks(diff)
 	want := map[string][][2]int{
@@ -54,6 +57,7 @@ func TestParseGitDiffHunks_SingleFileMultipleHunks(t *testing.T) {
 }
 
 func TestParseGitDiffHunks_MultipleFiles(t *testing.T) {
+	t.Parallel()
 	diff := "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,2 @@\n+x\n--- a/b.go\n+++ b/b.go\n@@ -100,1 +100,3 @@\n+y\n+z\n"
 	got := parseGitDiffHunks(diff)
 	want := map[string][][2]int{
@@ -66,6 +70,7 @@ func TestParseGitDiffHunks_MultipleFiles(t *testing.T) {
 }
 
 func TestParseGitDiffHunks_PureDeletion_StillEmits(t *testing.T) {
+	t.Parallel()
 	// `+20,0` means "0 new lines starting at 20" — a pure deletion.
 	// We still want a single-line range so a function losing one line
 	// shows up.
@@ -80,6 +85,7 @@ func TestParseGitDiffHunks_PureDeletion_StillEmits(t *testing.T) {
 }
 
 func TestSymbolOverlapsHunks_Inside(t *testing.T) {
+	t.Parallel()
 	// Symbol at lines 10-30; hunk at lines 15-20 (entirely inside).
 	if !symbolOverlapsHunks(10, 30, [][2]int{{15, 20}}) {
 		t.Errorf("hunk fully inside symbol must overlap")
@@ -87,6 +93,7 @@ func TestSymbolOverlapsHunks_Inside(t *testing.T) {
 }
 
 func TestSymbolOverlapsHunks_StraddlesStart(t *testing.T) {
+	t.Parallel()
 	// Symbol at 50-100; hunk at 40-60 (overlaps start).
 	if !symbolOverlapsHunks(50, 100, [][2]int{{40, 60}}) {
 		t.Errorf("hunk overlapping symbol start must overlap")
@@ -94,12 +101,14 @@ func TestSymbolOverlapsHunks_StraddlesStart(t *testing.T) {
 }
 
 func TestSymbolOverlapsHunks_StraddlesEnd(t *testing.T) {
+	t.Parallel()
 	if !symbolOverlapsHunks(50, 100, [][2]int{{90, 120}}) {
 		t.Errorf("hunk overlapping symbol end must overlap")
 	}
 }
 
 func TestSymbolOverlapsHunks_Disjoint(t *testing.T) {
+	t.Parallel()
 	// Symbol at 50-100; hunks at 10-20 and 200-210 — neither overlaps.
 	if symbolOverlapsHunks(50, 100, [][2]int{{10, 20}, {200, 210}}) {
 		t.Errorf("disjoint hunks must NOT overlap")
@@ -107,6 +116,7 @@ func TestSymbolOverlapsHunks_Disjoint(t *testing.T) {
 }
 
 func TestSymbolOverlapsHunks_EmptyHunks(t *testing.T) {
+	t.Parallel()
 	if symbolOverlapsHunks(50, 100, nil) {
 		t.Errorf("nil hunks must NOT overlap (no edits in this file)")
 	}
@@ -116,6 +126,7 @@ func TestSymbolOverlapsHunks_EmptyHunks(t *testing.T) {
 }
 
 func TestSymbolOverlapsHunks_AdjacentNotOverlap(t *testing.T) {
+	t.Parallel()
 	// Symbol ends at 100; next hunk starts at 101. The two ranges are
 	// adjacent but disjoint — should NOT match.
 	if symbolOverlapsHunks(50, 100, [][2]int{{101, 110}}) {

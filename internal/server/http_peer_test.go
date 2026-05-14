@@ -13,6 +13,7 @@ import (
 // guard the flusher would oscillate to fast cadence on the first
 // flush of a single-process run.
 func TestHasHTTPPeer_NoOtherProcess(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	if srv.hasHTTPPeer() {
 		t.Error("hasHTTPPeer should return false on an empty sessions table")
@@ -23,6 +24,7 @@ func TestHasHTTPPeer_NoOtherProcess(t *testing.T) {
 // PID has flushed an http_url row within the staleness window, so we
 // detect the peer and the flusher should accelerate.
 func TestHasHTTPPeer_FreshPeerDetected(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// Simulate another pincher process: write a session row with a
@@ -43,6 +45,7 @@ func TestHasHTTPPeer_FreshPeerDetected(t *testing.T) {
 // this, a long-dead HTTP process would strand the flusher at fast
 // cadence.
 func TestHasHTTPPeer_StalePeerIgnored(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// last_seen is set to time.Now() at write time inside RecordSession,
@@ -68,6 +71,7 @@ func TestHasHTTPPeer_StalePeerIgnored(t *testing.T) {
 // HTTP same-process case writes its own http_url; flusher should
 // stay slow because there's no peer to accelerate for.)
 func TestHasHTTPPeer_MyOwnPIDIgnored(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// Write a row with our own PID.
@@ -85,6 +89,7 @@ func TestHasHTTPPeer_MyOwnPIDIgnored(t *testing.T) {
 // process flushes session rows with empty http_url. Those are not a
 // dashboard signal, so they shouldn't trigger acceleration.
 func TestHasHTTPPeer_NoHTTPURLIgnored(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	otherPID := os.Getpid() + 1
@@ -102,6 +107,7 @@ func TestHasHTTPPeer_NoHTTPURLIgnored(t *testing.T) {
 // hits the query path against a real schema. Confirms the SQL parses
 // and no-rows path is wired correctly.
 func TestHasHTTPPeer_NotificationCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store, err := db.Open(dir)
 	if err != nil {

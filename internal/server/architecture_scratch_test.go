@@ -7,6 +7,7 @@ import "testing"
 // directory (e.g. testdata/corpus/foo/scratch.go) are kept visible
 // because they're typically real test fixtures.
 func TestIsDeveloperScratchPath(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		path string

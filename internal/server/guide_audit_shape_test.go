@@ -11,6 +11,7 @@ import (
 // pinchQL `query` against the docstring property (#438).
 
 func TestClassifyTaskShape_AuditUndocumented(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"find an undocumented exported function",
 		"list functions with no docstring",
@@ -36,6 +37,7 @@ func TestClassifyTaskShape_AuditUndocumented(t *testing.T) {
 // phrase. Regression test for the canonical examples that were
 // silently falling through to shapeFind.
 func TestClassifyTaskShape_AuditEveryWithoutPattern(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"find every function without a test",
 		"list every endpoint without auth",
@@ -57,6 +59,7 @@ func TestClassifyTaskShape_AuditEveryWithoutPattern(t *testing.T) {
 }
 
 func TestClassifyTaskShape_AuditDoesNotOvercatch(t *testing.T) {
+	t.Parallel()
 	// Generic find / understand tasks should NOT fall into shapeAudit.
 	cases := map[string]guideShape{
 		"find the auth middleware":           shapeFind,
@@ -74,6 +77,7 @@ func TestClassifyTaskShape_AuditDoesNotOvercatch(t *testing.T) {
 }
 
 func TestGuideRecommendations_AuditEmitsPinchQL(t *testing.T) {
+	t.Parallel()
 	recs := guideRecommendations(shapeAudit, "undocumented exported functions", "")
 	if len(recs) == 0 {
 		t.Fatal("audit shape should produce at least one recommendation")

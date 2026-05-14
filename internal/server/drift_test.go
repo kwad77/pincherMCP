@@ -9,6 +9,7 @@ import (
 )
 
 func TestNormalizeVersion(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -53,6 +54,7 @@ func seedProject(t *testing.T, s *Server, name, binaryVersion string) string {
 }
 
 func TestDriftFor_SelfNewer_NoDrift(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.11.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -64,6 +66,7 @@ func TestDriftFor_SelfNewer_NoDrift(t *testing.T) {
 }
 
 func TestDriftFor_Equal_NoDrift(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.10.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -75,6 +78,7 @@ func TestDriftFor_Equal_NoDrift(t *testing.T) {
 }
 
 func TestDriftFor_SelfOlder_Warns(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -92,6 +96,7 @@ func TestDriftFor_SelfOlder_Warns(t *testing.T) {
 }
 
 func TestDriftFor_DevOnEitherSide_Skips(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// Self is dev, project is real
@@ -110,6 +115,7 @@ func TestDriftFor_DevOnEitherSide_Skips(t *testing.T) {
 }
 
 func TestDriftFor_NormalizesGitDescribeAndDirty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Self is a dirty build of v0.10.0; project was indexed by clean v0.10.0.
 	// Without normalization, semver pre-release ordering would put dirty
@@ -124,6 +130,7 @@ func TestDriftFor_NormalizesGitDescribeAndDirty(t *testing.T) {
 }
 
 func TestCheckDriftForWrite_RefusesOnDrift(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -138,6 +145,7 @@ func TestCheckDriftForWrite_RefusesOnDrift(t *testing.T) {
 }
 
 func TestCheckDriftForWrite_NoDrift_ReturnsNil(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.10.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -148,6 +156,7 @@ func TestCheckDriftForWrite_NoDrift_ReturnsNil(t *testing.T) {
 }
 
 func TestAttachDriftWarning_AttachesToMeta(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -166,6 +175,7 @@ func TestAttachDriftWarning_AttachesToMeta(t *testing.T) {
 }
 
 func TestAttachDriftWarning_NoOpOnMatch(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.10.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -182,6 +192,7 @@ func TestAttachDriftWarning_NoOpOnMatch(t *testing.T) {
 // only once per server process. Repeated identical warnings train
 // agents to filter `_meta` entirely.
 func TestAttachDriftWarning_EmittedOncePerProcess(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -214,6 +225,7 @@ func TestAttachDriftWarning_EmittedOncePerProcess(t *testing.T) {
 // re-indexed at a different binary version mid-session (rare but
 // possible), the new pair fires fresh.
 func TestAttachDriftWarning_DifferentVersionReArmsEmission(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	pid := seedProject(t, srv, "p", "0.10.0")
@@ -244,6 +256,7 @@ func TestAttachDriftWarning_DifferentVersionReArmsEmission(t *testing.T) {
 }
 
 func TestAttachDriftWarning_PreservesExistingMeta(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	pid := seedProject(t, srv, "p", "0.10.0")

@@ -21,6 +21,7 @@ import (
 // past-the-end requests must still return [] (not null) and has_more
 // false.
 func TestProjects_Pagination(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	now := time.Now()
 	for i := 0; i < 75; i++ {
@@ -105,6 +106,7 @@ func TestProjects_Pagination(t *testing.T) {
 // #531: GET /v1/sessions accepts ?limit= (default 90, max 500). The
 // server pulls (limit+offset) rows from the store, then windows.
 func TestSessions_LimitParam(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	now := time.Now()
 	for i := 0; i < 25; i++ {
@@ -150,6 +152,7 @@ func TestSessions_LimitParam(t *testing.T) {
 // files_per_sec + eta_ms alongside the existing fields. When no index
 // is active for the project, the timing fields are null (not 0).
 func TestIndexProgress_HasETAFields(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpPost(t, srv, "/v1/index-progress", `{"project":"never-indexed"}`)
 	if w.Code != 200 {
@@ -175,6 +178,7 @@ func TestIndexProgress_HasETAFields(t *testing.T) {
 // version. JS bakes its own build version in at render time and polls
 // health to detect "your tab is running stale JS against a newer server".
 func TestHealth_HasDashboardVersion(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/health")
 	if w.Code != 200 {
@@ -200,6 +204,7 @@ func TestHealth_HasDashboardVersion(t *testing.T) {
 // every reachable error path: bad-request shapes, not-found, method
 // not allowed.
 func TestErrorEnvelope_StandardizedAcrossEndpoints(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	cases := []struct {
 		name     string

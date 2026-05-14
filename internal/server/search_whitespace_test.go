@@ -14,6 +14,7 @@ import (
 //   "search error: SQL logic error: fts5: syntax error near \"\""
 
 func TestHandleSearch_WhitespaceOnlyQuery_RejectedWithFriendlyError(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "ws-test"
 	srv.sessionRoot = "/tmp/ws-test"
@@ -64,6 +65,7 @@ func errorBody(r *mcp.CallToolResult) string {
 // add quotes — surface the matching-pair requirement instead of an
 // SQL parser detail.
 func TestHandleSearch_UnbalancedQuote_RejectedWithFriendlyError(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "uq-test"
 	srv.sessionRoot = "/tmp/uq-test"
@@ -97,6 +99,7 @@ func TestHandleSearch_UnbalancedQuote_RejectedWithFriendlyError(t *testing.T) {
 // well-formed phrase query (matched pair) must NOT trigger the
 // pre-flight rejection.
 func TestHandleSearch_BalancedQuote_RunsThrough(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "bq-test"
 	srv.sessionRoot = "/tmp/bq-test"

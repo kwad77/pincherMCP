@@ -26,6 +26,7 @@ import (
 // targets the GET/DELETE/POST routes that DON'T flow through registerTools.
 
 func TestEndpointShape_Health(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/health")
 	requireStatus(t, w.Code, 200, "GET /v1/health")
@@ -33,6 +34,7 @@ func TestEndpointShape_Health(t *testing.T) {
 }
 
 func TestEndpointShape_Stats(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/stats")
 	requireStatus(t, w.Code, 200, "GET /v1/stats")
@@ -44,6 +46,7 @@ func TestEndpointShape_Stats(t *testing.T) {
 }
 
 func TestEndpointShape_Sessions(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/sessions")
 	requireStatus(t, w.Code, 200, "GET /v1/sessions")
@@ -57,6 +60,7 @@ func TestEndpointShape_Sessions(t *testing.T) {
 }
 
 func TestEndpointShape_Projects(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/projects")
 	requireStatus(t, w.Code, 200, "GET /v1/projects")
@@ -64,6 +68,7 @@ func TestEndpointShape_Projects(t *testing.T) {
 }
 
 func TestEndpointShape_OpenAPI(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/openapi.json")
 	requireStatus(t, w.Code, 200, "GET /v1/openapi.json")
@@ -72,6 +77,7 @@ func TestEndpointShape_OpenAPI(t *testing.T) {
 }
 
 func TestEndpointShape_IndexProgress(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpPost(t, srv, "/v1/index-progress", `{"project":"nonexistent"}`)
 	requireStatus(t, w.Code, 200, "POST /v1/index-progress")
@@ -82,6 +88,7 @@ func TestEndpointShape_IndexProgress(t *testing.T) {
 // ── Negative: write endpoints reject malformed bodies with 4xx, not 500 ──
 
 func TestEndpointNegative_DeleteProjects_RejectsEmptyBody(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	for _, body := range []string{"", "{}", `{"id":""}`, "not json", `{"id":null}`} {
 		w := httpDelete(t, srv, "/v1/projects", body)
@@ -96,6 +103,7 @@ func TestEndpointNegative_DeleteProjects_RejectsEmptyBody(t *testing.T) {
 }
 
 func TestEndpointNegative_DeleteProjects_NonexistentID(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// A well-formed but nonexistent ID currently returns a 200 with
 	// `{"deleted": "<id>"}` because `DeleteProject` is idempotent — no
@@ -110,6 +118,7 @@ func TestEndpointNegative_DeleteProjects_NonexistentID(t *testing.T) {
 }
 
 func TestEndpointNegative_DeleteProjectsEmpty_NoBodyRequired(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// /v1/projects/empty takes no body. Sending one anyway must not
 	// 500 — it should be ignored.
@@ -124,6 +133,7 @@ func TestEndpointNegative_DeleteProjectsEmpty_NoBodyRequired(t *testing.T) {
 }
 
 func TestEndpointNegative_IndexProgress_MalformedBody(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Malformed JSON should not 500 — handler currently ignores decode
 	// errors and falls back to the session project. Pin that behavior
@@ -139,6 +149,7 @@ func TestEndpointNegative_IndexProgress_MalformedBody(t *testing.T) {
 }
 
 func TestEndpointNegative_MethodNotAllowed_StaysJSON(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Wrong-method requests on the ad-hoc routes (the ones in the if path == "..." chain)
 	// should fall through to the tool-dispatch path which returns 405

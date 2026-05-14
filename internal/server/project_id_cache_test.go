@@ -14,6 +14,7 @@ import (
 // resolving again — second call must return the cached ID even
 // though the underlying row is gone, proving cache hit happened.
 func TestResolveProjectID_CacheHitSkipsSQL(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	pid := "p401"
@@ -49,6 +50,7 @@ func TestResolveProjectID_CacheHitSkipsSQL(t *testing.T) {
 // invalidateProjectIDCache clears every entry; subsequent
 // resolve falls through to the store again.
 func TestInvalidateProjectIDCache_ForcesRefresh(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	pid := "p401i"
@@ -74,6 +76,7 @@ func TestInvalidateProjectIDCache_ForcesRefresh(t *testing.T) {
 // Cached entries expire after TTL. Simulated via direct injection
 // of an expired entry — production TTL is 60s.
 func TestProjectIDCache_RespectsTTLExpiry(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	pid := "p401t"
@@ -98,6 +101,7 @@ func TestProjectIDCache_RespectsTTLExpiry(t *testing.T) {
 // handleIndex invalidates the cache after a successful re-index.
 // End-to-end via the handler entry point.
 func TestHandleIndex_InvalidatesProjectIDCache(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	pid := "p401h"

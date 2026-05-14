@@ -15,6 +15,7 @@ import (
 // back to the URL because there's no `<title>` tag in markdown.
 
 func TestHandleFetch_MarkdownContent_PreservesArrowsAndGenericSyntax(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	srv.fetchAllowLoopback = true
 
@@ -52,6 +53,7 @@ Pincher's HTTP path: ` + "`/v1/<tool>`" + `.
 }
 
 func TestExtractTextFromHTML_PreservesLiteralAngleBracketsOutsideTags(t *testing.T) {
+	t.Parallel()
 	// Direct unit test of the scanner — pre-fix it consumed `>`
 	// even outside any tag.
 	in := `<p>Use Vec&lt;T&gt; or write x > 0 inline.</p>`
@@ -62,6 +64,7 @@ func TestExtractTextFromHTML_PreservesLiteralAngleBracketsOutsideTags(t *testing
 }
 
 func TestFirstMarkdownH1_SkipsFrontMatter(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string

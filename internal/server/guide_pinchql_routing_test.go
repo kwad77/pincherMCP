@@ -11,6 +11,7 @@ import (
 // "use pinchql" concept that recommends the `query` tool.
 
 func TestDomainConceptHint_UsePinchQLRoutesToQueryTool(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"use pinchQL to find functions sharing names across packages",
 		"use pinchql to count edges per file",
@@ -37,6 +38,7 @@ func TestDomainConceptHint_UsePinchQLRoutesToQueryTool(t *testing.T) {
 }
 
 func TestDomainConceptHint_PinchQLInternalsStillRoutesToSource(t *testing.T) {
+	t.Parallel()
 	// The original concept (pinchQL implementation investigation) must
 	// still fire for tasks that genuinely want to read the engine source.
 	cases := []string{
@@ -62,6 +64,7 @@ func TestDomainConceptHint_PinchQLInternalsStillRoutesToSource(t *testing.T) {
 }
 
 func TestDomainConceptHint_BarePinchQLNoLongerOverMatches(t *testing.T) {
+	t.Parallel()
 	// Pre-#616 regression check: tasks that mention pinchql conceptually
 	// without "use" / "engine" / "implementation" should NOT pick up the
 	// engine-source hint by accident. They should fall through to the

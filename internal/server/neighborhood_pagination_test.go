@@ -54,6 +54,7 @@ func setupBigNeighborhood(t *testing.T, n int) (*Server, *db.Store, string) {
 // reports the total (99 — seed excluded by default), neighbors holds
 // the first 50.
 func TestHandleNeighborhood_DefaultLimitPaginatesBigFiles(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupBigNeighborhood(t, 100)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id": "big::main.F0#Function",
@@ -92,6 +93,7 @@ func TestHandleNeighborhood_DefaultLimitPaginatesBigFiles(t *testing.T) {
 // Explicit limit + offset returns the requested window. Verifies the
 // pagination math without involving the default.
 func TestHandleNeighborhood_ExplicitOffsetReturnsWindow(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupBigNeighborhood(t, 100)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id":     "big::main.F0#Function",
@@ -121,6 +123,7 @@ func TestHandleNeighborhood_ExplicitOffsetReturnsWindow(t *testing.T) {
 // index 0, neighbors 1..99 indexed 0..98 of the filtered slice).
 // next_steps should NOT surface — there's nothing past the window.
 func TestHandleNeighborhood_TailPageHasNoNextStep(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupBigNeighborhood(t, 100)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id":     "big::main.F0#Function",
@@ -153,6 +156,7 @@ func TestHandleNeighborhood_TailPageHasNoNextStep(t *testing.T) {
 // Out-of-range offset clamps to a zero-length window without erroring.
 // The agent might compute a stale offset off an old `count`.
 func TestHandleNeighborhood_OutOfRangeOffsetReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupBigNeighborhood(t, 10)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id":     "big::main.F0#Function",
@@ -178,6 +182,7 @@ func TestHandleNeighborhood_OutOfRangeOffsetReturnsEmpty(t *testing.T) {
 // Negative limit / offset clamp to defaults — defensive against a
 // caller passing 0 or -1.
 func TestHandleNeighborhood_NegativeArgsClampToDefaults(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupBigNeighborhood(t, 10)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id":     "big::main.F0#Function",

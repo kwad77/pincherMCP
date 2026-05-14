@@ -14,6 +14,7 @@ import (
 // #532: search accepts limit + offset and returns
 // {results, total, has_more, offset, limit, count, ...}.
 func TestSearch_Pagination(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	if err := store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1"}); err != nil {

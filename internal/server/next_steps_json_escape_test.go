@@ -16,6 +16,7 @@ import (
 
 // nextStepArgs is the tiny helper that does the marshalling.
 func TestNextStepArgs_EscapesEmbeddedQuotes(t *testing.T) {
+	t.Parallel()
 	got := nextStepArgs(map[string]any{"query": `"login flow"`})
 	// Round-trip — the result must parse as valid JSON.
 	var parsed map[string]any
@@ -28,6 +29,7 @@ func TestNextStepArgs_EscapesEmbeddedQuotes(t *testing.T) {
 }
 
 func TestNextStepArgs_EscapesBackslashes(t *testing.T) {
+	t.Parallel()
 	got := nextStepArgs(map[string]any{"query": `path\to\thing`})
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
@@ -38,6 +40,7 @@ func TestNextStepArgs_EscapesBackslashes(t *testing.T) {
 // End-to-end: search with a phrase query (containing double-quotes)
 // must not produce broken JSON in next_steps.
 func TestHandleSearch_PhraseQuery_NextStepsAreValidJSON(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -71,6 +74,7 @@ func TestHandleSearch_PhraseQuery_NextStepsAreValidJSON(t *testing.T) {
 // even when the task hint contains characters that would break naive
 // fmt.Sprintf interpolation.
 func TestHandleGuide_HintWithBackslash_ProducesValidJSON(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleGuide(context.Background(), makeReq(map[string]any{
 		// Backslash-bearing token that would crash fmt-based interpolation.

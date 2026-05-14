@@ -12,6 +12,7 @@ import (
 // "extractor missing".
 
 func TestDiagnoseEmptyIndex_IncrementalSymbolNeutralReindex(t *testing.T) {
+	t.Parallel()
 	// skipped > 0 AND files > 0 AND symbols == 0 — body-only edits, the
 	// benign case #425 split out.
 	meta := diagnoseEmptyIndex(&index.IndexResult{
@@ -36,6 +37,7 @@ func TestDiagnoseEmptyIndex_IncrementalSymbolNeutralReindex(t *testing.T) {
 }
 
 func TestDiagnoseEmptyIndex_ExtractorMissing(t *testing.T) {
+	t.Parallel()
 	// skipped == 0 AND files > 0 AND symbols == 0 — the genuine bug case.
 	meta := diagnoseEmptyIndex(&index.IndexResult{
 		Files:   5,
@@ -56,6 +58,7 @@ func TestDiagnoseEmptyIndex_ExtractorMissing(t *testing.T) {
 }
 
 func TestDiagnoseEmptyIndex_AllUnchanged(t *testing.T) {
+	t.Parallel()
 	// files == 0 AND skipped > 0 — the all-cached fast path.
 	meta := diagnoseEmptyIndex(&index.IndexResult{
 		Files:   0,
@@ -72,6 +75,7 @@ func TestDiagnoseEmptyIndex_AllUnchanged(t *testing.T) {
 }
 
 func TestDiagnoseEmptyIndex_NoIndexableFiles(t *testing.T) {
+	t.Parallel()
 	meta := diagnoseEmptyIndex(&index.IndexResult{}, false)
 	if meta == nil {
 		t.Fatal("expected diagnosis for empty path, got nil")
@@ -83,6 +87,7 @@ func TestDiagnoseEmptyIndex_NoIndexableFiles(t *testing.T) {
 }
 
 func TestDiagnoseEmptyIndex_AllBlocked(t *testing.T) {
+	t.Parallel()
 	meta := diagnoseEmptyIndex(&index.IndexResult{
 		Files:   0,
 		Blocked: 12,
@@ -98,6 +103,7 @@ func TestDiagnoseEmptyIndex_AllBlocked(t *testing.T) {
 }
 
 func TestDiagnoseEmptyIndex_NonZeroSymbolsSilent(t *testing.T) {
+	t.Parallel()
 	// Healthy run — no diagnosis surfaced.
 	if meta := diagnoseEmptyIndex(&index.IndexResult{
 		Files:   5,
@@ -108,6 +114,7 @@ func TestDiagnoseEmptyIndex_NonZeroSymbolsSilent(t *testing.T) {
 }
 
 func TestDiagnoseEmptyIndex_ForceSkipsAllUnchangedBranch(t *testing.T) {
+	t.Parallel()
 	// With force=true and only skipped files, the "all unchanged" branch
 	// shouldn't fire — that would be misleading because force was meant
 	// to re-extract. Falls through to the extractor-missing default.

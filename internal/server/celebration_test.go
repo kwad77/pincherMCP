@@ -12,6 +12,7 @@ import (
 // maybeFormatCelebration produces a one-line dopamine signal — and only
 // once per installation.
 func TestMaybeFormatCelebration_FiresOnThresholdCrossing(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	atomic.StoreInt64(&srv.statsTokensSaved, 150_000)
 
@@ -36,6 +37,7 @@ func TestMaybeFormatCelebration_FiresOnThresholdCrossing(t *testing.T) {
 }
 
 func TestMaybeFormatCelebration_BelowFirstTier_Silent(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	atomic.StoreInt64(&srv.statsTokensSaved, 50_000)
 
@@ -45,6 +47,7 @@ func TestMaybeFormatCelebration_BelowFirstTier_Silent(t *testing.T) {
 }
 
 func TestMaybeFormatCelebration_PersistedCounted(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// Persisted session contributes 80k; in-flight contributes 30k.
@@ -64,6 +67,7 @@ func TestMaybeFormatCelebration_PersistedCounted(t *testing.T) {
 }
 
 func TestFormatCelebration_PureShape(t *testing.T) {
+	t.Parallel()
 	got := formatCelebration(1_000_000, 1_234_567)
 	if !strings.Contains(got, "1,234,567") {
 		t.Errorf("want cumulative '1,234,567'; got %q", got)

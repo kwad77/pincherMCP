@@ -31,6 +31,7 @@ func writeAndHash(t *testing.T, path, content string) string {
 // retrieve path: seed symbol, modify file on disk after recording
 // hash, call symbol, assert the warning surfaces.
 func TestHandleSymbol_StaleFileEmitsWarning(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -89,6 +90,7 @@ func TestHandleSymbol_StaleFileEmitsWarning(t *testing.T) {
 // Matching file → no warning. The happy path must not noise up
 // every call with a false-positive warning.
 func TestHandleSymbol_MatchingFileNoWarning(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -125,6 +127,7 @@ func TestHandleSymbol_MatchingFileNoWarning(t *testing.T) {
 // is only meaningful when the response includes byte-offset-driven
 // content — projection that excludes source uses the in-DB metadata.
 func TestHandleSymbol_FieldsExcludeSource_SkipsStalenessCheck(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -159,6 +162,7 @@ func TestHandleSymbol_FieldsExcludeSource_SkipsStalenessCheck(t *testing.T) {
 
 // fileHashOnDisk pure-helper coverage.
 func TestFileHashOnDisk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")
 	wantHash := writeAndHash(t, p, "hello world")

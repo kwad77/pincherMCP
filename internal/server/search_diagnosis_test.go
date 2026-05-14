@@ -34,6 +34,7 @@ func (f *fakeRelaxer) relax() emptySearchRelaxer {
 // because registerTools is a Method. The verifier must report that
 // dropping the kind filter surfaces 1 result, NOT blame min_confidence.
 func TestVerifyEmptySearchCause_KindFilterIsActualCause(t *testing.T) {
+	t.Parallel()
 	relaxer := &fakeRelaxer{counts: map[string]int{
 		"registerTools||Go|": 1, // dropping kind surfaces 1 result
 	}}
@@ -60,6 +61,7 @@ func TestVerifyEmptySearchCause_KindFilterIsActualCause(t *testing.T) {
 // min_confidence is verifiable without an extra query — if rawCount > 0
 // but post-filter == 0, the threshold is provably the cause.
 func TestVerifyEmptySearchCause_MinConfidenceVerifiedFromRawCount(t *testing.T) {
+	t.Parallel()
 	relaxer := &fakeRelaxer{}
 	cause, steps, ok := verifyEmptySearchCause(
 		"foo", "", "", "", 0.71, 5 /* rawPreConfidenceCount */, relaxer.relax(),
@@ -86,6 +88,7 @@ func TestVerifyEmptySearchCause_MinConfidenceVerifiedFromRawCount(t *testing.T) 
 // the caller falls back to the static diagnosis path. Covers spelling
 // errors, wrong-project, and genuinely-absent symbols.
 func TestVerifyEmptySearchCause_NoRelaxationHelpsFallsThrough(t *testing.T) {
+	t.Parallel()
 	relaxer := &fakeRelaxer{counts: map[string]int{}} // every relaxation returns 0
 	_, _, ok := verifyEmptySearchCause(
 		"misspelt", "Function", "Go", "config", 0.71, 0, relaxer.relax(),
@@ -97,6 +100,7 @@ func TestVerifyEmptySearchCause_NoRelaxationHelpsFallsThrough(t *testing.T) {
 
 // Language filter as the cause: drop language to surface results.
 func TestVerifyEmptySearchCause_LanguageFilterIsActualCause(t *testing.T) {
+	t.Parallel()
 	relaxer := &fakeRelaxer{counts: map[string]int{
 		"foo|||": 3, // dropping language surfaces 3 results (with no kind set either)
 	}}
@@ -113,6 +117,7 @@ func TestVerifyEmptySearchCause_LanguageFilterIsActualCause(t *testing.T) {
 
 // Non-default corpus as the cause.
 func TestVerifyEmptySearchCause_CorpusFilterIsActualCause(t *testing.T) {
+	t.Parallel()
 	relaxer := &fakeRelaxer{counts: map[string]int{
 		"foo|||code": 2,
 	}}
@@ -131,6 +136,7 @@ func TestVerifyEmptySearchCause_CorpusFilterIsActualCause(t *testing.T) {
 // drop probes don't surface. Verify the verifier escalates to dropping
 // both kind and language together.
 func TestVerifyEmptySearchCause_PairDropFallback(t *testing.T) {
+	t.Parallel()
 	relaxer := &fakeRelaxer{counts: map[string]int{
 		// Single-drop probes: dropping kind alone (still has language) → 0.
 		// Dropping language alone (still has kind) → 0. Both together → 4.
@@ -154,6 +160,7 @@ func TestVerifyEmptySearchCause_PairDropFallback(t *testing.T) {
 // kind=Function (which excludes Methods); expects the diagnosis to
 // blame kind, NOT min_confidence.
 func TestHandleSearch_DiagnosisBlamesActualCulpritKindFilter(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "diagnosis-bug"
 	store.UpsertProject(db.Project{

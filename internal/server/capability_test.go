@@ -191,6 +191,7 @@ var capabilityProbes = []capProbe{
 // Adding a new capability requires adding both — failure to do so
 // fails this test loudly.
 func TestCapability_EveryAdvertisedTagHasRuntimeProbe(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	advertised := make(map[string]bool)
@@ -225,6 +226,7 @@ func TestCapability_EveryAdvertisedTagHasRuntimeProbe(t *testing.T) {
 // binary doesn't actually support — false advertising. Fix the probe
 // or fix the feature.
 func TestCapability_AllProbesPass(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	advertised := make(map[string]bool)
@@ -246,6 +248,7 @@ func TestCapability_AllProbesPass(t *testing.T) {
 // populated on a normal tool response (the contract every router will
 // rely on).
 func TestCapability_PresentInMetaEnvelope(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result := srv.jsonResultWithMeta(
 		map[string]any{"ok": true},
@@ -283,6 +286,7 @@ func TestCapability_PresentInMetaEnvelope(t *testing.T) {
 // TestCapability_HTTPAuthConditional verifies http_auth advertisement
 // is conditional on httpKey being set.
 func TestCapability_HTTPAuthConditional(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// Default test server has no httpKey → http_auth must be absent.

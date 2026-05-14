@@ -55,6 +55,7 @@ func setupTraceKinds(t *testing.T) (*Server, *db.Store, string) {
 // are NOT followed because outbound direction + Cache being the
 // target of READS means it wouldn't show up regardless.
 func TestHandleTrace_DefaultKindsTraversesCalls(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupTraceKinds(t)
 	result, err := srv.handleTrace(context.Background(), makeReq(map[string]any{
 		"name":      "Foo",
@@ -74,6 +75,7 @@ func TestHandleTrace_DefaultKindsTraversesCalls(t *testing.T) {
 // Foo finds Cache (via READS). Trace outbound with default (CALLS)
 // would NOT find Cache because the edge isn't a CALLS.
 func TestHandleTrace_KindsReadsTraversesDataFlow(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupTraceKinds(t)
 	result, err := srv.handleTrace(context.Background(), makeReq(map[string]any{
 		"name":      "Foo",
@@ -94,6 +96,7 @@ func TestHandleTrace_KindsReadsTraversesDataFlow(t *testing.T) {
 // commas — agents pass varied formats and shouldn't fail on cosmetic
 // differences.
 func TestHandleTrace_KindsParsingTolerant(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupTraceKinds(t)
 	cases := []string{
 		"READS",
@@ -126,6 +129,7 @@ func TestHandleTrace_KindsParsingTolerant(t *testing.T) {
 // edge from Foo is a READS edge — back-compat gate against a future
 // regression that adds READS to the default kinds list.
 func TestHandleTrace_DefaultKindsExcludesReads(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupTraceKinds(t)
 	result, err := srv.handleTrace(context.Background(), makeReq(map[string]any{
 		"name":      "Foo",
@@ -145,6 +149,7 @@ func TestHandleTrace_DefaultKindsExcludesReads(t *testing.T) {
 // can't drop the docs silently — without them, agents have to read
 // source to discover the option.
 func TestTraceToolSchema_DocumentsKindsFilter(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tool, ok := srv.tools["trace"]
 	if !ok {

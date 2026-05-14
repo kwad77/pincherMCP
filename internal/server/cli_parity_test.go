@@ -20,6 +20,7 @@ import (
 // pure-operation CLI doesn't accidentally trip the gate, and adding a
 // new data CLI without an MCP equivalent does.
 func TestCLISurface_HasMCPParity(t *testing.T) {
+	t.Parallel()
 	// User-facing CLI subcommands that surface data → MCP tool name.
 	// CLI uses kebab-case; MCP uses snake_case.
 	expected := map[string]string{

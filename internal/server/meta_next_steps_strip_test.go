@@ -18,6 +18,7 @@ import (
 // non-empty tool name to preserve that ergonomic.
 
 func TestMeta_NextStepsStrippedOnSuccessPath(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1"})
 	store.BulkUpsertSymbols([]db.Symbol{{
@@ -44,6 +45,7 @@ func TestMeta_NextStepsStrippedOnSuccessPath(t *testing.T) {
 }
 
 func TestMeta_NextStepsKeptWhenVerboseTrue(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1"})
 	store.BulkUpsertSymbols([]db.Symbol{{
@@ -69,6 +71,7 @@ func TestMeta_NextStepsKeptWhenVerboseTrue(t *testing.T) {
 }
 
 func TestMeta_NextStepsKeptOnEmptyResult(t *testing.T) {
+	t.Parallel()
 	// Empty result fires diagnosis + remediation steps — high-value
 	// pedagogy that must survive even in non-verbose mode.
 	srv, store, _ := newTestServer(t)
@@ -94,6 +97,7 @@ func TestMeta_NextStepsKeptOnEmptyResult(t *testing.T) {
 }
 
 func TestMeta_NextStepsKeptForPagination(t *testing.T) {
+	t.Parallel()
 	// Pagination next_steps point at the same tool (continuation, not
 	// pedagogy). Must survive on success in non-verbose mode.
 	srv, store, _ := newTestServer(t)
@@ -124,6 +128,7 @@ func TestMeta_NextStepsKeptForPagination(t *testing.T) {
 }
 
 func TestMeta_VerboseUnknownArgIsAllowed(t *testing.T) {
+	t.Parallel()
 	// `verbose` is the universal meta-arg added by #622. It must be
 	// accepted by every tool without firing the unknown-arg warning
 	// (#499). Verifies the special-case in unknownArgs.

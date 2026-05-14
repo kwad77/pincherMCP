@@ -31,6 +31,7 @@ var updateGolden = flag.Bool("update-tool-contract", false,
 // (whitespace, comment shuffles inside the schema string) should produce
 // no diff because the comparison happens on the parsed JSON tree.
 func TestToolContract_GoldenFile(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// Build a stable, parsed-and-re-encoded snapshot. We intentionally

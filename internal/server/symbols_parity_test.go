@@ -16,6 +16,7 @@ import (
 // fields like qualified_name / extraction_confidence.
 
 func TestHandleSymbols_Parity_SameFieldSetAsHandleSymbol(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "parity", IndexedAt: time.Now()})
@@ -93,6 +94,7 @@ func TestHandleSymbols_Parity_SameFieldSetAsHandleSymbol(t *testing.T) {
 // changed since indexing. Without the per-entry hook, batch consumers
 // silently consume stale source bytes.
 func TestHandleSymbols_StalenessWarning_PerEntry(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "stale", IndexedAt: time.Now()})

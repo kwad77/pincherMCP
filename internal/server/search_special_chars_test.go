@@ -13,6 +13,7 @@ import (
 // `search query="os.Stat"` just works without the caller learning
 // FTS5 phrase syntax.
 func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -126,6 +127,7 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 // with "fts5: syntax error near '.'". After the fix, the call reaches
 // the index without error and finds the seeded match.
 func TestHandleSearch_DottedIdentifier_DoesNotError(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "proj1"
 	store.UpsertProject(db.Project{ID: "proj1", Path: "/tmp/proj1", Name: "proj1", IndexedAt: time.Now()})
@@ -153,6 +155,7 @@ func TestHandleSearch_DottedIdentifier_DoesNotError(t *testing.T) {
 // `my-component`-style hyphenated tokens used to error with
 // "no such column: component" because FTS5 reads `-` as NOT.
 func TestHandleSearch_HyphenatedIdentifier_DoesNotError(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "proj1"
 	store.UpsertProject(db.Project{ID: "proj1", Path: "/tmp/proj1", Name: "proj1", IndexedAt: time.Now()})

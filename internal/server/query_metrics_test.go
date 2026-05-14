@@ -16,6 +16,7 @@ import (
 // recordQueryMetrics is a no-op for tools outside queryShapedTools so
 // admin/orientation calls don't pollute the retry-rate denominator.
 func TestRecordQueryMetrics_NonQueryToolsAreNoOp(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	for _, tool := range []string{"architecture", "list", "schema", "health", "stats", "guide", "adr", "fetch", "index", "symbol", "symbols", "context", "changes"} {
@@ -32,6 +33,7 @@ func TestRecordQueryMetrics_NonQueryToolsAreNoOp(t *testing.T) {
 // A zero-result search increments queries_total + queries_zero_result
 // and adds tokensUsed to the burned counter.
 func TestRecordQueryMetrics_ZeroResultIncrementsAllZeroCounters(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	srv.recordQueryMetrics("search", map[string]any{"query": "no-such-symbol"}, map[string]any{"count": 0}, 250)
@@ -54,6 +56,7 @@ func TestRecordQueryMetrics_ZeroResultIncrementsAllZeroCounters(t *testing.T) {
 // credits queries_retried_succeeded — this is the "agent learned and
 // recovered" signal. Pin same-tool + same-query as the discriminator.
 func TestRecordQueryMetrics_RetryAfterZeroResultIsCredited(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	srv.recordQueryMetrics("search", map[string]any{"query": "ADR-NNNN → new location"}, map[string]any{"count": 0}, 200)
@@ -78,6 +81,7 @@ func TestRecordQueryMetrics_RetryAfterZeroResultIsCredited(t *testing.T) {
 // the first. Without this guard, an unrelated middle call would
 // inflate queries_retried_succeeded.
 func TestRecordQueryMetrics_UnrelatedSuccessClearsMarker(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	srv.recordQueryMetrics("search", map[string]any{"query": "first-zero"}, map[string]any{"count": 0}, 100)
@@ -96,6 +100,7 @@ func TestRecordQueryMetrics_UnrelatedSuccessClearsMarker(t *testing.T) {
 // switching tools is not the "learned the threshold" signal we're
 // trying to detect.
 func TestRecordQueryMetrics_DifferentToolDoesNotCreditRetry(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	srv.recordQueryMetrics("search", map[string]any{"query": "foo"}, map[string]any{"count": 0}, 100)
@@ -110,6 +115,7 @@ func TestRecordQueryMetrics_DifferentToolDoesNotCreditRetry(t *testing.T) {
 // retry — we'd otherwise match every empty-q zero-result against the
 // next empty-q success.
 func TestRecordQueryMetrics_EmptyPrimaryArgNoCredit(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	srv.recordQueryMetrics("trace", map[string]any{}, map[string]any{"count": 0}, 100)
@@ -124,6 +130,7 @@ func TestRecordQueryMetrics_EmptyPrimaryArgNoCredit(t *testing.T) {
 // wiring so a future tool addition doesn't accidentally land using an
 // arg name that won't match the retry detection.
 func TestPrimaryQueryArg_PerToolDiscriminator(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		tool string
 		args map[string]any
@@ -151,6 +158,7 @@ func TestPrimaryQueryArg_PerToolDiscriminator(t *testing.T) {
 // load-bearing path for #241 — `pincher stats` reads the aggregator,
 // not in-memory counters.
 func TestQueryMetrics_RoundTripThroughDB(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	atomic.StoreInt32(&srv.mcpConnected, 1)

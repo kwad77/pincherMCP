@@ -17,6 +17,7 @@ import (
 // as the discriminator.
 
 func TestTaskHintFromString_DropsVisibilityCategoryNouns(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		// task → forbidden hint (must NOT be the result)
 		"how do I find what calls a private function":  "private",
@@ -40,6 +41,7 @@ func TestTaskHintFromString_DropsVisibilityCategoryNouns(t *testing.T) {
 }
 
 func TestTaskHintFromString_KeepsRealSubjectAlongsideCategoryNoun(t *testing.T) {
+	t.Parallel()
 	// When a real subject is present, dropping the category noun should
 	// still leave the subject. e.g. "find every exported MCP handler"
 	// should yield "MCP handler" or similar — not "exported".

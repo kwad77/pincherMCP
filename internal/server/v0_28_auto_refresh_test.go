@@ -13,6 +13,7 @@ import (
 // computeProjection extracted as a pure function returning null
 // when there aren't enough sessions/days to project.
 func TestDashboardJS_ProjectionGuard(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function computeProjection",
@@ -34,6 +35,7 @@ func TestDashboardJS_ProjectionGuard(t *testing.T) {
 // + visibility-aware pause/resume. Replaces the bare setInterval
 // calls.
 func TestDashboardJS_PollManagerAndStaleness(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function pollManager",
@@ -72,6 +74,7 @@ func TestDashboardJS_PollManagerAndStaleness(t *testing.T) {
 // #549: dark/light/auto theme toggle. Auto = no data-theme attr +
 // @media (prefers-color-scheme); explicit attr wins.
 func TestDashboardJS_ThemeToggle(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function applyStoredTheme",

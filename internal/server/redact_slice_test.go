@@ -16,6 +16,7 @@ import (
 //  3. mixed slice with non-map values that should pass through unchanged
 
 func TestRedactSensitiveArgs_SliceOfMaps(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{
 		"items": []any{
 			map[string]any{"name": "alice", "password": "hunter2"},
@@ -47,6 +48,7 @@ func TestRedactSensitiveArgs_SliceOfMaps(t *testing.T) {
 }
 
 func TestRedactSensitiveArgs_NestedSliceOfSliceOfMaps(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{
 		"deeply": []any{
 			[]any{
@@ -83,6 +85,7 @@ func TestRedactSensitiveArgs_NestedSliceOfSliceOfMaps(t *testing.T) {
 }
 
 func TestRedactSensitiveArgs_SliceWithMixedValues(t *testing.T) {
+	t.Parallel()
 	// Slice contains scalars + a single map. Scalars must pass through;
 	// the map's sensitive key must redact. Pre-#607 the slice traversal
 	// was untested — this asserts both branches of the type-switch.
@@ -116,6 +119,7 @@ func TestRedactSensitiveArgs_SliceWithMixedValues(t *testing.T) {
 // prevents the slow-query writer from dereferencing nil. Existed pre-#607
 // but pinning it here so the helper's contract is documented in tests.
 func TestRedactSensitiveArgs_NilInput(t *testing.T) {
+	t.Parallel()
 	if got := redactSensitiveArgs(nil); got != nil {
 		t.Errorf("nil input should return nil; got %v", got)
 	}

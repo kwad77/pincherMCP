@@ -52,6 +52,7 @@ var expectedMCPTools = map[string]bool{
 }
 
 func TestMCPSurface_AllRegisteredToolsAgentCallable(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// Every registered tool must be in expectedMCPTools. Test fails
@@ -71,6 +72,7 @@ func TestMCPSurface_AllRegisteredToolsAgentCallable(t *testing.T) {
 }
 
 func TestMCPSurface_AllToolsHaveHTTPRoute(t *testing.T) {
+	t.Parallel()
 	// API parity: every tool must be reachable via POST /v1/<tool>. The
 	// HTTP dispatcher reads from s.handlers; addTool populates that map.
 	// If a future refactor accidentally skips s.handlers, monitoring

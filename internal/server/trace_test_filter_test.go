@@ -15,6 +15,7 @@ import (
 // surface only the production caller; include_tests=true must
 // surface all three.
 func TestHandleTrace_DefaultFiltersTestsAndFixtures(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})

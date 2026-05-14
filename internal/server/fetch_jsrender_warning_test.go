@@ -29,6 +29,7 @@ func jsShellHTML(t *testing.T, padBytes int) string {
 }
 
 func TestHandleFetch_EmitsWarning_WhenJSRenderedShell(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	srv.fetchAllowLoopback = true
 
@@ -62,6 +63,7 @@ func TestHandleFetch_EmitsWarning_WhenJSRenderedShell(t *testing.T) {
 }
 
 func TestHandleFetch_NoWarning_OnNormalHTMLPage(t *testing.T) {
+	t.Parallel()
 	// Sanity: a real text-heavy HTML page must NOT trigger the warning.
 	// Pre-#617 fix shouldn't have over-broadened to normal pages.
 	srv, _ := fetchTestSetup(t)
@@ -93,6 +95,7 @@ func TestHandleFetch_NoWarning_OnNormalHTMLPage(t *testing.T) {
 }
 
 func TestHandleFetch_NoWarning_OnSmallPage(t *testing.T) {
+	t.Parallel()
 	// The heuristic is gated on raw size > 10 KB so trivial pages
 	// (welcome screens, healthchecks) don't get false-positive warnings.
 	srv, _ := fetchTestSetup(t)
@@ -120,6 +123,7 @@ func TestHandleFetch_NoWarning_OnSmallPage(t *testing.T) {
 }
 
 func TestHandleFetch_NoWarning_OnMarkdownInput(t *testing.T) {
+	t.Parallel()
 	// Markdown extraction is verbatim copy — text/raw_bytes ratio is
 	// always ~1, no risk of the JS-render heuristic firing. Belt-and-
 	// suspenders: the heuristic explicitly skips text/markdown and

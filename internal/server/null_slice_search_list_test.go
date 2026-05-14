@@ -18,6 +18,7 @@ import (
 // Seeds an empty-but-indexed project so the auto-index path is skipped
 // and we exercise the actual zero-results branch inside handleSearch.
 func TestHandleSearch_ZeroResults_ResultsIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir() // real path so auto-index sees an existing root
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "search-empty", IndexedAt: time.Now()})
@@ -45,6 +46,7 @@ func TestHandleSearch_ZeroResults_ResultsIsEmptyArrayNotNull(t *testing.T) {
 
 // list on a server with zero indexed projects → "projects":[] not null.
 func TestHandleList_NoProjects_ProjectsIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Don't seed any project — we want the empty-store branch.
 

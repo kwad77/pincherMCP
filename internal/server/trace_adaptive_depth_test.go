@@ -12,6 +12,7 @@ import (
 // #402: when many direct callers exist (>=5 at depth=1), trace
 // auto-trims to depth=1; agent doesn't get 50+ depth-2/3 hops.
 func TestHandleTrace_AutoTrim_ManyDirectCallers_StaysShallow(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -69,6 +70,7 @@ func TestHandleTrace_AutoTrim_ManyDirectCallers_StaysShallow(t *testing.T) {
 // Few direct callers (<5) → auto-deepen continues until threshold
 // or max depth reached.
 func TestHandleTrace_AutoTrim_FewDirectCallers_Deepens(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p2"
 	store.UpsertProject(db.Project{ID: "p2", Path: "/tmp/p2", Name: "p2", IndexedAt: time.Now()})
@@ -116,6 +118,7 @@ func TestHandleTrace_AutoTrim_FewDirectCallers_Deepens(t *testing.T) {
 // Explicit `depth=N` from the caller skips auto-trim entirely. The
 // _meta.depth_used field should NOT appear.
 func TestHandleTrace_ExplicitDepth_SkipsAutoTrim(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p3"
 	store.UpsertProject(db.Project{ID: "p3", Path: "/tmp/p3", Name: "p3", IndexedAt: time.Now()})

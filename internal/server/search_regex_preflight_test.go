@@ -11,6 +11,7 @@ import (
 // dotted identifiers (db.Open) and prefix wildcards (auth*) must
 // continue to work.
 func TestHandleSearch_RegexInQuery_RejectedWithFriendlyError(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "regex-test"
 
@@ -49,6 +50,7 @@ func TestHandleSearch_RegexInQuery_RejectedWithFriendlyError(t *testing.T) {
 // trigger the regex pre-flight — they're rescued by the existing
 // sanitizeFTS5Query (#424).
 func TestHandleSearch_DottedIdentifier_NoRegexFalsePositive(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "dotted-test"
 
@@ -75,6 +77,7 @@ func TestHandleSearch_DottedIdentifier_NoRegexFalsePositive(t *testing.T) {
 
 // Prefix wildcards (auth*) are valid FTS5 syntax — must NOT be flagged.
 func TestHandleSearch_PrefixWildcard_NoRegexFalsePositive(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "wildcard-test"
 
@@ -93,6 +96,7 @@ func TestHandleSearch_PrefixWildcard_NoRegexFalsePositive(t *testing.T) {
 // Regex chars INSIDE a quoted phrase are literal — pre-flight skips
 // them.
 func TestHandleSearch_RegexInsideQuotedPhrase_AllowedThrough(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "regex-q-test"
 
@@ -110,6 +114,7 @@ func TestHandleSearch_RegexInsideQuotedPhrase_AllowedThrough(t *testing.T) {
 
 // Pure unit test for the helper.
 func TestFirstFTS5IncompatibleRegexChar_Coverage(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want string

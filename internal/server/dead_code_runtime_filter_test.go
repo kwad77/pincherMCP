@@ -9,24 +9,28 @@ import (
 )
 
 func TestIsRuntimeInvokedGoSymbol_Init(t *testing.T) {
+	t.Parallel()
 	if !isRuntimeInvokedGoSymbol("Go", "init") {
 		t.Errorf("Go init() must be runtime-invoked")
 	}
 }
 
 func TestIsRuntimeInvokedGoSymbol_TestMain(t *testing.T) {
+	t.Parallel()
 	if !isRuntimeInvokedGoSymbol("Go", "TestMain") {
 		t.Errorf("Go TestMain must be runtime-invoked")
 	}
 }
 
 func TestIsRuntimeInvokedGoSymbol_MainFunction(t *testing.T) {
+	t.Parallel()
 	if !isRuntimeInvokedGoSymbol("Go", "main") {
 		t.Errorf("Go main must be runtime-invoked")
 	}
 }
 
 func TestIsRuntimeInvokedGoSymbol_OtherLanguageInit(t *testing.T) {
+	t.Parallel()
 	if isRuntimeInvokedGoSymbol("Python", "init") {
 		t.Errorf("Python init is not runtime-invoked in the Go sense")
 	}
@@ -36,6 +40,7 @@ func TestIsRuntimeInvokedGoSymbol_OtherLanguageInit(t *testing.T) {
 }
 
 func TestIsRuntimeInvokedGoSymbol_OrdinaryFunction(t *testing.T) {
+	t.Parallel()
 	if isRuntimeInvokedGoSymbol("Go", "doStuff") {
 		t.Errorf("ordinary Go function must not match the runtime filter")
 	}
@@ -44,6 +49,7 @@ func TestIsRuntimeInvokedGoSymbol_OrdinaryFunction(t *testing.T) {
 // End-to-end: handleDeadCode must NOT return Go init / TestMain / main
 // even though the static graph has no inbound edges for them.
 func TestHandleDeadCode_FiltersGoRuntimeInvoked(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})

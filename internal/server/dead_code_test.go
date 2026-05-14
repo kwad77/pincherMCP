@@ -11,6 +11,7 @@ import (
 // dead_code: Function with no inbound CALLS and not exported/test/entry
 // must surface; a sibling Function with one inbound caller must NOT.
 func TestHandleDeadCode_BasicReachability(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -66,6 +67,7 @@ func TestHandleDeadCode_BasicReachability(t *testing.T) {
 // Exported + entry_point + test functions are never reported as dead,
 // regardless of inbound edges.
 func TestHandleDeadCode_ExcludesExportedEntryAndTest(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -102,6 +104,7 @@ func TestHandleDeadCode_ExcludesExportedEntryAndTest(t *testing.T) {
 // Default min_confidence (0.95) excludes regex-tier symbols.
 // Dropping the floor surfaces them.
 func TestHandleDeadCode_MinConfidenceFilter(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -140,6 +143,7 @@ func TestHandleDeadCode_MinConfidenceFilter(t *testing.T) {
 
 // kinds filter: only requested kinds appear; default Function+Method.
 func TestHandleDeadCode_KindsFilter(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -182,6 +186,7 @@ func TestHandleDeadCode_KindsFilter(t *testing.T) {
 // Developer scratch paths (scratch_*.go) are post-filtered — they're
 // known-dead noise the developer doesn't need to be told about.
 func TestHandleDeadCode_ExcludesScratchPaths(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -217,6 +222,7 @@ func TestHandleDeadCode_ExcludesScratchPaths(t *testing.T) {
 // alongside developer scratch paths. Fixture inputs aren't real code,
 // so calling them "dead" is misleading.
 func TestHandleDeadCode_ExcludesTestFixturePaths(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -251,6 +257,7 @@ func TestHandleDeadCode_ExcludesTestFixturePaths(t *testing.T) {
 // Empty result: meta.diagnosis explains the empty, doesn't suggest
 // next-step actions on a non-existent top dead symbol.
 func TestHandleDeadCode_EmptyDiagnosis(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})

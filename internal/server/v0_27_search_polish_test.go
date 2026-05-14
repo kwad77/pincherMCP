@@ -15,6 +15,7 @@ import (
 // every keystroke firing a fetch; the fix wraps doSearch in a 200ms
 // debounce + binds it via data-action-input on the search-q element.
 func TestDashboardJS_SearchDebounce(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	html := renderDashboard("")
 
@@ -41,6 +42,7 @@ func TestDashboardJS_SearchDebounce(t *testing.T) {
 // The highlightSnippet helper escapes the snippet first, then wraps
 // matches — so the HTML is XSS-safe and the highlighting is visible.
 func TestDashboardJS_SnippetHighlight(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 
 	for _, needle := range []string{
@@ -67,6 +69,7 @@ func TestDashboardJS_SnippetHighlight(t *testing.T) {
 // the data cache (_sparklineData), a mousemove handler that maps
 // cursor x→nearest data point, and CSS for the floating tip.
 func TestDashboardJS_SparklineTooltip(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 
 	for _, needle := range []string{
@@ -91,6 +94,7 @@ func TestDashboardJS_SparklineTooltip(t *testing.T) {
 // #533: architecture detail panel must show "X of Y" + a Show all
 // toggle when entry-points or hotspots exceed the default cap (8/10).
 func TestDashboardJS_ArchitectureShowAll(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 
 	for _, needle := range []string{

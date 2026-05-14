@@ -18,6 +18,7 @@ import (
 // Code change with no callers → impacted must be non-nil empty array,
 // serialised as [] in JSON (not null).
 func TestHandleChanges_ImpactedIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := setupChangesGitRepo(t)
 	store.UpsertProject(db.Project{ID: repoDir, Path: repoDir, Name: "impacted-empty", IndexedAt: time.Now()})
@@ -65,6 +66,7 @@ func TestHandleChanges_ImpactedIsEmptyArrayNotNull(t *testing.T) {
 // impacted — the changed symbol list is built in a separate loop and
 // has its own nil-slice failure mode.
 func TestHandleChanges_ChangedSymbolsIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	// A repo where no symbols match the diff (no symbols seeded at all)
 	// — changed_symbols stays empty after the diff-to-symbol mapping pass.

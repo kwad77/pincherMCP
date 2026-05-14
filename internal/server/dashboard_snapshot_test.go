@@ -28,6 +28,7 @@ var updateDashboardSnapshot = flag.Bool("update-dashboard-snapshot", false,
 	"overwrite testdata/dashboard/*.html with the current renderer output")
 
 func TestDashboardHTMLSnapshot(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		path    string
@@ -106,6 +107,7 @@ func normalizeNewlines(b []byte) []byte {
 // and half the dashboard will stop working — easy to miss without
 // this test.
 func TestDashboardHTMLSnapshot_NoInlineScript(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/v1/dashboard", nil)

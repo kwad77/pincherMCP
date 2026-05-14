@@ -13,6 +13,7 @@ import (
 // #400: parseFieldsArg unit-pins. Empty / whitespace / single / multi /
 // trailing-comma / trim-internal cases.
 func TestParseFieldsArg(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -53,6 +54,7 @@ func TestParseFieldsArg(t *testing.T) {
 // projectFields with nil allow returns the input unchanged. With
 // non-nil allow, only allowed keys + _meta survive.
 func TestProjectFields(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{
 		"id":     "x",
 		"name":   "Foo",
@@ -103,6 +105,7 @@ func sameKeys(m map[string]any, want []string) bool {
 // handleSymbols with fields=id,name returns only those keys + _meta;
 // source field is omitted AND the per-symbol disk read is skipped.
 func TestHandleSymbols_FieldsProjection(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -145,6 +148,7 @@ func TestHandleSymbols_FieldsProjection(t *testing.T) {
 // handleContext with fields=symbol drops imports + callees from the
 // response.
 func TestHandleContext_FieldsProjection(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p2"
 	store.UpsertProject(db.Project{ID: "p2", Path: "/tmp/p2", Name: "p2", IndexedAt: time.Now()})
@@ -176,6 +180,7 @@ func TestHandleContext_FieldsProjection(t *testing.T) {
 // handleTrace with fields=hops drops risk_summary from the
 // top-level response.
 func TestHandleTrace_FieldsProjection(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p3"
 	store.UpsertProject(db.Project{ID: "p3", Path: "/tmp/p3", Name: "p3", IndexedAt: time.Now()})
@@ -213,6 +218,7 @@ func TestHandleTrace_FieldsProjection(t *testing.T) {
 // handleChanges with fields=summary,tests_to_run drops changed_symbols
 // and impacted lists. Requires a real git repo for `git diff` to succeed.
 func TestHandleChanges_FieldsProjection(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -263,6 +269,7 @@ func mapKeys(m map[string]any) []string {
 // _meta is always preserved by projection — even when the caller
 // passed a fields list that doesn't include it.
 func TestProjectFields_MetaAlwaysPreserved(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{
 		"id":    "x",
 		"_meta": map[string]any{"k": "v"},

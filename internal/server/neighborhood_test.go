@@ -61,6 +61,7 @@ func setupNeighborhood(t *testing.T) (*Server, *db.Store, string) {
 // Default behavior: seed B, get A/C/D in source order, NOT B (default
 // excludes self), NOT X (different file).
 func TestHandleNeighborhood_ReturnsSiblingsInSourceOrder(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupNeighborhood(t)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id": "n::main.B#Function",
@@ -97,6 +98,7 @@ func TestHandleNeighborhood_ReturnsSiblingsInSourceOrder(t *testing.T) {
 // include_self=true keeps the seed in the list (still in source order).
 // Useful when the agent wants the WHOLE file's symbols in one call.
 func TestHandleNeighborhood_IncludeSelfReturnsAllSiblings(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupNeighborhood(t)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id":           "n::main.B#Function",
@@ -116,6 +118,7 @@ func TestHandleNeighborhood_IncludeSelfReturnsAllSiblings(t *testing.T) {
 // explicitly so a future GetSymbolsForFile change can't widen the
 // scope by accident.
 func TestHandleNeighborhood_DifferentFileSymbolsExcluded(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupNeighborhood(t)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id": "n::main.A#Function",
@@ -138,6 +141,7 @@ func TestHandleNeighborhood_DifferentFileSymbolsExcluded(t *testing.T) {
 // don't test that here because it requires real on-disk files (the
 // existing handleSymbol tests cover the source-read primitive).
 func TestHandleNeighborhood_DefaultExcludesSource(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupNeighborhood(t)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id": "n::main.B#Function",
@@ -163,6 +167,7 @@ func TestHandleNeighborhood_DefaultExcludesSource(t *testing.T) {
 // Missing id is a user error, not a server error. Mirrors handleSymbol.
 // errResult returns plain text (not JSON), so we read via textOf.
 func TestHandleNeighborhood_MissingIdErrors(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupNeighborhood(t)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -178,6 +183,7 @@ func TestHandleNeighborhood_MissingIdErrors(t *testing.T) {
 // symbol_moves) is exercised in handleSymbol's tests; we don't repeat
 // that here — the neighborhood handler shares the exact same path.
 func TestHandleNeighborhood_UnknownIdReturnsError(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := setupNeighborhood(t)
 	result, err := srv.handleNeighborhood(context.Background(), makeReq(map[string]any{
 		"id": "n::main.NonExistent#Function",
@@ -194,6 +200,7 @@ func TestHandleNeighborhood_UnknownIdReturnsError(t *testing.T) {
 // File with only one symbol returns an empty neighbors list — the
 // seed alone has no companions to surface. count=0, not nil/missing.
 func TestHandleNeighborhood_LoneSymbolReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	projectID := "lone"
 	store.UpsertProject(db.Project{
@@ -232,6 +239,7 @@ func TestHandleNeighborhood_LoneSymbolReturnsEmpty(t *testing.T) {
 // normalization at the tail. Without this case, the source-fetch
 // branch is unexercised and that whole helper sits at 0% coverage.
 func TestHandleNeighborhood_IncludeSourceReadsBodies(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	projectID := "with-source"
 
@@ -294,6 +302,7 @@ func TestHandleNeighborhood_IncludeSourceReadsBodies(t *testing.T) {
 // Tool registration: neighborhood appears in the tool registry with
 // the right name and required field. Pins the schema-stability gate.
 func TestNeighborhood_ToolRegistered(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tool, ok := srv.tools["neighborhood"]
 	if !ok {

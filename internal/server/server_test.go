@@ -103,6 +103,7 @@ func (w *Widget) Render() string { return "widget" }
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestParseArgs_Empty(t *testing.T) {
+	t.Parallel()
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}
 	m := parseArgs(req)
 	if len(m) != 0 {
@@ -111,6 +112,7 @@ func TestParseArgs_Empty(t *testing.T) {
 }
 
 func TestParseArgs_Fields(t *testing.T) {
+	t.Parallel()
 	req := makeReq(map[string]any{"path": "/tmp/x", "force": true, "limit": 5})
 	m := parseArgs(req)
 	if str(m, "path") != "/tmp/x" {
@@ -125,6 +127,7 @@ func TestParseArgs_Fields(t *testing.T) {
 }
 
 func TestBoolArgDefault(t *testing.T) {
+	t.Parallel()
 	m := map[string]any{}
 	if !boolArgDefault(m, "missing", true) {
 		t.Error("default should be true")
@@ -136,6 +139,7 @@ func TestBoolArgDefault(t *testing.T) {
 }
 
 func TestStrSlice(t *testing.T) {
+	t.Parallel()
 	m := map[string]any{"ids": []any{"a", "b", "c"}}
 	got := strSlice(m, "ids")
 	if len(got) != 3 || got[0] != "a" {
@@ -148,6 +152,7 @@ func TestStrSlice(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestParseFileURI(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		uri string
 		ok  bool
@@ -176,6 +181,7 @@ func TestParseFileURI(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleList_Empty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleList(context.Background(), makeReq(nil))
 	if err != nil {
@@ -205,6 +211,7 @@ func TestHandleList_Empty(t *testing.T) {
 }
 
 func TestHandleList_WithProjects(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	// On-disk paths required since #274 made the default `list` filter
 	// drop dead-on-disk rows. Use t.TempDir so the paths actually exist.
@@ -237,6 +244,7 @@ func TestHandleList_WithProjects(t *testing.T) {
 // out, and `filtered_out` reports the suppression count so the agent
 // can choose to surface them via include_dead/active=false.
 func TestHandleList_FiltersDeadAndStale(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	live := t.TempDir()
 	// EdgeCount=1 so #419's min_edges=1 default doesn't drop these — the
@@ -260,6 +268,7 @@ func TestHandleList_FiltersDeadAndStale(t *testing.T) {
 
 // include_dead=true surfaces dead-on-disk paths (cleanup workflow).
 func TestHandleList_IncludeDead(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{
 		ID: "ghost", Path: filepath.Join(t.TempDir(), "ghost-path-never-existed"),
@@ -278,6 +287,7 @@ func TestHandleList_IncludeDead(t *testing.T) {
 
 // active=false bypasses the staleness window.
 func TestHandleList_ActiveFalse(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	old := t.TempDir()
 	store.UpsertProject(db.Project{ID: "old", Path: old, Name: "old", IndexedAt: time.Now().Add(-100 * 24 * time.Hour), EdgeCount: 1})
@@ -294,6 +304,7 @@ func TestHandleList_ActiveFalse(t *testing.T) {
 // limit caps the page length (#301: count is now total after filters,
 // not the page length — read page.returned for the page size).
 func TestHandleList_LimitCaps(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	for i := 0; i < 5; i++ {
 		dir := t.TempDir()
@@ -322,6 +333,7 @@ func TestHandleList_LimitCaps(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleIndex_NoPath(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// No session root, no path arg → error result
 	result, err := srv.handleIndex(context.Background(), makeReq(nil))
@@ -334,6 +346,7 @@ func TestHandleIndex_NoPath(t *testing.T) {
 }
 
 func TestHandleIndex_ValidPath(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	writeGoFile(t, repoDir, "pkg/service.go", simpleGoSrc)
@@ -357,6 +370,7 @@ func TestHandleIndex_ValidPath(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSearch_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// No session root, no project arg → error
 	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{"query": "Compute"}))
@@ -369,6 +383,7 @@ func TestHandleSearch_NoProject(t *testing.T) {
 }
 
 func TestHandleSearch_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "proj1"
 	store.UpsertProject(db.Project{ID: "proj1", Path: "/tmp/proj1", Name: "proj1", IndexedAt: time.Now()})
@@ -392,6 +407,7 @@ func TestHandleSearch_WithProject(t *testing.T) {
 }
 
 func TestHandleSearch_FieldProjection(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "proj2"
 	store.UpsertProject(db.Project{ID: "proj2", Path: "/tmp/proj2", Name: "proj2", IndexedAt: time.Now()})
@@ -426,6 +442,7 @@ func TestHandleSearch_FieldProjection(t *testing.T) {
 }
 
 func TestHandleSearch_SnippetOmittedWhenFieldsExcluded(t *testing.T) {
+	t.Parallel()
 	// When the caller's fields= projection excludes "snippet", the result
 	// row must not contain a snippet key — and the snippet-read disk path
 	// should not run. (The latter is also covered by the perf comment in
@@ -461,6 +478,7 @@ func TestHandleSearch_SnippetOmittedWhenFieldsExcluded(t *testing.T) {
 }
 
 func TestHandleSearch_SnippetIncludedByDefault(t *testing.T) {
+	t.Parallel()
 	// Without fields= projection, the row should include the snippet key
 	// (even if its value is empty when the file isn't on disk).
 	srv, store, _ := newTestServer(t)
@@ -493,6 +511,7 @@ func TestHandleSearch_SnippetIncludedByDefault(t *testing.T) {
 }
 
 func TestHandleSearch_AllProjects(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "pA", Path: "/tmp/pA", Name: "pA", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
@@ -521,6 +540,7 @@ func TestHandleSearch_AllProjects(t *testing.T) {
 // end-to-end through the MCP handler. Pins routing for code/config/docs
 // and the cross-corpus isolation guarantee at the handler layer.
 func TestHandleSearch_CorpusParameter(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "pcorp"
 	store.UpsertProject(db.Project{ID: "pcorp", Path: "/tmp/pcorp", Name: "pcorp", IndexedAt: time.Now()})
@@ -589,6 +609,7 @@ func TestHandleSearch_CorpusParameter(t *testing.T) {
 // Ansible) and pure-docs projects would otherwise return 0 for every
 // reasonable query.
 func TestHandleSearch_CorpusFallthrough(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "pft"
 	store.UpsertProject(db.Project{ID: "pft", Path: "/tmp/pft", Name: "pft", IndexedAt: time.Now()})
@@ -679,6 +700,7 @@ func TestHandleSearch_CorpusFallthrough(t *testing.T) {
 // outright. This keeps existing scripts working through the deprecation
 // window while the schema-level removal lands behind human review.
 func TestHandleSearch_CorpusAllSoftRedirects(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "pdep"
 	store.UpsertProject(db.Project{ID: "pdep", Path: "/tmp/pdep", Name: "pdep", IndexedAt: time.Now()})
@@ -710,6 +732,7 @@ func TestHandleSearch_CorpusAllSoftRedirects(t *testing.T) {
 // falling through to legacy. The handler must surface the underlying
 // store error rather than swallow it.
 func TestHandleSearch_CorpusInvalidErrors(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "pcorp2"
 	store.UpsertProject(db.Project{ID: "pcorp2", Path: "/tmp/pcorp2", Name: "pcorp2", IndexedAt: time.Now()})
@@ -726,6 +749,7 @@ func TestHandleSearch_CorpusInvalidErrors(t *testing.T) {
 }
 
 func TestHandleSearch_VariableKindSkipsSnippet(t *testing.T) {
+	t.Parallel()
 	srv, store, dir := newTestServer(t)
 	srv.sessionID = "proj3"
 	srv.sessionRoot = dir
@@ -751,6 +775,7 @@ func TestHandleSearch_VariableKindSkipsSnippet(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSymbol_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleSymbol(context.Background(), makeReq(map[string]any{"id": "nonexistent"}))
 	if err != nil {
@@ -762,6 +787,7 @@ func TestHandleSymbol_NotFound(t *testing.T) {
 }
 
 func TestHandleSymbol_NoID(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleSymbol(context.Background(), makeReq(nil))
 	if err != nil {
@@ -773,6 +799,7 @@ func TestHandleSymbol_NoID(t *testing.T) {
 }
 
 func TestHandleSymbol_Found(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	writeGoFile(t, repoDir, "pkg/svc.go", simpleGoSrc)
@@ -802,6 +829,7 @@ func TestHandleSymbol_Found(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSymbols_NoIDs(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleSymbols(context.Background(), makeReq(nil))
 	if err != nil {
@@ -813,6 +841,7 @@ func TestHandleSymbols_NoIDs(t *testing.T) {
 }
 
 func TestHandleSymbols_MultipleIDs(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
@@ -839,6 +868,7 @@ func TestHandleSymbols_MultipleIDs(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleQuery_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleQuery(context.Background(), makeReq(map[string]any{
 		"cypher": "MATCH (f:Function) RETURN f.name",
@@ -853,6 +883,7 @@ func TestHandleQuery_NoProject(t *testing.T) {
 }
 
 func TestHandleQuery_EmptyCypher(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleQuery(context.Background(), makeReq(nil))
 	if err != nil {
@@ -868,6 +899,7 @@ func TestHandleQuery_EmptyCypher(t *testing.T) {
 // alias is covered by every other test in this file (TestHandleQuery_*
 // uses "cypher": ...).
 func TestHandleQuery_PinchQLParameter(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -892,6 +924,7 @@ func TestHandleQuery_PinchQLParameter(t *testing.T) {
 }
 
 func TestHandleQuery_ValidQuery(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -920,6 +953,7 @@ func TestHandleQuery_ValidQuery(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSchema_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleSchema(context.Background(), makeReq(nil))
 	if err != nil {
@@ -931,6 +965,7 @@ func TestHandleSchema_NoProject(t *testing.T) {
 }
 
 func TestHandleSchema_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -954,6 +989,7 @@ func TestHandleSchema_WithProject(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleArchitecture_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleArchitecture(context.Background(), makeReq(nil))
 	if err != nil {
@@ -965,6 +1001,7 @@ func TestHandleArchitecture_NoProject(t *testing.T) {
 }
 
 func TestHandleArchitecture_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now(), FileCount: 5})
@@ -987,6 +1024,7 @@ func TestHandleArchitecture_WithProject(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleTrace_NoName(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleTrace(context.Background(), makeReq(nil))
 	if err != nil {
@@ -998,6 +1036,7 @@ func TestHandleTrace_NoName(t *testing.T) {
 }
 
 func TestHandleTrace_SymbolNotFound(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -1014,6 +1053,7 @@ func TestHandleTrace_SymbolNotFound(t *testing.T) {
 }
 
 func TestHandleTrace_Valid(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -1049,6 +1089,7 @@ func TestHandleTrace_Valid(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleChanges_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleChanges(context.Background(), makeReq(nil))
 	if err != nil {
@@ -1060,6 +1101,7 @@ func TestHandleChanges_NoProject(t *testing.T) {
 }
 
 func TestHandleChanges_ValidProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	// Initialize a git repo so git diff doesn't fail
@@ -1082,6 +1124,7 @@ func TestHandleChanges_ValidProject(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleADR_SetGetListDelete(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -1132,6 +1175,7 @@ func TestHandleADR_SetGetListDelete(t *testing.T) {
 }
 
 func TestHandleADR_UnknownAction(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -1152,6 +1196,7 @@ func TestHandleADR_UnknownAction(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleStats_Empty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleStats(context.Background(), makeReq(nil))
 	if err != nil {
@@ -1168,6 +1213,7 @@ func TestHandleStats_Empty(t *testing.T) {
 }
 
 func TestHandleStats_Accumulates(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -1198,6 +1244,7 @@ func TestHandleStats_Accumulates(t *testing.T) {
 }
 
 func TestHandleStats_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now(), SymCount: 42})
@@ -1223,6 +1270,7 @@ func TestHandleStats_WithProject(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleContext_NoID(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleContext(context.Background(), makeReq(nil))
 	if err != nil {
@@ -1234,6 +1282,7 @@ func TestHandleContext_NoID(t *testing.T) {
 }
 
 func TestHandleContext_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": "nonexistent"}))
 	if err != nil {
@@ -1249,6 +1298,7 @@ func TestHandleContext_NotFound(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestParseGitDiffFiles(t *testing.T) {
+	t.Parallel()
 	diff := "internal/db/db.go\ninternal/server/server.go\n\n"
 	files := parseGitDiffFiles(diff)
 	if len(files) != 2 {
@@ -1260,6 +1310,7 @@ func TestParseGitDiffFiles(t *testing.T) {
 }
 
 func TestParseGitDiffFiles_Empty(t *testing.T) {
+	t.Parallel()
 	files := parseGitDiffFiles("")
 	if len(files) != 0 {
 		t.Errorf("expected 0 files for empty diff, got %d", len(files))
@@ -1271,6 +1322,7 @@ func TestParseGitDiffFiles_Empty(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestRiskLabel(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ d int; want string }{
 		{1, "CRITICAL"}, {2, "HIGH"}, {3, "MEDIUM"}, {4, "LOW"}, {5, "LOW"},
 	}
@@ -1286,6 +1338,7 @@ func TestRiskLabel(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestMax(t *testing.T) {
+	t.Parallel()
 	if max(3, 5) != 5 {
 		t.Error("max(3,5) should be 5")
 	}
@@ -1302,6 +1355,7 @@ func TestMax(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestResolveProjectID_ByID(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "proj-abc", Path: "/abc", Name: "myproj", IndexedAt: time.Now()})
 
@@ -1315,6 +1369,7 @@ func TestResolveProjectID_ByID(t *testing.T) {
 }
 
 func TestResolveProjectID_ByName(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "proj-xyz", Path: "/xyz", Name: "myproj", IndexedAt: time.Now()})
 
@@ -1328,6 +1383,7 @@ func TestResolveProjectID_ByName(t *testing.T) {
 }
 
 func TestResolveProjectID_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	_, err := srv.resolveProjectID("nonexistent-project")
 	if err == nil {
@@ -1340,6 +1396,7 @@ func TestResolveProjectID_NotFound(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestResolveProjectRoot_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "p1", Path: "/mypath", Name: "p1", IndexedAt: time.Now()})
 	root, err := srv.resolveProjectRoot("p1")
@@ -1352,6 +1409,7 @@ func TestResolveProjectRoot_WithProject(t *testing.T) {
 }
 
 func TestResolveProjectRoot_Fallback(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionRoot = "/fallback"
 	root, err := srv.resolveProjectRoot("nonexistent")
@@ -1368,6 +1426,7 @@ func TestResolveProjectRoot_Fallback(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSetRoot(t *testing.T) {
+	t.Parallel()
 	srv, _, dir := newTestServer(t)
 	srv.setRoot(dir)
 	if srv.sessionRoot != dir {
@@ -1383,6 +1442,7 @@ func TestSetRoot(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleContext_WithSymbol(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	writeGoFile(t, repoDir, "pkg/service.go", simpleGoSrc)
@@ -1418,6 +1478,7 @@ func TestHandleContext_WithSymbol(t *testing.T) {
 // the exact tool call removes a decision the agent would otherwise make from
 // scratch.
 func TestHandleContext_NextStepsForFunction(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	writeGoFile(t, repoDir, "pkg/service.go", simpleGoSrc)
@@ -1460,6 +1521,7 @@ func TestHandleContext_NextStepsForFunction(t *testing.T) {
 // (Setting, Section) get no next_steps because there's nothing further to
 // chase — context already returned the value plus its imports.
 func TestHandleContext_NoNextStepsForSetting(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte("key: value\n"), 0o644); err != nil {
@@ -1491,6 +1553,7 @@ func TestHandleContext_NoNextStepsForSetting(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleChanges_GitRepo(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 
@@ -1526,6 +1589,7 @@ func TestHandleChanges_GitRepo(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleArchitecture_WithSymbols(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now(), FileCount: 5})
@@ -1562,6 +1626,7 @@ func TestHandleArchitecture_WithSymbols(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSymbol_WithSource(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 	writeGoFile(t, repoDir, "pkg/svc.go", simpleGoSrc)
@@ -1588,6 +1653,7 @@ func TestHandleSymbol_WithSource(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleADR_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleADR(context.Background(), makeReq(map[string]any{
 		"action": "set", "key": "K", "value": "V",
@@ -1605,6 +1671,7 @@ func TestHandleADR_NoProject(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestMCPServer_Getter(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	s := srv.MCPServer()
 	if s == nil {
@@ -1617,6 +1684,7 @@ func TestMCPServer_Getter(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleChanges_InGitRepo(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 
@@ -1662,6 +1730,7 @@ func TestHandleChanges_InGitRepo(t *testing.T) {
 }
 
 func TestHandleChanges_WithStagedScope(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 
@@ -1695,6 +1764,7 @@ func TestHandleChanges_WithStagedScope(t *testing.T) {
 }
 
 func TestHandleChanges_AllScope(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 
@@ -1725,6 +1795,7 @@ func TestHandleChanges_AllScope(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleContext_WithImportEdges(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "ctx-import-proj"
 	repoDir := t.TempDir()
@@ -1761,6 +1832,7 @@ func TestHandleContext_WithImportEdges(t *testing.T) {
 }
 
 func TestHandleContext_NoImports(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "ctx-noimport-proj"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/ctx", Name: "ctx", IndexedAt: time.Now()})
@@ -1787,6 +1859,7 @@ func TestHandleContext_NoImports(t *testing.T) {
 // `parseFactor` calls `parseOrExpr`, `parseOneCondition`, and constructs
 // `condExpr` / `notExpr` — all in the same file.
 func TestHandleContext_IncludesInFileCallees(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "ctx-callees-proj"
 	repoDir := t.TempDir()
@@ -1842,6 +1915,7 @@ func TestHandleContext_IncludesInFileCallees(t *testing.T) {
 // appear once. Imports are processed first, so the de-dupe map drops
 // the duplicate from the callees side.
 func TestHandleContext_DeduplicatesAcrossImportsAndCallees(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "ctx-dedup-proj"
 	repoDir := t.TempDir()
@@ -1883,6 +1957,7 @@ func TestHandleContext_DeduplicatesAcrossImportsAndCallees(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestParseFileURI_Valid(t *testing.T) {
+	t.Parallel()
 	path, ok := parseFileURI("file:///home/user/project")
 	if !ok {
 		t.Error("expected valid parse for file:///home/user/project")
@@ -1893,6 +1968,7 @@ func TestParseFileURI_Valid(t *testing.T) {
 }
 
 func TestParseFileURI_WindowsDriveLetter(t *testing.T) {
+	t.Parallel()
 	// Windows: file:///C:/Users/project
 	path, ok := parseFileURI("file:///C:/Users/project")
 	if !ok {
@@ -1904,6 +1980,7 @@ func TestParseFileURI_WindowsDriveLetter(t *testing.T) {
 }
 
 func TestParseFileURI_InvalidScheme(t *testing.T) {
+	t.Parallel()
 	_, ok := parseFileURI("http://example.com/path")
 	if ok {
 		t.Error("expected false for non-file URI")
@@ -1911,6 +1988,7 @@ func TestParseFileURI_InvalidScheme(t *testing.T) {
 }
 
 func TestParseFileURI_InvalidURI(t *testing.T) {
+	t.Parallel()
 	_, ok := parseFileURI(":/invalid")
 	if ok {
 		t.Error("expected false for invalid URI")
@@ -1922,6 +2000,7 @@ func TestParseFileURI_InvalidURI(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestRunGitDiff_NonGitDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, err := runGitDiff(dir, "unstaged")
 	if err == nil {
@@ -1938,6 +2017,7 @@ func TestRunGitDiff_NonGitDir(t *testing.T) {
 // `unstaged` and `all` folded untracked in, so `unstaged` returned
 // untracked dotfiles instead of the agent's actual edits.
 func TestRunGitDiff_IncludesUntrackedForUnstagedAndAll(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -2017,6 +2097,7 @@ func TestRunGitDiff_IncludesUntrackedForUnstagedAndAll(t *testing.T) {
 // changes response's `changed_files` field, which serialises as
 // null when the slice is nil. Same fix-class as #330.
 func TestParseGitDiffFiles_EmptyInputReturnsEmptySliceNotNil(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{"", "\n", "  \n  \n", "# comment\n# another"} {
 		got := parseGitDiffFiles(in)
 		if got == nil {
@@ -2033,6 +2114,7 @@ func TestParseGitDiffFiles_EmptyInputReturnsEmptySliceNotNil(t *testing.T) {
 // preview: agent can ask "what does this branch introduce" without
 // opening the PR first.
 func TestRunGitDiff_BaseBranchScope(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -2117,6 +2199,7 @@ func TestRunGitDiff_BaseBranchScope(t *testing.T) {
 // base:<branch> with a non-existent branch returns a clear error
 // rather than shelling out and producing an opaque git failure.
 func TestRunGitDiff_BaseBranchNotFound(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -2148,6 +2231,7 @@ func TestRunGitDiff_BaseBranchNotFound(t *testing.T) {
 // clean working tree. The handler now rejects unknown scopes
 // explicitly with a message naming the legal values.
 func TestRunGitDiff_RejectsUnknownScope(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cases := []string{
 		"complete_garbage",
@@ -2172,6 +2256,7 @@ func TestRunGitDiff_RejectsUnknownScope(t *testing.T) {
 // validateGitRefName rejects flag-injection-shaped and range-shaped
 // names before they reach the git subprocess.
 func TestValidateGitRefName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		want_err bool
@@ -2205,6 +2290,7 @@ func TestValidateGitRefName(t *testing.T) {
 }
 
 func TestParseGitDiffFiles_Basic(t *testing.T) {
+	t.Parallel()
 	diff := "internal/server/server.go\ninternal/db/db.go\n"
 	files := parseGitDiffFiles(diff)
 	if len(files) != 2 {
@@ -2220,6 +2306,7 @@ func TestParseGitDiffFiles_Basic(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSymbols_WithProjectArg(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "syms-proj"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/syms", Name: "symsproj", IndexedAt: time.Now()})
@@ -2259,6 +2346,7 @@ func TestHandleSymbols_WithProjectArg(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestResolveProjectRoot_FallsBackToSessionRoot(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionRoot = "/tmp/session-root"
 
@@ -2272,6 +2360,7 @@ func TestResolveProjectRoot_FallsBackToSessionRoot(t *testing.T) {
 }
 
 func TestResolveProjectRoot_NoSessionRoot(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// No session root, no project in DB
 	_, err := srv.resolveProjectRoot("nonexistent")
@@ -2297,6 +2386,7 @@ func runCmd(t *testing.T, dir string, name string, args ...string) (string, erro
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleADR_GetEmptyKey(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -2314,6 +2404,7 @@ func TestHandleADR_GetEmptyKey(t *testing.T) {
 }
 
 func TestHandleADR_SetEmptyKey(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -2332,6 +2423,7 @@ func TestHandleADR_SetEmptyKey(t *testing.T) {
 }
 
 func TestHandleADR_SetEmptyValue(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -2350,6 +2442,7 @@ func TestHandleADR_SetEmptyValue(t *testing.T) {
 }
 
 func TestHandleADR_DeleteEmptyKey(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -2367,6 +2460,7 @@ func TestHandleADR_DeleteEmptyKey(t *testing.T) {
 }
 
 func TestHandleADR_GetNotFound(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now()})
@@ -2388,6 +2482,7 @@ func TestHandleADR_GetNotFound(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSymbol_StaleIDRedirect(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: t.TempDir(), Name: "p1", IndexedAt: time.Now()})
@@ -2424,6 +2519,7 @@ func TestHandleSymbol_StaleIDRedirect(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestIntArg_NonFloatFallsToDefault(t *testing.T) {
+	t.Parallel()
 	// When the value is not a float64, intArg should return the default.
 	m := map[string]any{"depth": "notanumber"}
 	if got := intArg(m, "depth", 42); got != 42 {
@@ -2432,6 +2528,7 @@ func TestIntArg_NonFloatFallsToDefault(t *testing.T) {
 }
 
 func TestBoolArgDefault_NonBoolFallsToDefault(t *testing.T) {
+	t.Parallel()
 	// When the value is present but not a bool, boolArgDefault returns def.
 	m := map[string]any{"flag": "notabool"}
 	if got := boolArgDefault(m, "flag", true); !got {
@@ -2443,6 +2540,7 @@ func TestBoolArgDefault_NonBoolFallsToDefault(t *testing.T) {
 }
 
 func TestStrSlice_NonStringValuesSkipped(t *testing.T) {
+	t.Parallel()
 	// Values that aren't strings should be skipped.
 	m := map[string]any{"ids": []any{"a", 42, "b", nil, "c"}}
 	got := strSlice(m, "ids")
@@ -2456,6 +2554,7 @@ func TestStrSlice_NonStringValuesSkipped(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleHealth_NoProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// No session project, no project arg — should still return schema_version.
 	result, err := srv.handleHealth(context.Background(), makeReq(nil))
@@ -2469,6 +2568,7 @@ func TestHandleHealth_NoProject(t *testing.T) {
 }
 
 func TestHandleHealth_WithProject(t *testing.T) {
+	t.Parallel()
 	srv, store, dir := newTestServer(t)
 	pid := db.ProjectIDFromPath(dir)
 	store.UpsertProject(db.Project{ID: pid, Path: dir, Name: "healthtest", IndexedAt: time.Now()})
@@ -2496,6 +2596,7 @@ func TestHandleHealth_WithProject(t *testing.T) {
 }
 
 func TestResolveProjectID_ByProjectName(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "pid-xyz", Path: "/tmp/xyz", Name: "myproject", IndexedAt: time.Now()})
 
@@ -2510,6 +2611,7 @@ func TestResolveProjectID_ByProjectName(t *testing.T) {
 }
 
 func TestResolveProjectID_NoSessionNoArg(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// sessionID is "" (default) and no project arg — should error
 	_, err := srv.resolveProjectID("")
@@ -2519,6 +2621,7 @@ func TestResolveProjectID_NoSessionNoArg(t *testing.T) {
 }
 
 func TestResolveProjectID_UnknownName(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "some-session"
 	// Project arg not in DB by ID or name
@@ -2529,6 +2632,7 @@ func TestResolveProjectID_UnknownName(t *testing.T) {
 }
 
 func TestResolveProjectID_SessionIDUsedWhenEmpty(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "my-session-proj"
 	store.UpsertProject(db.Project{
@@ -2546,6 +2650,7 @@ func TestResolveProjectID_SessionIDUsedWhenEmpty(t *testing.T) {
 }
 
 func TestHandleSymbol_StaleID(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "stale-proj"
 	srv.sessionID = pid
@@ -2579,6 +2684,7 @@ func TestHandleSymbol_StaleID(t *testing.T) {
 }
 
 func TestParseArgs_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	// Malformed JSON should return an empty map, not panic.
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
@@ -2595,6 +2701,7 @@ func TestParseArgs_InvalidJSON(t *testing.T) {
 }
 
 func TestParseArgs_EmptyArguments(t *testing.T) {
+	t.Parallel()
 	// nil/empty Arguments should return an empty map.
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
@@ -2629,6 +2736,7 @@ func httpPost(t *testing.T, srv *Server, path, body string) *httptest.ResponseRe
 }
 
 func TestServeHTTP_Health(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/health")
 	if w.Code != http.StatusOK {
@@ -2654,6 +2762,7 @@ func TestServeHTTP_Health(t *testing.T) {
 // flip to true so the dashboard knows the server is authenticated and
 // suppresses the "no auth" banner.
 func TestServeHTTP_Health_AuthRequiredWhenKeySet(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("test-secret-token")
 
@@ -2673,6 +2782,7 @@ func TestServeHTTP_Health_AuthRequiredWhenKeySet(t *testing.T) {
 }
 
 func TestServeHTTP_OpenAPISpec(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/openapi.json")
 	if w.Code != http.StatusOK {
@@ -2690,6 +2800,7 @@ func TestServeHTTP_OpenAPISpec(t *testing.T) {
 }
 
 func TestServeHTTP_Projects(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/projects")
 	if w.Code != http.StatusOK {
@@ -2703,6 +2814,7 @@ func TestServeHTTP_Projects(t *testing.T) {
 }
 
 func TestServeHTTP_CORS_Preflight(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodOptions, "/v1/list", nil)
 	w := httptest.NewRecorder()
@@ -2716,6 +2828,7 @@ func TestServeHTTP_CORS_Preflight(t *testing.T) {
 }
 
 func TestServeHTTP_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/list", nil)
 	w := httptest.NewRecorder()
@@ -2726,6 +2839,7 @@ func TestServeHTTP_MethodNotAllowed(t *testing.T) {
 }
 
 func TestServeHTTP_UnknownTool(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpPost(t, srv, "/v1/notarealtool", "{}")
 	if w.Code != http.StatusNotFound {
@@ -2734,6 +2848,7 @@ func TestServeHTTP_UnknownTool(t *testing.T) {
 }
 
 func TestServeHTTP_PostList(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpPost(t, srv, "/v1/list", "{}")
 	if w.Code != http.StatusOK {
@@ -2746,6 +2861,7 @@ func TestServeHTTP_PostList(t *testing.T) {
 // allowed — use POST /v1/{tool}". Pre-fix the front door was a
 // 405 page from the unrouted bare path.
 func TestServeHTTP_RootRedirectsToDashboard(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	w := httpGet(t, srv, "/")
@@ -2763,6 +2879,7 @@ func TestServeHTTP_RootRedirectsToDashboard(t *testing.T) {
 // orchestrators can liveness-probe the server without sharing the
 // bearer secret. Every other endpoint still enforces auth.
 func TestServeHTTP_HealthAndOpenAPIBypassBearerAuth(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("secret123")
 
@@ -2787,6 +2904,7 @@ func TestServeHTTP_HealthAndOpenAPIBypassBearerAuth(t *testing.T) {
 // can pattern-match on the machine-readable code instead of substring-
 // checking the message text.
 func TestServeHTTP_ErrorResponseIsJSON(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// /v1/search with no project + no session project → IsError.
@@ -2815,6 +2933,7 @@ func TestServeHTTP_ErrorResponseIsJSON(t *testing.T) {
 }
 
 func TestServeHTTP_BearerAuth(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("secret123")
 
@@ -2862,6 +2981,7 @@ func TestServeHTTP_BearerAuth(t *testing.T) {
 // produce different rejection paths for empty / very-long tokens — and our
 // path is now uniform.
 func TestAuth_ConstantTime_LengthInvariant(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("secret123")
 
@@ -2910,6 +3030,7 @@ func TestAuth_ConstantTime_LengthInvariant(t *testing.T) {
 // prefix-match case, leaking that the first N bytes were correct. Post-fix
 // (hash-and-compare), both rejection paths are identical.
 func TestAuth_NoSidechannelOnPrefixMatch(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("supersecret")
 
@@ -2941,6 +3062,7 @@ func TestAuth_NoSidechannelOnPrefixMatch(t *testing.T) {
 // when there's no Bearer prefix" optimization that would re-introduce
 // timing distinguishability between malformed shapes.
 func TestAuth_MalformedHeader_VariousShapes(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("supersecret")
 
@@ -3035,6 +3157,7 @@ func BenchmarkAuth_TimingProfile(b *testing.B) {
 }
 
 func TestServeHTTP_GzipResponse(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
@@ -3049,6 +3172,7 @@ func TestServeHTTP_GzipResponse(t *testing.T) {
 }
 
 func TestAllowRequest_RateLimit(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetRateLimit(3, time.Minute)
 
@@ -3067,6 +3191,7 @@ func TestAllowRequest_RateLimit(t *testing.T) {
 }
 
 func TestServeHTTP_RateLimitedResponse(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetRateLimit(1, time.Minute)
 
@@ -3091,6 +3216,7 @@ func TestServeHTTP_RateLimitedResponse(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestServeHTTP_GetStats_Empty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/stats")
 	if w.Code != http.StatusOK {
@@ -3105,6 +3231,7 @@ func TestServeHTTP_GetStats_Empty(t *testing.T) {
 }
 
 func TestServeHTTP_GetStats_WithSession(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	// Record a fake session directly in the DB
 	if err := store.RecordSession("sess-1", time.Now(), 5, 1000, 2000, 0.10, "", 0, ""); err != nil {
@@ -3126,6 +3253,7 @@ func TestServeHTTP_GetStats_WithSession(t *testing.T) {
 }
 
 func TestServeHTTP_GetStats_SessionProject(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// No sessionID yet → response must NOT include session_project (so the
@@ -3152,6 +3280,7 @@ func TestServeHTTP_GetStats_SessionProject(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestServeHTTP_GetSessions_Empty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/sessions")
 	if w.Code != http.StatusOK {
@@ -3165,6 +3294,7 @@ func TestServeHTTP_GetSessions_Empty(t *testing.T) {
 }
 
 func TestServeHTTP_GetSessions_WithData(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.RecordSession("sess-a", time.Now(), 3, 500, 1000, 0.05, "", 0, "")
 	store.RecordSession("sess-b", time.Now(), 7, 1500, 3000, 0.15, "", 0, "")
@@ -3185,6 +3315,7 @@ func TestServeHTTP_GetSessions_WithData(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestServeHTTP_IndexProgress_NotActive(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpPost(t, srv, "/v1/index-progress", `{"project":"nonexistent"}`)
 	if w.Code != http.StatusOK {
@@ -3202,6 +3333,7 @@ func TestServeHTTP_IndexProgress_NotActive(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestServeHTTP_GetProjects_Empty(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/projects")
 	if w.Code != http.StatusOK {
@@ -3215,6 +3347,7 @@ func TestServeHTTP_GetProjects_Empty(t *testing.T) {
 }
 
 func TestServeHTTP_Dashboard(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/dashboard", nil)
 	w := httptest.NewRecorder()
@@ -3229,6 +3362,7 @@ func TestServeHTTP_Dashboard(t *testing.T) {
 }
 
 func TestServeHTTP_DeleteProject_Success(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "del-pid", Path: "/tmp/del", Name: "todel", IndexedAt: time.Now()})
 	w := httpDelete(t, srv, "/v1/projects", `{"id":"del-pid"}`)
@@ -3243,6 +3377,7 @@ func TestServeHTTP_DeleteProject_Success(t *testing.T) {
 }
 
 func TestServeHTTP_DeleteProject_BadBody(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Missing id field
 	w := httpDelete(t, srv, "/v1/projects", `{}`)
@@ -3252,6 +3387,7 @@ func TestServeHTTP_DeleteProject_BadBody(t *testing.T) {
 }
 
 func TestServeHTTP_DeleteProject_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpDelete(t, srv, "/v1/projects", `{"id":"nonexistent-proj"}`)
 	// DeleteProject on nonexistent ID should still return 200 (SQLite DELETE is idempotent)
@@ -3270,6 +3406,7 @@ func httpDelete(t *testing.T, srv *Server, path, body string) *httptest.Response
 }
 
 func TestServeHTTP_DeleteEmptyProjects(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	// Two ghosts (sym=0, edge=0) plus one real project.
 	store.UpsertProject(db.Project{ID: "ghost-1", Path: "/g1", Name: "g1", IndexedAt: time.Now()})
@@ -3299,6 +3436,7 @@ func TestServeHTTP_DeleteEmptyProjects(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSavedVsFileSizes_EmptyRoot(t *testing.T) {
+	t.Parallel()
 	// When root is "" and the files don't exist, falls back to avgFileSize per path
 	paths := []string{"nonexistent/file.go"}
 	saved := savedVsFileSizes("", paths, []byte("small payload"))
@@ -3309,6 +3447,7 @@ func TestSavedVsFileSizes_EmptyRoot(t *testing.T) {
 }
 
 func TestSavedVsFileSizes_DuplicatePaths(t *testing.T) {
+	t.Parallel()
 	// Duplicate paths should only be counted once
 	paths := []string{"a.go", "a.go", "a.go"}
 	saved1 := savedVsFileSizes("", []string{"a.go"}, []byte("x"))
@@ -3323,6 +3462,7 @@ func TestSavedVsFileSizes_DuplicatePaths(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleStats_DBFallback(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	// Inject a session row directly; stats atomic counters stay at 0.
 	store.RecordSession("fallback-sess", time.Now(), 42, 9000, 18000, 0.90, "", 0, "")
@@ -3340,6 +3480,7 @@ func TestHandleStats_DBFallback(t *testing.T) {
 }
 
 func TestHandleStats_AllTime(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.RecordSession("s1", time.Now(), 10, 1000, 2000, 0.10, "", 0, "")
 	store.RecordSession("s2", time.Now(), 20, 3000, 6000, 0.30, "", 0, "")
@@ -3364,6 +3505,7 @@ func TestHandleStats_AllTime(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestStartSessionFlusher_CancelFlushes(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// Simulate MCP client connecting (required for flushSession to record sessions)
@@ -3396,6 +3538,7 @@ func TestStartSessionFlusher_CancelFlushes(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleADR_GetMissing(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "proj1"
 	store.UpsertProject(db.Project{ID: "proj1", Path: "/proj1", Name: "proj1", IndexedAt: time.Now()})
@@ -3413,6 +3556,7 @@ func TestHandleADR_GetMissing(t *testing.T) {
 }
 
 func TestHandleADR_GetNoKey(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "proj2"
 	store.UpsertProject(db.Project{ID: "proj2", Path: "/proj2", Name: "proj2", IndexedAt: time.Now()})
@@ -3434,6 +3578,7 @@ func TestHandleADR_GetNoKey(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleChanges_StagedScope(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	dir := t.TempDir()
 	store.UpsertProject(db.Project{ID: dir, Path: dir, Name: "repo", IndexedAt: time.Now()})
@@ -3451,6 +3596,7 @@ func TestHandleChanges_StagedScope(t *testing.T) {
 }
 
 func TestHandleChanges_CommitScope(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	dir := t.TempDir()
 	store.UpsertProject(db.Project{ID: dir, Path: dir, Name: "repo", IndexedAt: time.Now()})
@@ -3469,6 +3615,7 @@ func TestHandleChanges_CommitScope(t *testing.T) {
 // TestResolveProjectID_AutoIndex covers the auto-index path when the session
 // project is not yet in the DB (lines 511-517 in resolveProjectID).
 func TestResolveProjectID_AutoIndex(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	dir := t.TempDir()
 	// sessionID is set but project NOT in DB — triggers auto-index on empty arg.
@@ -3489,6 +3636,7 @@ func TestResolveProjectID_AutoIndex(t *testing.T) {
 // TestServeHTTP_IsErrorResult verifies that an IsError tool result causes a
 // 400 Bad Request HTTP response (ServeHTTP line 381-383).
 func TestServeHTTP_IsErrorResult(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// POST /v1/search with no project set → handleSearch returns errResult
 	// which sets result.IsError = true → ServeHTTP should return 400.
@@ -3502,6 +3650,7 @@ func TestServeHTTP_IsErrorResult(t *testing.T) {
 // and risk-count accumulation (lines 1217-1221) by setting up a symbol in a
 // changed file with an inbound edge from another symbol.
 func TestHandleChanges_WithImpact(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	repoDir := t.TempDir()
 
@@ -3563,6 +3712,7 @@ func TestHandleChanges_WithImpact(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestListenAndServeHTTP_AutoPort(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3612,6 +3762,7 @@ func TestListenAndServeHTTP_AutoPort(t *testing.T) {
 // an open API on their LAN. The check happens before any net.Listen
 // call, so the port never even briefly comes up.
 func TestListenAndServeHTTP_DefaultDeny_NonLoopbackNoKey(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	err := srv.ListenAndServeHTTP(context.Background(), ":0")
@@ -3627,6 +3778,7 @@ func TestListenAndServeHTTP_DefaultDeny_NonLoopbackNoKey(t *testing.T) {
 // without --http-key is permitted — local-only access is the safe
 // default for dev workflows.
 func TestListenAndServeHTTP_DefaultDeny_LoopbackNoKey(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -3653,6 +3805,7 @@ func TestListenAndServeHTTP_DefaultDeny_LoopbackNoKey(t *testing.T) {
 // bind WITH --http-key is permitted — auth is the right escape hatch
 // from the default-deny rule.
 func TestListenAndServeHTTP_DefaultDeny_NonLoopbackWithKey(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("test-secret-token")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3679,6 +3832,7 @@ func TestListenAndServeHTTP_DefaultDeny_NonLoopbackWithKey(t *testing.T) {
 // without --http-key is permitted when SetHTTPAllowOpen(true) is the
 // explicit opt-in. For reverse-proxy / trusted-network deployments.
 func TestListenAndServeHTTP_DefaultDeny_AllowOpen(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPAllowOpen(true)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3702,6 +3856,7 @@ func TestListenAndServeHTTP_DefaultDeny_AllowOpen(t *testing.T) {
 }
 
 func TestDisplayAddr(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -3733,6 +3888,7 @@ func httpGetWithHeader(srv *Server, path string, headers map[string]string) *htt
 }
 
 func TestNormalizeBasePath(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -3754,6 +3910,7 @@ func TestNormalizeBasePath(t *testing.T) {
 }
 
 func TestServeHTTP_BasePath_StripsPrefix(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetBasePath("/pincher")
 	w := httpGet(t, srv, "/pincher/v1/health")
@@ -3768,6 +3925,7 @@ func TestServeHTTP_BasePath_StripsPrefix(t *testing.T) {
 }
 
 func TestServeHTTP_BasePath_AcceptsRootPath(t *testing.T) {
+	t.Parallel()
 	// When the proxy strips the prefix before forwarding, requests arrive
 	// at /v1/* directly. Pincher must still serve them.
 	srv, _, _ := newTestServer(t)
@@ -3779,6 +3937,7 @@ func TestServeHTTP_BasePath_AcceptsRootPath(t *testing.T) {
 }
 
 func TestServeHTTP_BasePath_NormalizesInput(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetBasePath("pincher/")
 	if got := srv.BasePath(); got != "/pincher" {
@@ -3791,6 +3950,7 @@ func TestServeHTTP_BasePath_NormalizesInput(t *testing.T) {
 }
 
 func TestServeHTTP_BasePath_OpenAPIPathsPrefixed(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetBasePath("/pincher")
 	w := httpGet(t, srv, "/pincher/v1/openapi.json")
@@ -3821,6 +3981,7 @@ func TestServeHTTP_BasePath_OpenAPIPathsPrefixed(t *testing.T) {
 }
 
 func TestServeHTTP_TrustProxy_HonorsXForwardedPrefix(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetTrustProxy(true)
 	// Note: no SetBasePath — the prefix comes only from the header.
@@ -3858,6 +4019,7 @@ func TestServeHTTP_TrustProxy_HonorsXForwardedPrefix(t *testing.T) {
 }
 
 func TestServeHTTP_TrustProxy_IgnoresHeaderByDefault(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// trustProxy stays at its zero value (false).
 	// X-Forwarded-Prefix must NOT influence routing — request to a
@@ -3892,6 +4054,7 @@ func TestServeHTTP_TrustProxy_IgnoresHeaderByDefault(t *testing.T) {
 }
 
 func TestServeHTTP_Dashboard_InjectsBasePath(t *testing.T) {
+	t.Parallel()
 	// Post-#56: BP constant lives in /v1/dashboard.js, not the HTML
 	// shell. The HTML still has the prefix-rewritten <script src> and
 	// footer href; the BP constant moves to the JS endpoint.
@@ -3926,6 +4089,7 @@ func TestServeHTTP_Dashboard_InjectsBasePath(t *testing.T) {
 }
 
 func TestServeHTTP_Dashboard_NoBasePath(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/dashboard")
 	if w.Code != http.StatusOK {
@@ -3965,6 +4129,7 @@ func reqWithRemoteAndHeaders(remote string, headers map[string]string) *http.Req
 }
 
 func TestClientIP_TrustProxyOff_IgnoresXFF(t *testing.T) {
+	t.Parallel()
 	// Spoof gate: when --trust-proxy is OFF (the default), X-Forwarded-For
 	// MUST be ignored. A direct caller cannot influence the rate-limit key
 	// by adding the header. This is the security invariant — without it,
@@ -3982,6 +4147,7 @@ func TestClientIP_TrustProxyOff_IgnoresXFF(t *testing.T) {
 }
 
 func TestClientIP_TrustProxyOn_UsesXFF(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetTrustProxy(true)
 
@@ -3995,6 +4161,7 @@ func TestClientIP_TrustProxyOn_UsesXFF(t *testing.T) {
 }
 
 func TestClientIP_TrustProxyOn_LeftmostInChain(t *testing.T) {
+	t.Parallel()
 	// XFF chain semantics: each proxy appends to the right. Leftmost is
 	// the original client; rightmost is the proxy immediately upstream of
 	// pincher. We rate-limit on the original client.
@@ -4011,6 +4178,7 @@ func TestClientIP_TrustProxyOn_LeftmostInChain(t *testing.T) {
 }
 
 func TestClientIP_TrustProxyOn_NoXFF_FallsBackToRemoteAddr(t *testing.T) {
+	t.Parallel()
 	// Graceful fallback: trust-proxy on, but no XFF header set (e.g. the
 	// proxy in front of pincher didn't add one). Use RemoteAddr — the
 	// fallback is the same shape as trustProxy=off behaviour.
@@ -4025,6 +4193,7 @@ func TestClientIP_TrustProxyOn_NoXFF_FallsBackToRemoteAddr(t *testing.T) {
 }
 
 func TestClientIP_TrustProxyOn_EmptyXFF_FallsBack(t *testing.T) {
+	t.Parallel()
 	// XFF set to empty string (or just whitespace) — same as missing.
 	srv, _, _ := newTestServer(t)
 	srv.SetTrustProxy(true)
@@ -4039,6 +4208,7 @@ func TestClientIP_TrustProxyOn_EmptyXFF_FallsBack(t *testing.T) {
 }
 
 func TestClientIP_IPv6_RemoteAddr(t *testing.T) {
+	t.Parallel()
 	// IPv6 RemoteAddr is "[::1]:port" — bracketed. The previous
 	// strings.Cut(":") implementation cut on the first colon (which is
 	// inside the bracket) and returned "[", which would then match "["
@@ -4062,6 +4232,7 @@ func TestClientIP_IPv6_RemoteAddr(t *testing.T) {
 // XFF parsing robustness — #41 item 6.
 
 func TestClientIP_XFF_StripsPort_IPv4(t *testing.T) {
+	t.Parallel()
 	// Some proxies emit "1.2.3.4:8080" in X-Forwarded-For. Without
 	// stripping the port, ephemeral source ports would each get their
 	// own rate-limit bucket — bypassing per-IP throttling.
@@ -4077,6 +4248,7 @@ func TestClientIP_XFF_StripsPort_IPv4(t *testing.T) {
 }
 
 func TestClientIP_XFF_StripsPort_IPv6Bracketed(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetTrustProxy(true)
 	r := reqWithRemoteAndHeaders("10.0.0.1:5555", map[string]string{
@@ -4089,6 +4261,7 @@ func TestClientIP_XFF_StripsPort_IPv6Bracketed(t *testing.T) {
 }
 
 func TestClientIP_XFF_BareIPv6_NoPort(t *testing.T) {
+	t.Parallel()
 	// A bare IPv6 (no brackets, no port) MUST pass through unchanged —
 	// SplitHostPort fails on it, we fall through to the raw value.
 	srv, _, _ := newTestServer(t)
@@ -4103,6 +4276,7 @@ func TestClientIP_XFF_BareIPv6_NoPort(t *testing.T) {
 }
 
 func TestClientIP_XFF_EmptyLeftmost_FallsThrough(t *testing.T) {
+	t.Parallel()
 	// Pathological XFF: leading comma → empty leftmost entry. The
 	// safe behaviour is to fall through to RemoteAddr rather than
 	// use the empty string as a rate-limit key.
@@ -4118,6 +4292,7 @@ func TestClientIP_XFF_EmptyLeftmost_FallsThrough(t *testing.T) {
 }
 
 func TestClientIP_XFF_OnlyComma_FallsThrough(t *testing.T) {
+	t.Parallel()
 	// XFF that's just a comma → both sides empty → fall through.
 	srv, _, _ := newTestServer(t)
 	srv.SetTrustProxy(true)
@@ -4131,6 +4306,7 @@ func TestClientIP_XFF_OnlyComma_FallsThrough(t *testing.T) {
 }
 
 func TestClientIP_XFF_LeadingWhitespaceAndPort(t *testing.T) {
+	t.Parallel()
 	// Combined: leading whitespace + port. TrimSpace runs first, then
 	// SplitHostPort handles the port.
 	srv, _, _ := newTestServer(t)
@@ -4145,6 +4321,7 @@ func TestClientIP_XFF_LeadingWhitespaceAndPort(t *testing.T) {
 }
 
 func TestClientIP_XFF_PathologicalValueSafelyContained(t *testing.T) {
+	t.Parallel()
 	// Audit finding: Go's net/http validates header values at WIRE parse
 	// time (a real request with \r\n in a header value is rejected
 	// before reaching our handler) but NOT at Header.Set time. So an
@@ -4191,6 +4368,7 @@ func TestClientIP_XFF_PathologicalValueSafelyContained(t *testing.T) {
 }
 
 func TestClientIP_XFF_MultipleHeaders_FirstWins(t *testing.T) {
+	t.Parallel()
 	// RFC allows the same header to appear multiple times. Header.Get
 	// returns ONLY the first instance. Document this behaviour: a
 	// trusted proxy chain that comma-appends to a single XFF header
@@ -4211,6 +4389,7 @@ func TestClientIP_XFF_MultipleHeaders_FirstWins(t *testing.T) {
 }
 
 func TestRateLimit_TrustProxyOn_PerXFFClient_Integration(t *testing.T) {
+	t.Parallel()
 	// End-to-end integration: same TCP source (the proxy), different
 	// XFF values (different real clients). Rate limit MUST apply per
 	// XFF-derived client, not per RemoteAddr — otherwise a single proxy
@@ -4244,6 +4423,7 @@ func TestRateLimit_TrustProxyOn_PerXFFClient_Integration(t *testing.T) {
 }
 
 func TestRateLimit_TrustProxyOff_XFFSpoofIgnored_Integration(t *testing.T) {
+	t.Parallel()
 	// The negative companion: with --trust-proxy OFF, two requests with
 	// the same RemoteAddr but different (spoofed) XFF MUST still hit the
 	// rate limit. This is what prevents a malicious direct caller from
@@ -4299,6 +4479,7 @@ func fetchArgs(url string) map[string]any {
 }
 
 func TestHandleFetch_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	srv.fetchAllowLoopback = true // httptest.Server binds 127.0.0.1
 
@@ -4324,6 +4505,7 @@ func TestHandleFetch_HappyPath(t *testing.T) {
 // Negative scheme allow-list — only http/https accepted.
 
 func TestHandleFetch_RejectsFileScheme(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("file:///etc/passwd")))
 	body := textOf(t, result)
@@ -4333,6 +4515,7 @@ func TestHandleFetch_RejectsFileScheme(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsGopherScheme(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("gopher://example.com/")))
 	body := textOf(t, result)
@@ -4342,6 +4525,7 @@ func TestHandleFetch_RejectsGopherScheme(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsDataScheme(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("data:text/plain;base64,SGVsbG8=")))
 	body := textOf(t, result)
@@ -4353,6 +4537,7 @@ func TestHandleFetch_RejectsDataScheme(t *testing.T) {
 // SSRF gate — block private/loopback/link-local/multicast IPs.
 
 func TestHandleFetch_RejectsCloudMetadataIP(t *testing.T) {
+	t.Parallel()
 	// 169.254.169.254 is the AWS / GCP / Azure cloud-metadata endpoint.
 	// Reaching it from a fetch tool is a classic SSRF for cred theft.
 	srv, _ := fetchTestSetup(t)
@@ -4364,6 +4549,7 @@ func TestHandleFetch_RejectsCloudMetadataIP(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsRFC1918_10Net(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("http://10.0.0.1/")))
 	body := textOf(t, result)
@@ -4373,6 +4559,7 @@ func TestHandleFetch_RejectsRFC1918_10Net(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsRFC1918_172Net(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("http://172.17.0.1/")))
 	body := textOf(t, result)
@@ -4382,6 +4569,7 @@ func TestHandleFetch_RejectsRFC1918_172Net(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsRFC1918_192Net(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("http://192.168.1.1/")))
 	body := textOf(t, result)
@@ -4391,6 +4579,7 @@ func TestHandleFetch_RejectsRFC1918_192Net(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsLoopbackByDefault(t *testing.T) {
+	t.Parallel()
 	// fetchAllowLoopback is OFF — production behaviour. 127.0.0.1 MUST
 	// be rejected even though tests can opt in for httptest.Server.
 	srv, _ := fetchTestSetup(t)
@@ -4402,6 +4591,7 @@ func TestHandleFetch_RejectsLoopbackByDefault(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsIPv6Loopback(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	result, _ := srv.handleFetch(context.Background(), makeReq(fetchArgs("http://[::1]:8080/")))
 	body := textOf(t, result)
@@ -4411,6 +4601,7 @@ func TestHandleFetch_RejectsIPv6Loopback(t *testing.T) {
 }
 
 func TestHandleFetch_RejectsZeroAddress(t *testing.T) {
+	t.Parallel()
 	// 0.0.0.0 — unspecified. Hitting it on Linux often resolves to
 	// localhost; treat as SSRF.
 	srv, _ := fetchTestSetup(t)
@@ -4425,6 +4616,7 @@ func TestHandleFetch_RejectsZeroAddress(t *testing.T) {
 // a private/loopback/link-local target.
 
 func TestHandleFetch_RedirectToPrivateBlocked(t *testing.T) {
+	t.Parallel()
 	// The upstream server is on httptest (loopback, allowed via flag).
 	// It responds with a 302 redirect to 10.0.0.1, which is RFC1918.
 	// CheckRedirect must reject before any TCP connection to 10.0.0.1.
@@ -4444,6 +4636,7 @@ func TestHandleFetch_RedirectToPrivateBlocked(t *testing.T) {
 }
 
 func TestHandleFetch_RedirectToMetadataIPBlocked(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	srv.fetchAllowLoopback = true
 
@@ -4460,6 +4653,7 @@ func TestHandleFetch_RedirectToMetadataIPBlocked(t *testing.T) {
 }
 
 func TestHandleFetch_RedirectChainCapped(t *testing.T) {
+	t.Parallel()
 	// Cap is maxFetchRedirects = 5. Build a chain that always redirects
 	// back to itself with a counter; expect rejection at hop 6.
 	srv, _ := fetchTestSetup(t)
@@ -4483,6 +4677,7 @@ func TestHandleFetch_RedirectChainCapped(t *testing.T) {
 // rather than trusting Content-Length.
 
 func TestHandleFetch_BodySizeCapEnforced(t *testing.T) {
+	t.Parallel()
 	srv, _ := fetchTestSetup(t)
 	srv.fetchAllowLoopback = true
 
@@ -4522,6 +4717,7 @@ func TestHandleFetch_BodySizeCapEnforced(t *testing.T) {
 // finer-grained negative assertions than the integration handler tests.
 
 func TestValidateFetchURL_BlocksMulticast(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	if err := srv.validateFetchURL("http://224.0.0.1/"); err == nil ||
 		!strings.Contains(err.Error(), "multicast") {
@@ -4530,6 +4726,7 @@ func TestValidateFetchURL_BlocksMulticast(t *testing.T) {
 }
 
 func TestValidateFetchURL_AllowsPublicIP(t *testing.T) {
+	t.Parallel()
 	// 8.8.8.8 (Google DNS) is a public IP — MUST pass validation
 	// purely. We're not actually fetching anything here, just checking
 	// the gate.
@@ -4540,6 +4737,7 @@ func TestValidateFetchURL_AllowsPublicIP(t *testing.T) {
 }
 
 func TestValidateFetchURL_NoHost(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	if err := srv.validateFetchURL("http:///path"); err == nil {
 		t.Error("expected error on URL with no host")
@@ -4562,6 +4760,7 @@ func TestValidateFetchURL_NoHost(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestDashboard_ESCWrapsAllAttributeJSONStringify(t *testing.T) {
+	t.Parallel()
 	// Post-#56: the JS lives in renderDashboardJS, not renderDashboard.
 	// Post-#3 (event-delegation migration): the inline `onclick="X(...)"`
 	// pattern is gone. The same attribute-injection sites now use
@@ -4585,6 +4784,7 @@ func TestDashboard_ESCWrapsAllAttributeJSONStringify(t *testing.T) {
 }
 
 func TestDashboard_NoBareJSONStringifyInOnclickAttribute(t *testing.T) {
+	t.Parallel()
 	// Negative-shape regression: detect the unsafe pattern returning to
 	// any onclick handler. We scan for `onclick="<funcName>('+JSON.stringify`
 	// — the exact shape that bypasses HTML-attribute escaping.
@@ -4628,6 +4828,7 @@ func TestDashboard_NoBareJSONStringifyInOnclickAttribute(t *testing.T) {
 }
 
 func TestDashboard_EscFunctionDefined(t *testing.T) {
+	t.Parallel()
 	// Sanity check: the esc() helper must exist in the rendered JS,
 	// since every above test depends on it. Catches a regression where
 	// someone removes the helper definition while leaving call sites in
@@ -4641,6 +4842,7 @@ func TestDashboard_EscFunctionDefined(t *testing.T) {
 // CSP and security headers on the dashboard response.
 
 func TestDashboard_SecurityHeaders(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httpGet(t, srv, "/v1/dashboard")
 	if w.Code != http.StatusOK {
@@ -4700,6 +4902,7 @@ func TestDashboard_SecurityHeaders(t *testing.T) {
 }
 
 func TestDashboard_AssetEndpoints(t *testing.T) {
+	t.Parallel()
 	// /v1/dashboard.js and /v1/dashboard.css MUST serve with the right
 	// Content-Type and a Cache-Control header. Pinning these signals
 	// catches a future change that drops the asset routes (which would
@@ -4818,6 +5021,7 @@ func TestDashboard_AssetEndpoints(t *testing.T) {
 }
 
 func TestADR_AcceptsArbitraryStringValues(t *testing.T) {
+	t.Parallel()
 	// Regression: the ADR write path MUST NOT silently sanitize, mangle,
 	// or reject arbitrary string values. Sanitization is the dashboard's
 	// job (esc() on render). Server-side filtering would create a
@@ -4873,6 +5077,7 @@ func TestADR_AcceptsArbitraryStringValues(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSlowQuery_DisabledByDefault(t *testing.T) {
+	t.Parallel()
 	// Threshold defaults to 0 → no rows persisted regardless of latency.
 	srv, store, _ := newTestServer(t)
 	// Don't call SetSlowQueryThreshold.
@@ -4893,6 +5098,7 @@ func TestSlowQuery_DisabledByDefault(t *testing.T) {
 }
 
 func TestSlowQuery_ThresholdBoundary(t *testing.T) {
+	t.Parallel()
 	// Latency >= threshold → recorded; below → not.
 	srv, store, _ := newTestServer(t)
 	srv.SetSlowQueryThreshold(50)
@@ -4918,6 +5124,7 @@ func TestSlowQuery_ThresholdBoundary(t *testing.T) {
 }
 
 func TestSlowQuery_ProjectIDPropagatesFromArgs(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.SetSlowQueryThreshold(50)
 
@@ -4938,6 +5145,7 @@ func TestSlowQuery_ProjectIDPropagatesFromArgs(t *testing.T) {
 // keyed under sensitive names MUST be redacted before persistence — pincher
 // would otherwise persist credentials on disk indefinitely.
 func TestSlowQuery_SecretRedaction(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.SetSlowQueryThreshold(50)
 
@@ -4988,6 +5196,7 @@ func TestSlowQuery_SecretRedaction(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestMeta_TokensSavedPct_PresentWhenSavingsPositive(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "savpr", Path: "/tmp/savpr", Name: "savpr", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
@@ -5026,6 +5235,7 @@ func TestMeta_TokensSavedPct_PresentWhenSavingsPositive(t *testing.T) {
 }
 
 func TestMeta_TokensSavedPct_NullWhenBaselineMethodNone(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// list is an admin/orientation tool (baseline_method=none) — there is
 	// no honest Read alternative to compare against, so both
@@ -5056,6 +5266,7 @@ func TestMeta_TokensSavedPct_NullWhenBaselineMethodNone(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleTrace_AmbiguousNameSurfacesAlternatives(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ptr-amb"
 	store.UpsertProject(db.Project{ID: "ptr-amb", Path: "/tmp/ptr-amb", Name: "ptr-amb", IndexedAt: time.Now()})
@@ -5103,6 +5314,7 @@ func TestHandleTrace_AmbiguousNameSurfacesAlternatives(t *testing.T) {
 // `id` is "no, I want THIS one." Surfacing alternatives here would
 // re-introduce the noise the escape hatch was supposed to eliminate.
 func TestHandleTrace_IDArgSkipsNameAmbiguity(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ptr-id"
 	store.UpsertProject(db.Project{ID: "ptr-id", Path: "/tmp/ptr-id", Name: "ptr-id", IndexedAt: time.Now()})
@@ -5138,6 +5350,7 @@ func TestHandleTrace_IDArgSkipsNameAmbiguity(t *testing.T) {
 // nonexistent symbol id — caller mistyped or stale. Better to return a
 // specific "id not found" message than silently fall back to name.
 func TestHandleTrace_IDArgUnknownReturnsError(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ptr-bad"
 	store.UpsertProject(db.Project{ID: "ptr-bad", Path: "/tmp/ptr-bad", Name: "ptr-bad", IndexedAt: time.Now()})
@@ -5159,6 +5372,7 @@ func TestHandleTrace_IDArgUnknownReturnsError(t *testing.T) {
 // Go method, not an MCP tool. The new hint must reference the real
 // `id` parameter on this tool and give a concrete next-call example.
 func TestHandleTrace_AmbiguousHintReferencesIDParam(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ptr-hint"
 	store.UpsertProject(db.Project{ID: "ptr-hint", Path: "/tmp/ptr-hint", Name: "ptr-hint", IndexedAt: time.Now()})
@@ -5191,6 +5405,7 @@ func TestHandleTrace_AmbiguousHintReferencesIDParam(t *testing.T) {
 }
 
 func TestHandleTrace_UniqueNameNoAmbiguityField(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ptr-uniq"
 	store.UpsertProject(db.Project{ID: "ptr-uniq", Path: "/tmp/ptr-uniq", Name: "ptr-uniq", IndexedAt: time.Now()})
@@ -5230,6 +5445,7 @@ func TestHandleTrace_UniqueNameNoAmbiguityField(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestClassifyTaskShape_KeywordMatching(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want guideShape
@@ -5264,6 +5480,7 @@ func TestClassifyTaskShape_KeywordMatching(t *testing.T) {
 // handle the http listener lifecycle", the right hint is
 // "http listener lifecycle", not "functions".
 func TestTaskHintFromString_PicksLongestPhrase(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want string
@@ -5293,6 +5510,7 @@ func TestTaskHintFromString_PicksLongestPhrase(t *testing.T) {
 // #284 shape classifier: trace-shape verbs route to trace_in / trace_out
 // before the broader "understand" catch-all.
 func TestClassifyTaskShape_TraceVerbs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want guideShape
@@ -5317,6 +5535,7 @@ func TestClassifyTaskShape_TraceVerbs(t *testing.T) {
 }
 
 func TestGuideRecommendations_AllShapesNonEmpty(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []guideShape{shapeFix, shapeAdd, shapeRefactor, shapeUnderstand, shapeTest, shapeReview, shapeFind, shapeTraceIn, shapeTraceOut, shapeUnknown, shapeToolAudit} {
 		recs := guideRecommendations(shape, "Foo", "")
 		if len(recs) == 0 {
@@ -5334,6 +5553,7 @@ func TestGuideRecommendations_AllShapesNonEmpty(t *testing.T) {
 }
 
 func TestHandleGuide_FixTaskReturnsSearchAsFirstStep(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleGuide(context.Background(), makeReq(map[string]any{
 		"task": "fix the auth bug",
@@ -5356,6 +5576,7 @@ func TestHandleGuide_FixTaskReturnsSearchAsFirstStep(t *testing.T) {
 }
 
 func TestHandleGuide_EmptyTaskErrors(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	result, err := srv.handleGuide(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -5375,6 +5596,7 @@ func TestHandleGuide_EmptyTaskErrors(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestIsLoopbackBind_Cases(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		addr string
 		want bool
@@ -5410,6 +5632,7 @@ func TestIsLoopbackBind_Cases(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSuggestChangesNextSteps_PrioritizesCritical(t *testing.T) {
+	t.Parallel()
 	impacted := []map[string]any{
 		{"id": "a.go::pkg.Mid#Function", "name": "Mid", "risk": "MEDIUM"},
 		{"id": "b.go::pkg.Top#Function", "name": "Top", "risk": "CRITICAL"},
@@ -5434,6 +5657,7 @@ func TestSuggestChangesNextSteps_PrioritizesCritical(t *testing.T) {
 }
 
 func TestSuggestChangesNextSteps_NoImpactSuggestsTests(t *testing.T) {
+	t.Parallel()
 	changed := []map[string]any{{"id": "x.go::pkg.X#Function", "name": "X"}}
 	got := suggestChangesNextSteps(nil, changed, map[string]int{})
 	if len(got) != 1 {
@@ -5445,6 +5669,7 @@ func TestSuggestChangesNextSteps_NoImpactSuggestsTests(t *testing.T) {
 }
 
 func TestSuggestChangesNextSteps_NoChangedSymsReturnsNil(t *testing.T) {
+	t.Parallel()
 	got := suggestChangesNextSteps(nil, nil, map[string]int{})
 	if got != nil {
 		t.Errorf("zero changed symbols should return nil (nothing actionable), got %v", got)
@@ -5452,6 +5677,7 @@ func TestSuggestChangesNextSteps_NoChangedSymsReturnsNil(t *testing.T) {
 }
 
 func TestHandleTrace_NextStepsAfterTrace(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "tr-ns"
 	store.UpsertProject(db.Project{ID: "tr-ns", Path: "/tmp/tr-ns", Name: "tr-ns", IndexedAt: time.Now()})
@@ -5488,6 +5714,7 @@ func TestHandleTrace_NextStepsAfterTrace(t *testing.T) {
 }
 
 func TestHandleArchitecture_NextStepsFromHotspot(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "arch-ns"
 	store.UpsertProject(db.Project{ID: "arch-ns", Path: "/tmp/arch-ns", Name: "arch-ns", IndexedAt: time.Now(), SymCount: 3})
@@ -5531,6 +5758,7 @@ func TestHandleArchitecture_NextStepsFromHotspot(t *testing.T) {
 // see an empty body — they should see what to do next (`health` for
 // the per-language coverage breakdown, or force-reindex).
 func TestHandleArchitecture_TrulyEmptyProjectGetsZeroSymbolsDiagnosis(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "arch-empty"
 	store.UpsertProject(db.Project{ID: "arch-empty", Path: "/tmp/arch-empty", Name: "arch-empty", IndexedAt: time.Now(), SymCount: 0})
@@ -5561,6 +5789,7 @@ func TestHandleArchitecture_TrulyEmptyProjectGetsZeroSymbolsDiagnosis(t *testing
 // or entry points — typical for docs/config-only projects (Markdown
 // Sections, YAML Settings, no Functions).
 func TestHandleArchitecture_DocsOnlyProjectGetsCorrectDiagnosis(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "arch-docs"
 	store.UpsertProject(db.Project{ID: "arch-docs", Path: "/tmp/arch-docs", Name: "arch-docs", IndexedAt: time.Now(), SymCount: 12})
@@ -5588,6 +5817,7 @@ func TestHandleArchitecture_DocsOnlyProjectGetsCorrectDiagnosis(t *testing.T) {
 }
 
 func TestHandleIndex_ZeroSymbolsSurfacesDiagnosis(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	emptyDir := t.TempDir() // no source files at all
 	result, err := srv.handleIndex(context.Background(), makeReq(map[string]any{
@@ -5613,6 +5843,7 @@ func TestHandleIndex_ZeroSymbolsSurfacesDiagnosis(t *testing.T) {
 }
 
 func TestHandleIndex_NonZeroNoUnnecessaryDiagnosis(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc Main() {}\n"), 0o644); err != nil {
@@ -5635,6 +5866,7 @@ func TestHandleIndex_NonZeroNoUnnecessaryDiagnosis(t *testing.T) {
 }
 
 func TestSuggestNextSteps_FunctionRecommendsContextAndTrace(t *testing.T) {
+	t.Parallel()
 	suggestions := suggestNextSteps(db.Symbol{
 		ID: "a.go::pkg.F#Function", Name: "F", Kind: "Function",
 	}, false)
@@ -5654,6 +5886,7 @@ func TestSuggestNextSteps_FunctionRecommendsContextAndTrace(t *testing.T) {
 }
 
 func TestSuggestNextSteps_SettingRecommendsSymbol(t *testing.T) {
+	t.Parallel()
 	suggestions := suggestNextSteps(db.Symbol{
 		ID: "k.yaml::services.web.image#Setting", Name: "image", Kind: "Setting",
 	}, false)
@@ -5666,6 +5899,7 @@ func TestSuggestNextSteps_SettingRecommendsSymbol(t *testing.T) {
 }
 
 func TestSuggestNextSteps_DocumentRecommendsSymbolWithFieldsProjection(t *testing.T) {
+	t.Parallel()
 	suggestions := suggestNextSteps(db.Symbol{
 		ID: "url::https://example.com#Document", Name: "example", Kind: "Document",
 	}, false)
@@ -5679,6 +5913,7 @@ func TestSuggestNextSteps_DocumentRecommendsSymbolWithFieldsProjection(t *testin
 }
 
 func TestHandleSearch_NextStepsInMeta(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "ns"
 	store.UpsertProject(db.Project{ID: "ns", Path: "/tmp/ns", Name: "ns", IndexedAt: time.Now()})
@@ -5710,6 +5945,7 @@ func TestHandleSearch_NextStepsInMeta(t *testing.T) {
 // (concrete recovery tool calls). Mirrors handleIndex's empty-state
 // pattern; agents shouldn't have to guess from a bare `count: 0`.
 func TestHandleSearch_ZeroResultsAttachesDiagnosisAndRecoverySteps(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "nsz"
 	store.UpsertProject(db.Project{ID: "nsz", Path: "/tmp/nsz", Name: "nsz", IndexedAt: time.Now()})
@@ -5749,6 +5985,7 @@ func TestHandleSearch_ZeroResultsAttachesDiagnosisAndRecoverySteps(t *testing.T)
 // next; finally a generic "wildcards" hint when no filters narrow
 // the search but the query has no wildcard already.
 func TestDiagnoseEmptySearch_PrioritiesMostSpecificFilter(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		query      string
@@ -5780,6 +6017,7 @@ func TestDiagnoseEmptySearch_PrioritiesMostSpecificFilter(t *testing.T) {
 // The `list` fallback is always present (universal "wrong project"
 // recovery).
 func TestSuggestEmptySearchNextSteps_RecoveryActionsMatchFilters(t *testing.T) {
+	t.Parallel()
 	t.Run("min_confidence > 0 suggests dropping it", func(t *testing.T) {
 		steps := suggestEmptySearchNextSteps("Foo", "", "", 0.71)
 		if len(steps) < 2 {
@@ -5819,6 +6057,7 @@ func TestSuggestEmptySearchNextSteps_RecoveryActionsMatchFilters(t *testing.T) {
 }
 
 func TestHumanInt_FormatsThousandsSeparators(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		n    int
 		want string
@@ -5843,6 +6082,7 @@ func TestHumanInt_FormatsThousandsSeparators(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleSymbol_FieldsProjection_OnlyRequestedKeys(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "pf", Path: "/pf", Name: "pf", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
@@ -5877,6 +6117,7 @@ func TestHandleSymbol_FieldsProjection_OnlyRequestedKeys(t *testing.T) {
 }
 
 func TestHandleSymbol_FieldsProjection_DefaultReturnsAll(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{ID: "pf2", Path: "/pf2", Name: "pf2", IndexedAt: time.Now()})
 	store.BulkUpsertSymbols([]db.Symbol{
@@ -5901,6 +6142,7 @@ func TestHandleSymbol_FieldsProjection_DefaultReturnsAll(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestHandleHealth_ParserIdentityFromRegistry(t *testing.T) {
+	t.Parallel()
 	srv, store, dir := newTestServer(t)
 	pid := db.ProjectIDFromPath(dir)
 	store.UpsertProject(db.Project{ID: pid, Path: dir, Name: "parsertest", IndexedAt: time.Now()})
@@ -5947,6 +6189,7 @@ func TestHandleHealth_ParserIdentityFromRegistry(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestServeHTTP_UnknownToolListsRegisteredHandlers(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/no-such-tool", strings.NewReader("{}"))

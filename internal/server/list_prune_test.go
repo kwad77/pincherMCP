@@ -15,6 +15,7 @@ import (
 
 // Default behaviour: dead-on-disk projects are HIDDEN but not deleted.
 func TestHandleList_DefaultDoesNotPrune(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	store.UpsertProject(db.Project{
 		ID: "ghost", Path: filepath.Join(t.TempDir(), "no-such-dir"),
@@ -42,6 +43,7 @@ func TestHandleList_DefaultDoesNotPrune(t *testing.T) {
 // prune_dead=true physically removes the missing-path projects and
 // returns their ids in `pruned`.
 func TestHandleList_PruneDeadDeletesMissingProjects(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	deadDir := filepath.Join(t.TempDir(), "dead-dir-doesnt-exist")
 	store.UpsertProject(db.Project{
@@ -85,6 +87,7 @@ func TestHandleList_PruneDeadDeletesMissingProjects(t *testing.T) {
 // array (not nil) — distinguishes "I tried to prune and there was
 // nothing" from "I never tried to prune".
 func TestHandleList_PruneDeadEmptyArrayWhenNothingDead(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	aliveDir := t.TempDir()
 	store.UpsertProject(db.Project{
@@ -117,6 +120,7 @@ func TestHandleList_PruneDeadEmptyArrayWhenNothingDead(t *testing.T) {
 // AND is removed from the DB (via prune_dead). The pruned field
 // reports exactly what got deleted.
 func TestHandleList_IncludeDeadAndPruneDead_BothHonored(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	deadDir := filepath.Join(t.TempDir(), "dead-dir-doesnt-exist")
 	store.UpsertProject(db.Project{
@@ -154,6 +158,7 @@ func TestHandleList_IncludeDeadAndPruneDead_BothHonored(t *testing.T) {
 // Pre-fix, dropped + 0 entries returned (silently filtered). Post-fix,
 // the dead row IS shown AND deleted, so subsequent calls see it gone.
 func TestHandleList_IncludeDeadAndPruneDead_DogfoodRepro(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	deadDir := filepath.Join(t.TempDir(), "NonexistentProjectThatDoesNotExist")
 	store.UpsertProject(db.Project{

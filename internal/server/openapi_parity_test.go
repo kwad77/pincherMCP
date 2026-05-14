@@ -19,6 +19,7 @@ import (
 // test guarantees the auto-include actually happened by re-deriving
 // the expected set from s.handlers and asserting equality.
 func TestOpenAPI_ParityWithRegisteredHandlers(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	// Expected: every handler name shows up at /v1/<name>.
@@ -86,6 +87,7 @@ func TestOpenAPI_ParityWithRegisteredHandlers(t *testing.T) {
 // placeholder the pre-fix hardcoded version emitted. Catches
 // regressions where InputSchema retrieval breaks silently.
 func TestOpenAPI_PerToolSchemaIsRealNotPlaceholder(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/v1/openapi.json", nil)
@@ -131,6 +133,7 @@ func TestOpenAPI_PerToolSchemaIsRealNotPlaceholder(t *testing.T) {
 // `_meta` reference. Catches new tools added without an entry in
 // outputSchemas.
 func TestOpenAPI_EveryToolHasNonPlaceholderResponseSchema(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/v1/openapi.json", nil)
@@ -195,6 +198,7 @@ func TestOpenAPI_EveryToolHasNonPlaceholderResponseSchema(t *testing.T) {
 // openAPIComponentSchemas (#581). Per-endpoint schemas $ref these,
 // so removing them silently breaks every response shape.
 func TestOpenAPI_HasSharedMetaAndErrorComponents(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/v1/openapi.json", nil)

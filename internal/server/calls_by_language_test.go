@@ -18,6 +18,7 @@ import (
 // sessions row stores SQL NULL — pre-v15 rows then render distinct from
 // "v15 row, no language data yet". An empty `{}` would lose that signal.
 func TestSnapshotCallsByLanguage_EmptyReturnsEmptyString(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	if got := srv.snapshotCallsByLanguage(); got != "" {
 		t.Errorf("snapshot on empty server = %q, want \"\"", got)
@@ -27,6 +28,7 @@ func TestSnapshotCallsByLanguage_EmptyReturnsEmptyString(t *testing.T) {
 // Recorded languages serialize to a stable-sorted JSON object — sort
 // order matters for snapshot test reproducibility (#33).
 func TestSnapshotCallsByLanguage_StableSortedJSON(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Insert in non-alphabetical order; expect sorted output.
 	srv.recordCallLanguage("Python")
@@ -45,6 +47,7 @@ func TestSnapshotCallsByLanguage_StableSortedJSON(t *testing.T) {
 // the language extraction themselves. A nil-or-empty regex match would
 // otherwise pollute the map with an empty-string key.
 func TestRecordCallLanguage_EmptyIsNoOp(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.recordCallLanguage("")
 	srv.recordCallLanguage("")
@@ -59,6 +62,7 @@ func TestRecordCallLanguage_EmptyIsNoOp(t *testing.T) {
 // the increment correctness so a future refactor that drops sync.Map
 // or atomic surfaces the regression as a flaky count.
 func TestRecordCallLanguage_AtomicUnderConcurrentCalls(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	const goroutines = 50
@@ -90,6 +94,7 @@ func TestRecordCallLanguage_AtomicUnderConcurrentCalls(t *testing.T) {
 // the real tools emit so a future regex tweak that loses one of these
 // cases surfaces in CI.
 func TestLanguageRE_MatchShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		input string
@@ -123,6 +128,7 @@ func TestLanguageRE_MatchShapes(t *testing.T) {
 // #240 diagnostic — bypass-detection downstream depends on it surviving
 // the round-trip.
 func TestRecordAndFlush_AggregatesViaDB(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// Simulate "an MCP client connected" so flushSession actually writes.

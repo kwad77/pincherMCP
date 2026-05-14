@@ -64,6 +64,7 @@ func helper() {
 }
 
 func TestHandleContext_Lite_ReturnsIDAndSourceOnly(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	sym, _ := newLiteTestSymbol(t, srv)
 
@@ -96,6 +97,7 @@ func TestHandleContext_Lite_ReturnsIDAndSourceOnly(t *testing.T) {
 }
 
 func TestHandleContext_DefaultModeStillReturnsFullShape(t *testing.T) {
+	t.Parallel()
 	// Sanity: dropping `lite` (or setting it to false) preserves the
 	// existing context contract — symbol + imports + callees.
 	srv, _, _ := newTestServer(t)
@@ -116,6 +118,7 @@ func TestHandleContext_DefaultModeStillReturnsFullShape(t *testing.T) {
 }
 
 func TestHandleContext_Lite_StillTracksTokensSaved(t *testing.T) {
+	t.Parallel()
 	// Lite mode is the small-envelope shape, but the savings tracker
 	// still wires through — the agent's stats accumulate from lite calls
 	// the same as regular ones. Catches a refactor where lite skips

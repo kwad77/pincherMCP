@@ -18,6 +18,7 @@ import (
 // languages pincher indexes so a future tweak to one extension
 // doesn't silently change the cross-language filter.
 func TestIsTestFile_RecognisedConventions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		path string
 		want bool
@@ -80,6 +81,7 @@ func TestIsTestFile_RecognisedConventions(t *testing.T) {
 // End-to-end: seed a project with a mix of production and test
 // hotspots; default architecture call drops the test ones.
 func TestHandleArchitecture_HotspotsExcludeTestFilesByDefault(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -144,6 +146,7 @@ func TestHandleArchitecture_HotspotsExcludeTestFilesByDefault(t *testing.T) {
 
 // include_tests=true restores the legacy mixed list.
 func TestHandleArchitecture_IncludeTestsTrue_SurfacesTestHotspots(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/tmp/p1", Name: "p1", IndexedAt: time.Now()})
@@ -183,6 +186,7 @@ func TestHandleArchitecture_IncludeTestsTrue_SurfacesTestHotspots(t *testing.T) 
 // Pure helper — pin the kind decisions so a future tweak doesn't
 // silently let JS-script `var result` accumulators back into the list.
 func TestIsHotspotKind(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		kind string
 		want bool
@@ -227,6 +231,7 @@ func TestIsHotspotKind(t *testing.T) {
 // #380). The Variable must NOT appear in hotspots; the lower-ranked
 // Function must.
 func TestHandleArchitecture_HotspotsExcludeVariableKind(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p380v"
 	store.UpsertProject(db.Project{ID: "p380v", Path: "/tmp/p380v", Name: "p380v", IndexedAt: time.Now()})
@@ -299,6 +304,7 @@ func TestHandleArchitecture_HotspotsExcludeVariableKind(t *testing.T) {
 // Variables / Settings back in — that would bring back the JS-script
 // accumulator pollution.
 func TestHandleArchitecture_IncludeTestsTrue_StillFiltersNonCodeKinds(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p380vt"
 	store.UpsertProject(db.Project{ID: "p380vt", Path: "/tmp/p380vt", Name: "p380vt", IndexedAt: time.Now()})
@@ -357,6 +363,7 @@ func TestHandleArchitecture_IncludeTestsTrue_StillFiltersNonCodeKinds(t *testing
 // `package main` declaration, including hand-crafted fixtures used by
 // the pinned-corpus snapshot tests.
 func TestIsTestFixturePath(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		path string
 		want bool
@@ -389,6 +396,7 @@ func TestIsTestFixturePath(t *testing.T) {
 // is_entry_point=1) must NOT appear in the architecture entry_points
 // list. Real entry points still surface.
 func TestHandleArchitecture_EntryPointsExcludeTestFixtures(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "pfix"
 	store.UpsertProject(db.Project{ID: "pfix", Path: "/tmp/pfix", Name: "pfix", IndexedAt: time.Now()})
@@ -426,6 +434,7 @@ func TestHandleArchitecture_EntryPointsExcludeTestFixtures(t *testing.T) {
 
 // #306: Project struct uses snake_case JSON keys.
 func TestProject_JSONUsesSnakeCase(t *testing.T) {
+	t.Parallel()
 	p := db.Project{
 		ID: "x", Path: "/p", Name: "p",
 		IndexedAt: time.Now(), FileCount: 1, SymCount: 2, EdgeCount: 3,

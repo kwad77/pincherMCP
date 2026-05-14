@@ -16,6 +16,7 @@ import (
 // loopback dashboard.
 
 func TestHTTP_HookStats_EmptyDB(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/hook-stats", nil)
 	rr := httptest.NewRecorder()
@@ -38,6 +39,7 @@ func TestHTTP_HookStats_EmptyDB(t *testing.T) {
 }
 
 func TestHTTP_HookStats_WithData(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	now := time.Now().UnixNano()
 
@@ -91,6 +93,7 @@ func TestHTTP_HookStats_WithData(t *testing.T) {
 }
 
 func TestHTTP_HookStats_PostReturns405(t *testing.T) {
+	t.Parallel()
 	// /v1/hook-stats is GET-only per #609 + the v0.37 hookGetOnlyRoutes
 	// addition. POST returns 405 with Allow: GET, HEAD.
 	srv, _, _ := newTestServer(t)

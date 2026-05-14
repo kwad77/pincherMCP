@@ -20,6 +20,7 @@ import (
 // Admin tool (architecture) → baseline_method="none", tokens_saved=null,
 // no savings line.
 func TestBaselineMethod_AdminTool_StampsNoneAndNullsSaved(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 
@@ -49,6 +50,7 @@ func TestBaselineMethod_AdminTool_StampsNoneAndNullsSaved(t *testing.T) {
 // Read-replacement tool (symbol) → baseline_method="full_file_read",
 // tokens_saved is a non-null int.
 func TestBaselineMethod_ReadReplacementTool_StampsFullFileRead(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	seedSimpleProject(t, srv)
@@ -80,6 +82,7 @@ func TestBaselineMethod_ReadReplacementTool_StampsFullFileRead(t *testing.T) {
 // Stats accumulator must skip "none" tools — calling architecture
 // repeatedly must not inflate statsTokensSaved.
 func TestBaselineMethod_NoneToolDoesNotAccumulateStats(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 
@@ -102,6 +105,7 @@ func TestBaselineMethod_NoneToolDoesNotAccumulateStats(t *testing.T) {
 // Pure-function unit tests on the lookup table — guards against
 // classification drift when adding new tools.
 func TestBaselineMethodForTool_KnownTools(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		tool, want string
 	}{
@@ -137,6 +141,7 @@ func TestBaselineMethodForTool_KnownTools(t *testing.T) {
 // gate for future tool additions. Mirrors db's writerRoutedStoreMethods
 // classification gate from #51.
 func TestBaselineMethodForTool_AllRegisteredToolsClassified(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	for name := range srv.tools {
 		if _, ok := baselineMethodForTool[name]; !ok {

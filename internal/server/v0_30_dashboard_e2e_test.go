@@ -18,6 +18,7 @@ import (
 // j/k navigate project cards. Not typing-target-aware would steal
 // '/' from the search box; the test asserts the typing-guard is in.
 func TestDashboardJS_KeyboardShortcuts(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function _isTypingTarget",
@@ -44,6 +45,7 @@ func TestDashboardJS_KeyboardShortcuts(t *testing.T) {
 // #551: CSV/JSON export buttons on Projects + Sessions tables.
 // exportTable(format, kind) helper + buttons wired via data-action.
 func TestDashboardJS_ExportButtons(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function exportTable",
@@ -78,6 +80,7 @@ func TestDashboardJS_ExportButtons(t *testing.T) {
 // updates hash via history.replaceState; closeDetail strips the
 // project ID; restore on load + on hashchange.
 func TestDashboardJS_DeepLinks(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 	for _, needle := range []string{
 		"function _parseHash",
@@ -96,6 +99,7 @@ func TestDashboardJS_DeepLinks(t *testing.T) {
 // #556: dashboard.js + dashboard.css must respond with ETag and
 // honor If-None-Match (304), and respect Accept-Encoding: gzip.
 func TestDashboardAssets_ETagAndGzip(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	for _, path := range []string{"/v1/dashboard.js", "/v1/dashboard.css"} {
 		t.Run(path, func(t *testing.T) {

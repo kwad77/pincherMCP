@@ -22,6 +22,7 @@ func setSessionRoot(t *testing.T, srv *Server, root string) {
 }
 
 func TestHandleInit_DefaultIsDryRun(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -55,6 +56,7 @@ func TestHandleInit_DefaultIsDryRun(t *testing.T) {
 }
 
 func TestHandleInit_WriteTrueMutates(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -83,6 +85,7 @@ func TestHandleInit_WriteTrueMutates(t *testing.T) {
 }
 
 func TestHandleInit_TargetContinueRejected(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -102,6 +105,7 @@ func TestHandleInit_TargetContinueRejected(t *testing.T) {
 }
 
 func TestHandleInit_TargetAllFiltersAlwaysGlobal(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -133,6 +137,7 @@ func TestHandleInit_TargetAllFiltersAlwaysGlobal(t *testing.T) {
 }
 
 func TestHandleInit_TargetDetect(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -167,6 +172,7 @@ func TestHandleInit_TargetDetect(t *testing.T) {
 }
 
 func TestHandleInit_NoSessionRootRejected(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	// Deliberately don't setRoot — simulate an MCP client that hasn't
 	// declared roots and the handler can't infer one.
@@ -183,6 +189,7 @@ func TestHandleInit_NoSessionRootRejected(t *testing.T) {
 }
 
 func TestHandleInit_UnknownTargetRejected(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -199,6 +206,7 @@ func TestHandleInit_UnknownTargetRejected(t *testing.T) {
 }
 
 func TestHandleInit_PathPreviewIncluded(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -231,6 +239,7 @@ func TestHandleInit_PathPreviewIncluded(t *testing.T) {
 // action=unchanged on the second pass — pinning the no-op recognition
 // path so an agent doesn't see spurious "wrote" entries on re-runs.
 func TestHandleInit_UnchangedActionOnRerun(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
@@ -257,6 +266,7 @@ func TestHandleInit_UnchangedActionOnRerun(t *testing.T) {
 // the built-ins all stay under cwd; this pins the gate behavior so a
 // future PathFn that miscomputes can't silently escape.
 func TestHandleInit_PathEscapeRejected(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	projectRoot := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "escape.txt")
@@ -279,6 +289,7 @@ func TestHandleInit_PathEscapeRejected(t *testing.T) {
 }
 
 func TestHandleInit_MetaEnvelopePresent(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)

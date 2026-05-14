@@ -39,6 +39,7 @@ func metaTokensSaved(t *testing.T, m map[string]any) int {
 // per call, which over-claimed by 4-6 orders of magnitude on real
 // corpora and dominated the cumulative session counter.
 func TestArchitecture_TokensSavedIsZero(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "p1"
 	store.UpsertProject(db.Project{ID: "p1", Path: "/p1", Name: "p1", IndexedAt: time.Now(), FileCount: 5, SymCount: 1000})
@@ -65,6 +66,7 @@ func TestArchitecture_TokensSavedIsZero(t *testing.T) {
 // avgFileSize=20000 constant. We seed two physical files with known
 // sizes and assert the savings reflect those, not 2 × 20000 / 4.
 func TestSymbolsBatch_UsesRealFileSizes(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -113,6 +115,7 @@ func TestSymbolsBatch_UsesRealFileSizes(t *testing.T) {
 // against two unique files should claim ~2× a single file's worth of
 // savings, not ~6×.
 func TestSymbolsBatch_DedupsByFilePath(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -166,6 +169,7 @@ func TestSymbolsBatch_DedupsByFilePath(t *testing.T) {
 // Docstring (no on-disk file), so it's excluded from the file-size
 // baseline rather than os.Stat-ing a path that doesn't exist.
 func TestSymbolsBatch_DocumentSymbolsSkipped(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -203,6 +207,7 @@ func TestSymbolsBatch_DocumentSymbolsSkipped(t *testing.T) {
 // repeat access so the cumulative tokens_saved counter stops linearly
 // inflating with redundant lookups.
 func TestSymbols_AccessedFilesDedup_RepeatCallChargesZero(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root
@@ -242,6 +247,7 @@ func TestSymbols_AccessedFilesDedup_RepeatCallChargesZero(t *testing.T) {
 // handleSymbol uses a separate per-file Stat formula (not the shared
 // savedVsFileSizesSession helper), so it needs its own coverage.
 func TestSymbol_AccessedFilesDedup(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	root := t.TempDir()
 	srv.sessionRoot = root

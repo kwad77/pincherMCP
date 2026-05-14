@@ -23,6 +23,7 @@ import (
 //     in internal/server/server.go) rather than a generic search.
 
 func TestClassifyTaskShape_WhyDoesIsUnderstand(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want guideShape
@@ -43,6 +44,7 @@ func TestClassifyTaskShape_WhyDoesIsUnderstand(t *testing.T) {
 }
 
 func TestTaskHintFromString_AcronymTieBreak(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want string
@@ -60,6 +62,7 @@ func TestTaskHintFromString_AcronymTieBreak(t *testing.T) {
 }
 
 func TestDomainConceptHint_RecommendationsByPattern(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task         string
 		wantContains string // substring expected in the prepended why
@@ -86,6 +89,7 @@ func TestDomainConceptHint_RecommendationsByPattern(t *testing.T) {
 }
 
 func TestDomainConceptHint_NoMatchReturnsNil(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"fix the login timeout bug",
 		"refactor the auth middleware",

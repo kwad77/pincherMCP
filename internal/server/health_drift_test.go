@@ -15,6 +15,7 @@ import (
 // — agents trusted stale CALLS edges and got wrong "0 callers" results.
 
 func TestHandleHealth_VersionMatch_NoDrift(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	srv.sessionID = "p1"
@@ -34,6 +35,7 @@ func TestHandleHealth_VersionMatch_NoDrift(t *testing.T) {
 }
 
 func TestHandleHealth_VersionMismatch_SurfacesDrift(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	srv.sessionID = "p1"
@@ -76,6 +78,7 @@ func TestHandleHealth_VersionMismatch_SurfacesDrift(t *testing.T) {
 // Empty stored binary_version (row pre-dates v18 migration) is
 // rendered as "indexed before v18 migration ... unknown".
 func TestHandleHealth_EmptyBinaryVersion_RendersAsUnknown(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	srv.sessionID = "p1"
@@ -102,6 +105,7 @@ func TestHandleHealth_EmptyBinaryVersion_RendersAsUnknown(t *testing.T) {
 
 // project field includes binary_version verbatim.
 func TestHandleHealth_BinaryVersionInProject(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.version = "0.9.0"
 	srv.sessionID = "p1"

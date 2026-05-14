@@ -26,6 +26,7 @@ var updateDashboardCSSSnapshot = flag.Bool("update-dashboard-css-snapshot", fals
 	"overwrite testdata/dashboard/dashboard.css with the current renderer output")
 
 func TestDashboardCSS_RegressionSnapshot(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/v1/dashboard.css", nil)
@@ -85,6 +86,7 @@ func TestDashboardCSS_RegressionSnapshot(t *testing.T) {
 // Table-driven across the cases the issue calls out: empty, trailing
 // slash, URL-special chars, BP that itself contains /v1/, deep paths.
 func TestDashboardJS_BasepathSubstitution(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		prefix string
@@ -150,6 +152,7 @@ func snippetAroundBP(js string) string {
 // JS doesn't, the browser fetches dashboard.css from /pincher/v1/...
 // while the JS wrapper rewrites to /pincher//v1/...
 func TestDashboardJS_BasepathSubstitution_HTMLAndJSAgree(t *testing.T) {
+	t.Parallel()
 	for _, prefix := range []string{"", "/pincher", "/pincher/", "/a/b/c"} {
 		html := renderDashboard(prefix)
 		js := renderDashboardJS(prefix)

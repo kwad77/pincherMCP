@@ -18,6 +18,7 @@ import (
 // otherwise.
 
 func TestDefaultMinConfidenceFor_QueryShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		query  string
 		corpus string
@@ -79,6 +80,7 @@ func TestDefaultMinConfidenceFor_QueryShapes(t *testing.T) {
 // Post-fix, the identifier query auto-defaults to 0.0 and surfaces the
 // match.
 func TestHandleSearch_IdentifierQueryDefaultsToZeroConfidence(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "qaconf"
 	store.UpsertProject(db.Project{
@@ -128,6 +130,7 @@ func TestHandleSearch_IdentifierQueryDefaultsToZeroConfidence(t *testing.T) {
 // Post-fix the caller's explicit corpus=docs is the noise filter; the
 // confidence floor disappears.
 func TestHandleSearch_DocsCorpus_DefaultIncludesMarkdownSections(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "qaconf-docs"
 	store.UpsertProject(db.Project{
@@ -180,6 +183,7 @@ func TestHandleSearch_DocsCorpus_DefaultIncludesMarkdownSections(t *testing.T) {
 // that BM25-match `authentication`, `authorization`, etc. Post-fix
 // they all surface.
 func TestHandleSearch_DocsCorpus_WildcardSurfacesSections(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "qaconf-docs-wild"
 	store.UpsertProject(db.Project{
@@ -216,6 +220,7 @@ func TestHandleSearch_DocsCorpus_WildcardSurfacesSections(t *testing.T) {
 // default. A future change shouldn't let the docs auto-default
 // silently override a deliberate threshold from the caller.
 func TestHandleSearch_DocsCorpus_ExplicitMinConfidenceStillWins(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "qaconf-docs-explicit"
 	store.UpsertProject(db.Project{
@@ -255,6 +260,7 @@ func TestHandleSearch_DocsCorpus_ExplicitMinConfidenceStillWins(t *testing.T) {
 // doc-section noise that BM25-matches wide queries. A 0.65-confidence
 // symbol whose name contains the phrase should NOT surface.
 func TestHandleSearch_PhraseQueryRespectsConfidenceFloor(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "qaconf-phrase"
 	store.UpsertProject(db.Project{
@@ -305,6 +311,7 @@ func TestHandleSearch_PhraseQueryRespectsConfidenceFloor(t *testing.T) {
 // future refactor doesn't accidentally let the heuristic override an
 // explicit value.
 func TestHandleSearch_ExplicitMinConfidenceOverridesDefault(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "qaconf-explicit"
 	store.UpsertProject(db.Project{
@@ -345,6 +352,7 @@ func TestHandleSearch_ExplicitMinConfidenceOverridesDefault(t *testing.T) {
 // query-aware behavior. Otherwise callers passing 0.0 explicitly think
 // they're changing behavior when they're not.
 func TestSearchToolSchema_DocumentsQueryAwareDefault(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	tool, ok := srv.tools["search"]
 	if !ok {

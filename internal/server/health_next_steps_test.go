@@ -10,6 +10,7 @@ import (
 // #276: health emits actionable next_steps.
 
 func TestSuggestHealthNextSteps_NoProject(t *testing.T) {
+	t.Parallel()
 	report := &db.HealthReport{}
 	steps := suggestHealthNextSteps(report)
 	if len(steps) == 0 {
@@ -21,6 +22,7 @@ func TestSuggestHealthNextSteps_NoProject(t *testing.T) {
 }
 
 func TestSuggestHealthNextSteps_StaleIndex(t *testing.T) {
+	t.Parallel()
 	report := &db.HealthReport{
 		Project:        &db.Project{Name: "x", Path: "/tmp/x", SymCount: 50, IndexedAt: time.Now()},
 		StalenessSecs:  7200, // 2h
@@ -40,6 +42,7 @@ func TestSuggestHealthNextSteps_StaleIndex(t *testing.T) {
 }
 
 func TestSuggestHealthNextSteps_LowConfidence(t *testing.T) {
+	t.Parallel()
 	report := &db.HealthReport{
 		Project: &db.Project{Name: "x", Path: "/tmp/x", SymCount: 50},
 		Coverage: []db.LanguageCoverage{
@@ -65,6 +68,7 @@ func TestSuggestHealthNextSteps_LowConfidence(t *testing.T) {
 }
 
 func TestSuggestHealthNextSteps_LargeProjectSuggestsArchitecture(t *testing.T) {
+	t.Parallel()
 	report := &db.HealthReport{
 		Project: &db.Project{Name: "x", Path: "/tmp/x", SymCount: 500},
 	}
@@ -82,6 +86,7 @@ func TestSuggestHealthNextSteps_LargeProjectSuggestsArchitecture(t *testing.T) {
 }
 
 func TestSuggestHealthNextSteps_HealthyTinyProject(t *testing.T) {
+	t.Parallel()
 	report := &db.HealthReport{
 		Project: &db.Project{Name: "x", Path: "/tmp/x", SymCount: 10},
 	}

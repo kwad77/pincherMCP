@@ -9,6 +9,7 @@ import (
 // #497: classifyTaskShape recognizes "find FPs in dead_code" as a
 // tool-output audit, not a generic find/fix.
 func TestClassifyTaskShape_ToolAuditPattern(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want guideShape
@@ -40,6 +41,7 @@ func TestClassifyTaskShape_ToolAuditPattern(t *testing.T) {
 }
 
 func TestExtractAuditedTool_RecognizesToolNames(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		task string
 		want string
@@ -67,6 +69,7 @@ func TestExtractAuditedTool_RecognizesToolNames(t *testing.T) {
 // End-to-end: handleGuide on a tool-audit task returns a recipe whose
 // FIRST step is calling the audited tool itself, not `search`.
 func TestHandleGuide_ToolAudit_RecommendsRunningTheTool(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 
@@ -106,6 +109,7 @@ func TestHandleGuide_ToolAudit_RecommendsRunningTheTool(t *testing.T) {
 // recommendation falls back to a `<tool-name>` placeholder rather
 // than guessing.
 func TestHandleGuide_ToolAuditWithoutNamedTool_PlaceholderInRecipe(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.sessionID = "p1"
 

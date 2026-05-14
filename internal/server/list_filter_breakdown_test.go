@@ -12,6 +12,7 @@ import (
 // #505: filtered_out lump-sum is opaque. The breakdown + diagnosis
 // surfaces what knob recovers each hidden entry.
 func TestHandleList_FilterBreakdown_SurfacesByReason(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	now := time.Now()
@@ -92,6 +93,7 @@ func TestHandleList_FilterBreakdown_SurfacesByReason(t *testing.T) {
 
 // When nothing was filtered, no diagnosis should appear (no signal needed).
 func TestHandleList_NoFilter_NoDiagnosis(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	if err := store.UpsertProject(db.Project{

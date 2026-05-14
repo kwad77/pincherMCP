@@ -18,6 +18,7 @@ import (
 // TestComplexityTier_EveryRegisteredToolClassified is the gate. Adding
 // a new tool requires adding a tier; CI fails otherwise.
 func TestComplexityTier_EveryRegisteredToolClassified(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	for name := range srv.tools {
 		if tier := toolComplexityTier(name); tier == "" {
@@ -36,6 +37,7 @@ func TestComplexityTier_EveryRegisteredToolClassified(t *testing.T) {
 // TestComplexityTier_OnlyKnownTierValues guards the vocabulary.
 // Routers will rely on the enum being stable.
 func TestComplexityTier_OnlyKnownTierValues(t *testing.T) {
+	t.Parallel()
 	allowed := map[string]bool{"lite": true, "standard": true, "heavy": true}
 	for tool, tier := range toolComplexityTiers {
 		if !allowed[tier] {
@@ -47,6 +49,7 @@ func TestComplexityTier_OnlyKnownTierValues(t *testing.T) {
 // TestComplexityTier_MetaEnvelopeCarriesTier verifies the per-response
 // injection happens for a representative tool.
 func TestComplexityTier_MetaEnvelopeCarriesTier(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	cases := []struct {
 		tool string
@@ -84,6 +87,7 @@ func TestComplexityTier_MetaEnvelopeCarriesTier(t *testing.T) {
 // shows up in the OpenAPI spec for every tool. Planning-time consumers
 // (codegen, router config tools) use this without needing to invoke.
 func TestComplexityTier_OpenAPIAnnotationPresent(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	req := httptest.NewRequest("GET", "/v1/openapi.json", nil)
 	rr := httptest.NewRecorder()
@@ -132,6 +136,7 @@ func TestComplexityTier_OpenAPIAnnotationPresent(t *testing.T) {
 // TestComplexityTier_AdvertisedAsCapability verifies the capability
 // tag is present (gate-tested for runtime backing in capability_test.go).
 func TestComplexityTier_AdvertisedAsCapability(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	found := false
 	for _, c := range srv.capabilities {

@@ -18,6 +18,7 @@ import (
 // trace with no hops → "hops":[] not "hops":null. Symbol exists but has
 // no inbound or outbound CALLS edges, so the BFS produces zero hops.
 func TestHandleTrace_NoHops_HopsIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "trace-null-test"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})
@@ -54,6 +55,7 @@ func TestHandleTrace_NoHops_HopsIsEmptyArrayNotNull(t *testing.T) {
 // context on a symbol with no IMPORTS edges → "imports":[] not null.
 // Same JSON-shape stability fix that #381 also applies to "callees".
 func TestHandleContext_NoImports_ImportsIsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "ctx-null-test"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})
@@ -92,6 +94,7 @@ func TestHandleContext_NoImports_ImportsIsEmptyArrayNotNull(t *testing.T) {
 // architecture on an empty project → entry_points and hotspots are []
 // not null. Project record exists but has no symbols.
 func TestHandleArchitecture_EmptyProject_NullSlicesAreEmptyArrays(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := "arch-null-test"
 	store.UpsertProject(db.Project{ID: pid, Path: "/tmp/" + pid, Name: pid, IndexedAt: time.Now()})

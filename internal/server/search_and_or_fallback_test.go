@@ -19,6 +19,7 @@ import (
 // surfaces 5 hits. The AND→OR fallback recovers.
 
 func TestHandleSearch_MultiTokenAndFallsBackToOr(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "and-or-fallback", IndexedAt: time.Now()})
@@ -77,6 +78,7 @@ func TestHandleSearch_MultiTokenAndFallsBackToOr(t *testing.T) {
 // must NOT fire in that case — the user already made an explicit choice
 // and a hidden retry would confuse them further.
 func TestHandleSearch_AndOrFallback_SkippedWhenUserUsesOperator(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "explicit-op", IndexedAt: time.Now()})
@@ -116,6 +118,7 @@ func TestHandleSearch_AndOrFallback_SkippedWhenUserUsesOperator(t *testing.T) {
 // When the user explicitly quotes a phrase, the fallback must not fire
 // — they asked for an exact phrase, not an OR over the tokens.
 func TestHandleSearch_AndOrFallback_SkippedWhenUserQuoted(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "quoted-query", IndexedAt: time.Now()})

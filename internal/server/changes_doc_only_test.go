@@ -11,6 +11,7 @@ import (
 // numbers and either errors or BM25-matches unrelated noise. Emit a
 // short note instead.
 func TestSuggestChangesNextSteps_DocOnlyDiffSkipsSearch(t *testing.T) {
+	t.Parallel()
 	changedSyms := []map[string]any{
 		{"id": "doc.md::a#Section", "name": "Foo — bar", "kind": "Section"},
 		{"id": "doc.md::a.b#Section", "name": "Baz", "kind": "Section"},
@@ -35,6 +36,7 @@ func TestSuggestChangesNextSteps_DocOnlyDiffSkipsSearch(t *testing.T) {
 
 // Mixed code + doc — code symbol is preferred for the search query.
 func TestSuggestChangesNextSteps_MixedDiffPrefersCodeName(t *testing.T) {
+	t.Parallel()
 	changedSyms := []map[string]any{
 		{"id": "doc.md::a#Section", "name": "Foo — bar", "kind": "Section"},
 		{"id": "a.go::pkg.Compute#Function", "name": "Compute", "kind": "Function"},
@@ -57,6 +59,7 @@ func TestSuggestChangesNextSteps_MixedDiffPrefersCodeName(t *testing.T) {
 
 // Code-only diff — keep the existing behaviour.
 func TestSuggestChangesNextSteps_CodeOnlyDiffStillSuggestsSearch(t *testing.T) {
+	t.Parallel()
 	changedSyms := []map[string]any{
 		{"id": "a.go::pkg.Compute#Function", "name": "Compute", "kind": "Function"},
 	}
@@ -68,6 +71,7 @@ func TestSuggestChangesNextSteps_CodeOnlyDiffStillSuggestsSearch(t *testing.T) {
 
 // allDocKinds helper coverage.
 func TestAllDocKinds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   []map[string]any
 		want bool

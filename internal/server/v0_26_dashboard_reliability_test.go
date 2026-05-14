@@ -18,6 +18,7 @@ import (
 // regressions of this class would have failed.
 
 func TestDashboardJS_HasAbortControllerWiring(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 
 	// #539: tab fetch wrapper that registers AbortController.
@@ -39,6 +40,7 @@ func TestDashboardJS_HasAbortControllerWiring(t *testing.T) {
 }
 
 func TestDashboardJS_HasPerTabErrorState(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 
 	// #538: setTabError + extractErrMsg must be present and used.
@@ -76,6 +78,7 @@ func TestDashboardJS_HasPerTabErrorState(t *testing.T) {
 // onto the wrong tab. The contract is: any catch-block in load*()
 // short-circuits on AbortError before writing to the DOM.
 func TestDashboardJS_AbortErrorDiscardedQuietly(t *testing.T) {
+	t.Parallel()
 	js := renderDashboardJS("")
 
 	// At least three load*() catch handlers must check for AbortError.

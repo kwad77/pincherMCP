@@ -18,6 +18,7 @@ import (
 // /mcp endpoint 404s through the normal /v1/* dispatcher and the
 // capability is absent.
 func TestStreamableHTTP_Disabled(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	for _, c := range srv.capabilities {
 		if c == "streamable_http" {
@@ -39,6 +40,7 @@ func TestStreamableHTTP_Disabled(t *testing.T) {
 // transport mounted, an MCP initialize round-trip succeeds — the
 // minimal contract a router needs to bootstrap.
 func TestStreamableHTTP_InitializeReturns200(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetMCPHTTPPath("/mcp")
 
@@ -63,6 +65,7 @@ func TestStreamableHTTP_InitializeReturns200(t *testing.T) {
 // surfaces as soon as the setter is called — important because routers
 // query capabilities to decide whether to even attempt the transport.
 func TestStreamableHTTP_CapabilityFlipsOnSet(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetMCPHTTPPath("/mcp")
 
@@ -82,6 +85,7 @@ func TestStreamableHTTP_CapabilityFlipsOnSet(t *testing.T) {
 // reaches the handler when basepath is /pincher and mcpHTTPPath is /mcp.
 // This is the integration most k8s deployments will actually run.
 func TestStreamableHTTP_HonorsBasePath(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetBasePath("/pincher")
 	srv.SetMCPHTTPPath("/mcp")
@@ -102,6 +106,7 @@ func TestStreamableHTTP_HonorsBasePath(t *testing.T) {
 // inherits the existing --http-key gate. Routers fronting pincher with
 // a shared bearer token need this.
 func TestStreamableHTTP_RequiresAuthWhenHTTPKeySet(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetMCPHTTPPath("/mcp")
 	srv.SetHTTPKey("secret")
@@ -130,6 +135,7 @@ func TestStreamableHTTP_RequiresAuthWhenHTTPKeySet(t *testing.T) {
 // TestStreamableHTTP_SDKHandlerSingleton verifies the lazy build only
 // constructs the handler once even under concurrent first-touch.
 func TestStreamableHTTP_SDKHandlerSingleton(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetMCPHTTPPath("/mcp")
 

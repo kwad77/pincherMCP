@@ -46,6 +46,7 @@ func readBody(t *testing.T, rr *httptest.ResponseRecorder) []byte {
 }
 
 func TestHTTP_PostOnGetOnlyDashboard_Returns405(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	rr := httpDo(t, srv, http.MethodPost, "/v1/dashboard")
@@ -69,6 +70,7 @@ func TestHTTP_PostOnGetOnlyDashboard_Returns405(t *testing.T) {
 }
 
 func TestHTTP_DeleteOnGetOnlyStats_Returns405(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	rr := httpDo(t, srv, http.MethodDelete, "/v1/stats")
@@ -81,6 +83,7 @@ func TestHTTP_DeleteOnGetOnlyStats_Returns405(t *testing.T) {
 }
 
 func TestHTTP_PutOnGetOnlyOpenAPI_Returns405(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	rr := httpDo(t, srv, http.MethodPut, "/v1/openapi.json")
@@ -90,6 +93,7 @@ func TestHTTP_PutOnGetOnlyOpenAPI_Returns405(t *testing.T) {
 }
 
 func TestHTTP_HeadDashboard_MirrorsGetHeaders_NoBody(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newTestServer(t)
 
 	getRR := httpDo(t, srv, http.MethodGet, "/v1/dashboard")
@@ -117,6 +121,7 @@ func TestHTTP_HeadDashboard_MirrorsGetHeaders_NoBody(t *testing.T) {
 }
 
 func TestHTTP_HeadHealth_NoBody(t *testing.T) {
+	t.Parallel()
 	// /v1/health is a public probe (no auth) — the most common HEAD
 	// target for k8s/docker liveness. Must not 404 on HEAD just because
 	// the handler was authored only for GET.
@@ -135,6 +140,7 @@ func TestHTTP_HeadHealth_NoBody(t *testing.T) {
 }
 
 func TestHTTP_PostOnUnknownTool_StillReturns404(t *testing.T) {
+	t.Parallel()
 	// Sanity: the #609 fix must not over-broaden. A genuine unknown
 	// tool (POST /v1/never_existed) must still 404 with the
 	// available_tools list — that's the correct behaviour for non-

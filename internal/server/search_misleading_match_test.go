@@ -14,6 +14,7 @@ import (
 // warning and a relax-the-kind next_step.
 
 func TestHandleSearch_ExactMatchInOtherKind_SurfacesHint(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "exact-match", IndexedAt: time.Now()})
@@ -85,6 +86,7 @@ func TestHandleSearch_ExactMatchInOtherKind_SurfacesHint(t *testing.T) {
 // #350: when the exact-name match IS in the result set (no kind filter
 // or kind filter that includes it), no hint should be emitted.
 func TestHandleSearch_ExactMatchInResults_NoHint(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "no-hint", IndexedAt: time.Now()})
@@ -120,6 +122,7 @@ func TestHandleSearch_ExactMatchInResults_NoHint(t *testing.T) {
 // no hint should fire even if a kind filter is set, because BM25
 // partial matching is the intended behaviour for phrase queries.
 func TestHandleSearch_PhraseQuery_NoHint(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	pid := t.TempDir()
 	store.UpsertProject(db.Project{ID: pid, Path: pid, Name: "phrase", IndexedAt: time.Now()})

@@ -13,6 +13,7 @@ import (
 // trace the first match. Bare `name` resolves silently to the first
 // hit and leads the agent into the wrong symbol.
 func TestSuggestNextStepsForResults_AmbiguousNameUsesQualified(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{
 		{Symbol: db.Symbol{
 			ID: "a/a.go::pkg.New#Function", Name: "New",
@@ -49,6 +50,7 @@ func TestSuggestNextStepsForResults_AmbiguousNameUsesQualified(t *testing.T) {
 // Single-result-name case: keep using bare name. The qualified_name
 // switch is only for the ambiguous case.
 func TestSuggestNextStepsForResults_UniqueNameUsesBareName(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{
 		{Symbol: db.Symbol{
 			ID: "a/a.go::pkg.flushBuffers#Method", Name: "flushBuffers",
@@ -77,6 +79,7 @@ func TestSuggestNextStepsForResults_UniqueNameUsesBareName(t *testing.T) {
 // reader of the next_step understands why it diverges from the bare-
 // name pattern they see elsewhere.
 func TestSuggestNextStepsForResults_AmbiguousWhyLineExplainsChoice(t *testing.T) {
+	t.Parallel()
 	results := []db.SearchResult{
 		{Symbol: db.Symbol{
 			ID: "a.go::pkg.X#Function", Name: "X", QualifiedName: "pkg.X",

@@ -16,6 +16,7 @@ import (
 // unscoped and the SQLite PK collision was resolved by INSERT OR
 // REPLACE — whichever project indexed last would shadow the other.
 func TestHandleSymbol_ProjectScopedLookup(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 
 	// Two projects with a colliding symbol ID. In real life this happens

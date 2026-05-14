@@ -12,6 +12,7 @@ import (
 // from #34's negative-tests section: bucket counts MUST sum to len(input).
 // Catches off-by-one bucketing and the "1.0 falls off the table" boundary.
 func TestConfidenceDistribution_SumsToCount(t *testing.T) {
+	t.Parallel()
 	cases := [][]float64{
 		{},
 		{0.5},
@@ -36,6 +37,7 @@ func TestConfidenceDistribution_SumsToCount(t *testing.T) {
 // each bucket so refactoring doesn't accidentally double-count or drop
 // values at exact threshold values.
 func TestConfidenceDistribution_BoundaryInclusion(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		conf       float64
 		wantBucket string
@@ -63,6 +65,7 @@ func TestConfidenceDistribution_BoundaryInclusion(t *testing.T) {
 // of the consistent `{...}` shape and downstream histograms that assume a
 // dict-shape break.
 func TestConfidenceDistribution_EmptyInputShape(t *testing.T) {
+	t.Parallel()
 	dist := confidenceDistribution(nil)
 	if dist == nil {
 		t.Fatal("got nil; want non-nil map")
@@ -81,6 +84,7 @@ func TestConfidenceDistribution_EmptyInputShape(t *testing.T) {
 // Critical for the backward-compat invariant: a search call without
 // min_confidence MUST behave identically to one with min_confidence=0.0.
 func TestFloatArg_DefaultPath(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{}
 	got := floatArg(args, "min_confidence", 0.0)
 	if got != 0.0 {
@@ -92,6 +96,7 @@ func TestFloatArg_DefaultPath(t *testing.T) {
 // test code might pass int. floatArg must accept both rather than silently
 // fall back to default.
 func TestFloatArg_TypePromotion(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		v    any
 		want float64
@@ -120,6 +125,7 @@ func TestFloatArg_TypePromotion(t *testing.T) {
 //   - A symbol scored EXACTLY at the threshold IS included (>= boundary)
 //   - min_confidence=1.0 returns only symbols with confidence == 1.0
 func TestHandleSearch_MinConfidenceFilter(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "projMC"
 	store.UpsertProject(db.Project{ID: "projMC", Path: "/tmp/projMC", Name: "projMC", IndexedAt: time.Now()})
@@ -202,6 +208,7 @@ func TestHandleSearch_MinConfidenceFilter(t *testing.T) {
 // by default, and that explicit min_confidence=0.0 surfaces it as the
 // escape-hatch behavior.
 func TestHandleSearch_DefaultIs0_7(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "projEq"
 	store.UpsertProject(db.Project{ID: "projEq", Path: "/tmp/projEq", Name: "projEq", IndexedAt: time.Now()})
@@ -255,6 +262,7 @@ func TestHandleSearch_DefaultIs0_7(t *testing.T) {
 // counts that sum to len(results). Catches the regression where someone
 // strips _meta or breaks the merge logic in jsonResultWithMeta.
 func TestHandleSearch_MetaConfidenceDistribution(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	srv.sessionID = "projMeta"
 	store.UpsertProject(db.Project{ID: "projMeta", Path: "/tmp/projMeta", Name: "projMeta", IndexedAt: time.Now()})
@@ -311,6 +319,7 @@ func TestHandleSearch_MetaConfidenceDistribution(t *testing.T) {
 // information should NOT be filtered out by min_confidence (the user's
 // query didn't ask for confidence; we don't fabricate it).
 func TestRowConfidence_Projection(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		row    map[string]any

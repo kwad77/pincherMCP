@@ -36,6 +36,7 @@ func seedProjects(t *testing.T, store *db.Store, n int) {
 
 // Default limit caps to 50 even when 100 projects are indexed.
 func TestHandleList_DefaultLimitCapsToFifty(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	seedProjects(t, store, 100)
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{}))
@@ -58,6 +59,7 @@ func TestHandleList_DefaultLimitCapsToFifty(t *testing.T) {
 
 // _meta.next_steps surfaces the next page when more remain.
 func TestHandleList_NextStepsSurfaceNextPage(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	seedProjects(t, store, 100)
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{}))
@@ -82,6 +84,7 @@ func TestHandleList_NextStepsSurfaceNextPage(t *testing.T) {
 
 // Explicit offset returns the requested window.
 func TestHandleList_OffsetReturnsWindow(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	seedProjects(t, store, 100)
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
@@ -103,6 +106,7 @@ func TestHandleList_OffsetReturnsWindow(t *testing.T) {
 
 // Tail page (last partial window) emits no list-pagination next_step.
 func TestHandleList_TailPageHasNoNextStep(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	seedProjects(t, store, 100)
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
@@ -130,6 +134,7 @@ func TestHandleList_TailPageHasNoNextStep(t *testing.T) {
 
 // Out-of-range offset clamps to a zero-length window.
 func TestHandleList_OutOfRangeOffsetReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	seedProjects(t, store, 5)
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
@@ -155,6 +160,7 @@ func TestHandleList_OutOfRangeOffsetReturnsEmpty(t *testing.T) {
 // limit=0 preserves the legacy unbounded behaviour for callers that
 // explicitly opt back in.
 func TestHandleList_LimitZeroReturnsAll(t *testing.T) {
+	t.Parallel()
 	srv, store, _ := newTestServer(t)
 	seedProjects(t, store, 75)
 	result, err := srv.handleList(context.Background(), makeReq(map[string]any{
