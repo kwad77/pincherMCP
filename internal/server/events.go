@@ -86,13 +86,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // writeSSE marshals one event as an SSE frame and flushes it. The
 // payload's `type` key is set from ev.Type so a consumer that only
 // reads the data line still gets the discriminator.
+//
+// The event bus fans the SAME sseEvent (and the same Payload map) out
+// to every subscriber, so writeSSE must NOT mutate ev.Payload — two
+// subscriber goroutines writing `type` into the shared map while a
+// third marshals it is a "concurrent map write" fatal. It builds a
+// shallow copy instead; the copy is goroutine-local.
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, ev sseEvent) {
-	payload := ev.Payload
-	if payload == nil {
-		payload = map[string]any{}
+	out := make(map[string]any, len(ev.Payload)+1)
+	for k, v := range ev.Payload {
+		out[k] = v
 	}
-	payload["type"] = ev.Type
-	data, err := json.Marshal(payload)
+	out["type"] = ev.Type
+	data, err := json.Marshal(out)
 	if err != nil {
 		return
 	}
