@@ -8377,10 +8377,17 @@ func runGitDiff(root, scope string) (string, error) {
 //   - `.*` / `.+` / `.?` — the "anything" / "one+" / "optional"
 //     wildcards that are the unmistakable signature of a regex query
 //     and never appear in a literal identifier.
+//   - `/.../ ` — a query wrapped in slashes on both ends is a regex
+//     literal (#786). No identifier or path search looks like that,
+//     so the meta-chars inside (`[A-Z]`, `\w`) — which the sanitizer
+//     would otherwise quietly mangle into zero-result token soup —
+//     get the friendly redirect instead.
 //
 // What's NOT checked:
 //   - Single `.` — handled by sanitizeFTS5Query (wraps `os.Stat` etc.)
 //   - `(` `)` `[` `]` `{` `}` `?` `!` — sanitizeFTS5Query wraps these.
+//     (A bare `[A-Z]` without slash delimiters stays the sanitizer's
+//     job — only the slash-wrapped form is unambiguously regex.)
 //   - `*` alone — FTS5 supports it as a prefix wildcard (`auth*`).
 //   - Anything inside a quoted phrase ("...") — caller's choice.
 //
@@ -8388,6 +8395,10 @@ func runGitDiff(root, scope string) (string, error) {
 // wildcard cases pinned by `TestHandleSearch_DottedIdentifier_DoesNotError`
 // and the docs-corpus wildcard test.
 func firstFTS5IncompatibleRegexChar(q string) string {
+	// Slash-delimited regex literal: /.../ — unambiguous, check first.
+	if len(q) > 2 && q[0] == '/' && q[len(q)-1] == '/' {
+		return "/.../"
+	}
 	inQuote := false
 	for i := 0; i < len(q)-1; i++ {
 		c := q[i]

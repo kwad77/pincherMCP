@@ -167,6 +167,60 @@ func TestHandleSearch_StemmedWildcard_NotRejectedByBareWildcardPreflight(t *test
 	}
 }
 
+// #786: a slash-delimited regex literal (/handle[A-Z]\w+/) sailed past
+// the preflight — the .*/.+/.? scan didn't match, the #424 sanitizer
+// mangled [A-Z]\w into FTS5 token soup, and the agent got a misleading
+// "lower min_confidence" diagnosis instead of the regex redirect.
+func TestHandleSearch_SlashDelimitedRegex_RejectedWithFriendlyError(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.sessionID = "slash-regex-test"
+
+	for _, q := range []string{`/handle[A-Z]\w+/`, `/^foo$/`, `/bar/`} {
+		t.Run(q, func(t *testing.T) {
+			req := makeReq(map[string]any{"query": q})
+			req.Params.Name = "search"
+			result, err := srv.handleSearch(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handleSearch: %v", err)
+			}
+			if !result.IsError {
+				t.Fatalf("expected IsError=true on slash-delimited regex; got success")
+			}
+			body := errorBody(result)
+			if !strings.Contains(body, "regex sequence") {
+				t.Errorf("error should mention 'regex sequence'; got %q", body)
+			}
+			if !strings.Contains(body, "=~") {
+				t.Errorf("error should redirect to the query tool with =~; got %q", body)
+			}
+		})
+	}
+}
+
+// A path fragment with internal slashes (internal/server) must NOT trip
+// the slash-delimited regex check — it only fires when slashes wrap the
+// whole query.
+func TestHandleSearch_PathFragment_NoSlashRegexFalsePositive(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.sessionID = "path-frag-test"
+
+	for _, q := range []string{"internal/server", "/etc/hosts", "cmd/pinch/"} {
+		t.Run(q, func(t *testing.T) {
+			req := makeReq(map[string]any{"query": q})
+			req.Params.Name = "search"
+			result, err := srv.handleSearch(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handleSearch: %v", err)
+			}
+			if strings.Contains(errorBody(result), "regex sequence") {
+				t.Errorf("path fragment %q must not trigger the slash-regex preflight", q)
+			}
+		})
+	}
+}
+
 // Pure unit test for the helper.
 func TestFirstFTS5IncompatibleRegexChar_Coverage(t *testing.T) {
 	t.Parallel()
@@ -182,6 +236,12 @@ func TestFirstFTS5IncompatibleRegexChar_Coverage(t *testing.T) {
 		{"foo.+bar", ".+"},
 		{"baz.?qux", ".?"},
 		{`"a.*b"`, ""}, // inside quote
+		// #786: slash-delimited regex literal.
+		{`/handle[A-Z]\w+/`, "/.../"},
+		{`/bar/`, "/.../"},
+		{"internal/server", ""}, // internal slash — not wrapped
+		{"/etc/hosts", ""},      // leading slash only
+		{"//", ""},              // too short to be a regex literal
 	}
 	for _, tc := range cases {
 		got := firstFTS5IncompatibleRegexChar(tc.in)
