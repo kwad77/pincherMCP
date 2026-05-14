@@ -1264,6 +1264,53 @@ func TestParse_RejectsUnbalancedDelimiters(t *testing.T) {
 	}
 }
 
+// #847: ORDER BY was applied AFTER the max_rows scan cap — the SQL
+// SELECT had no ORDER BY, so the LIMIT grabbed an arbitrary sample and
+// buildResult sorted only that sample. `ORDER BY complexity DESC LIMIT
+// 3` returned the top 3 of a random slice, not the global top 3. The
+// fix pushes ORDER BY into the SQL SELECT so the DB sorts the full set
+// before the cap. This test seeds more rows than the scan cap, with
+// the highest-complexity rows inserted LAST (so insertion order is the
+// opposite of complexity order — a cap-before-sort would miss them).
+func TestRunNodeScan_OrderByPushedBeforeScanCap(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	// 15 functions, complexity == index. f14 (highest) inserted last.
+	for i := 0; i < 15; i++ {
+		_, err := db.Exec(
+			`INSERT INTO symbols(id, project_id, file_path, name, qualified_name,
+				kind, language, complexity, start_byte, end_byte, start_line, end_line)
+			 VALUES (?,?,?,?,?,?,?,?, 0,100,1,5)`,
+			fmt.Sprintf("f%02d", i), "proj1", "file.go",
+			fmt.Sprintf("Fn%02d", i), fmt.Sprintf("Fn%02d", i),
+			"Function", "Go", i,
+		)
+		if err != nil {
+			t.Fatalf("insert f%02d: %v", i, err)
+		}
+	}
+	// MaxRows 3 → scan cap is small (scanLimitFor(3, ...)), far below 15.
+	// Pre-fix, the unordered scan grabbed the first ~6 rows (complexity
+	// 0-5) and sorted those — top 3 came back as 5,4,3.
+	e := &Executor{DB: db, MaxRows: 3, ProjectID: "proj1"}
+	r, err := e.Execute(context.Background(),
+		"MATCH (n:Function) RETURN n.name, n.complexity ORDER BY n.complexity DESC LIMIT 3")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(r.Rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(r.Rows), r.Rows)
+	}
+	want := []string{"Fn14", "Fn13", "Fn12"}
+	for i, wantName := range want {
+		got := fmt.Sprint(r.Rows[i]["n.name"])
+		if got != wantName {
+			t.Errorf("row %d: got %q, want %q — ORDER BY must sort the full set before the scan cap, not an arbitrary sample (full result: %+v)",
+				i, got, wantName, r.Rows)
+		}
+	}
+}
+
 // Balanced queries with the same shapes must still parse cleanly — the
 // strict closers must not over-reject.
 func TestParse_AcceptsBalancedDelimiters(t *testing.T) {
