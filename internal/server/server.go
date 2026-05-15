@@ -4584,6 +4584,10 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			"id", "name", "qualified_name", "kind", "language",
 			"file_path", "start_line", "end_line", "start_byte", "end_byte",
 			"signature", "score", "extraction_confidence", "snippet",
+			// #1047: only populated when project="*"; listed unconditionally
+			// so a caller's `fields=project_id` doesn't trip the unknown-keys
+			// warning when paired with single-project search.
+			"project_id",
 		}
 		validSet := make(map[string]bool, len(validKeys))
 		for _, k := range validKeys {
@@ -4633,6 +4637,16 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	allFields := map[string]any{}
 	// #334: zero-len init so search returns "results":[] (not null) when zero hits.
 	rows := []map[string]any{}
+	// #1047: when project="*" (cross-repo search) the response contains
+	// results from N indexed projects with no signal which project each
+	// result is in. Symbol IDs are scoped (file::qn#kind) and don't
+	// embed project_id, so pre-fix the agent had to pattern-match file
+	// paths to disambiguate — and on monorepo mounts that share source
+	// trees (pincher-repo + sniffer mirrors both contain
+	// internal/server/server.go) even file_path is ambiguous. Always
+	// emit project_id on cross-project search results. Single-project
+	// queries omit it to avoid bloating every row with redundant data.
+	crossProjectSearch := projectArg == "*"
 	for _, r := range results {
 		allFields["id"] = r.Symbol.ID
 		allFields["name"] = r.Symbol.Name
@@ -4640,6 +4654,9 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		allFields["kind"] = r.Symbol.Kind
 		allFields["language"] = r.Symbol.Language
 		allFields["file_path"] = r.Symbol.FilePath
+		if crossProjectSearch {
+			allFields["project_id"] = r.Symbol.ProjectID
+		}
 		allFields["start_line"] = r.Symbol.StartLine
 		// #947: end_line / start_byte / end_byte were silently dropped
 		// from search results. Agents reading a result couldn't compute
