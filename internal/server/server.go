@@ -7444,6 +7444,26 @@ var auditShapePattern = regexp.MustCompile(
 		` (without|missing|lacking|lacks|has no|have no|doesn't have|does not have|with no|with zero|where there's no)\b`,
 )
 
+// auditThresholdPattern (#912) matches metric-audit phrasings like
+// "find every function with complexity above 50" or "list all methods
+// with more than 100 lines". Same structural-audit intent as the
+// absence pattern above — the right tool is `query` with a pinchQL
+// predicate, not BM25 text search.
+//
+// Allows 0-3 optional words between "with/having/whose" and the
+// comparison so "with more than 100" (zero metric words before the
+// multi-word comparison) and "with complexity above 50" (one metric
+// word) both match. Trailing `\b` is omitted because some comparison
+// alternatives end in non-word characters (>, >=, <, <=) which never
+// satisfy `\b`.
+//
+// Lowercased-input invariant matches auditShapePattern's contract.
+var auditThresholdPattern = regexp.MustCompile(
+	`\b(find|list|count|show|surface) (every|all|any) \w+( \w+){0,4}?` +
+		` (with|having|whose)( \w+){0,3}? ` +
+		`(above|over|exceeding|greater than|larger than|bigger than|more than|below|under|less than|smaller than|at least|at most|exceeds|>=|<=|>|<)`,
+)
+
 // refactorExtractWord word-bounds the "extract" refactor verb so it
 // doesn't substring-match the nouns "extraction" / "extractor" /
 // "extracted" — all common in this codebase (#784). The other refactor
@@ -7507,6 +7527,12 @@ func classifyTaskShape(task string) guideShape {
 	// audit — pre-fix it grabbed those tasks and recommended the
 	// hardcoded `docstring IS NULL` query regardless.
 	case auditShapePattern.MatchString(t):
+		return shapeAudit
+	// #912: threshold/comparison audits ("find every function with
+	// complexity above 50") are the same structural-audit intent as
+	// the absence pattern — pinchQL with a numeric WHERE predicate
+	// answers them, BM25 search of the literal phrase doesn't.
+	case auditThresholdPattern.MatchString(t):
 		return shapeAudit
 	case contains("test", "spec ", "coverage"):
 		return shapeTest
