@@ -535,6 +535,7 @@ var readerRoutedStoreMethods = map[string]bool{
 var writerRoutedStoreMethods = map[string]bool{
 	// Mutations (use s.db).
 	"UpsertProject":            true,
+	"UpsertProjectMeta":        true,
 	"UpdateProjectCounts":      true,
 	"DeleteProject":            true,
 	"DeleteEmptyProjects":      true,

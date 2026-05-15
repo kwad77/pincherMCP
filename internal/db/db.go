@@ -1940,6 +1940,39 @@ func (s *Store) UpdateProjectCounts(projectID string, files, syms, edges int) er
 	return err
 }
 
+// UpsertProjectMeta upserts a project's metadata WITHOUT touching the
+// cached file/symbol/edge counts. Used at the start of Index() where
+// path/name/indexed_at/binary_version need to land but the counts are
+// still zero (struct zero values from the just-constructed Project) —
+// the existing UpsertProject would overwrite the prior run's accurate
+// counts with zeros, so `health` reads as "0 symbols / 0 files / 0
+// edges" for the brief window between start-of-index and the first
+// UpdateProjectCounts call (#894).
+//
+// Counts continue to flow through UpdateProjectCounts during the run
+// and the final UpsertProject at the end of Index() writes the
+// authoritative totals.
+//
+// The #724 monotonic guard on schema_version_at_index / binary_version
+// is preserved exactly — a stale orphan re-walker can't stomp newer
+// schema metadata even via this path.
+func (s *Store) UpsertProjectMeta(p Project) error {
+	currentSchema := len(schemaMigrations) + 1
+	_, err := s.db.Exec(`
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version)
+		VALUES (?,?,?,?,0,0,0,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
+			binary_version=CASE
+				WHEN excluded.schema_version_at_index >= schema_version_at_index
+				THEN excluded.binary_version ELSE binary_version END,
+			schema_version_at_index=MAX(schema_version_at_index, excluded.schema_version_at_index)`,
+		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
+		currentSchema, p.BinaryVersion,
+	)
+	return err
+}
+
 // ListProjects returns all indexed projects.
 func (s *Store) ListProjects() ([]Project, error) {
 	// Reader pool (#51).
