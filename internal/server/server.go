@@ -6996,11 +6996,34 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	} else {
 		// Truly empty — neither hotspots nor entry points. Either the
 		// project isn't indexed, or it is indexed but contains zero
-		// callable symbols (docs-only, config-only, lockfile-only).
-		// Disambiguate via the project's reported sym count.
+		// callable symbols (docs-only, config-only, lockfile-only), or
+		// — the silent-confidently-wrong case — extraction half-
+		// succeeded but the resolver phase produced no graph (ghost-
+		// extraction signature, #815).
+		// Disambiguate via project counts AND the langs histogram.
 		symCount := 0
+		edgeCount := 0
 		if p != nil {
 			symCount = p.SymCount
+			edgeCount = p.EdgeCount
+		}
+		// #1040: detect code-corpus languages even when hotspots and
+		// entry-points are empty. A ghost project has Functions/Methods
+		// extracted but zero edges to walk — pre-fix the diagnosis
+		// confidently said "config/docs-only (no Functions)" even when
+		// the project had hundreds. The langs histogram catches this.
+		hasCodeLang := false
+		for lang := range langs {
+			switch lang {
+			case "Go", "Python", "JavaScript", "TypeScript", "TSX", "JSX",
+				"Rust", "Java", "Ruby", "PHP", "C", "C++", "C#", "Kotlin",
+				"Swift", "Scala", "Lua", "Zig", "Elixir", "Haskell", "Dart",
+				"R", "Bash", "Makefile":
+				hasCodeLang = true
+			}
+			if hasCodeLang {
+				break
+			}
 		}
 		var diagnosis string
 		var nextSteps []map[string]string
@@ -7016,6 +7039,20 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 			nextSteps = []map[string]string{
 				{"tool": "health", "args": fmt.Sprintf(`{"project":"%s"}`, projectID), "why": "per-language extraction coverage shows whether files were detected but skipped vs not detected at all"},
 				{"tool": "index", "args": fmt.Sprintf(`{"path":"%s","force":true}`, p.Path), "why": "force a re-index in case the previous run hit a partial-state bug"},
+			}
+		case hasCodeLang && edgeCount == 0:
+			// #1040: ghost-extraction signature. Symbols were extracted
+			// from code-corpus languages but the resolver phase produced
+			// no edges. Pre-fix this fell into the "config/docs-only"
+			// default and directly contradicted the langs histogram.
+			diagnosis = fmt.Sprintf(
+				"project has %d symbols across code-corpus languages but zero edges — ghost-extraction signature (#815). Resolver phase produced no graph; `trace`/`query` over this project will silently return zero rows.",
+				symCount)
+			nextSteps = []map[string]string{
+				{"tool": "index", "args": fmt.Sprintf(`{"path":"%s","force":true}`, p.Path),
+					"why": "force a fresh re-index — clears stale per-file hash state that can leave resolveCalls/resolveImports skipping every file"},
+				{"tool": "doctor", "args": "{}",
+					"why": "extraction_failures may explain why the resolver phase failed (parser cap, language extractor crash)"},
 			}
 		default:
 			diagnosis = fmt.Sprintf("project has %d symbols but no callable hotspots or entry points — likely config/docs-only (Settings, Sections, no Functions)", symCount)
