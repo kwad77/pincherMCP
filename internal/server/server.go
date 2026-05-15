@@ -8733,6 +8733,28 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	}
 	meta["latency_ms"] = latency
 
+	// #925: surface index_in_progress when the session project's
+	// indexer is mid-pass. Pre-fix, agents calling search/query/trace
+	// during the 30-60s window after a binary swap got silently
+	// incomplete results — no warning, no `_meta` flag, no diagnosis,
+	// and the standard empty-result advisory pointed them at
+	// min_confidence (wrong cause). With this flag, callers know to
+	// retry once the pass completes. Cheap probe: GetProgress reads
+	// in-memory atomic counters, no DB hit. Stamped only when
+	// genuinely active so quiet calls don't pay the field weight.
+	if s.indexer != nil && s.sessionID != "" {
+		if done, total, active := s.indexer.GetProgress(s.sessionID); active {
+			meta["index_in_progress"] = map[string]any{
+				"files_done":  done,
+				"files_total": total,
+			}
+			existing, _ := meta["warnings"].([]string)
+			meta["warnings"] = append(existing,
+				fmt.Sprintf("indexer is mid-pass (%d/%d files); results may be incomplete — retry after the pass completes",
+					done, total))
+		}
+	}
+
 	// #649: capability advertisement. Stable per-server slice computed
 	// at New() time. Routers consume to make integration decisions
 	// (subscribe to SSE? use streamable-HTTP? expect operator tools
