@@ -73,6 +73,7 @@ var AllTargets = []Target{
 	GeminiTarget,
 	WarpTarget,
 	VSCodeTarget,
+	VSCodeMCPTarget,
 }
 
 // FindTarget looks up a target by its --target value.
