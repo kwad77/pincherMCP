@@ -335,6 +335,19 @@ var knownEdgeKinds = map[string]bool{
 	"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
 }
 
+// escapeLikePattern escapes SQL LIKE special characters (`%`, `_`,
+// and the escape char `\`) so a user-supplied literal can be used as a
+// substring match without `%` / `_` acting as wildcards. The caller
+// must append `ESCAPE '\'` to the LIKE clause for SQLite to recognise
+// the escape. Used by the CONTAINS / STARTS WITH / ENDS WITH pushdown
+// path (#885) to match Cypher's literal-substring semantics.
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	s = strings.ReplaceAll(s, "_", `\_`)
+	return s
+}
+
 // collectUnknownOrderByWarnings (#881) warns when ORDER BY names a
 // column outside the property whitelist. orderByCol / joinOrderByCol
 // silently return "" for an unknown column — the SQL ORDER BY clause is
@@ -3137,15 +3150,22 @@ func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 		inner = prefix + col + c.op + "?"
 		args = append(args, val)
 	case "CONTAINS":
-		inner = prefix + col + " LIKE ?"
-		args = append(args, "%"+c.value+"%")
+		// #885: escape SQL LIKE wildcards in the user-supplied literal so
+		// CONTAINS does literal-substring match, not pattern match. Pre-
+		// fix `WHERE n.name CONTAINS "%"` compiled to `LIKE '%%%'` and
+		// matched every row — semantic divergence from Cypher (CONTAINS
+		// is documented as literal substring) AND silent-confidently-
+		// wrong (the user's `%` looked like it filtered, but didn't).
+		inner = prefix + col + " LIKE ? ESCAPE '\\'"
+		args = append(args, "%"+escapeLikePattern(c.value)+"%")
 	case "STARTS WITH":
-		inner = prefix + col + " LIKE ?"
-		args = append(args, c.value+"%")
+		inner = prefix + col + " LIKE ? ESCAPE '\\'"
+		args = append(args, escapeLikePattern(c.value)+"%")
 	case "ENDS WITH":
-		// #340: SQL pushdown for the suffix-match family.
-		inner = prefix + col + " LIKE ?"
-		args = append(args, "%"+c.value)
+		// #340: SQL pushdown for the suffix-match family. #885 escape:
+		// see CONTAINS comment above.
+		inner = prefix + col + " LIKE ? ESCAPE '\\'"
+		args = append(args, "%"+escapeLikePattern(c.value))
 	case "IS NULL":
 		// #342: NULL OR empty. SQLite's Go driver maps NULL TEXT to "".
 		inner = "(" + prefix + col + " IS NULL OR " + prefix + col + " = '')"
