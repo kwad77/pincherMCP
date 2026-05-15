@@ -294,7 +294,7 @@
           "type": "boolean"
         },
         "limit": {
-          "description": "Maximum neighbors to return (default 50). Files with more symbols paginate via _meta.next_steps.",
+          "description": "Maximum neighbors to return (default 50, max 500). Files with more symbols paginate via _meta.next_steps.",
           "type": "integer"
         },
         "offset": {
