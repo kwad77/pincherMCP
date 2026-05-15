@@ -3879,22 +3879,28 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	kind := str(args, "kind")
 	language := str(args, "language")
 	corpus := str(args, "corpus")
-	// "all" is deprecated and being removed (#106). Soft-redirect to "code"
-	// — that's what new callers should use, and it preserves the dominant
-	// real-world use case (search for an identifier). A hard error would
-	// break existing scripts; a soft redirect with a warning surfaces the
-	// deprecation without breakage. The schema-level drop is tracked at #106.
-	if corpus == "all" {
-		slog.Warn("pincher.search.corpus_all_deprecated",
-			"action", "redirected to 'code'",
-			"recommendation", "call search once per corpus (code/config/docs); see #106")
-		corpus = ""
-	}
 	limit := intArg(args, "limit", 20)
 	// #712: collect clamp warnings so the caller learns its input was
 	// adjusted instead of silently getting a different page size than
 	// it asked for. Surfaced in _meta.warnings below.
 	var searchClampWarnings []string
+	// #935: "all" is deprecated and being removed (#106). Pre-fix
+	// the soft-redirect logged a slog.Warn line — invisible to the
+	// agent calling the tool. The agent passed corpus="all"
+	// thinking it would search every corpus, got code-only results,
+	// and had no signal that the override happened. Surface a
+	// _meta.warnings entry alongside the redirect so the deprecation
+	// is observable. Same failure-as-pedagogy shape as the
+	// case-fix and unknown-property families.
+	if corpus == "all" {
+		slog.Warn("pincher.search.corpus_all_deprecated",
+			"action", "redirected to 'code'",
+			"recommendation", "call search once per corpus (code/config/docs); see #106")
+		searchClampWarnings = append(searchClampWarnings,
+			"corpus=\"all\" was removed in v0.5 — searched corpus=\"code\" instead. "+
+				"To search config/docs, call search once per corpus (code/config/docs).")
+		corpus = ""
+	}
 	rawLimit := limit
 	// #532: cap limit at 500. Pre-cap a caller asking for limit=10000 would
 	// pin a goroutine on FTS5 + the projection loop. Server-side cap also
