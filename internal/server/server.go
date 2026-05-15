@@ -5334,11 +5334,18 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// without adding orientation value.
 	confs := make([]float64, 0, len(hops))
 	filtered := hops[:0]
+	// #898: count hops dropped by the default test/fixture filter so the
+	// empty-trace branch can surface the include_tests=true escape hatch
+	// instead of suggesting "this symbol is a leaf, read its own source".
+	// For a symbol whose only inbound writes/calls come from test files,
+	// the pre-fix advice was confidently wrong.
+	testFilteredCount := 0
 	for _, h := range hops {
 		if minConfidence > 0 && h.Symbol.ExtractionConfidence < minConfidence {
 			continue
 		}
 		if !includeTests && (isTestFile(h.Symbol.FilePath) || isTestFixturePath(h.Symbol.FilePath)) {
+			testFilteredCount++
 			continue
 		}
 		filtered = append(filtered, h)
@@ -5498,6 +5505,27 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, topHop.Symbol.ID),
 				"why": fmt.Sprintf("read the %s-risk hop's full source + imports before deciding to edit", topHop.Risk)},
 		}
+	} else if testFilteredCount > 0 {
+		// #898: the trace IS connected — just only via test files. The
+		// default include_tests=false dropped them silently, so the empty
+		// result read as "this symbol is a leaf." Surface the escape
+		// hatch with the count so a heavily-tested utility doesn't look
+		// dead just because its writers are all in *_test.go.
+		retryArgs := fmt.Sprintf(`{"name":%q,"include_tests":true`, name)
+		if direction != "both" {
+			retryArgs += fmt.Sprintf(`,"direction":%q`, direction)
+		}
+		if kindsArg != "" {
+			retryArgs += fmt.Sprintf(`,"kinds":%q`, kindsArg)
+		}
+		retryArgs += "}"
+		meta["next_steps"] = []map[string]string{
+			{"tool": "trace", "args": retryArgs,
+				"why": fmt.Sprintf("%d hop(s) were filtered as test/fixture paths — re-run with include_tests=true to see them", testFilteredCount)},
+		}
+		meta["diagnosis"] = fmt.Sprintf(
+			"empty result, but %d hop(s) exist in test/fixture files (filtered by default include_tests=false). Pass include_tests=true if test coverage is what you're after.",
+			testFilteredCount)
 	} else {
 		// Empty trace = no inbound/outbound CALLS edges. Likely a leaf
 		// (no callers) or an entry point (no callees). Direct the agent
