@@ -45,7 +45,14 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 		projectPath = s.sessionRoot
 	}
 	if projectPath == "" {
-		return errResult("init: no project_path provided and no session root detected — agents must pass project_path explicitly when the MCP server has no roots configured"), nil
+		return s.errResultRich(
+			"init: no project_path provided and no session root detected — agents must pass project_path explicitly when the MCP server has no roots configured",
+			[]map[string]string{
+				{"tool": "init", "args": `{"project_path":"/absolute/path/to/project","target":"detect"}`,
+					"why": "pass project_path explicitly; target=detect auto-picks based on marker files / dirs"},
+				{"tool": "list", "args": `{}`,
+					"why": "see already-indexed project paths to copy from"},
+			}), nil
 	}
 
 	// Resolve the project root once so escape checks compare against
@@ -60,12 +67,27 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	// user's home directory, and an MCP-driven write would silently
 	// escape project_path. The CLI keeps the broader semantic.
 	if target == "continue" {
-		return errResult("init: target=continue is not available via MCP — its path is always global (~/.continue/config.json) and would escape project_path. Use the `pincher init --target=continue` CLI."), nil
+		return s.errResultRich(
+			"init: target=continue is not available via MCP — its path is always global (~/.continue/config.json) and would escape project_path. Use the `pincher init --target=continue` CLI.",
+			[]map[string]string{
+				{"tool": "init", "args": `{"target":"detect","project_path":"` + absProjectPath + `"}`,
+					"why": "let pincher auto-pick a per-project target instead of continue's always-global one"},
+			}), nil
 	}
 
 	targets, err := pinit.ResolveTargets(target, absProjectPath)
 	if err != nil {
-		return errResult(fmt.Sprintf("init: %v", err)), nil
+		// pinit.ResolveTargets already names the valid targets in its
+		// error message; wrap with rich envelope so the recovery hints
+		// surface alongside the named values.
+		return s.errResultRich(
+			fmt.Sprintf("init: %v", err),
+			[]map[string]string{
+				{"tool": "init", "args": `{"target":"detect","project_path":"` + absProjectPath + `"}`,
+					"why": "detect picks the best target based on .claude/, .cursor/, .vscode/, etc."},
+				{"tool": "init", "args": `{"target":"all","project_path":"` + absProjectPath + `"}`,
+					"why": "write to every supported per-project target at once"},
+			}), nil
 	}
 
 	results := make([]map[string]any, 0, len(targets))
