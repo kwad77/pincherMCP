@@ -1291,6 +1291,17 @@ func (p *parser) parseQuery() (*queryAST, error) {
 			} else if p.peek().value == "ASC" {
 				p.next()
 			}
+			// #883: a trailing comma after the first ORDER BY column means
+			// the caller wrote a multi-column sort (`ORDER BY a, b`). The
+			// pre-fix path fell through to the clause-keyword catch-all
+			// which complained "unexpected token ',' — expected WHERE,
+			// RETURN, ORDER BY, LIMIT" — actively misleading, since the
+			// real cause is "multi-column ORDER BY not supported." Surface
+			// the actual constraint + remediation shape used by #871 / #433.
+			if p.peek().value == "," {
+				return nil, fmt.Errorf(
+					"pinchQL: multi-column ORDER BY (`ORDER BY a, b`) is not supported — sort by the single most important column and break ties client-side")
+			}
 
 		case "LIMIT":
 			p.next()
