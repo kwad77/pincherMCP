@@ -3395,9 +3395,15 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// failure so it surfaces in _meta.warnings further down. Same
 	// silent-fallback family as #1023 (health) / #1024 (stats) / #1025
 	// (neighborhood).
+	// #1048: skip resolution when projectArg=="*" — documented
+	// cross-project sentinel (search/query accept it). symbol returns
+	// a single row; "*" maps to "look up globally without scoping",
+	// which the GetSymbol fallback below already does. Pre-fix the
+	// "*" arg triggered a misleading "did not resolve" warning even
+	// though the unscoped lookup returned the right answer.
 	var resolvedProjectID string
 	var symbolProjectResolveWarning string
-	if projectArg != "" {
+	if projectArg != "" && projectArg != "*" {
 		if pid, err := s.resolveProjectID(projectArg); err == nil {
 			resolvedProjectID = pid
 		} else {
@@ -3751,9 +3757,13 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	includeSource := fieldSet == nil || fieldSet["source"]
 	root := s.sessionRoot
+	// #1048: skip resolution when projectArg=="*" — documented
+	// cross-project sentinel. Batch lookups with "*" map to "look
+	// up each id globally without scoping". Same fix as symbol /
+	// neighborhood / context.
 	var resolvedProjectID string
 	var symbolsProjectResolveWarning string
-	if projectArg != "" {
+	if projectArg != "" && projectArg != "*" {
 		if pid, err := s.resolveProjectID(projectArg); err == nil {
 			resolvedProjectID = pid
 			if r, err := s.resolveProjectRoot(pid); err == nil {
@@ -3910,8 +3920,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// the resolution failure via _meta.warnings on success, or stack
 	// it into the not-found error (#1037 pattern) when the symbol is
 	// also missing.
+	// #1048: skip resolution when projectArg=="*" — documented
+	// cross-project sentinel. context returns a single symbol;
+	// "*" maps to "look up globally without scoping", which the
+	// GetSymbol path already does. Same fix as symbol + neighborhood.
 	var contextProjectWarning string
-	if projectArg := str(args, "project"); projectArg != "" {
+	if projectArg := str(args, "project"); projectArg != "" && projectArg != "*" {
 		if _, perr := s.resolveProjectID(projectArg); perr != nil {
 			contextProjectWarning = fmt.Sprintf(
 				"context: project %q did not resolve — falling back to unscoped symbol lookup. Call `list` to see indexed projects.",

@@ -91,8 +91,16 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 	// both the project AND the id were bogus, the error reported only
 	// the id miss, and the agent didn't learn their project name was
 	// also wrong until their next call. Mirrors #1037 (symbol).
+	//
+	// #1048: skip resolution when projectArg=="*" — that's the
+	// documented cross-project sentinel (search/query accept it).
+	// Neighborhood scopes by file, so cross-project is a no-op
+	// semantically — but pre-fix `*` was treated as an unknown
+	// project name and produced a "did not resolve" warning even
+	// though the unscoped lookup returned the right answer. Same
+	// fix applied to symbol + context.
 	var projectResolveWarning string
-	if projectArg != "" {
+	if projectArg != "" && projectArg != "*" {
 		if pid, err := s.resolveProjectID(projectArg); err == nil {
 			resolvedProjectID = pid
 		} else {
