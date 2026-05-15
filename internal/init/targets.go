@@ -70,6 +70,7 @@ var AllTargets = []Target{
 	ContinueTarget,
 	CodexTarget,
 	ZedTarget,
+	GeminiTarget,
 }
 
 // FindTarget looks up a target by its --target value.
@@ -321,6 +322,40 @@ var ZedTarget = Target{
 		return false
 	},
 	WriteFn: MergePolicyBlockBare,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// gemini (./GEMINI.md, ~/.gemini/GEMINI.md global — same shape as claude)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Gemini CLI loads project rules from GEMINI.md at the project root
+// (or ~/.gemini/GEMINI.md globally), same convention as Claude Code's
+// CLAUDE.md. #658 wave-1 init parity.
+
+var GeminiTarget = Target{
+	Name:           "gemini",
+	Describe:       "Gemini CLI: ./GEMINI.md (or ~/.gemini/GEMINI.md with --global)",
+	SupportsGlobal: true,
+	PathFn: func(cwd string, global bool) (string, error) {
+		if global {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("user home dir: %w", err)
+			}
+			return filepath.Join(home, ".gemini", "GEMINI.md"), nil
+		}
+		return filepath.Join(cwd, "GEMINI.md"), nil
+	},
+	DetectFn: func(cwd string) bool {
+		if _, err := os.Stat(filepath.Join(cwd, "GEMINI.md")); err == nil {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(cwd, ".gemini")); err == nil {
+			return true
+		}
+		return false
+	},
+	WriteFn: MergePolicyBlock,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
