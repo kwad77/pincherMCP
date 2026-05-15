@@ -7544,6 +7544,24 @@ var auditAdjectivePattern = regexp.MustCompile(
 		`(untested|undocumented|uncovered|untyped|unowned|unauthenticated|unvalidated|unhandled)\b`,
 )
 
+// auditBareThresholdPattern (#951) catches "find all functions over
+// 100 lines" — threshold audits that drop the "with|having|whose"
+// scaffold AND use a bare preposition (over/under/above/below/more
+// than/less than/at least/at most) instead of a comparative adjective
+// ("longer/bigger than"). Without this, the most common audit phrasing
+// in code review falls through to BM25 text search on the literal
+// words. Same #473-family silent-quality-loss as the others in this
+// classifier.
+//
+// Requires a digit after the preposition to anchor "this is a metric
+// threshold," not prose ("look over there"). 0-3 optional words between
+// the subject noun and the preposition catches "find all Go functions
+// over 100 lines."
+var auditBareThresholdPattern = regexp.MustCompile(
+	`\b(find|list|count|show|surface) \w+( \w+){0,3}? ` +
+		`(over|under|above|below|more than|less than|at least|at most|>=|<=|>|<)\s*\d`,
+)
+
 // refactorExtractWord word-bounds the "extract" refactor verb so it
 // doesn't substring-match the nouns "extraction" / "extractor" /
 // "extracted" — all common in this codebase (#784). The other refactor
@@ -7627,6 +7645,12 @@ func classifyTaskShape(task string) guideShape {
 	// "with|having|whose" clause. The adjective-form comparison is
 	// itself the audit signal.
 	case auditLooseThresholdPattern.MatchString(t):
+		return shapeAudit
+	// #951: bare-preposition threshold form — "find functions over
+	// 100 lines" — drops both the comparative adjective AND the
+	// "with/having" scaffold. Anchored on the digit after the
+	// preposition so "look over there" doesn't false-trigger.
+	case auditBareThresholdPattern.MatchString(t):
 		return shapeAudit
 	// #924: audit adjectives ("untested", "undocumented", ...) — must
 	// run before the shapeTest case below, which would otherwise catch
