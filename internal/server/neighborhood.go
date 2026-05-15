@@ -247,18 +247,24 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 	}
 	// #293: when the response is a partial window, surface the next
 	// page in _meta.next_steps so the agent doesn't need to compute
-	// pagination math themselves.
+	// pagination math themselves. #1021: merge into existing _meta —
+	// outright assignment clobbered the staleness warning that
+	// attachStalenessWarning may have attached just above (same shape
+	// of bug as #1020 in handleList).
 	if end < totalNeighbors {
-		data["_meta"] = map[string]any{
-			"next_steps": []map[string]string{
-				{
-					"tool": "neighborhood",
-					"args": fmt.Sprintf(`{"id":"%s","limit":%d,"offset":%d}`, seed.ID, limit, end),
-					"why": fmt.Sprintf("file has %d neighbors total; you've seen %d-%d. Page to see the rest.",
-						totalNeighbors, offset+1, end),
-				},
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["next_steps"] = []map[string]string{
+			{
+				"tool": "neighborhood",
+				"args": fmt.Sprintf(`{"id":"%s","limit":%d,"offset":%d}`, seed.ID, limit, end),
+				"why": fmt.Sprintf("file has %d neighbors total; you've seen %d-%d. Page to see the rest.",
+					totalNeighbors, offset+1, end),
 			},
 		}
+		data["_meta"] = meta
 	}
 	// #712: merge input-clamp warnings into _meta.warnings without
 	// clobbering the next_steps the pagination branch may have set.
