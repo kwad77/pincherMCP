@@ -6701,6 +6701,56 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 	if len(changesTrimWarnings) > 0 {
 		meta["warnings"] = changesTrimWarnings
 	}
+	// #1053: empty-state diagnosis. Pre-fix `changes scope=staged` (or
+	// unstaged) on a clean working tree returned 0-everything with no
+	// _meta — the caller had no signal whether the response meant
+	// "nothing changed" vs "I asked the wrong scope". Probe the other
+	// scopes when the requested one is empty; report which scopes DO
+	// have content so the agent can re-issue against the right one.
+	// Skipped on base:* scopes — that path errors loudly when the base
+	// is bad and returns a real diff otherwise; an empty result there
+	// is a genuine "no diff vs base" finding (clean PR, post-rebase).
+	if len(changedFiles) == 0 && (scope == "staged" || scope == "unstaged" || scope == "all") {
+		otherScopesWithChanges := []string{}
+		for _, other := range []string{"staged", "unstaged", "all"} {
+			if other == scope {
+				continue
+			}
+			if out, err := runGitDiff(root, other); err == nil {
+				if files := parseGitDiffFiles(out); len(files) > 0 {
+					otherScopesWithChanges = append(otherScopesWithChanges,
+						fmt.Sprintf("%s (%d file(s))", other, len(files)))
+				}
+			}
+		}
+		nextScopeSteps := []map[string]string{}
+		for _, other := range []string{"staged", "unstaged", "all"} {
+			if other == scope {
+				continue
+			}
+			nextScopeSteps = append(nextScopeSteps, map[string]string{
+				"tool": "changes",
+				"args": fmt.Sprintf(`{"scope":%q}`, other),
+				"why":  fmt.Sprintf("try scope=%q to see what %s captures", other, scopeDescription(other)),
+			})
+		}
+		if len(otherScopesWithChanges) > 0 {
+			meta["diagnosis"] = fmt.Sprintf(
+				"scope=%q is clean (0 changed files). Other scopes DO have changes: %s — re-issue with the right scope to see them.",
+				scope, strings.Join(otherScopesWithChanges, ", "))
+		} else {
+			meta["diagnosis"] = fmt.Sprintf(
+				"scope=%q is clean and so are the other scopes (staged/unstaged/all) — the working tree has no changes at all. Use scope=\"base:<branch>\" to compare against a committed baseline.",
+				scope)
+		}
+		// next_steps already set if suggestChangesNextSteps fired
+		// (it won't on an empty changedSyms list, but defensively merge).
+		if existing, _ := meta["next_steps"].([]map[string]string); len(existing) > 0 {
+			meta["next_steps"] = append(existing, nextScopeSteps...)
+		} else {
+			meta["next_steps"] = nextScopeSteps
+		}
+	}
 	if len(meta) > 0 {
 		data["_meta"] = meta
 	}
@@ -6725,6 +6775,22 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(projectID, root, changedPaths, responseJSON)), nil
+}
+
+// scopeDescription returns a one-line label for each changes scope.
+// Used by the empty-state diagnosis (#1053) so next_steps spell out
+// what scope=foo actually captures, not just the bare scope name.
+func scopeDescription(scope string) string {
+	switch scope {
+	case "staged":
+		return "what's already added via git add (pre-commit blast radius)"
+	case "unstaged":
+		return "the working tree's modified files (default)"
+	case "all":
+		return "every dirty path including untracked files"
+	default:
+		return scope
+	}
 }
 
 // suggestChangesNextSteps picks 1-2 follow-up actions for handleChanges
