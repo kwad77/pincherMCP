@@ -8062,8 +8062,18 @@ func taskHintFromString(task string) string {
 		"understand": true, "explain": true, "explore": true,
 		"review": true, "test": true, "tests": true, "implement": true,
 		"build": true, "builds": true, "built": true, "make": true,
-		"use":   true, "using": true, "find":  true, "show":  true,
+		"use":   true, "uses":  true, "used":  true, "using": true,
+		"find":  true, "show":  true,
 		"handle": true, "handles": true,
+		// #933: call-family verbs / nouns. "what calls processPayment"
+		// previously hinted "calls processPayment" — the trace
+		// recommendation then templated `name="calls processPayment"`
+		// which doesn't resolve. Same idea as "use/uses" above — the
+		// shape detector (shapeTraceIn keyword "calls") owns these
+		// tokens; the hint should be the bare identifier.
+		"call": true, "calls": true, "called": true,
+		"caller": true, "callers": true, "calling": true,
+		"trace": true, "traces": true, "traced": true, "tracing": true,
 		// generic interrogatives
 		"what": true, "how": true, "why": true, "which": true, "where": true,
 		"when": true, "who": true, "does": true, "this": true, "that": true,
