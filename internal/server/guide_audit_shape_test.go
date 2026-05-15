@@ -80,7 +80,7 @@ func TestClassifyTaskShape_AuditDoesNotOvercatch(t *testing.T) {
 
 func TestGuideRecommendations_AuditEmitsPinchQL(t *testing.T) {
 	t.Parallel()
-	recs := guideRecommendations(shapeAudit, "undocumented exported functions", "")
+	recs := guideRecommendations(shapeAudit, "undocumented exported functions", "", "find undocumented exported functions")
 	if len(recs) == 0 {
 		t.Fatal("audit shape should produce at least one recommendation")
 	}
@@ -94,5 +94,59 @@ func TestGuideRecommendations_AuditEmitsPinchQL(t *testing.T) {
 	}
 	if !strings.Contains(args, "is_exported=true") {
 		t.Errorf("audit query should filter on is_exported=true; got args=%q", args)
+	}
+}
+
+// #921: pre-fix, every shapeAudit task got the docstring/is_exported
+// template — including threshold audits like "find every function with
+// cyclomatic complexity above 20." inferAuditPinchQL routes on the
+// task's keywords so the recommended pinchql actually addresses the
+// audit the user described.
+func TestInferAuditPinchQL_RoutesByKeyword(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		task         string
+		wantContains string
+	}{
+		{"find every function with cyclomatic complexity above 20", "n.complexity"},
+		{"list functions with complexity over 15", "n.complexity"},
+		{"surface functions longer than 100 lines", "end_line - n.start_line"},
+		{"find functions with more than 80 lines", "end_line - n.start_line"},
+		{"show me untested exported functions", "is_exported=true AND n.is_test=false"},
+		{"functions missing test coverage", "is_exported=true AND n.is_test=false"},
+		// Default fallback — the canonical #467 docstring example.
+		{"find undocumented exported functions", "docstring IS NULL"},
+		{"audit exported APIs", "docstring IS NULL"},
+	}
+	for _, c := range cases {
+		t.Run(c.task, func(t *testing.T) {
+			got, _ := inferAuditPinchQL(c.task)
+			if !strings.Contains(got, c.wantContains) {
+				t.Errorf("inferAuditPinchQL(%q) = %q, want it to contain %q", c.task, got, c.wantContains)
+			}
+		})
+	}
+}
+
+// End-to-end shape: a threshold audit must produce a pinchql query
+// that addresses the threshold the user named, not the docstring
+// template.
+func TestGuideRecommendations_ThresholdAuditUsesComplexityQuery(t *testing.T) {
+	t.Parallel()
+	recs := guideRecommendations(shapeAudit, "complexity above 20", "",
+		"find every function with cyclomatic complexity above 20")
+	if len(recs) == 0 {
+		t.Fatal("audit shape should produce at least one recommendation")
+	}
+	first := recs[0]
+	if first["tool"] != "query" {
+		t.Errorf("first recommendation tool = %q, want query", first["tool"])
+	}
+	args := first["args"]
+	if !strings.Contains(args, "n.complexity") {
+		t.Errorf("threshold audit query must project n.complexity; got args=%q", args)
+	}
+	if strings.Contains(args, "docstring IS NULL") {
+		t.Errorf("threshold audit must NOT emit the docstring template; got args=%q", args)
 	}
 }

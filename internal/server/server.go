@@ -7814,7 +7814,35 @@ func isWordChar(b byte) bool {
 // the guide tool fills in anything it can extract from the task string
 // (e.g. the most-likely symbol name) and leaves the rest as a
 // placeholder the agent fills in.
-func guideRecommendations(shape guideShape, taskHint, auditedTool string) []map[string]string {
+// inferAuditPinchQL (#921) picks the right pinchQL audit template
+// based on the task's keywords. Pre-fix shapeAudit always emitted the
+// docstring/is_exported template (the canonical #467 example) no
+// matter what audit the user described. Threshold tasks (#912) now
+// get a complexity-shaped query that actually addresses their
+// question. Returns the pinchql string and a short "why" rationale.
+func inferAuditPinchQL(task string) (pinchql, why string) {
+	t := strings.ToLower(task)
+	switch {
+	case strings.Contains(t, "complexity") || strings.Contains(t, "cyclomatic"):
+		return `MATCH (n:Function) WHERE n.complexity > 20 RETURN n.name, n.file_path, n.complexity ORDER BY n.complexity DESC LIMIT 50`,
+			"structural audit — pinchQL projects n.complexity directly. Adjust the threshold (currently 20) to match your task. ORDER BY complexity DESC surfaces the worst offenders first"
+	case strings.Contains(t, "line") && (strings.Contains(t, "long") || strings.Contains(t, "above") ||
+		strings.Contains(t, "over") || strings.Contains(t, "exceed") || strings.Contains(t, "more")):
+		return `MATCH (n:Function) WHERE (n.end_line - n.start_line) > 100 RETURN n.name, n.file_path, (n.end_line - n.start_line) AS lines ORDER BY lines DESC LIMIT 50`,
+			"structural audit — pinchQL computes lines = end_line - start_line. Adjust the threshold (currently 100) to match your task"
+	case strings.Contains(t, "untested") ||
+		(strings.Contains(t, "test") && (strings.Contains(t, "coverage") || strings.Contains(t, "missing"))):
+		return `MATCH (n:Function) WHERE n.is_exported=true AND n.is_test=false RETURN n.name, n.file_path LIMIT 50`,
+			"structural audit — pinchQL lists exported non-test functions. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
+	default:
+		// Docstring audit is the canonical #467 example and still the
+		// most common shapeAudit query — keep it as the fallback.
+		return `MATCH (n:Function) WHERE n.docstring IS NULL AND n.is_exported=true RETURN n.name, n.file_path LIMIT 50`,
+			"structural audit — pinchQL filters on docstring/is_exported directly. BM25 search of the literal phrase wouldn't surface anything"
+	}
+}
+
+func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask string) []map[string]string {
 	queryArgs := nextStepArgs(map[string]any{"query": taskHint})
 	queryFnArgs := nextStepArgs(map[string]any{"query": taskHint, "kind": "Function"})
 	traceInArgs := nextStepArgs(map[string]any{"name": taskHint, "direction": "inbound"})
@@ -7874,19 +7902,19 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool string) []map[
 				"why": "read the top hit with its imports — usually answers \"what is this?\" without opening any file"},
 		}
 	case shapeAudit:
-		// #467: docstring-aware audit. Routed here for tasks like
-		// "find undocumented exported functions". The canonical
-		// answer is pinchQL — BM25 search of "undocumented" returns
-		// nothing useful. is_exported / docstring properties live in
-		// the row map post-#438.
-		auditQuery := nextStepArgs(map[string]any{
-			"pinchql": `MATCH (n:Function) WHERE n.docstring IS NULL AND n.is_exported=true RETURN n.name, n.file_path LIMIT 50`,
-		})
+		// #467 + #921: shape-aware audit. The canonical pinchQL
+		// template depends on the kind of audit — docstring-coverage,
+		// complexity threshold, line-count threshold, etc. Pre-#921
+		// every audit got the docstring/is_exported template even
+		// when the user asked about complexity above 20.
+		// inferAuditPinchQL routes on keywords; the fallback is the
+		// canonical #467 docstring example.
+		pinchql, why := inferAuditPinchQL(fullTask)
+		auditQuery := nextStepArgs(map[string]any{"pinchql": pinchql})
 		return []map[string]string{
-			{"tool": "query", "args": auditQuery,
-				"why": "structural audit — pinchQL filters on docstring/is_exported directly. BM25 search of the literal phrase wouldn't surface anything"},
+			{"tool": "query", "args": auditQuery, "why": why},
 			{"tool": "context", "args": `{"id":"<from-query>"}`,
-				"why": "read each candidate's surrounding context to confirm it warrants a docstring"},
+				"why": "read each candidate's surrounding context to confirm"},
 		}
 	case shapeDeadCode:
 		// The dead_code tool IS the answer here — zero-inbound-edge
@@ -8227,7 +8255,7 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// guideRecommendations so shapeToolAudit can name the right tool —
 	// the hint string usually drops it.
 	auditedTool := extractAuditedTool(strings.ToLower(task))
-	recommendations := guideRecommendations(shape, hint, auditedTool)
+	recommendations := guideRecommendations(shape, hint, auditedTool, task)
 	// #397: if the task mentions a pincher-domain concept, prepend a
 	// concept-aware starter that points at the actual file/symbol where
 	// the concept lives. The shape-default recommendations follow as

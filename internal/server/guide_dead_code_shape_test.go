@@ -55,7 +55,7 @@ func TestClassifyTaskShape_DeadCodeToolAuditStillWins(t *testing.T) {
 
 func TestGuideRecommendations_DeadCodeEmitsDeadCodeTool(t *testing.T) {
 	t.Parallel()
-	recs := guideRecommendations(shapeDeadCode, "zero callers", "")
+	recs := guideRecommendations(shapeDeadCode, "zero callers", "", "find functions with zero callers")
 	if len(recs) == 0 {
 		t.Fatal("dead_code shape should produce recommendations")
 	}

@@ -5584,7 +5584,7 @@ func TestClassifyTaskShape_TraceVerbs(t *testing.T) {
 func TestGuideRecommendations_AllShapesNonEmpty(t *testing.T) {
 	t.Parallel()
 	for _, shape := range []guideShape{shapeFix, shapeAdd, shapeRefactor, shapeUnderstand, shapeTest, shapeReview, shapeFind, shapeTraceIn, shapeTraceOut, shapeUnknown, shapeToolAudit} {
-		recs := guideRecommendations(shape, "Foo", "")
+		recs := guideRecommendations(shape, "Foo", "", "Foo")
 		if len(recs) == 0 {
 			t.Errorf("guideRecommendations(%v) returned empty — every shape must have at least 1 suggestion", shape)
 		}
