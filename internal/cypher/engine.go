@@ -114,6 +114,11 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	// scan order while the caller thinks they're sorted. Warn so the
 	// silent-drop becomes teachable.
 	warnings = append(warnings, collectUnknownOrderByWarnings(q)...)
+	// #889: a WHERE comparison that crosses literal type — say
+	// `n.start_line = "string"` or `n.name = 12345` — gets silently
+	// coerced by SQLite affinity and typically yields 0 rows. Same
+	// silent-confidently-wrong shape as #473 etc.; surface the mismatch.
+	warnings = append(warnings, collectTypeMismatchWarnings(q)...)
 	res, err := e.run(ctx, q)
 	if err != nil {
 		return res, err
@@ -346,6 +351,149 @@ func escapeLikePattern(s string) string {
 	s = strings.ReplaceAll(s, "%", `\%`)
 	s = strings.ReplaceAll(s, "_", `\_`)
 	return s
+}
+
+// cypherPropType (#889) classifies a known property name into a SQLite
+// storage class — text / int / real / bool. "" means cypherPropToCol
+// didn't recognise the name, in which case other warnings (#473) handle
+// it. Single source of truth for type-mismatch detection.
+func cypherPropType(prop string) string {
+	col := cypherPropToCol(prop)
+	if col == "" {
+		return ""
+	}
+	switch col {
+	case "start_line", "end_line", "start_byte", "end_byte", "complexity":
+		return "int"
+	case "extraction_confidence":
+		return "real"
+	case "is_exported", "is_entry_point", "is_test":
+		return "bool"
+	default:
+		return "text"
+	}
+}
+
+// collectTypeMismatchWarnings (#889) catches the silent-zero where a
+// WHERE comparison crosses literal type — e.g. `WHERE n.start_line =
+// "twenty"` or `WHERE n.name = 12345`. SQLite's type affinity coerces
+// the literal and quietly yields 0 rows; the user reads it as "nothing
+// matches" when the predicate was malformed. Same warning-surface
+// family as #473 (typo'd property), #867 (unknown edge kind), #881
+// (unknown ORDER BY column). One warning per (property, value-kind)
+// pair, sorted for stable test output.
+func collectTypeMismatchWarnings(q *queryAST) []string {
+	if q == nil {
+		return nil
+	}
+	type mismatch struct {
+		prop      string
+		propType  string
+		valueKind string
+	}
+	seen := map[mismatch]bool{}
+	consider := func(c condition) {
+		if c.property == "" || c.rhsProperty != "" || c.valueKind == "" {
+			return
+		}
+		switch c.op {
+		case "=", "<>", ">", "<", ">=", "<=":
+		default:
+			return
+		}
+		propType := cypherPropType(c.property)
+		if propType == "" {
+			return
+		}
+		bad := false
+		switch propType {
+		case "text":
+			// A bare NUMBER literal against a text column never matches
+			// (SQLite affinity stores TEXT, comparison casts NUMBER → TEXT
+			// "12345" which only matches a literal "12345"-named symbol).
+			// Flagging this catches `name=12345` etc.
+			if c.valueKind == "NUMBER" {
+				bad = true
+			}
+		case "int", "real":
+			// A STRING literal against a numeric column casts to 0, so the
+			// predicate silently always-zero unless every value in the
+			// column happens to be 0. Always a malformed query.
+			if c.valueKind == "STRING" {
+				bad = true
+			}
+		case "bool":
+			// TRUE/FALSE keywords get normalised to "1"/"0", NUMBER 0/1
+			// works directly. Anything else (other NUMBERs, non-bool
+			// STRINGs) is a typo.
+			if c.valueKind == "NUMBER" && c.value != "0" && c.value != "1" {
+				bad = true
+			}
+			if c.valueKind == "STRING" {
+				lv := strings.ToLower(c.value)
+				if lv != "true" && lv != "false" && lv != "0" && lv != "1" {
+					bad = true
+				}
+			}
+		}
+		if !bad {
+			return
+		}
+		seen[mismatch{prop: c.property, propType: propType, valueKind: c.valueKind}] = true
+	}
+	for _, c := range q.conditions {
+		consider(c)
+	}
+	var walk func(w whereExpr)
+	walk = func(w whereExpr) {
+		switch e := w.(type) {
+		case condExpr:
+			consider(e.c)
+		case binaryExpr:
+			walk(e.left)
+			walk(e.right)
+		case notExpr:
+			walk(e.inner)
+		}
+	}
+	walk(q.where)
+	if len(seen) == 0 {
+		return nil
+	}
+	keys := make([]mismatch, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].prop != keys[j].prop {
+			return keys[i].prop < keys[j].prop
+		}
+		return keys[i].valueKind < keys[j].valueKind
+	})
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fmt.Sprintf(
+			"WHERE compares %s-typed property %q against a %s literal — SQLite affinity coerces the literal and typically yields 0 rows. Use a %s literal (e.g. %s).",
+			k.propType, k.prop, strings.ToLower(k.valueKind), k.propType, sampleLiteralFor(k.propType)))
+	}
+	return out
+}
+
+// sampleLiteralFor returns a one-token example for the warning text.
+// Kept tiny — the warning already names the property and the offending
+// kind, so the sample only needs to be syntactically suggestive.
+func sampleLiteralFor(propType string) string {
+	switch propType {
+	case "text":
+		return `"foo"`
+	case "int":
+		return "42"
+	case "real":
+		return "0.85"
+	case "bool":
+		return "true"
+	}
+	return ""
 }
 
 // collectUnknownOrderByWarnings (#881) warns when ORDER BY names a
@@ -914,6 +1062,13 @@ type condition struct {
 	// of falsely-true. Empty when the RHS is a literal.
 	rhsVariable string
 	rhsProperty string
+	// #889: the tokenizer's kind for the value literal (STRING / NUMBER /
+	// KEYWORD / IDENT). Lets collectTypeMismatchWarnings tell apart
+	// `WHERE n.start_line = "twenty"` (mismatched STRING on int column,
+	// silent-zero) from `WHERE n.start_line = 20` (well-formed). Empty
+	// for operators with no value (IS NULL / IS NOT NULL) or column-vs-
+	// column comparisons.
+	valueKind string
 }
 
 type returnVar struct {
@@ -1571,7 +1726,9 @@ func (p *parser) parseOneCondition() (condition, error) {
 	switch p.peek().value {
 	case "=", "<>", ">", "<", ">=", "<=":
 		c.op = p.next().value
-		c.value = normalizeConditionValue(p.next())
+		valTok := p.next()
+		c.value = normalizeConditionValue(valTok)
+		c.valueKind = valTok.kind
 		// #593: detect column-vs-column shape (`a.col <op> b.col`).
 		// When the RHS token is followed by `.<prop>`, the user wrote a
 		// property reference instead of a literal. Capture both sides so
@@ -1583,22 +1740,29 @@ func (p *parser) parseOneCondition() (condition, error) {
 			c.rhsVariable = c.value
 			c.rhsProperty = p.next().value
 			c.value = ""
+			c.valueKind = ""
 		}
 	case "=~":
 		c.op = p.next().value
-		c.value = normalizeConditionValue(p.next())
+		valTok := p.next()
+		c.value = normalizeConditionValue(valTok)
+		c.valueKind = valTok.kind
 		if _, err := regexp.Compile(c.value); err != nil {
 			return c, fmt.Errorf("invalid regex pattern %q: %w", c.value, err)
 		}
 	case "CONTAINS":
 		p.next()
 		c.op = "CONTAINS"
-		c.value = normalizeConditionValue(p.next())
+		valTok := p.next()
+		c.value = normalizeConditionValue(valTok)
+		c.valueKind = valTok.kind
 	case "STARTS":
 		p.next()
 		p.skip("WITH")
 		c.op = "STARTS WITH"
-		c.value = normalizeConditionValue(p.next())
+		valTok := p.next()
+		c.value = normalizeConditionValue(valTok)
+		c.valueKind = valTok.kind
 	case "ENDS":
 		// #340: ENDS WITH as a first-class operator, symmetric to
 		// STARTS WITH (#288). Same two-token shape — consume "WITH"
@@ -1606,7 +1770,9 @@ func (p *parser) parseOneCondition() (condition, error) {
 		p.next()
 		p.skip("WITH")
 		c.op = "ENDS WITH"
-		c.value = normalizeConditionValue(p.next())
+		valTok := p.next()
+		c.value = normalizeConditionValue(valTok)
+		c.valueKind = valTok.kind
 	case "IS":
 		// #342: IS NULL / IS NOT NULL. Common Cypher pattern for
 		// finding rows with empty/absent properties (e.g. functions
