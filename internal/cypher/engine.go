@@ -88,6 +88,11 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	// but evaluation returns false — surface a warning so the agent
 	// knows the predicate isn't being honored. Same UX class as #473.
 	warnings = append(warnings, collectCrossColumnWarnings(q)...)
+	// #867: an unknown relationship type (`-[:CALLZ]->`) is the edge-side
+	// twin of #473's unknown property — it returns 0 rows silently. Warn
+	// unconditionally (not gated on Total==0) so a typo'd kind in a
+	// multi-pattern query still surfaces even if other patterns matched.
+	warnings = append(warnings, collectUnknownEdgeKindWarnings(q)...)
 	res, err := e.run(ctx, q)
 	if err != nil {
 		return res, err
@@ -294,6 +299,54 @@ func collectCrossColumnWarnings(q *queryAST) []string {
 	for _, n := range names {
 		out = append(out, fmt.Sprintf(
 			"column-vs-column comparison %q is not supported in pinchQL — predicate ignored (returns false). Use literal values on the RHS, or post-filter the result set in your client.",
+			n))
+	}
+	return out
+}
+
+// knownEdgeKinds is the traversable edge-kind taxonomy — exactly the
+// set the indexer emits. Kept in sync with handleTrace's knownEdgeKinds
+// in internal/server (a shared constant would need a new home both
+// packages import; the taxonomy moves rarely enough that the duplicated
+// literal is the smaller cost — flag both if it changes).
+var knownEdgeKinds = map[string]bool{
+	"CALLS": true, "HTTP_CALLS": true, "ASYNC_CALLS": true,
+	"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
+}
+
+// collectUnknownEdgeKindWarnings (#867) walks the MATCH patterns for
+// relationship types outside the edge-kind taxonomy. An unknown kind —
+// `-[:CALLZ]->`, a typo — compiles to `e.kind IN ('CALLZ')`, matches
+// nothing, and returns 0 rows with no signal: the same silent-zero
+// class as #473 (unknown property) and #501 (unknown enum value). The
+// node-label path already warns; the edge type had no guard. Edge
+// kinds are upper-cased at parse time, so a lower-case `-[:calls]->`
+// resolves correctly and never reaches this check. Sorted for stable
+// test output.
+func collectUnknownEdgeKindWarnings(q *queryAST) []string {
+	if q == nil {
+		return nil
+	}
+	unknown := map[string]struct{}{}
+	for _, pat := range q.patterns {
+		for _, k := range pat.edgeKinds {
+			if k != "" && !knownEdgeKinds[k] {
+				unknown[k] = struct{}{}
+			}
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(unknown))
+	for n := range unknown {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, fmt.Sprintf(
+			"edge kind %q not recognized — the MATCH matched nothing because no edge has that type. Valid edge kinds: ASYNC_CALLS, CALLS, HTTP_CALLS, IMPORTS, READS, REFERENCES, WRITES.",
 			n))
 	}
 	return out
@@ -1244,7 +1297,11 @@ func (p *parser) parsePattern() (pattern, error) {
 			if p.peek().value == ":" {
 				p.next()
 				for p.peek().kind == "IDENT" {
-					pat.edgeKinds = append(pat.edgeKinds, p.next().value)
+					// #867: normalise to upper-case at parse time. Edge
+					// kinds are stored upper-case in the DB (`CALLS`), so
+					// a lower-case `-[:calls]->` would compile to
+					// `e.kind IN ('calls')` and silently match nothing.
+					pat.edgeKinds = append(pat.edgeKinds, strings.ToUpper(p.next().value))
 					if p.peek().value == "|" {
 						p.next()
 					} else {
