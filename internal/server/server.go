@@ -7515,6 +7515,29 @@ var auditThresholdPattern = regexp.MustCompile(
 		`(above|over|exceeding|greater than|larger than|bigger than|more than|below|under|less than|smaller than|at least|at most|exceeds|>=|<=|>|<)`,
 )
 
+// auditLooseThresholdPattern (#924) catches the more natural phrasings
+// of threshold audits that drop the "every|all|any" article AND the
+// "with|having|whose" clause — e.g. "find functions longer than 100
+// lines". The adjective-form comparison ("longer/shorter/bigger than")
+// is itself a strong audit signal, so the surrounding scaffold isn't
+// required to disambiguate from prose.
+var auditLooseThresholdPattern = regexp.MustCompile(
+	`\b(find|list|count|show|surface) \w+( \w+){0,3}? ` +
+		`(longer|shorter|bigger|smaller|larger|deeper|wider|heavier|slower|faster) than \b`,
+)
+
+// auditAdjectivePattern (#924) catches "find untested exported
+// functions" — the standalone audit adjectives that mean "missing X"
+// without using comparison or "with no X" scaffolding. Must run BEFORE
+// shapeTest, otherwise "untested" matches the bare "test" substring
+// check and routes to test-writing flow. "unused" is intentionally
+// NOT in the adjective list — it's already routed to shapeDeadCode
+// (more specific than a generic audit query).
+var auditAdjectivePattern = regexp.MustCompile(
+	`\b(find|list|count|show|surface)( \w+){0,2} ` +
+		`(untested|undocumented|uncovered|untyped|unowned|unauthenticated|unvalidated|unhandled)\b`,
+)
+
 // refactorExtractWord word-bounds the "extract" refactor verb so it
 // doesn't substring-match the nouns "extraction" / "extractor" /
 // "extracted" — all common in this codebase (#784). The other refactor
@@ -7584,6 +7607,18 @@ func classifyTaskShape(task string) guideShape {
 	// the absence pattern — pinchQL with a numeric WHERE predicate
 	// answers them, BM25 search of the literal phrase doesn't.
 	case auditThresholdPattern.MatchString(t):
+		return shapeAudit
+	// #924: loose threshold form — "find functions longer than 100
+	// lines" — drops the "every|all|any" article and the
+	// "with|having|whose" clause. The adjective-form comparison is
+	// itself the audit signal.
+	case auditLooseThresholdPattern.MatchString(t):
+		return shapeAudit
+	// #924: audit adjectives ("untested", "undocumented", ...) — must
+	// run before the shapeTest case below, which would otherwise catch
+	// "untested" via the bare "test" substring check and recommend a
+	// test-writing flow instead of a coverage audit.
+	case auditAdjectivePattern.MatchString(t):
 		return shapeAudit
 	case contains("test", "spec ", "coverage"):
 		return shapeTest
@@ -7828,17 +7863,32 @@ func inferAuditPinchQL(task string) (pinchql, why string) {
 			"structural audit — pinchQL projects n.complexity directly. Adjust the threshold (currently 20) to match your task. ORDER BY complexity DESC surfaces the worst offenders first"
 	case strings.Contains(t, "line") && (strings.Contains(t, "long") || strings.Contains(t, "above") ||
 		strings.Contains(t, "over") || strings.Contains(t, "exceed") || strings.Contains(t, "more")):
-		return `MATCH (n:Function) WHERE (n.end_line - n.start_line) > 100 RETURN n.name, n.file_path, (n.end_line - n.start_line) AS lines ORDER BY lines DESC LIMIT 50`,
-			"structural audit — pinchQL computes lines = end_line - start_line. Adjust the threshold (currently 100) to match your task"
+		// #928: pinchQL doesn't yet support arithmetic operators
+		// (`-`, `+`, `*`, `/`) in WHERE/RETURN, so the obvious
+		// `(n.end_line - n.start_line) > 100` template crashes the
+		// parser. Until #928 lands, emit a length-correlated query
+		// that returns start_line + end_line and asks the caller to
+		// compute the diff client-side. Adjust to use real arithmetic
+		// once the engine supports it.
+		return `MATCH (n:Function) WHERE n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.start_line, n.end_line LIMIT 200`,
+			"structural audit — pinchQL doesn't yet support arithmetic in WHERE/RETURN (#928), so the engine can't filter by (end_line - start_line) directly. The query returns start_line + end_line for every Go non-test function (capped at 200 to stay bounded); compute the diff and sort descending client-side. Once #928 ships, this template will become `WHERE (n.end_line - n.start_line) > N ORDER BY ... DESC LIMIT 50`."
 	case strings.Contains(t, "untested") ||
 		(strings.Contains(t, "test") && (strings.Contains(t, "coverage") || strings.Contains(t, "missing"))):
-		return `MATCH (n:Function) WHERE n.is_exported=true AND n.is_test=false RETURN n.name, n.file_path LIMIT 50`,
-			"structural audit — pinchQL lists exported non-test functions. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
+		// #923: scope to Go — regex-tier languages don't populate
+		// is_test reliably, so they flood the result with false
+		// positives.
+		return `MATCH (n:Function) WHERE n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path LIMIT 50`,
+			"structural audit — pinchQL lists exported non-test Go functions. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
 	default:
 		// Docstring audit is the canonical #467 example and still the
 		// most common shapeAudit query — keep it as the fallback.
-		return `MATCH (n:Function) WHERE n.docstring IS NULL AND n.is_exported=true RETURN n.name, n.file_path LIMIT 50`,
-			"structural audit — pinchQL filters on docstring/is_exported directly. BM25 search of the literal phrase wouldn't surface anything"
+		// #923: scope to Go + non-test. Regex-tier languages don't
+		// populate the docstring property (so 100% match the IS NULL
+		// filter), and test functions don't need docstrings by
+		// convention. Pre-fix the top results were JS handlers, Bash
+		// helpers, and `TestDashboardJS_*` — pure noise.
+		return `MATCH (n:Function) WHERE n.docstring IS NULL AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path LIMIT 50`,
+			"structural audit — pinchQL filters on docstring/is_exported directly. Scoped to Go (AST-extracted docstrings) and non-test functions so regex-tier languages and tests don't flood the result. BM25 search of the literal phrase wouldn't surface anything"
 	}
 }
 
