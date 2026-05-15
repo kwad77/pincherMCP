@@ -6742,6 +6742,45 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			kinds = validated
 		}
 	}
+	// #1045: validate language= against the project's actual language
+	// histogram, mirroring the kinds validation above. Pre-fix
+	// `dead_code language="Java"` on a Go-only project silently returned
+	// 0 rows with the standard "lower min_confidence" hint — wrong
+	// cause; the actual reason is the project has 0 Java symbols.
+	// Same family as the kinds validation (#851) and search's
+	// language-filter diagnosis (#xxx). Unknown languages are kept in
+	// the filter (not dropped) so the SQL still runs the way the caller
+	// asked; the warning surfaces the actual cause of the empty result.
+	if language != "" {
+		var langCount int
+		row := s.store.RO().QueryRow(
+			`SELECT COUNT(*) FROM symbols WHERE project_id=? AND language=?`,
+			projectID, language)
+		if err := row.Scan(&langCount); err == nil && langCount == 0 {
+			var availableLangs []string
+			rows, qerr := s.store.RO().Query(
+				`SELECT language FROM symbols WHERE project_id=? GROUP BY language ORDER BY COUNT(*) DESC LIMIT 12`,
+				projectID)
+			if qerr == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var l string
+					if rows.Scan(&l) == nil && l != "" {
+						availableLangs = append(availableLangs, l)
+					}
+				}
+			}
+			if len(availableLangs) > 0 {
+				kindWarnings = append(kindWarnings, fmt.Sprintf(
+					"language=%q matched 0 symbols in this project — filter cannot return any rows. Available languages: %s",
+					language, strings.Join(availableLangs, ", ")))
+			} else {
+				kindWarnings = append(kindWarnings, fmt.Sprintf(
+					"language=%q matched 0 symbols in this project — filter cannot return any rows",
+					language))
+			}
+		}
+	}
 	// 0.95 default biases toward AST-extracted languages (Go=1.0,
 	// JSON/YAML/HCL parser-backed). Caller can drop to 0.0 to include
 	// regex-tier languages at known false-positive cost (their CALLS
