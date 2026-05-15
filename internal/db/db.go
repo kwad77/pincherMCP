@@ -1123,6 +1123,22 @@ END;`,
 		PRIMARY KEY (project_id, from_id, to_id)
 	) WITHOUT ROWID;
 	CREATE INDEX IF NOT EXISTS idx_closure_to ON closure(project_id, to_id);`,
+
+	// v25 → v26: pending_edges.base_type — for a Go READS candidate
+	// extracted from a non-package selector `base.Sel`, this is the
+	// declared type of `base` as written, stripped of leading `*` and
+	// `[]` (e.g. "ast.ExtractedEdge" for `e.Confidence` where `e`
+	// ranges over a `[]ast.ExtractedEdge`). The #565 binding pass
+	// (resolveReads) consults it to tell a struct-field read from a
+	// function-value reference: if base_type names a project struct
+	// with a field of the READS edge's to_name, the read is a field
+	// access and the pass must NOT emit a false CALLS edge to a
+	// same-named Method (#760 — `e.Confidence` no longer false-binds
+	// to `*hclExtractor.Confidence`). Empty for non-selector reads,
+	// unresolved base types, non-Go languages, and pre-v26 rows —
+	// keeps every existing row valid under the NOT NULL DEFAULT and
+	// the binding pass falls back to its pre-#760 heuristic.
+	`ALTER TABLE pending_edges ADD COLUMN base_type TEXT NOT NULL DEFAULT '';`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -2763,6 +2779,13 @@ type PendingEdge struct {
 	// it to follow recv.field.method calls via struct_fields. Empty
 	// for plain functions, non-Go languages, and pre-v22 rows.
 	ReceiverType string
+	// BaseType is set (in schema v26+) on a Go READS candidate whose
+	// source AST node was a non-package selector `base.Sel` and whose
+	// base's declared type the extractor resolved — the type as
+	// written, stripped of leading `*` and `[]`. The #760 binding pass
+	// uses it to suppress the false CALLS edge from a struct-field read
+	// (`e.Confidence`) to a same-named Method. Empty otherwise.
+	BaseType string
 }
 
 // ReplacePendingEdgesForFile atomically deletes any existing
@@ -2783,15 +2806,15 @@ func (s *Store) ReplacePendingEdgesForFile(projectID, fromFile string, edges []P
 			return nil
 		}
 		stmt, err := tx.Prepare(`
-			INSERT OR IGNORE INTO pending_edges(project_id, from_file, kind, from_qn, to_name, confidence, receiver_type)
-			VALUES (?,?,?,?,?,?,?)`)
+			INSERT OR IGNORE INTO pending_edges(project_id, from_file, kind, from_qn, to_name, confidence, receiver_type, base_type)
+			VALUES (?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for i := range edges {
 			e := &edges[i]
-			if _, err := stmt.Exec(projectID, fromFile, e.Kind, e.FromQN, e.ToName, e.Confidence, e.ReceiverType); err != nil {
+			if _, err := stmt.Exec(projectID, fromFile, e.Kind, e.FromQN, e.ToName, e.Confidence, e.ReceiverType, e.BaseType); err != nil {
 				return err
 			}
 		}
@@ -2956,7 +2979,7 @@ func (s *Store) LoadInterfaceMethods(projectID string) ([]InterfaceMethod, error
 // of the given kind. Reader-routed — pure SELECT.
 func (s *Store) LoadPendingEdges(projectID, kind string) ([]PendingEdge, error) {
 	rows, err := s.ro.Query(
-		`SELECT project_id, from_file, kind, from_qn, to_name, confidence, receiver_type
+		`SELECT project_id, from_file, kind, from_qn, to_name, confidence, receiver_type, base_type
 		 FROM pending_edges WHERE project_id=? AND kind=?`,
 		projectID, kind)
 	if err != nil {
@@ -2966,7 +2989,7 @@ func (s *Store) LoadPendingEdges(projectID, kind string) ([]PendingEdge, error) 
 	var out []PendingEdge
 	for rows.Next() {
 		var e PendingEdge
-		if err := rows.Scan(&e.ProjectID, &e.FromFile, &e.Kind, &e.FromQN, &e.ToName, &e.Confidence, &e.ReceiverType); err != nil {
+		if err := rows.Scan(&e.ProjectID, &e.FromFile, &e.Kind, &e.FromQN, &e.ToName, &e.Confidence, &e.ReceiverType, &e.BaseType); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

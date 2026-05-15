@@ -517,6 +517,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 						ToName:       e.ToName,
 						Confidence:   e.Confidence,
 						ReceiverType: e.ReceiverType,
+						BaseType:     e.BaseType,
 					})
 				}
 			}
@@ -1503,6 +1504,7 @@ func loadOrFallback(idx *Indexer, projectID, kind string, fallback []ast.Extract
 			FromFile:     r.FromFile,
 			Confidence:   r.Confidence,
 			ReceiverType: r.ReceiverType,
+			BaseType:     r.BaseType,
 		})
 	}
 	return out
@@ -2264,6 +2266,67 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 		return 0
 	}
 
+	// #760: struct-field index, structQN → set of field names. Used by
+	// the binding pass to suppress the false CALLS edge from a struct-
+	// field read (`e.Confidence`) to a same-named project Method. The
+	// extractor stamps ExtractedEdge.BaseType with the base's declared
+	// type; if that type names a project struct with a field of the
+	// READS edge's ToName, the read is a field access — never a
+	// function-value reference — so no binding edge is emitted. On a
+	// load failure we leave the map empty: the binding pass then falls
+	// back to its pre-#760 heuristic rather than dropping silently.
+	fieldsByStructQN := map[string]map[string]bool{}
+	if rows, err := idx.store.LoadStructFields(projectID); err == nil {
+		for _, f := range rows {
+			structQN := ""
+			if i := strings.Index(f.StructID, "::"); i >= 0 {
+				rest := f.StructID[i+2:]
+				if j := strings.LastIndex(rest, "#"); j > 0 {
+					structQN = rest[:j]
+				}
+			}
+			if structQN == "" {
+				continue
+			}
+			m := fieldsByStructQN[structQN]
+			if m == nil {
+				m = map[string]bool{}
+				fieldsByStructQN[structQN] = m
+			}
+			m[f.FieldName] = true
+		}
+	} else {
+		slog.Warn("pincher.struct_fields.load.err", "err", err)
+	}
+	// isStructFieldRead reports whether a READS edge's base type names a
+	// project struct that has a field called fieldName — i.e. the read
+	// is `someStruct.fieldName`, a field access, not a method value.
+	// baseType is the type as written (e.g. "ast.ExtractedEdge" or, for
+	// a same-package type, the bare "ExtractedEdge"); fromQN supplies
+	// the caller's package so the bare form can be qualified.
+	isStructFieldRead := func(baseType, fromQN, fieldName string) bool {
+		if baseType == "" || fieldName == "" {
+			return false
+		}
+		if m := fieldsByStructQN[baseType]; m[fieldName] {
+			return true
+		}
+		// Same-package struct: the extractor wrote the type unqualified
+		// ("ExtractedEdge"); the struct's QN is "<pkg>.ExtractedEdge".
+		if !strings.Contains(baseType, ".") {
+			pkg := fromQN
+			if i := strings.Index(pkg, "."); i > 0 {
+				pkg = pkg[:i]
+			}
+			if pkg != "" {
+				if m := fieldsByStructQN[pkg+"."+baseType]; m[fieldName] {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
 	// QN cache: maps the qualified name to (id, language, kind-class).
 	// language is needed for #436 — same-language scoping prevents Go
 	// references to common identifiers (`path`, `result`, `fs`) from
@@ -2520,6 +2583,16 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge) 
 				candName = candName[i+1:]
 			}
 			if isPolymorphicInterfaceMethodName(candName) {
+				continue
+			}
+			// #760: the read resolved to a project Method, but if the
+			// extractor knew the base expression's type and that type
+			// is a project struct with a field of this name, the AST
+			// node was a struct-field read (`e.Confidence`), not a
+			// function-value reference (`w.defaultDo`). Drop — emitting
+			// a binding CALLS edge here false-binds `e.Confidence` to
+			// `*hclExtractor.Confidence`.
+			if isStructFieldRead(e.BaseType, e.FromQN, candName) {
 				continue
 			}
 			key := fromID + "\x00" + to.id + "\x00CALLS"

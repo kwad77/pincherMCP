@@ -2486,7 +2486,7 @@ func computeCapabilities(s *Server) []string {
 		// Schema version — always reflects the current migration head.
 		// Routers can pin a minimum schema or refuse to talk to older
 		// pincher binaries via this tag.
-		"schema_v25",
+		"schema_v26",
 
 		// PreToolUse hook intercept (#625, #626, #627, v0.36).
 		// `pincher hook-check` is built into every binary post-v0.36;
