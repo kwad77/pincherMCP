@@ -7006,14 +7006,38 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		}
 		if dropped > 0 {
 			// Filtered-empty rather than truly-empty: tell the agent
-			// how to surface the suppressed rows.
-			meta["diagnosis"] = fmt.Sprintf("no active projects in the last %d days (%d filtered out as stale or dead-on-disk)", activeWithinDays, dropped)
-			meta["next_steps"] = []map[string]string{
-				{"tool": "list", "args": `{"active":false}`,
-					"why": "include projects whose last index is older than the activity window"},
-				{"tool": "list", "args": `{"include_dead":true}`,
-					"why": "include projects whose on-disk path no longer exists (stale DB rows)"},
+			// how to surface the suppressed rows. Diagnosis names the
+			// dominant filter cause so the next_steps actually map to
+			// the recovery args. Pre-fix the message hardcoded
+			// "stale or dead-on-disk" even when min_edges was the
+			// dominant reason (73 of 128 dropped on a fresh test) —
+			// the recommended next_steps (active=false, include_dead)
+			// wouldn't have recovered the result.
+			causes := []string{}
+			if droppedInactive > 0 {
+				causes = append(causes, fmt.Sprintf("%d inactive >%dd", droppedInactive, activeWithinDays))
 			}
+			if droppedDead > 0 {
+				causes = append(causes, fmt.Sprintf("%d dead-on-disk", droppedDead))
+			}
+			if droppedLowEdges > 0 {
+				causes = append(causes, fmt.Sprintf("%d below min_edges=%d", droppedLowEdges, minEdges))
+			}
+			meta["diagnosis"] = fmt.Sprintf("no projects after filters: %s — pass the recovery args below to widen the scope", strings.Join(causes, ", "))
+			recovery := []map[string]string{}
+			if droppedInactive > 0 {
+				recovery = append(recovery, map[string]string{"tool": "list", "args": `{"active":false}`,
+					"why": "include projects whose last index is older than the activity window"})
+			}
+			if droppedDead > 0 {
+				recovery = append(recovery, map[string]string{"tool": "list", "args": `{"include_dead":true}`,
+					"why": "include projects whose on-disk path no longer exists (stale DB rows)"})
+			}
+			if droppedLowEdges > 0 {
+				recovery = append(recovery, map[string]string{"tool": "list", "args": `{"min_edges":0}`,
+					"why": "drop the edge-count floor — surface projects with empty or sparse graphs (regex-extracted languages, pre-extraction stubs)"})
+			}
+			meta["next_steps"] = recovery
 		}
 		data["_meta"] = meta
 	}
