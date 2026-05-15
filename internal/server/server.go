@@ -3825,11 +3825,22 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// sizes, not 30 × per-file-estimate as the prior savedVsFullRead path
 	// did.
 	filePaths := make([]string, 0, len(ids))
+	// #1050: track resolved-symbol project_ids on the unscoped batch
+	// path so a cross-project leak warning can surface below. Same
+	// shape as #1049 on handleSymbol but the batch variant aggregates
+	// across N IDs — one warning per request listing the offending
+	// projects, not N per-row warnings. Skipped on scoped lookups
+	// (resolvedProjectID != "") since those can't leak.
+	crossProjectSources := map[string]int{}
 	for _, id := range ids {
 		sym, ok := bySymID[id]
 		if !ok || sym == nil {
 			results = append(results, map[string]any{"id": id, "error": "not found"})
 			continue
+		}
+		if resolvedProjectID == "" && projectArg == "" &&
+			s.sessionID != "" && sym.ProjectID != s.sessionID {
+			crossProjectSources[sym.ProjectID]++
 		}
 		source := ""
 		if includeSource {
@@ -3904,6 +3915,24 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// sees their scope hint was ignored.
 	if symbolsProjectResolveWarning != "" {
 		attachWarning(data, symbolsProjectResolveWarning)
+	}
+	// #1050: surface the cross-project leak when any of the resolved
+	// symbols came from a project other than the session's. Same risk
+	// class as #1049 (symbol) — mirror projects and stale snapshots
+	// carry identical IDs, so an unscoped batch on a mixed DB can
+	// hand the agent source bytes from the wrong tree with no signal.
+	if len(crossProjectSources) > 0 {
+		sources := make([]string, 0, len(crossProjectSources))
+		total := 0
+		for src, n := range crossProjectSources {
+			sources = append(sources, src)
+			total += n
+		}
+		sort.Strings(sources)
+		attachWarning(data, fmt.Sprintf(
+			"%d of %d resolved symbol(s) came from project(s) %v rather than the session project %q — an indexed mirror or stale snapshot carries IDs identical to your working tree. Re-issue with project=%q to pin scope.",
+			total, len(ids), sources, s.sessionID, s.sessionID,
+		))
 	}
 	// #908: batch-level warning for fields that didn't match any known
 	// entry key. Single warning rather than per-entry to keep the
@@ -3981,6 +4010,26 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		), nil
 	}
 
+	// #1050: cross-project leak warning, mirroring #1049 on handleSymbol.
+	// When projectArg is omitted, the GetSymbol fallback above resolves
+	// to whichever indexed project happens to carry the ID — mirror
+	// projects (sniffer mirrors, MCP_Combine staging, .pincher-supported
+	// snapshots) carry identical IDs to their primary repo. Pre-fix the
+	// agent got source bytes (and the source bytes of every callee/import)
+	// from a stale fork with no signal the lookup crossed project
+	// boundaries. context is the more dangerous shape than symbol —
+	// its EdgesFrom calls walk the leaked project's graph, so callee
+	// sources and import paths also belong to the wrong tree. Warn
+	// whenever the unscoped lookup resolved outside the session project.
+	var contextCrossProjectWarning string
+	if projectArg := str(args, "project"); projectArg == "" &&
+		s.sessionID != "" && sym.ProjectID != s.sessionID {
+		contextCrossProjectWarning = fmt.Sprintf(
+			"symbol %q resolved from project %q rather than the session project %q — an indexed mirror or stale snapshot carries an ID identical to your working tree. Imports + callees in this response come from the same off-tree project. Re-issue with project=%q to pin scope, or project=%q if you intended that source.",
+			id, sym.ProjectID, s.sessionID, s.sessionID, sym.ProjectID,
+		)
+	}
+
 	root, _ := s.resolveProjectRoot(sym.ProjectID)
 	source, _ := index.ReadSymbolSource(root, *sym)
 
@@ -4021,6 +4070,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		// #1039: lite-path also surfaces project-resolve failure.
 		if contextProjectWarning != "" {
 			attachWarning(liteData, contextProjectWarning)
+		}
+		// #1050: lite-path also surfaces cross-project resolution.
+		if contextCrossProjectWarning != "" {
+			attachWarning(liteData, contextCrossProjectWarning)
 		}
 		liteResponseJSON, _ := json.Marshal(liteData)
 		return s.jsonResultWithMeta(liteData, start, tool, args,
@@ -4194,6 +4247,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// unscoped path. attachWarning merges into _meta.warnings.
 	if contextProjectWarning != "" {
 		attachWarning(data, contextProjectWarning)
+	}
+	// #1050: surface the cross-project leak.
+	if contextCrossProjectWarning != "" {
+		attachWarning(data, contextCrossProjectWarning)
 	}
 	responseJSON, _ := json.Marshal(data)
 	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(sym.ProjectID, root, allPaths, responseJSON)), nil
