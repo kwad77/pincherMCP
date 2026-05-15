@@ -107,6 +107,19 @@ type ExtractedEdge struct {
 	// uses it to disambiguate field-shaped ToName like "stdin.Write"
 	// by intersecting with the struct's Fields map.
 	ReceiverType string
+	// BaseType is set on a Go READS edge whose source AST node was a
+	// non-package selector `base.Sel` where `base` is a local variable,
+	// parameter, or receiver whose declared type the extractor could
+	// resolve. It holds that type as written, stripped of leading `*`
+	// and `[]` (e.g. "ast.ExtractedEdge" for `for _, e := range pending`
+	// over a `pending []ast.ExtractedEdge` param). The #760 resolver
+	// uses it to tell a struct-field read (`e.Confidence`) from a
+	// function-value reference (`w.defaultDo`): if BaseType names a
+	// project struct that has a field of the READS edge's ToName, the
+	// binding pass must NOT emit a false CALLS edge to a same-named
+	// Method. Empty when the base's type couldn't be resolved — the
+	// binding pass then keeps its pre-#760 heuristic behaviour.
+	BaseType string
 }
 
 // FileResult holds all symbols and edges extracted from one file.
@@ -529,7 +542,7 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 				// #247 #3: identifier references for READS edges. Walks
 				// the same body — costs an extra ast.Inspect pass per
 				// function, dwarfed by the parser cost itself.
-				reads := extractGoReads(d.Body, sym.QualifiedName, importPkgs)
+				reads := extractGoReads(d, sym.QualifiedName, importPkgs)
 				result.Edges = append(result.Edges, reads...)
 			}
 
@@ -810,13 +823,88 @@ func extractGoFileLevelReads(d *ast.GenDecl, callerQN string, importPkgs map[str
 	return edges
 }
 
-func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]bool) []ExtractedEdge {
-	if body == nil {
+func extractGoReads(d *ast.FuncDecl, callerQN string, importPkgs map[string]bool) []ExtractedEdge {
+	if d == nil || d.Body == nil {
 		return nil
 	}
-	seenReads := make(map[string]bool)
+	body := d.Body
+	seenReads := make(map[string]int) // name → index into edges
 	seenWrites := make(map[string]bool)
 	var edges []ExtractedEdge
+
+	// varTypes maps a local identifier (receiver, parameter, or in-body
+	// declared variable) to its declared type as written. Seeded from
+	// the receiver + parameter lists, then extended by a pre-pass over
+	// the body for `var x T`, `x := T{}` / `x := &T{}`, and slice-range
+	// variables. Used only to stamp ExtractedEdge.BaseType on selector
+	// READS edges (#760). Lexical-scope-imperfect (no shadowing
+	// tracking), but the resolver acts on BaseType only when it
+	// positively confirms a struct field — a stale entry can miss a
+	// suppression, never manufacture a false edge.
+	varTypes := make(map[string]string)
+	noteVarType := func(name, typ string) {
+		if name == "" || name == "_" || typ == "" {
+			return
+		}
+		varTypes[name] = typ
+	}
+	if d.Recv != nil {
+		for _, f := range d.Recv.List {
+			for _, n := range f.Names {
+				noteVarType(n.Name, goTypeToString(f.Type))
+			}
+		}
+	}
+	if d.Type != nil && d.Type.Params != nil {
+		for _, f := range d.Type.Params.List {
+			for _, n := range f.Names {
+				noteVarType(n.Name, goTypeToString(f.Type))
+			}
+		}
+	}
+	// Pre-pass: collect in-body local-variable → declared-type bindings
+	// before the read/write walk so a selector `base.Sel` anywhere in
+	// the body can look up `base`'s type. ast.Inspect visits in source
+	// order, so a `pending := []T{}` is recorded before a later
+	// `for _, e := range pending` can derive `e`'s element type.
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.ValueSpec:
+			if s.Type != nil {
+				for _, name := range s.Names {
+					noteVarType(name.Name, goTypeToString(s.Type))
+				}
+			}
+			for i, val := range s.Values {
+				if i < len(s.Names) {
+					if ct := compositeLitType(val); ct != "" {
+						noteVarType(s.Names[i].Name, ct)
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			if s.Tok == token.DEFINE && len(s.Lhs) == len(s.Rhs) {
+				for i, lhs := range s.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						if ct := compositeLitType(s.Rhs[i]); ct != "" {
+							noteVarType(id.Name, ct)
+						}
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if s.Tok == token.DEFINE && s.Value != nil {
+				if vid, ok := s.Value.(*ast.Ident); ok {
+					if xid, ok := s.X.(*ast.Ident); ok {
+						if elem := sliceElem(varTypes[xid.Name]); elem != "" {
+							noteVarType(vid.Name, elem)
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
 
 	emitWrite := func(name string) {
 		if isPredeclaredOrBlank(name) || seenWrites[name] {
@@ -830,16 +918,26 @@ func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]
 			Confidence: 0.5,
 		})
 	}
-	emitRead := func(name string) {
-		if isPredeclaredOrBlank(name) || seenReads[name] {
+	emitRead := func(name, baseType string) {
+		if isPredeclaredOrBlank(name) {
 			return
 		}
-		seenReads[name] = true
+		if idx, ok := seenReads[name]; ok {
+			// A later typed read upgrades an earlier untyped one so the
+			// #760 resolver gets the disambiguating type even when the
+			// first occurrence of this name was a bare identifier.
+			if baseType != "" && edges[idx].BaseType == "" {
+				edges[idx].BaseType = baseType
+			}
+			return
+		}
+		seenReads[name] = len(edges)
 		edges = append(edges, ExtractedEdge{
 			FromQN:     callerQN,
 			ToName:     name,
 			Kind:       "READS",
 			Confidence: 0.5,
+			BaseType:   baseType,
 		})
 	}
 
@@ -868,7 +966,7 @@ func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]
 		}
 		switch e := n.(type) {
 		case *ast.Ident:
-			emitRead(e.Name)
+			emitRead(e.Name, "")
 		case *ast.CallExpr:
 			if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
 				walkRead(sel.X)
@@ -882,13 +980,21 @@ func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]
 			if base, ok := e.X.(*ast.Ident); ok && importPkgs[base.Name] {
 				// Imported-package selector — emit qualified, don't
 				// recurse into the package ident itself.
-				emitRead(base.Name + "." + e.Sel.Name)
+				emitRead(base.Name+"."+e.Sel.Name, "")
 				return
 			}
 			// Receiver/struct selector — preserve the legacy shape:
 			// walk the base as a read, emit the trailing `.Sel` bare.
+			// #760: when the base is a local whose declared type we
+			// resolved, stamp it onto the `.Sel` READS edge so the
+			// binding pass can tell `e.Confidence` (struct-field read)
+			// from `w.defaultDo` (function-value reference).
+			baseType := ""
+			if base, ok := e.X.(*ast.Ident); ok {
+				baseType = structBase(varTypes[base.Name])
+			}
 			walkRead(e.X)
-			emitRead(e.Sel.Name)
+			emitRead(e.Sel.Name, baseType)
 		default:
 			ast.Inspect(n, func(child ast.Node) bool {
 				if child == n {
@@ -896,7 +1002,7 @@ func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]
 				}
 				switch c := child.(type) {
 				case *ast.Ident:
-					emitRead(c.Name)
+					emitRead(c.Name, "")
 					return false
 				case *ast.CallExpr:
 					walkRead(c)
@@ -1011,6 +1117,45 @@ func extractGoReads(body *ast.BlockStmt, callerQN string, importPkgs map[string]
 	}
 	walk(body)
 	return edges
+}
+
+// compositeLitType returns the type of a composite-literal expression
+// (`T{...}` or `&T{...}`) as written — used by extractGoReads's #760
+// pre-pass to bind a `:=`-declared local to its struct type. Returns ""
+// for any other expression (call results, conversions, etc. — those
+// would need full type inference, which the resolver's positive-only
+// confirmation makes optional).
+func compositeLitType(e ast.Expr) string {
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		e = u.X
+	}
+	if cl, ok := e.(*ast.CompositeLit); ok && cl.Type != nil {
+		return goTypeToString(cl.Type)
+	}
+	return ""
+}
+
+// structBase strips a leading `*` from a type string and returns it
+// only when what remains is a bare (optionally package-qualified)
+// identifier — the shape the #760 struct-field lookup can use. Slices,
+// maps, channels, funcs, and anonymous struct/interface literals return
+// "" (the resolver then keeps its pre-#760 heuristic for that read).
+func structBase(t string) string {
+	t = strings.TrimPrefix(t, "*")
+	if t == "" || strings.ContainsAny(t, " \t[]{}()*<>-/") {
+		return ""
+	}
+	return t
+}
+
+// sliceElem returns the element type of a slice type string (`[]T` → `T`),
+// "" for non-slice types. Lets the #760 pre-pass derive a range
+// variable's type from the collection it ranges over.
+func sliceElem(t string) string {
+	if rest, ok := strings.CutPrefix(t, "[]"); ok {
+		return rest
+	}
+	return ""
 }
 
 // isPredeclaredOrBlank skips identifiers that would never resolve to
