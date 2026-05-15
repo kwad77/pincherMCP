@@ -84,8 +84,49 @@ func TestGuideRecommendations_LooseThresholdGetsLinesQuery(t *testing.T) {
 	if first["tool"] != "query" {
 		t.Errorf("first tool = %q, want query", first["tool"])
 	}
-	if !strings.Contains(first["args"], "end_line - n.start_line") {
-		t.Errorf("loose-threshold lines task must emit (end_line - start_line) query; got %q", first["args"])
+	// #928: pinchQL doesn't yet support arithmetic in WHERE/RETURN.
+	// Until then, the line-count template returns start_line +
+	// end_line for client-side diff computation rather than emitting
+	// a query the engine can't parse.
+	if !strings.Contains(first["args"], "n.start_line") || !strings.Contains(first["args"], "n.end_line") {
+		t.Errorf("line-count audit must project start_line + end_line; got %q", first["args"])
+	}
+	// Must NOT emit the broken arithmetic form pre-#928.
+	if strings.Contains(first["args"], "end_line - n.start_line") || strings.Contains(first["args"], "(n.end_line-n.start_line)") {
+		t.Errorf("line-count audit must NOT emit arithmetic until #928 lands; got %q", first["args"])
+	}
+}
+
+// Regression guard: every audit template inferAuditPinchQL emits must
+// be parseable by the cypher engine. Pre-#928 the line-count template
+// emitted `(n.end_line - n.start_line) > 100` which crashes with
+// "cypher parse: unsupported operator: -". This test pins the
+// "templates must round-trip through the parser" invariant so a
+// future change can't re-introduce engine-incompatible templates.
+func TestInferAuditPinchQL_AllTemplatesParseable(t *testing.T) {
+	t.Parallel()
+	// Sample tasks covering every branch of inferAuditPinchQL.
+	tasks := []string{
+		"find every function with cyclomatic complexity above 20",
+		"find functions longer than 100 lines",
+		"find untested exported functions",
+		"find undocumented exported APIs",
+	}
+	for _, task := range tasks {
+		t.Run(task, func(t *testing.T) {
+			pinchql, _ := inferAuditPinchQL(task)
+			// We don't have a public parse-only entry point on the
+			// engine, so the cheapest check is: ensure no recognised
+			// unsupported-operator pattern slipped in.
+			for _, bad := range []string{
+				" - ", "(n.end_line-n.start_line)", "n.start_line-n.end_line",
+				" + ", " * ", " / ",
+			} {
+				if strings.Contains(pinchql, bad) {
+					t.Errorf("template for %q contains arithmetic %q which pinchQL doesn't yet support (#928); got %q", task, bad, pinchql)
+				}
+			}
+		})
 	}
 }
 

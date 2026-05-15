@@ -7863,8 +7863,15 @@ func inferAuditPinchQL(task string) (pinchql, why string) {
 			"structural audit — pinchQL projects n.complexity directly. Adjust the threshold (currently 20) to match your task. ORDER BY complexity DESC surfaces the worst offenders first"
 	case strings.Contains(t, "line") && (strings.Contains(t, "long") || strings.Contains(t, "above") ||
 		strings.Contains(t, "over") || strings.Contains(t, "exceed") || strings.Contains(t, "more")):
-		return `MATCH (n:Function) WHERE (n.end_line - n.start_line) > 100 RETURN n.name, n.file_path, (n.end_line - n.start_line) AS lines ORDER BY lines DESC LIMIT 50`,
-			"structural audit — pinchQL computes lines = end_line - start_line. Adjust the threshold (currently 100) to match your task"
+		// #928: pinchQL doesn't yet support arithmetic operators
+		// (`-`, `+`, `*`, `/`) in WHERE/RETURN, so the obvious
+		// `(n.end_line - n.start_line) > 100` template crashes the
+		// parser. Until #928 lands, emit a length-correlated query
+		// that returns start_line + end_line and asks the caller to
+		// compute the diff client-side. Adjust to use real arithmetic
+		// once the engine supports it.
+		return `MATCH (n:Function) WHERE n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.start_line, n.end_line LIMIT 200`,
+			"structural audit — pinchQL doesn't yet support arithmetic in WHERE/RETURN (#928), so the engine can't filter by (end_line - start_line) directly. The query returns start_line + end_line for every Go non-test function (capped at 200 to stay bounded); compute the diff and sort descending client-side. Once #928 ships, this template will become `WHERE (n.end_line - n.start_line) > N ORDER BY ... DESC LIMIT 50`."
 	case strings.Contains(t, "untested") ||
 		(strings.Contains(t, "test") && (strings.Contains(t, "coverage") || strings.Contains(t, "missing"))):
 		// #923: scope to Go — regex-tier languages don't populate

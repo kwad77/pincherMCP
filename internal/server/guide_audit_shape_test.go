@@ -110,8 +110,11 @@ func TestInferAuditPinchQL_RoutesByKeyword(t *testing.T) {
 	}{
 		{"find every function with cyclomatic complexity above 20", "n.complexity"},
 		{"list functions with complexity over 15", "n.complexity"},
-		{"surface functions longer than 100 lines", "end_line - n.start_line"},
-		{"find functions with more than 80 lines", "end_line - n.start_line"},
+		// #928: pinchQL doesn't support arithmetic in WHERE/RETURN
+		// yet; line-count templates project start_line + end_line for
+		// client-side diff until the engine catches up.
+		{"surface functions longer than 100 lines", "n.start_line, n.end_line"},
+		{"find functions with more than 80 lines", "n.start_line, n.end_line"},
 		{"show me untested exported functions", "is_exported=true AND n.is_test=false"},
 		{"functions missing test coverage", "is_exported=true AND n.is_test=false"},
 		// Default fallback — the canonical #467 docstring example.
