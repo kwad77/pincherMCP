@@ -5408,6 +5408,13 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, starts[0].ID),
 				"why": "no call edges found at this depth — read the symbol's own source instead"},
 		}
+		// #858: distinguish "this symbol is a leaf" from "this language
+		// has no edge graph at all." For C / TS / etc. an empty trace is
+		// the second case — say so rather than letting it read like a
+		// genuine leaf result.
+		if gap := s.edgeCoverageGap(projectID); gap != "" {
+			meta["diagnosis"] = gap
+		}
 	}
 	data := map[string]any{
 		"root":      name,
@@ -5791,6 +5798,39 @@ func firstCodeSymbolName(syms []map[string]any) string {
 	return ""
 }
 
+// edgeCoverageGap returns a one-line advisory when a graph-shaped tool
+// (trace / dead_code) is about to return an empty result *because* the
+// project's dominant language has no cross-file edge resolution (#858).
+// resolveImports/Calls/Reads cover Go and Python; C / TypeScript / Rust
+// / etc. extract symbols fine but produce a zero-edge graph, so the
+// graph tools are silent no-ops on them — an empty result that reads
+// like "nothing to find" but actually means "unsupported language."
+//
+// Returns "" when the project has edges, has no symbols, or its
+// dominant language does have resolution — i.e. whenever an empty graph
+// result is genuinely meaningful. Best-effort: any DB error → "".
+func (s *Server) edgeCoverageGap(projectID string) string {
+	symCount, edgeCount, _, _, err := s.store.GraphStats(projectID)
+	if err != nil || symCount == 0 || edgeCount > 0 {
+		return ""
+	}
+	var lang string
+	var cnt int
+	row := s.store.RO().QueryRow(
+		`SELECT language, COUNT(*) c FROM symbols WHERE project_id=? GROUP BY language ORDER BY c DESC LIMIT 1`,
+		projectID)
+	if err := row.Scan(&lang, &cnt); err != nil || lang == "" {
+		return ""
+	}
+	switch lang {
+	case "Go", "Python":
+		// These have cross-file edge resolution — a zero-edge graph
+		// here is a real finding, not a coverage gap.
+		return ""
+	}
+	return fmt.Sprintf("This project is predominantly %s. Cross-file edge resolution currently covers Go and Python only (#858) — trace and dead_code return empty results here because the edge graph itself is empty, not because there are no callers / no dead code. Use search and neighborhood for %s navigation.", lang, lang)
+}
+
 func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 	_ = ctx
@@ -5907,6 +5947,18 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 					"why": "read the top dead symbol's source before recommending deletion — confirm the graph isn't missing an inbound edge"},
 				{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"inbound"}`, topName),
 					"why": "double-check inbound callers — name-based trace catches references the symbol-id graph might miss for regex-extracted languages"},
+			},
+		}
+	} else if gap := s.edgeCoverageGap(projectID); gap != "" {
+		// #858: the empty result isn't "no dead code" — it's "this
+		// language has no edge graph, so dead_code can't run." Tell the
+		// caller that instead of the misleading "lower min_confidence"
+		// advice (there are no edges at any confidence to lower toward).
+		data["_meta"] = map[string]any{
+			"diagnosis": gap,
+			"next_steps": []map[string]string{
+				{"tool": "health", "args": "{}",
+					"why": "see the per-language extraction + edge coverage breakdown for this project"},
 			},
 		}
 	} else {
