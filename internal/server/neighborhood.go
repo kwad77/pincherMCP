@@ -78,10 +78,19 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 
 	// Resolve project the same way handleSymbol does so a request
 	// authenticated for project A can't accidentally read project B.
+	// #1025: surface a clamp warning when the caller passed a project
+	// name that doesn't resolve. Pre-fix, neighborhood silently fell
+	// back to a global symbol lookup and returned siblings from
+	// WHATEVER project happened to own the seed id — typo'd project
+	// names looked successful. Same silent-fallback shape as #1023
+	// (health) and #1024 (stats).
 	var resolvedProjectID string
 	if projectArg != "" {
 		if pid, err := s.resolveProjectID(projectArg); err == nil {
 			resolvedProjectID = pid
+		} else {
+			clampWarnings = append(clampWarnings,
+				fmt.Sprintf("neighborhood: project %q did not resolve — falling back to global symbol lookup. Call `list` to see indexed projects.", projectArg))
 		}
 	}
 
