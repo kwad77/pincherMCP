@@ -147,17 +147,23 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 		top = 10
 	}
-	// #1016: upper-bound clamp. top governs three list caps (projects,
-	// extraction_failures, slow_queries) AND the per-project
-	// ListExtractionFailures call. Pre-fix top=99999 on a multi-project
+	// #1016 / #1054: upper-bound clamp. top governs three list caps
+	// (projects, extraction_failures, slow_queries) AND the per-project
+	// ListExtractionFailures call. Pre-#1016 top=99999 on a multi-project
 	// install produced a 506 KB response that blew the MCP per-call
-	// token cap — agent saw a truncation error with no recovery path.
-	// Same shape as search (#532) / neighborhood (#1013): 500 ceiling
-	// with a clamp warning so the caller knows they hit it.
-	const maxTop = 500
+	// token cap. #1016 capped at 500 to mirror search/neighborhood, but
+	// doctor returns three sections at `top` each PLUS per-row detail
+	// (file paths, multi-line stack traces) — at top=500 the response
+	// still ran ~218 KB and exceeded the MCP cap. Dogfood-discovered:
+	// the agent gets "result exceeds maximum allowed tokens" with no
+	// recovery affordance. Drop to 50 — three sections × 50 rows with
+	// ~400-byte rows lands well inside the per-call budget. For deeper
+	// enumeration use `list` (per-project pagination) or pinchQL
+	// queries against extraction_failures / slow_queries directly.
+	const maxTop = 50
 	if top > maxTop {
 		clampWarnings = append(clampWarnings,
-			fmt.Sprintf("doctor: top=%d clamped to %d (max). Use offset-style follow-up calls if you need to enumerate more.", rawTop, maxTop))
+			fmt.Sprintf("doctor: top=%d clamped to %d (max). The response carries 3 sections (projects, extraction_failures, slow_queries) each capped at `top` — higher caps blow the MCP per-call token budget. Use `list` for paginated project enumeration if you need more.", rawTop, maxTop))
 		top = maxTop
 	}
 
