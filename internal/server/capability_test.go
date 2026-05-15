@@ -185,6 +185,29 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		tag: "idempotency_declared",
+		probe: func(t *testing.T, srv *Server) {
+			// Advertised tag means OpenAPI spec stamps x-pincher-idempotent
+			// on every tool endpoint. Hit /v1/openapi.json and check.
+			req := httptest.NewRequest("GET", "/v1/openapi.json", nil)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			var spec map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &spec); err != nil {
+				t.Fatalf("openapi.json parse: %v", err)
+			}
+			paths := spec["paths"].(map[string]any)
+			search, ok := paths["/v1/search"].(map[string]any)
+			if !ok {
+				t.Fatal("/v1/search missing")
+			}
+			post := search["post"].(map[string]any)
+			if _, has := post["x-pincher-idempotent"]; !has {
+				t.Errorf("idempotency_declared advertised but x-pincher-idempotent absent from /v1/search")
+			}
+		},
+	},
+	{
 		tag: "sse",
 		probe: func(t *testing.T, srv *Server) {
 			// GET /v1/events must answer 200 with a text/event-stream

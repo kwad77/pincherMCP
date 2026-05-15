@@ -1775,9 +1775,10 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 		tier := toolComplexityTier(t)
 		paths[prefix+"/v1/"+t] = map[string]any{
 			"post": map[string]any{
-				"operationId":     t,
-				"summary":         summary,
-				"x-pincher-tier":  tier,
+				"operationId":           t,
+				"summary":               summary,
+				"x-pincher-tier":        tier,
+				"x-pincher-idempotent":  toolIsIdempotent(t),
 				"requestBody": map[string]any{
 					"required": true,
 					"content":  map[string]any{"application/json": map[string]any{"schema": requestSchema}},
@@ -2466,6 +2467,55 @@ func toolComplexityTier(tool string) string {
 	return toolComplexityTiers[tool]
 }
 
+// toolIdempotent declares whether the tool is safe to retry without
+// side-effects (#659). Routers/aggregators (zelos, bifrost, detour-
+// shape gateways) consult this declaration before retrying a failed
+// call: idempotent=true means "retry freely"; idempotent=false means
+// "the call has side effects, do not retry blindly." Static, tool-
+// level declaration — per-action ambiguity (adr set vs adr get) is
+// resolved at the tool level as the conservative case (the tool
+// EITHER mutates or it doesn't; mixed tools declare false).
+//
+// Gate test (TestToolIdempotency_EveryToolClassified) enforces every
+// registered tool has an entry. Pre-fix this declaration was implicit
+// in the code path; routers had to assume "not idempotent" and skip
+// retries conservatively. Capability advertisement (#649) carries
+// "idempotency_declared" so consumers know the data is available.
+var toolIdempotent = map[string]bool{
+	// Idempotent (true) — safe to retry.
+	"search":       true,
+	"symbol":       true,
+	"symbols":      true,
+	"context":      true,
+	"trace":        true,
+	"query":        true,
+	"guide":        true,
+	"changes":      true,
+	"fetch":        true,
+	"architecture": true,
+	"dead_code":    true,
+	"neighborhood": true,
+	"list":         true,
+	"health":       true,
+	"stats":        true,
+	"schema":       true,
+	"doctor":       true,
+	"self_test":    true, // read-only smoke-test; runs in a temp project that's cleaned before return
+
+	// Not idempotent (false) — writes/mutations; routers should not blindly retry.
+	"index":       false, // writes symbols + edges
+	"rebuild_fts": false, // rebuilds storage
+	"init":        false, // writes editor config files (write=true path)
+	"adr":         false, // mixed: get/list idempotent, set/delete not — declare conservatively
+}
+
+// toolIsIdempotent returns the registered idempotency declaration for
+// a tool. Used by the OpenAPI spec emitter to stamp
+// x-pincher-idempotent on every endpoint.
+func toolIsIdempotent(tool string) bool {
+	return toolIdempotent[tool]
+}
+
 // computeCapabilities builds the per-server capability advertisement
 // slice published in _meta.capabilities (#649). Each tag corresponds
 // to a feature with a runtime probe in capability_test.go; the
@@ -2539,6 +2589,12 @@ func computeCapabilities(s *Server) []string {
 		// binary_drift instead of polling /v1/health or
 		// /v1/index-progress. Always wired when the HTTP gateway is up.
 		"sse",
+
+		// Per-tool x-pincher-idempotent declaration in OpenAPI spec
+		// (#659, v0.58). Every tool endpoint stamps idempotent=true|false
+		// so router/aggregator retry logic can act on a machine-readable
+		// declaration rather than assuming "not idempotent" conservatively.
+		"idempotency_declared",
 	}
 
 	// Conditional capability — present when the operator has wired
