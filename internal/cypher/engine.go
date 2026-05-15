@@ -2018,6 +2018,16 @@ func operatorHint(op string) (string, bool) {
 		// #321: IN multi-value membership isn't implemented yet —
 		// the OR-of-equalities pattern is the documented workaround.
 		return "IN is not supported; combine equality conditions with OR: 'n.kind = \"Function\" OR n.kind = \"Method\"'", true
+	case "+", "-", "*", "/":
+		// #928: arithmetic operators aren't yet supported in WHERE/RETURN.
+		// Pre-fix the generic "unsupported operator: -" stopped at the
+		// symbol with no guidance — users hit this on the canonical
+		// `(n.end_line - n.start_line) > N` shape that #921's line-count
+		// audit template emits. Surface the open issue and the workaround
+		// shape so the failure teaches instead of dead-ending.
+		return "arithmetic operators (+, -, *, /) are not yet supported in pinchQL (tracked in #928). " +
+			"For line-count audits use `RETURN n.start_line, n.end_line` and compute the diff client-side; " +
+			"for fan-in ratios, run two queries and divide outside the engine.", true
 	}
 	return "", false
 }
