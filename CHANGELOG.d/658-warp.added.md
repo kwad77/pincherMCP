@@ -1,0 +1,1 @@
+`pincher init --target=warp` writes a project-scoped Warp Agent rules file at `./WARP.md` (or `~/.warp/WARP.md` with `--global`), same plain-markdown shape as `--target=claude` and `--target=gemini`. Detection fires on either `WARP.md` or `.warp/` at the project root. Last leg of #658 wave-1 init parity. (#658)

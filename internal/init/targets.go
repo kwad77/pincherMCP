@@ -71,6 +71,7 @@ var AllTargets = []Target{
 	CodexTarget,
 	ZedTarget,
 	GeminiTarget,
+	WarpTarget,
 }
 
 // FindTarget looks up a target by its --target value.
@@ -351,6 +352,42 @@ var GeminiTarget = Target{
 			return true
 		}
 		if _, err := os.Stat(filepath.Join(cwd, ".gemini")); err == nil {
+			return true
+		}
+		return false
+	},
+	WriteFn: MergePolicyBlock,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// warp (./WARP.md, ~/.warp/WARP.md global — same shape as claude)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Warp Agent loads project-scoped instructions from WARP.md at the
+// project root (or ~/.warp/WARP.md globally). Same plain-markdown
+// convention as Claude Code's CLAUDE.md and Gemini's GEMINI.md, so the
+// marker-block writer is reused without modification. #658 wave-1 init
+// parity, last leg.
+
+var WarpTarget = Target{
+	Name:           "warp",
+	Describe:       "Warp Agent: ./WARP.md (or ~/.warp/WARP.md with --global)",
+	SupportsGlobal: true,
+	PathFn: func(cwd string, global bool) (string, error) {
+		if global {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("user home dir: %w", err)
+			}
+			return filepath.Join(home, ".warp", "WARP.md"), nil
+		}
+		return filepath.Join(cwd, "WARP.md"), nil
+	},
+	DetectFn: func(cwd string) bool {
+		if _, err := os.Stat(filepath.Join(cwd, "WARP.md")); err == nil {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(cwd, ".warp")); err == nil {
 			return true
 		}
 		return false
