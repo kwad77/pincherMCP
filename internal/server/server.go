@@ -3734,6 +3734,17 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		// Apply field projection if requested — keeps the contract
 		// consistent (callers already use `fields=` patterns elsewhere).
 		liteData = projectFields(liteData, fieldSet)
+		// Stale-bytes warning still applies in lite mode — minimum
+		// envelope means "skip imports/callees/next_steps," not
+		// "swallow correctness signals." Without this, an agent that
+		// redirects from Read via lite=true gets stale source after
+		// an edit with zero indication the bytes don't match the
+		// current file (same silent-confidently-wrong family as #317
+		// + #960). attachStalenessWarning is a hash compare — cheap
+		// enough to keep on the lite path.
+		if root != "" {
+			s.attachStalenessWarning(liteData, sym.ProjectID, sym, root)
+		}
 		liteResponseJSON, _ := json.Marshal(liteData)
 		return s.jsonResultWithMeta(liteData, start, tool, args,
 			s.savedVsFileSizesSession(sym.ProjectID, root, []string{sym.FilePath}, liteResponseJSON)), nil
