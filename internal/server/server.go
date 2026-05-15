@@ -9128,10 +9128,17 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 			}
 			existing, _ := meta["warnings"].([]string)
 			var warnText string
-			if total > 0 && done >= total {
+			switch {
+			case total == 0:
+				// Walk-phase: gocodewalker is still enumerating files;
+				// FilesTotal hasn't been seeded yet. Pre-fix the wording
+				// read "mid-pass (0/0 files)" which conflicts with what
+				// the numbers show.
+				warnText = "indexer is starting (walking files); results may be incomplete — retry in a few seconds"
+			case done >= total:
 				warnText = fmt.Sprintf("indexer is finalizing (cross-file resolver running after %d/%d files extracted); results may still be incomplete — retry in a few seconds",
 					done, total)
-			} else {
+			default:
 				warnText = fmt.Sprintf("indexer is mid-pass (%d/%d files); results may be incomplete — retry after the pass completes",
 					done, total)
 			}
@@ -9481,14 +9488,20 @@ func (s *Server) errResultRich(msg string, nextSteps []map[string]string) *mcp.C
 				"files_done":  done,
 				"files_total": total,
 			}
-			// #993: phase the warning so files_done==files_total doesn't
-			// read "mid-pass (55/55 files)" — the per-file walk has
-			// finished but the cross-file resolvers are still running.
+			// #993/#1006: phase the warning across walk → extract → resolve.
+			// "mid-pass (0/0 files)" is what was firing on this path when
+			// GetProgress reported active=true before the walker had seeded
+			// FilesTotal. "mid-pass (55/55 files)" is what fires when the
+			// per-file walk is done but the cross-file resolvers are still
+			// running. Both confused agents reading the numbers.
 			var warnText string
-			if total > 0 && done >= total {
+			switch {
+			case total == 0:
+				warnText = "indexer is starting (walking files); result may be transient — retry in a few seconds"
+			case done >= total:
 				warnText = fmt.Sprintf("indexer is finalizing (cross-file resolver running after %d/%d files extracted); result may be transient — retry in a few seconds",
 					done, total)
-			} else {
+			default:
 				warnText = fmt.Sprintf("indexer is mid-pass (%d/%d files); result may be transient — retry after the pass completes",
 					done, total)
 			}
