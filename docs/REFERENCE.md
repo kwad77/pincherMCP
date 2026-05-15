@@ -560,7 +560,7 @@ Apply to the no-subcommand form (running as MCP server).
 | `--trust-proxy` | false | `PINCHER_TRUST_PROXY=1` | Honor X-Forwarded-* headers. Only enable behind a trusted proxy. |
 | `--slow-query-ms` | 0 | — | Persist tool calls slower than N ms to `slow_queries`. 0 = disabled (zero overhead). |
 | `--db-readers` | 4 | `PINCHER_DB_READERS` | Max concurrent SQLite read connections (1–32). Higher = more parallel tool calls under load. |
-| `--max-file-size-mb` | 512 | `PINCHER_MAX_FILE_SIZE_MB` | Per-file size cap during indexing. Larger files recorded as `file_too_large`, skipped. 0 disables cap. |
+| `--max-file-size-mb` | 4 | `PINCHER_MAX_FILE_SIZE_MB` | Per-file size cap during indexing. Larger files recorded as `file_too_large`, skipped. 0 disables cap. |
 
 ---
 
