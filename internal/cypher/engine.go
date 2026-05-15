@@ -3021,8 +3021,24 @@ func buildResult(allRows []map[string]any, q *queryAST) (*Result, error) {
 				key := rv.variable + "." + rv.property
 				val = row[key]
 			} else {
-				// Return all properties for the variable
-				val = row[rv.variable+".name"]
+				// #918: bare-variable return (`RETURN n`) emits the node
+				// as a nested object with all its properties — matching
+				// the Cypher spec and the comment-stated intent of this
+				// branch. Pre-fix the code returned just `.name`, so
+				// `RETURN n` silently produced `{"n": "Open"}` instead of
+				// the full property map. Same silent-confidently-wrong
+				// shape as the rest of this cycle's bug family.
+				node := map[string]any{}
+				prefix := rv.variable + "."
+				for k, v := range row {
+					if v == nil {
+						continue
+					}
+					if rest, ok := strings.CutPrefix(k, prefix); ok {
+						node[rest] = v
+					}
+				}
+				val = node
 			}
 			pr[cols[i]] = val
 		}
