@@ -4871,6 +4871,24 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}), nil
 	}
 	maxRows := intArg(args, "max_rows", 200)
+	// #879: clamp max_rows to the documented [1, 10000] range and warn.
+	// Pre-fix `cypher.Executor.maxRows()` silently rewrote 0 / negative
+	// to 200 and `> 10000` to 10000 — the caller got a different row
+	// budget than they asked for with no signal.
+	if rawMR, present := args["max_rows"]; present {
+		if mr, ok := rawMR.(float64); ok {
+			rawMRInt := int(mr)
+			if rawMRInt < 1 {
+				queryWarnings = append(queryWarnings,
+					fmt.Sprintf("max_rows=%d clamped to 1 (valid range 1-10000)", rawMRInt))
+				maxRows = 1
+			} else if rawMRInt > 10000 {
+				queryWarnings = append(queryWarnings,
+					fmt.Sprintf("max_rows=%d clamped to 10000 (valid range 1-10000)", rawMRInt))
+				maxRows = 10000
+			}
+		}
+	}
 	minConfidence := floatArg(args, "min_confidence", 0.0)
 	minConfidence, queryMinConfWarn := clampMinConfidence(minConfidence)
 	if queryMinConfWarn != "" {
@@ -5956,8 +5974,24 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		kindWarnings = append(kindWarnings, deadMinConfWarn)
 	}
 	limit := intArg(args, "limit", 100)
-	if limit > 500 {
-		limit = 500
+	// #879: surface the limit clamp instead of silently dropping the
+	// caller-requested page size. search/neighborhood already warn on
+	// limit clamp; dead_code didn't. Also clamps negative / zero to 1
+	// (pre-fix passed straight through to GetDeadCode and produced an
+	// empty or all-rows result depending on the driver).
+	if rawL, present := args["limit"]; present {
+		if l, ok := rawL.(float64); ok {
+			rawLInt := int(l)
+			if rawLInt < 1 {
+				kindWarnings = append(kindWarnings,
+					fmt.Sprintf("limit=%d clamped to 1 (valid range 1-500)", rawLInt))
+				limit = 1
+			} else if rawLInt > 500 {
+				kindWarnings = append(kindWarnings,
+					fmt.Sprintf("limit=%d clamped to 500 (valid range 1-500)", rawLInt))
+				limit = 500
+			}
+		}
 	}
 
 	rawDead, err := s.store.GetDeadCode(projectID, kinds, language, minConfidence, limit*2)
