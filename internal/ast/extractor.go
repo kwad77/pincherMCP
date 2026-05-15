@@ -1524,6 +1524,13 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 						Complexity:    estimateComplexity(source[lineStart:min(endByte, len(source))]),
 					})
 					funcMatched = true
+					// #858: per-file CALLS pass. Scan this function's body
+					// for C-family call sites so non-Go corpora get an
+					// edge graph instead of zero edges.
+					if opts.extractCalls {
+						result.Edges = append(result.Edges,
+							regexCallScan(source[lineStart:min(endByte, len(source))], qn)...)
+					}
 				}
 			}
 		}
@@ -1580,6 +1587,60 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 		}
 	}
 	return result
+}
+
+// regexCallRE matches a C-family call site: an identifier immediately
+// followed by `(`. Used by the regex extractor's per-file CALLS pass
+// (#858) for languages whose opts set extractCalls. Deliberately
+// permissive — the indexer's per-file resolver drops any ToName that
+// doesn't match a symbol in the same file, so a keyword or macro that
+// slips past regexCallKeywords resolves to nothing and vanishes rather
+// than becoming a false edge.
+var regexCallRE = regexp.MustCompile(`\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+
+// regexCallKeywords are C-family control-flow / operator keywords that
+// are followed by `(` but are not calls. A superset across C / C++ /
+// C# / Java / Rust — an entry irrelevant to one language is harmless
+// (those names just never appear as a call site there).
+var regexCallKeywords = map[string]bool{
+	"if": true, "for": true, "while": true, "switch": true,
+	"return": true, "sizeof": true, "catch": true, "do": true,
+	"else": true, "case": true, "defined": true, "alignof": true,
+	"typeof": true, "decltype": true, "static_assert": true,
+	"_Static_assert": true, "throw": true, "new": true, "delete": true,
+	"and": true, "or": true, "not": true,
+}
+
+// regexCallScan scans a Function/Method body for C-family call sites and
+// emits CALLS edges from fromQN (#858). body is the symbol's full source
+// span; everything before the first `{` (the signature — return type,
+// name, parameter types) is skipped so the function's own declaration
+// doesn't self-match. Targets are bare names; the indexer resolves them
+// per-file and drops misses, so over-emission here is bounded — it can
+// never produce a cross-file false edge. Confidence 0.6: below AST CALLS
+// (0.7), an honest regex-tier signal. Per-name dedup keeps a hot helper
+// called ten times from emitting ten identical edges.
+func regexCallScan(body []byte, fromQN string) []ExtractedEdge {
+	open := bytes.IndexByte(body, '{')
+	if open < 0 {
+		return nil
+	}
+	var edges []ExtractedEdge
+	seen := map[string]bool{}
+	for _, m := range regexCallRE.FindAllSubmatch(body[open:], -1) {
+		name := string(m[1])
+		if regexCallKeywords[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		edges = append(edges, ExtractedEdge{
+			FromQN:     fromQN,
+			ToName:     name,
+			Kind:       "CALLS",
+			Confidence: 0.6,
+		})
+	}
+	return edges
 }
 
 // disambiguateDuplicates makes the (QN, kind) keys in result.Symbols unique
@@ -1648,6 +1709,13 @@ type extractOpts struct {
 	// def/class/module/do with `end`, not a brace — without this every
 	// such symbol got an 80-line span clamped to EOF (#805).
 	endKeyword bool
+	// extractCalls turns on the per-file CALLS pass (#858): each
+	// Function/Method body is scanned for C-family `name(` call sites
+	// and CALLS edges are emitted. Off by default — only set for
+	// languages whose call syntax `regexCallScan` can read. Without it,
+	// regex-tier languages produce a zero-edge graph (trace / dead_code
+	// silently empty).
+	extractCalls bool
 }
 
 // Language-specific extractors
@@ -1868,7 +1936,12 @@ var cMacroRE = regexp.MustCompile(
 //   - extractCBareMacros must run AFTER dropForwardDecls so the bare
 //     macro pass doesn't re-emit names just removed.
 func extractC(source []byte, relPath string) *FileResult {
-	result := cRE.extract(source, relPath, "C", simpleOpts("::", '{'))
+	// #858: opt into the per-file CALLS pass. C's `name(` call syntax is
+	// exactly what regexCallScan reads; same-file calls resolve, cross-
+	// file calls drop (the regex-tier per-file resolution policy).
+	cOpts := simpleOpts("::", '{')
+	cOpts.extractCalls = true
+	result := cRE.extract(source, relPath, "C", cOpts)
 	rewriteCMacroSymbols(result, source, relPath)
 	result.Symbols = dropCForwardDecls(result.Symbols, source)
 	result.Symbols = append(result.Symbols, extractCBareMacros(source, relPath, result.Symbols)...)
