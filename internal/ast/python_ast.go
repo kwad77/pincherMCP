@@ -157,7 +157,17 @@ func (r *pythonResponse) toFileResult() *FileResult {
 			Confidence: e.Confidence,
 		}
 	}
-	return &FileResult{Symbols: syms, Edges: edges, Module: r.Module}
+	// #944: signal to ExtractWithModule that this FileResult is AST-tier.
+	// The Python langAdapter registers confidence=0.85 (regex fallback's
+	// honest floor); without this override, AST-extracted symbols stamp
+	// the same value as regex-extracted ones, leaving no way to tell the
+	// two apart in the database or via min_confidence filtering.
+	return &FileResult{
+		Symbols:            syms,
+		Edges:              edges,
+		Module:             r.Module,
+		ConfidenceOverride: 1.0,
+	}
 }
 
 // extractPythonAST shells out to python3 with the embedded helper script.

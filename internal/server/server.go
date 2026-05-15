@@ -6907,6 +6907,16 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 				report.Coverage[i].Parser = "Regex"
 			}
 		}
+		// #944: Python has a regex/AST dispatcher behind the langAdapter.
+		// The adapter registers confidence=0.85 (the regex fallback's
+		// honesty), so the above loop labels Python "Regex" even when
+		// extractPythonAST is actually running. PythonAvailable() probes
+		// the same gate the dispatcher uses, so we can upgrade the label
+		// to "AST" when the runtime conditions for AST extraction hold.
+		// Honest signal to agents that filter by parser identity.
+		if report.Coverage[i].Language == "Python" && ast.PythonAvailable() {
+			report.Coverage[i].Parser = "AST"
+		}
 	}
 
 	data := map[string]any{

@@ -136,6 +136,16 @@ type FileResult struct {
 	// the QNs unique by appending `~<line>` to the 2nd+ occurrences;
 	// callers that want to track the underlying issue read this map.
 	QNCollisions map[string]int
+
+	// ConfidenceOverride lets a dispatcher (langAdapter for Python /
+	// future JS-AST) declare that this FileResult was produced by a
+	// higher-quality extractor than the langAdapter's registered
+	// confidence. When non-zero, ExtractWithModule uses this value as
+	// the baseline for per-symbol composition instead of the adapter's
+	// Confidence(). #944: pre-fix the Python AST dispatcher returned
+	// symbols stamped at the regex-tier 0.85 → ~0.975, so callers had
+	// no signal that AST extraction had actually run.
+	ConfidenceOverride float64
 }
 
 // Extract dispatches to the registered Extractor for the given language.
@@ -168,6 +178,13 @@ func ExtractWithModule(source []byte, language, relPath, modulePath string) *Fil
 	// forget to call disambiguateDuplicates.
 	disambiguateDuplicates(result)
 	conf := e.Confidence()
+	// #944: dispatcher-level override. When a langAdapter routes to a
+	// higher-quality extractor at runtime (Python AST, future JS AST)
+	// the FileResult declares the actual extractor's confidence so the
+	// adapter's static-registered value doesn't downgrade AST output.
+	if result.ConfidenceOverride > 0 {
+		conf = result.ConfidenceOverride
+	}
 	for i := range result.Symbols {
 		// Per-symbol composition (#34). In Phase 1 every signal contributes
 		// 0 except BaseExtractor (and KindBaseline which falls back to
