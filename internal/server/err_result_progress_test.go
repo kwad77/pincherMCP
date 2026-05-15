@@ -37,6 +37,37 @@ func TestErrResultRich_IdleIndexer_NoInProgressFlag(t *testing.T) {
 	}
 }
 
+// #1006: when files_total is 0 the walker is still enumerating files;
+// FilesTotal hasn't been seeded yet. The warning must say "starting
+// (walking files)", not the misleading "mid-pass (0/0 files)".
+func TestErrResultRich_FilesTotalZero_SaysStartingNotMidPass(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.sessionID = "p1006-walk"
+	srv.indexer.MarkActiveForTest("p1006-walk", 0, 0)
+	t.Cleanup(func() { srv.indexer.UnmarkActiveForTest("p1006-walk") })
+
+	res := srv.errResultRich("symbol not found", []map[string]string{{
+		"tool": "search", "args": `{"query":"X"}`, "why": "look by name",
+	}})
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	warnings, _ := meta["warnings"].([]any)
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning when indexer is active")
+	}
+	warn, _ := warnings[0].(string)
+	if strings.Contains(warn, "mid-pass") {
+		t.Errorf("walk-phase (total=0) must NOT say 'mid-pass'; got %q", warn)
+	}
+	if !strings.Contains(warn, "starting") {
+		t.Errorf("walk-phase (total=0) should say 'starting'; got %q", warn)
+	}
+	if strings.Contains(warn, "0/0") {
+		t.Errorf("walk-phase warning should not include the 0/0 count; got %q", warn)
+	}
+}
+
 // #993: when files_done == files_total the per-file walk has finished
 // but cross-file resolvers are still running. The warning must say
 // "finalizing", not the misleading "mid-pass (55/55 files)".
