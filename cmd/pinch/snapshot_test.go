@@ -23,6 +23,7 @@ var corpora = []string{
 	"node-monorepo",
 	"docs-site",
 	"terraform-stack",
+	"python-app",
 }
 
 // TestCorpusSnapshot pins the snapshot round-trip end-to-end without

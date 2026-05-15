@@ -174,6 +174,37 @@ production:
 	}
 }
 
+// Merge keys (`<<: *anchor`) are real YAML mapping keys with the
+// special name "<<" — yaml.v3 surfaces them as scalar keys. Pinning
+// here so we know what the QN looks like; if a future change strips
+// merge-key entries from the symbol set (arguable — they don't
+// represent caller-relevant config) the diff catches it. Same shape
+// of contract as the rest of the YAML invariants in this file:
+// behaviour is documented, not silently changeable.
+func TestExtractYAML_MergeKey(t *testing.T) {
+	src := []byte(`defaults: &defaults
+  timeout: 30
+
+production:
+  <<: *defaults
+  host: prod.example.com
+`)
+	result := Extract(src, "YAML", "merge.yml")
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range result.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	if _, ok := byQN["production.<<"]; !ok {
+		t.Errorf("merge key extracted as production.<<; got QNs: %v", mapKeys(byQN))
+	}
+	if _, ok := byQN["production.host"]; !ok {
+		t.Error("sibling production.host should survive alongside merge key")
+	}
+	if _, ok := byQN["production.timeout"]; ok {
+		t.Error("merge-key expansion is a yaml.v3 runtime concept — pincher's static extraction must NOT materialise production.timeout from the merge")
+	}
+}
+
 func TestExtractYAML_KeySanitization(t *testing.T) {
 	src := []byte(`key.with.dots: value
 key/with/slashes: value

@@ -267,3 +267,50 @@ Use camelCase.
 		t.Errorf("missing style_guide.naming symbol; got QNs: %v", mapKeys(got))
 	}
 }
+
+// Headings inside fenced code blocks must NOT become Section symbols.
+// CommonMark treats `## ...` inside a triple-backtick block as code
+// content, not a heading. Pre-extractor pincher (regex-tier) used to
+// over-match; the goldmark parser handles this correctly, but the
+// test pins the contract so a future swap of the markdown parser
+// can't quietly reintroduce the bug.
+func TestExtractMarkdown_HeadingsInCodeBlocksIgnored(t *testing.T) {
+	src := []byte("# Top\n\n## Real Heading\n\n```\n## NOT a heading (in code block)\n```\n\nMore prose.\n")
+	r := Extract(src, "Markdown", "code-block.md")
+	if r == nil {
+		t.Fatal("Extract returned nil")
+	}
+	if len(r.Symbols) != 2 {
+		t.Errorf("expected 2 sections (Top + Real Heading), got %d", len(r.Symbols))
+	}
+	for _, s := range r.Symbols {
+		if s.Name == "NOT a heading (in code block)" {
+			t.Errorf("heading inside code block must not become a Section symbol: %s", s.QualifiedName)
+		}
+	}
+}
+
+// Setext-style headings (underlined with === or ---) are valid
+// CommonMark equivalents to # / ##. Pin them as a regression guard —
+// pincher's docs corpus matters most on README/CHANGELOG, both of
+// which can carry setext headings depending on tooling.
+func TestExtractMarkdown_SetextHeadings(t *testing.T) {
+	src := []byte("Title\n=====\n\nIntro prose.\n\nSubsection\n----------\n\nMore.\n")
+	r := Extract(src, "Markdown", "setext.md")
+	if r == nil {
+		t.Fatal("Extract returned nil")
+	}
+	if len(r.Symbols) != 2 {
+		t.Errorf("expected 2 sections from setext headings, got %d", len(r.Symbols))
+	}
+	byQN := make(map[string]ExtractedSymbol)
+	for _, s := range r.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	if _, ok := byQN["title"]; !ok {
+		t.Errorf("missing 'title' (H1-setext); got QNs: %v", mapKeys(byQN))
+	}
+	if _, ok := byQN["title.subsection"]; !ok {
+		t.Errorf("missing 'title.subsection' (H2-setext); got QNs: %v", mapKeys(byQN))
+	}
+}
