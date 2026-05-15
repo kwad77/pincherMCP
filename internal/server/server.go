@@ -3137,7 +3137,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"include_source":{"type":"boolean","description":"If true, also fetch each neighbor's source body via the byte-offset path. Default false (signatures only — much cheaper)."},
 				"include_self":{"type":"boolean","description":"If true, include the seed symbol itself in the neighbors list. Default false (caller already has it)."},
-				"limit":{"type":"integer","description":"Maximum neighbors to return (default 50). Files with more symbols paginate via _meta.next_steps."},
+				"limit":{"type":"integer","description":"Maximum neighbors to return (default 50, max 500). Files with more symbols paginate via _meta.next_steps."},
 				"offset":{"type":"integer","description":"Skip the first N neighbors (default 0). Use the value from _meta.next_steps to walk the file."}
 			}
 		}`),

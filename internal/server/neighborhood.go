@@ -57,6 +57,19 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 			fmt.Sprintf("neighborhood: limit=%d clamped to 50 (must be positive)", limit))
 		limit = 50
 	}
+	// #1013: cap the upper bound. Pre-fix a caller passing limit=99999 got
+	// "every symbol in the file" — on big files (server.go's 200+ symbols)
+	// the response blew the per-call token cap and the agent saw an MCP
+	// truncation error with no recovery path. Same shape as search's
+	// #532 limit=500 cap with a clamp-warning so the caller knows they
+	// hit it. 500 is the same ceiling search uses; neighborhood scopes to
+	// one file so 500 will always be enough for real files.
+	const maxLimit = 500
+	if limit > maxLimit {
+		clampWarnings = append(clampWarnings,
+			fmt.Sprintf("neighborhood: limit=%d clamped to %d (max). Use offset to page deeper.", limit, maxLimit))
+		limit = maxLimit
+	}
 	if offset < 0 {
 		clampWarnings = append(clampWarnings,
 			fmt.Sprintf("neighborhood: offset=%d clamped to 0 (must be >= 0)", offset))
