@@ -4537,8 +4537,15 @@ func looksLikeDeliberateFTS5Expr(tokens []string) bool {
 }
 
 // looksLikeCodeIdent reports whether a token reads as a source-code
-// identifier rather than a plain English word. CamelCase, identifier
-// punctuation, or a prefix wildcard all qualify.
+// identifier rather than a plain English word. Identifier punctuation,
+// a prefix wildcard, or mixed-case ASCII (camelCase OR PascalCase) all
+// qualify.
+//
+// #919: pre-fix only PascalCase (uppercase-first + lowercase inside)
+// counted; camelCase tokens like `handleSearch` were treated as prose
+// and the entire query was phrase-wrapped, defeating #887's OR
+// support. The `hasMixedCase` predicate unifies both shapes — same
+// detector used by `needsQuoting` at the token-wrap layer.
 func looksLikeCodeIdent(s string) bool {
 	if strings.HasSuffix(s, "*") {
 		return true
@@ -4546,14 +4553,7 @@ func looksLikeCodeIdent(s string) bool {
 	if strings.ContainsAny(s, "._-") {
 		return true
 	}
-	if len(s) >= 2 && s[0] >= 'A' && s[0] <= 'Z' {
-		for i := 1; i < len(s); i++ {
-			if s[i] >= 'a' && s[i] <= 'z' {
-				return true
-			}
-		}
-	}
-	return false
+	return hasMixedCase(s)
 }
 
 // looksLikeIdentToken reports whether a token reads as a source-code
