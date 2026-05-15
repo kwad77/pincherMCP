@@ -13,12 +13,11 @@
 
 ## Release alignment
 
-<!-- Pick one. The milestone field on this PR must match. See CLAUDE.md > Release process. -->
+<!-- The PR must be assigned to a milestone at create time. See CLAUDE.md > Release process. Default to the next-shipping minor on the milestones page: https://github.com/kwad77/pincher/milestones -->
 
-- [ ] `v0.4.0` — capture-what-shipped (already cut or about to)
-- [ ] `v0.5.0` — trustworthy single-binary release
-- [ ] `v1.0` — API freeze + announce
-- [ ] Patch release (`v0.X.Y`) — bug fix only, no features
+- [ ] Current minor (default) — features, schema migrations, new CLI surface
+- [ ] Patch release (`v0.X.Y`) — bug fix only, no features, no schema changes
+- [ ] `v1.0` — API freeze + announce (tracked at #638)
 
 ## Closes / refs
 
