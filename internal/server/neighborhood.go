@@ -163,6 +163,24 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 	if resolvedProjectID != "" {
 		projectID = resolvedProjectID
 	}
+	// #1051: cross-project leak warning, mirroring #1049 / #1050.
+	// When projectArg is omitted, GetSymbol above resolves to whichever
+	// indexed project happens to carry the seed id — mirror projects
+	// (sniffer mirrors, MCP_Combine staging, .pincher-supported
+	// snapshots) carry identical IDs to their primary repo. Pre-fix
+	// neighborhood happily returned 224 neighbors from the wrong tree
+	// (the seed's project, not the session's), with bytes pulled from
+	// the wrong on-disk file. Agents using the neighbor list to plan
+	// an in-file refactor were planning against the wrong file. Same
+	// guards as #1049: only fires when no project arg was passed and
+	// the resolution actually crossed projects. "*" / explicit-project
+	// callers asked for cross-project lookups deliberately.
+	if projectArg == "" && s.sessionID != "" && seed.ProjectID != s.sessionID {
+		clampWarnings = append(clampWarnings, fmt.Sprintf(
+			"seed %q resolved from project %q rather than the session project %q — an indexed mirror or stale snapshot carries an ID identical to your working tree. The neighbor list + every file_path below belongs to the off-tree project. Re-issue with project=%q to pin scope, or project=%q if you intended that source.",
+			id, seed.ProjectID, s.sessionID, s.sessionID, seed.ProjectID,
+		))
+	}
 	siblings, err := s.store.GetSymbolsForFile(projectID, seed.FilePath)
 	if err != nil {
 		return errResult(fmt.Sprintf("db error fetching siblings: %v", err)), nil
