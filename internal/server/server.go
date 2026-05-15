@@ -5353,7 +5353,22 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	defer cancel()
 	result, err := exec.Execute(queryCtx, cql)
 	if err != nil {
-		return errResult(fmt.Sprintf("cypher error: %v", err)), nil
+		// Rich error envelope so cypher parse/syntax failures carry
+		// recovery next_steps. Operator-hint family (BETWEEN, !=,
+		// LIKE, IN, arithmetic) already teaches the supported
+		// spelling inline in the message; the next_steps lead the
+		// caller to schema/guide when the error is about something
+		// else (unknown property, malformed regex, type mismatch).
+		return s.errResultRich(
+			fmt.Sprintf("cypher error: %v", err),
+			[]map[string]string{
+				{"tool": "schema", "args": `{}`,
+					"why": "list valid node and edge kinds the query can match on"},
+				{"tool": "query", "args": `{"pinchql":"MATCH (f:Function) WHERE f.name=\"main\" RETURN f.file_path LIMIT 10"}`,
+					"why": "working pinchQL example — copy the shape, swap the predicate"},
+				{"tool": "guide", "args": `{"task":"<describe what you're trying to find>"}`,
+					"why": "guide proposes a query shape from a free-form task description"},
+			}), nil
 	}
 
 	// min_confidence filters rows whose query projects an
