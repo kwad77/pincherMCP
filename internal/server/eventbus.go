@@ -68,7 +68,8 @@ func (b *eventBus) publish(ev sseEvent) {
 }
 
 // subscriberCount reports how many SSE clients are currently connected.
-// Used by tests and could feed a future health field.
+// Drives the eventbus_test.go subscribe/publish lifecycle tests; could
+// feed a future health field once `/v1/health` learns SSE liveness.
 func (b *eventBus) subscriberCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
