@@ -227,8 +227,26 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// would otherwise overwrite it). Best-effort; a missing prior row
 	// just yields estimate 0.
 	var fileCountEstimate int
+	// #936: When the running binary's version differs from the project's
+	// last-indexed binary_version, treat the run as if force=true. The
+	// canonical case: file's content hasn't changed but the extractor
+	// HAS — e.g. python_extract.py was indexed by the pre-#856 regex
+	// path, hash matched on the next index, so the new Python-AST
+	// extractor never ran. Same shape affects any extractor/resolver
+	// upgrade that's behaviorally significant but doesn't change file
+	// content. Empty binary_version on either side (legacy index, dev
+	// build) opts out of the force — we don't want one-shot CLI runs
+	// with --version=dev to nuke the project's hash cache on every call.
+	var binaryDriftForce bool
 	if prev, _ := idx.store.GetProject(projectID); prev != nil {
 		fileCountEstimate = prev.FileCount
+		if prev.BinaryVersion != "" && idx.binaryVersion != "" && prev.BinaryVersion != idx.binaryVersion {
+			binaryDriftForce = true
+			slog.Info("pincher.index.binary_drift_force_reindex",
+				"project_id", projectID,
+				"indexed_with", prev.BinaryVersion,
+				"running", idx.binaryVersion)
+		}
 	}
 	idx.emitEvent("index_started", map[string]any{
 		"project_id":          projectID,
@@ -356,7 +374,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		// here (not in the per-file goroutine) so no mutex needed.
 		seenFiles[relPath] = true
 
-		if !force {
+		if !force && !binaryDriftForce {
 			stored := idx.store.GetFileHash(projectID, relPath)
 			if stored == hash {
 				totalSkipped++
