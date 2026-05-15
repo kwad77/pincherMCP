@@ -3897,7 +3897,14 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 		// Apply field projection if requested — keeps the contract
 		// consistent (callers already use `fields=` patterns elsewhere).
-		liteData = projectFields(liteData, fieldSet)
+		// #1031: switched from projectFields (silent drop on unknown
+		// names) to projectAndCheckFields. Pre-fix `context lite=true
+		// fields=bogus_field` returned an empty body with no warning —
+		// same silent-confidently-wrong shape as #1030 (search fields).
+		// projectAndCheckFields drops unknown keys with a warning and
+		// falls back to the full lite body if every requested field was
+		// bogus, so the call stays useful while the caller learns.
+		liteData = projectAndCheckFields(liteData, fieldSet)
 		// Stale-bytes warning still applies in lite mode — minimum
 		// envelope means "skip imports/callees/next_steps," not
 		// "swallow correctness signals." Without this, an agent that
