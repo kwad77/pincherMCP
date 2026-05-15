@@ -240,8 +240,12 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 
 	// Ensure project record exists. #304: stamp the running binary
 	// version so health can detect drift later — empty when the
-	// caller didn't plumb SetBinaryVersion.
-	if err := idx.store.UpsertProject(db.Project{
+	// caller didn't plumb SetBinaryVersion. #894: use the *Meta variant
+	// so the counts from the previous index run aren't zeroed during
+	// the brief window before UpdateProjectCounts catches up — health
+	// previously reported 0 files / 0 symbols / 0 edges in that gap
+	// even though the underlying tables were intact.
+	if err := idx.store.UpsertProjectMeta(db.Project{
 		ID:            projectID,
 		Path:          absPath,
 		Name:          projectName,
