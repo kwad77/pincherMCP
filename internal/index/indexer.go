@@ -123,6 +123,33 @@ func (idx *Indexer) MaxFileSize() int64 {
 	return idx.maxFileSize
 }
 
+// MarkActiveForTest stamps the indexer's active+progress state for the
+// given project so tests can exercise the "indexer mid-pass" branch of
+// consumers (e.g. server-side `_meta.index_in_progress` injection) without
+// having to spawn a real indexing pass. Production code never calls this
+// directly — naming carries the contract. Pair with UnmarkActiveForTest in
+// a defer to keep state isolated across test cases.
+func (idx *Indexer) MarkActiveForTest(projectID string, done, total int64) {
+	idx.mu.Lock()
+	if idx.active == nil {
+		idx.active = make(map[string]bool)
+	}
+	idx.active[projectID] = true
+	idx.mu.Unlock()
+	p := &IndexProgress{}
+	p.FilesDone.Store(done)
+	p.FilesTotal.Store(total)
+	idx.progress.Store(projectID, p)
+}
+
+// UnmarkActiveForTest reverts MarkActiveForTest.
+func (idx *Indexer) UnmarkActiveForTest(projectID string) {
+	idx.mu.Lock()
+	delete(idx.active, projectID)
+	idx.mu.Unlock()
+	idx.progress.Delete(projectID)
+}
+
 // GetProgress returns current file progress for the given project ID.
 // Returns (done, total, active). If not currently indexing, active=false.
 func (idx *Indexer) GetProgress(projectID string) (done, total int64, active bool) {

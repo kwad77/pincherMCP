@@ -9220,13 +9220,38 @@ func shortNameFromID(id string) string {
 // Clients that only parse text content still see the error message — JSON
 // is a superset of text in their renderers — but JSON-aware clients pick
 // up the structured remediation.
+//
+// #974: also stamps `index_in_progress` when the session indexer is
+// mid-pass, mirroring the success path in jsonResultWithMeta. A
+// "symbol not found" surfaced during a binary-drift re-extract is
+// almost always transient — the caller deserves the same signal a
+// successful-but-incomplete response carries, with a retry-after-pass
+// hint prepended to next_steps.
 func (s *Server) errResultRich(msg string, nextSteps []map[string]string) *mcp.CallToolResult {
+	meta := map[string]any{
+		"capabilities": s.capabilities,
+	}
+	if s.indexer != nil && s.sessionID != "" {
+		if done, total, active := s.indexer.GetProgress(s.sessionID); active {
+			meta["index_in_progress"] = map[string]any{
+				"files_done":  done,
+				"files_total": total,
+			}
+			meta["warnings"] = []string{
+				fmt.Sprintf("indexer is mid-pass (%d/%d files); result may be transient — retry after the pass completes",
+					done, total),
+			}
+			nextSteps = append([]map[string]string{{
+				"tool":  "index",
+				"args":  `{}`,
+				"why":   "wait for the in-flight pass to finish (or call again in a few seconds) — the symbol may resolve once extraction catches up",
+			}}, nextSteps...)
+		}
+	}
+	meta["next_steps"] = nextSteps
 	body := map[string]any{
 		"error": msg,
-		"_meta": map[string]any{
-			"capabilities": s.capabilities,
-			"next_steps":   nextSteps,
-		},
+		"_meta": meta,
 	}
 	b, _ := json.Marshal(body)
 	return &mcp.CallToolResult{
