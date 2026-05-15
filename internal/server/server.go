@@ -7098,29 +7098,41 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		}
 		data["pruned"] = pruned
 	}
-	// Surface next page when the response is partial.
+	// Surface next page when the response is partial. #1020: merge
+	// into existing _meta — overwriting clobbers clamp warnings the
+	// block above attached. Before the fix, `list active_within_days=0
+	// limit=2` (paginated + clamp-warned) lost the
+	// "active_within_days=0 ignored — using default 14" warning
+	// entirely because this assignment replaced `_meta`.
 	if limit >= 0 && pageEnd < total {
-		data["_meta"] = map[string]any{
-			"next_steps": []map[string]string{
-				{
-					"tool": "list",
-					"args": fmt.Sprintf(`{"limit":%d,"offset":%d}`, limit, pageEnd),
-					"why":  fmt.Sprintf("%d total projects after filters; you've seen %d-%d. Page to see the rest.", total, pageStart+1, pageEnd),
-				},
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["next_steps"] = []map[string]string{
+			{
+				"tool": "list",
+				"args": fmt.Sprintf(`{"limit":%d,"offset":%d}`, limit, pageEnd),
+				"why":  fmt.Sprintf("%d total projects after filters; you've seen %d-%d. Page to see the rest.", total, pageStart+1, pageEnd),
 			},
 		}
+		data["_meta"] = meta
 	}
 	// Empty-state guidance — first-contact agents (fresh install,
 	// no projects yet) need to know the next step is `index`. A bare
 	// `count: 0` is silent failure: the index is real and queryable,
 	// just empty.
 	if total == 0 {
-		meta := map[string]any{
-			"diagnosis": "no projects indexed yet — pincher's symbol store is empty",
-			"next_steps": []map[string]string{
-				{"tool": "index", "args": `{"path":"/path/to/your/project"}`,
-					"why": "index a repo to populate the symbol store; subsequent `search`/`context`/`trace` calls require at least one indexed project"},
-			},
+		// #1020: merge into existing _meta so prior clamp warnings
+		// survive — fresh-init `data["_meta"] = map[...]` clobbered them.
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["diagnosis"] = "no projects indexed yet — pincher's symbol store is empty"
+		meta["next_steps"] = []map[string]string{
+			{"tool": "index", "args": `{"path":"/path/to/your/project"}`,
+				"why": "index a repo to populate the symbol store; subsequent `search`/`context`/`trace` calls require at least one indexed project"},
 		}
 		if dropped > 0 {
 			// Filtered-empty rather than truly-empty: tell the agent
