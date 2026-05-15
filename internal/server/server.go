@@ -3294,35 +3294,13 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"source":                source,
 	}
 
-	// #908: route through projectFieldsChecked so unknown fields are
-	// warned instead of being included as null. Pre-fix
-	// `data[f] = allFields[f]` returned `nil` for an unknown key — the
-	// response carried `{nonexistent_field: null}` which lied about
-	// the field's existence. The context handler already does this;
-	// symbol now matches.
-	var data map[string]any
-	if fieldSet == nil {
-		data = allFields
-	} else {
-		projected, unknown := projectFieldsChecked(allFields, fieldSet)
-		if len(unknown) > 0 {
-			realKeys := projectableKeys(projected)
-			validKeys := projectableKeys(allFields)
-			if len(realKeys) == 0 {
-				data = allFields
-				attachWarning(data, fmt.Sprintf(
-					"fields=%v matched no keys; valid keys: %v — returning full response",
-					unknown, validKeys))
-			} else {
-				attachWarning(projected, fmt.Sprintf(
-					"fields %v matched no keys and were dropped; valid keys: %v",
-					unknown, validKeys))
-				data = projected
-			}
-		} else {
-			data = projected
-		}
-	}
+	// #908/#914: route through the shared projection-with-check helper
+	// so unknown fields are warned instead of being included as null.
+	// Pre-#908 `data[f] = allFields[f]` returned `nil` for an unknown
+	// key — the response carried `{nonexistent_field: null}` which
+	// lied about the field's existence. #914 hoisted the check pattern
+	// out of this handler so trace / changes match the same shape.
+	data := projectAndCheckFields(allFields, fieldSet)
 	// #317: warn when the file on disk has changed since indexing —
 	// byte offsets we just used point at content that no longer
 	// matches the indexed symbol. Only emitted when source was
@@ -5647,7 +5625,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// trim shape via downstream `symbol`/`symbols` calls). Top-level
 	// projection lets callers drop e.g. `risk_summary` when they
 	// only want the hop list.
-	data = projectFields(data, parseFieldsArg(str(args, "fields")))
+	data = projectAndCheckFields(data, parseFieldsArg(str(args, "fields")))
 	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(projectID, traceRoot, tracedPaths, responseJSON)), nil
 }
 
@@ -5911,7 +5889,7 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 	// PR-prep flow: caller wants summary + tests_to_run, skips
 	// changed_symbols/impacted lists. `fields=summary,tests_to_run`
 	// drops ~80% of the response when the diff impacts many symbols.
-	data = projectFields(data, parseFieldsArg(str(args, "fields")))
+	data = projectAndCheckFields(data, parseFieldsArg(str(args, "fields")))
 	// Honest savings baseline: the agent's alternative was reading every
 	// changed file plus every transitively-impacted symbol's file. Sum
 	// real file sizes (de-duped + per-session dedup'd) rather than the
@@ -8940,6 +8918,41 @@ func projectFields(m map[string]any, allow map[string]bool) map[string]any {
 		out["_meta"] = v
 	}
 	return out
+}
+
+// projectAndCheckFields (#914) is the shared projection+check pattern
+// used by every handler that exposes a `fields=` parameter. It runs
+// `projectFieldsChecked`, decides between "drop unknowns + warn" and
+// "all-unknown → keep full response + warn", and returns the chosen
+// data map. Caller passes a no-op `fields` (empty allow map → nil
+// returned by parseFieldsArg) and gets m unchanged.
+//
+// Pre-#914 the rule was applied only in `symbol` and `context`; trace,
+// changes, and similar handlers used the plain `projectFields` and
+// silently dropped typo'd field names with no signal.
+func projectAndCheckFields(m map[string]any, allow map[string]bool) map[string]any {
+	if allow == nil {
+		return m
+	}
+	projected, unknown := projectFieldsChecked(m, allow)
+	if len(unknown) == 0 {
+		return projected
+	}
+	validKeys := projectableKeys(m)
+	realKeys := projectableKeys(projected)
+	if len(realKeys) == 0 {
+		// Every requested field was bogus — keep the full body so the
+		// call stays useful, but tell the caller their projection was
+		// malformed.
+		attachWarning(m, fmt.Sprintf(
+			"fields=%v matched no keys; valid keys: %v — returning full response",
+			unknown, validKeys))
+		return m
+	}
+	attachWarning(projected, fmt.Sprintf(
+		"fields %v matched no keys and were dropped; valid keys: %v",
+		unknown, validKeys))
+	return projected
 }
 
 // projectFieldsChecked is projectFields plus the list of requested
