@@ -4363,6 +4363,24 @@ func verifyEmptySearchCause(
 	// first (kind narrows hardest), then language, then corpus.
 	if kind != "" {
 		if n, err := relax(query, "", language, corpus); err == nil && n > 0 {
+			// #910: same canonical-case probe pattern as #902 for the
+			// kind filter. Stored canonical values are Function /
+			// Method / Class / etc. — case-sensitive equality at the
+			// DB layer means "FuNcTiOn" returns zero. Teach the case
+			// fix instead of recommending the filter be dropped, since
+			// "drop the filter" over-broadens to all kinds.
+			if canon := canonicalKindCase(kind); canon != "" && canon != kind {
+				if cn, cerr := relax(query, canon, language, corpus); cerr == nil && cn > 0 {
+					return fmt.Sprintf(
+							"%d match(es) exist for %q but kind=%q is the wrong case — the canonical form is %q",
+							cn, query, kind, canon,
+						), []map[string]string{{
+							"tool": "search",
+							"args": nextStepArgs(map[string]any{"query": query, "kind": canon}),
+							"why":  fmt.Sprintf("verified: kind=%q surfaces %d match(es)", canon, cn),
+						}}, true
+				}
+			}
 			return fmt.Sprintf(
 					"%d match(es) exist for %q but kind=%q excludes them — drop the kind filter",
 					n, query, kind,
@@ -8996,6 +9014,30 @@ func clampMinConfidence(v float64) (float64, string) {
 		return 1.0, fmt.Sprintf("min_confidence=%g clamped to 1.0 (valid range 0.0-1.0; out-of-range silently filtered every result)", v)
 	}
 	return v, ""
+}
+
+// canonicalKindCase (#910) returns the canonical-case spelling of a
+// known symbol kind for case-insensitive matching. Same pattern as
+// canonicalLanguageCase — the stored canonical values are PascalCase
+// per the extractor convention, and a case-mismatched filter input
+// silently returns 0 rows. Returns "" for unknown kinds; the existing
+// unknown-enum-value path handles those.
+func canonicalKindCase(in string) string {
+	known := []string{
+		// Code symbols
+		"Function", "Method", "Class", "Interface", "Type", "Variable",
+		"Module", "Constant", "Field", "Property", "Enum", "Trait",
+		// Config / docs symbols
+		"Section", "Setting", "Block", "Resource", "DataSource", "Provider",
+		"Output", "Local", "Heading", "Document",
+	}
+	lower := strings.ToLower(in)
+	for _, k := range known {
+		if strings.ToLower(k) == lower {
+			return k
+		}
+	}
+	return ""
 }
 
 // canonicalLanguageCase (#902) returns the canonical-case spelling of
