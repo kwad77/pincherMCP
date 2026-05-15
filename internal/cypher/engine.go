@@ -3302,12 +3302,30 @@ func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 		}
 		args = append(args, val)
 	case "<>":
-		// #434: include rows where the column is NULL when comparing
-		// inequality. SQL's `col <> ?` is FALSE on NULL by tri-state
-		// logic; the in-Go evaluator (`actual != c.value` after a
-		// `fmt.Sprint(nil)` → "<nil>") returned TRUE for NULL rows,
-		// so preserve that semantics.
-		inner = "(" + prefix + col + " IS NULL OR " + prefix + col + "<>?)"
+		// #434 originally folded NULL rows into the inequality match so
+		// the in-Go evaluator (which returns TRUE for NULL-vs-anything)
+		// agreed with the SQL pushdown. #892 found that paired with
+		// #606's NULL-match-on-`=""` rule, the same NULL row satisfied
+		// BOTH `col = ""` AND `col <> ""` — logically impossible and
+		// breaks every "missing field" audit pattern, since the two
+		// predicates no longer partition the corpus.
+		//
+		// Fix: when the RHS is a zero-value literal (matching the
+		// #606 special case), `<>` excludes NULL rows. The dual is now:
+		//   col = ""  → NULL OR col=""    (NULL matches, #606 rule)
+		//   col <> "" → col IS NOT NULL AND col<>""  (NULL excluded)
+		// so {= ""} ∪ {<> ""} partitions the corpus minus the empty set,
+		// and {= ""} ∩ {<> ""} is empty — the natural reading.
+		//
+		// For a non-zero RHS we keep the pre-existing behaviour: NULL
+		// rows match (the in-Go evaluator and the SQL emitter agree),
+		// since `WHERE col <> "x"` is naturally read as "anything but x"
+		// and the user expects NULL/missing rows to surface.
+		if isZeroValuePredicate(col, val) {
+			inner = "(" + prefix + col + " IS NOT NULL AND " + prefix + col + "<>?)"
+		} else {
+			inner = "(" + prefix + col + " IS NULL OR " + prefix + col + "<>?)"
+		}
 		args = append(args, val)
 	case ">", "<", ">=", "<=":
 		// #434: comparison-operator pushdown. SQLite affinity converts
@@ -3547,6 +3565,25 @@ func evalCondition(row map[string]any, c condition, reCache map[string]*regexp.R
 		// the four spellings. boolCoerceEqual handles both.
 		return boolCoerceEqual(actual, c.value)
 	case "<>":
+		// #892: symmetric to the `=` path's NULL-as-zero rule. A NULL
+		// row matching `col = ""` (per #606) must NOT also match `col
+		// <> ""` — otherwise the two predicates don't partition the
+		// corpus and "find missing fields" patterns break.
+		raw, present := row[key]
+		isNullRow := !present || raw == nil || actual == "<nil>"
+		if isNullRow {
+			if c.value == "" {
+				return false
+			}
+			col := cypherPropToCol(c.property)
+			if isBoolCol(col) && (c.value == "false" || c.value == "0") {
+				return false
+			}
+			// For a non-zero RHS, NULL rows surface — matches the
+			// natural reading of `WHERE col <> "x"` as "anything but x"
+			// and keeps parity with the SQL emitter's non-zero branch.
+			return true
+		}
 		if actual == c.value {
 			return false
 		}
