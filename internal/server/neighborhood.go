@@ -222,6 +222,16 @@ func (s *Server) handleNeighborhood(ctx context.Context, req *mcp.CallToolReques
 		"count": totalNeighbors,
 		"page":  map[string]any{"limit": limit, "offset": offset, "returned": len(neighbors)},
 	}
+	// Surface a single staleness warning when source bytes were
+	// requested and the file has been edited since indexing. Every
+	// neighbor shares the same file, so one warning per call is the
+	// right shape (vs N per-symbol warnings). Skipped when sources
+	// weren't requested — the staleness only bites the byte-offset
+	// read path, signatures alone stay correct. Same silent-
+	// confidently-wrong family as #317/#960/#978.
+	if includeSource && root != "" {
+		s.attachStalenessWarning(data, projectID, seed, root)
+	}
 	// #293: when the response is a partial window, surface the next
 	// page in _meta.next_steps so the agent doesn't need to compute
 	// pagination math themselves.
