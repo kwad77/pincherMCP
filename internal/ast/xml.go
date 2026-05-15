@@ -200,11 +200,20 @@ func (x *xmlExtractor) Extract(source []byte, _, relPath string, _ ExtractOption
 			if attrName == "" {
 				continue
 			}
-			attrQN := qn + "@" + attrName
 			attrStart, attrEnd := xmlFindAttrRange(source, n.startByte, attrName)
+			// Skip the attribute symbol when its byte range can't be
+			// located in the source. Pre-fix this branch fell back to
+			// (n.startByte, n.startByte) — an empty byte range — which
+			// recordExtractionHeuristics caught as byte_range_negative on
+			// real XSD files where namespaced 1-char attrs (xmlns:s) get
+			// their prefix stripped to a needle that fails the
+			// preceding-char-is-separator check in xmlFindAttrRange. The
+			// element itself already has a Setting symbol; an attribute
+			// symbol with zero bytes can't be sliced from disk anyway.
 			if attrStart == 0 || attrEnd <= attrStart {
-				attrStart, attrEnd = n.startByte, n.startByte
+				continue
 			}
+			attrQN := qn + "@" + attrName
 			result.Symbols = append(result.Symbols, ExtractedSymbol{
 				Name:          attrName,
 				QualifiedName: attrQN,

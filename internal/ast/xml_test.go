@@ -146,6 +146,47 @@ func TestXML_AttributeByteRanges(t *testing.T) {
 // TestXML_MalformedTolerated covers permissive parsing: a templated /
 // truncated XML file should produce as many symbols as the parser was
 // able to read, not zero. Mirrors HTML's permissive contract.
+// Namespaced 1-char attribute names that get their prefix stripped to
+// a needle that fails xmlFindAttrRange's preceding-char-is-separator
+// check used to fall through to a (n.startByte, n.startByte) empty-
+// byte-range — caught by recordExtractionHeuristics as
+// byte_range_negative on real XSD files (Microsoft Office Open XML
+// schemas like pml.xsd, wml-2010.xsd surfaced this). The fix: skip the
+// attribute symbol entirely when its byte range can't be located.
+func TestXML_NamespacedAttrSkippedWhenUnlocatable(t *testing.T) {
+	// xmlns:s="…" — the local name "s" + the preceding ":" character
+	// makes xmlFindAttrRange's `<sep>s=` lookup fail (`:` isn't a
+	// separator). The element itself emits a Setting; the attribute
+	// must NOT emit a zero-byte one.
+	src := []byte(`<schema xmlns:s="http://schemas/example"></schema>`)
+	got := (&xmlExtractor{}).Extract(src, "XML", "x.xsd", ExtractOptions{})
+
+	for _, s := range got.Symbols {
+		if s.EndByte <= s.StartByte {
+			t.Errorf("Setting %q has empty byte range start=%d end=%d — namespaced-attr regression",
+				s.QualifiedName, s.StartByte, s.EndByte)
+		}
+	}
+
+	// The `schema@s` symbol should NOT be emitted (can't locate its
+	// range), but `schema` itself should be.
+	var sawElement, sawAttr bool
+	for _, s := range got.Symbols {
+		switch s.QualifiedName {
+		case "schema":
+			sawElement = true
+		case "schema@s":
+			sawAttr = true
+		}
+	}
+	if !sawElement {
+		t.Errorf("expected schema element Setting; got: %v", qnList(got.Symbols))
+	}
+	if sawAttr {
+		t.Errorf("schema@s emitted with unlocatable byte range; should have been skipped")
+	}
+}
+
 func TestXML_MalformedTolerated(t *testing.T) {
 	// Unclosed `<config>` — encoding/xml errors on EOF inside an open
 	// element. We accept whatever it returned before the error.
