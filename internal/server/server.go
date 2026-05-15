@@ -8999,6 +8999,24 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		// completely empty. Edge case for very short or all-stop-word tasks.
 		hint = task
 	}
+	// #1028: guide's schema declares a `project` arg ("Project name or
+	// ID. Defaults to session project."), but the handler used to ignore
+	// it entirely. A typo'd project name returned recommendations as if
+	// the caller hadn't scoped at all — no signal the lookup failed.
+	// Same contract-drift shape as #1024 (stats). Now: surface the
+	// resolution failure via _meta.warnings so the caller sees the
+	// scope hint was dropped. The recommendations themselves stay
+	// shape-driven and are not re-scoped — guide is advisory, not
+	// project-aware in its recommendation logic.
+	var guideProjectWarning string
+	if projectArg := str(args, "project"); projectArg != "" {
+		if _, err := s.resolveProjectID(projectArg); err != nil {
+			guideProjectWarning = fmt.Sprintf(
+				"project %q did not resolve — recommendations are shape-driven and unaffected, but the scope hint was dropped. Call `list` to see indexed projects.",
+				projectArg,
+			)
+		}
+	}
 	// #497: scan the raw task once for an audited tool name. Passed to
 	// guideRecommendations so shapeToolAudit can name the right tool —
 	// the hint string usually drops it.
@@ -9017,6 +9035,12 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"shape":                  string(shape),
 		"hint":                   hint,
 		"recommended_next_tools": recommendations,
+	}
+	// #1028: attach project-resolve warning if a bogus project was
+	// passed. attachWarning merges into _meta.warnings so other paths
+	// (unknown-args, etc.) can append cleanly.
+	if guideProjectWarning != "" {
+		attachWarning(data, guideProjectWarning)
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
