@@ -6761,6 +6761,26 @@ func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"node_kinds":      kindCounts,
 		"edge_kinds":      edgeKindCounts,
 	}
+	// Empty-graph diagnosis. The most common cause is a name-collision
+	// with a stale project — e.g. `schema project="pincher"` resolves
+	// to a dead-on-disk `D:\...\pincher` row with 0 symbols rather
+	// than the intended `pincher-repo`. Without a diagnosis the caller
+	// sees `{symbols:0, edges:0, node_kinds:{}, edge_kinds:{}}` and
+	// has no idea whether the project really is empty or whether they
+	// resolved the wrong one. Same failure-as-pedagogy throughline as
+	// #983 (list empty-state) and #974 (errResultRich progress).
+	if symCount == 0 {
+		meta := map[string]any{
+			"diagnosis": "this project has 0 indexed symbols — either the project really is empty, or the project arg resolved to a stale name-collision (e.g. \"pincher\" matching a dead-on-disk row instead of \"pincher-repo\"). Confirm with `list` or re-index the intended path.",
+			"next_steps": []map[string]string{
+				{"tool": "list", "args": `{"include_dead":true}`,
+					"why": "include dead-on-disk projects so a name-collision shows up — compare the path on the row that resolved here"},
+				{"tool": "index", "args": `{"path":"/absolute/path/to/intended/project","force":true}`,
+					"why": "re-index from the actual path you meant; the project arg matched by name and the intended one may not be indexed yet"},
+			},
+		}
+		data["_meta"] = meta
+	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
 
