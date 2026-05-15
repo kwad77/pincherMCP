@@ -3472,6 +3472,27 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if resolvedProjectID != "" {
 		projectID = resolvedProjectID
 	}
+	// #1049: cross-project leak warning. When projectArg is omitted, the
+	// fallback above uses GetSymbol (unscoped) for backward compat — but
+	// indexed-mirror projects (sniffer mirrors, MCP_Combine staging,
+	// .pincher-supported snapshots) routinely carry identical symbol IDs
+	// to their primary repo (`internal/server/server.go::server.New#Function`
+	// is in pincher-repo AND every mirror). Pre-fix the unscoped lookup
+	// resolved deterministically to whichever row sorted first in the DB
+	// — typically the mirror, not the live working tree the session was
+	// opened from. The agent got source bytes from a stale fork with no
+	// signal the lookup crossed project boundaries. Now warn whenever
+	// the resolved symbol came from a project other than the session,
+	// so the agent can re-issue with `project=<session>` to pin scope.
+	// "*" and explicit-project paths are not subject to this — they
+	// asked for cross-project / specific-project lookup deliberately.
+	var symbolCrossProjectWarning string
+	if projectArg == "" && s.sessionID != "" && sym.ProjectID != s.sessionID {
+		symbolCrossProjectWarning = fmt.Sprintf(
+			"symbol %q resolved from project %q rather than the session project %q — an indexed mirror or stale snapshot carries an ID identical to your working tree. Re-issue with project=%q to pin the lookup, or project=%q if you intended that source.",
+			id, sym.ProjectID, s.sessionID, s.sessionID, sym.ProjectID,
+		)
+	}
 	root, err := s.resolveProjectRoot(projectID)
 	if err != nil {
 		root = s.sessionRoot
@@ -3561,6 +3582,11 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// existing _meta — safe to call before attachStalenessWarning.
 	if symbolProjectResolveWarning != "" {
 		attachWarning(data, symbolProjectResolveWarning)
+	}
+	// #1049: surface the cross-project leak warning when the symbol
+	// resolved into a project other than the session's.
+	if symbolCrossProjectWarning != "" {
+		attachWarning(data, symbolCrossProjectWarning)
 	}
 	// #317: warn when the file on disk has changed since indexing —
 	// byte offsets we just used point at content that no longer
