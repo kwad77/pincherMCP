@@ -72,6 +72,14 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 		// Code-shape tokens with punctuation pass through too.
 		{"os.Stat OR fmt.Errorf", `"os.Stat" OR "fmt.Errorf"`},
 		{"my-mod OR your-mod", `"my-mod" OR "your-mod"`},
+		// #919: camelCase (lowercase-first + uppercase inside) was treated
+		// as prose before this fix, so an OR query of two camelCase tokens
+		// got the whole expression phrase-wrapped and the operator never
+		// fired. Verified end-to-end against the live MCP — running the
+		// merged #887 binary against the live FTS5 vtab proved the regress.
+		{"handleSearch OR handleQuery", `"handleSearch" OR "handleQuery"`},
+		{"handleSearch AND handleQuery", `"handleSearch" AND "handleQuery"`},
+		{"handleSearch AND NOT handleQuery", `"handleSearch" AND NOT "handleQuery"`},
 
 		// #424: parens, slash, at-sign, brackets, braces, comma, !, ?
 		// — these all crash bare in FTS5; phrase-wrap them.
