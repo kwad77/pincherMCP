@@ -3489,6 +3489,69 @@ func (s *Server) attachStalenessWarning(data map[string]any, projectID string, s
 	data["_meta"] = meta
 }
 
+// attachStalenessWarningsForPaths checks each unique file path against
+// the on-disk hash and emits one _meta.warnings entry per stale file
+// (#980). One re-index next_step is appended at most — `force=true`
+// covers every stale file at once, so multiplying that hint per path
+// would just spam. Used by handleContext for the imports/callees
+// dependency files, which are read via the same byte-offset path as
+// the seed and silently shipped stale bytes pre-fix.
+func (s *Server) attachStalenessWarningsForPaths(data map[string]any, projectID string, paths []string, root string) {
+	if root == "" || len(paths) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(paths))
+	var stale []string
+	for _, p := range paths {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		stored := s.store.GetFileHash(projectID, p)
+		if stored == "" {
+			continue
+		}
+		live, ok := fileHashOnDisk(filepath.Join(root, filepath.FromSlash(p)))
+		if !ok || live == stored {
+			continue
+		}
+		stale = append(stale, p)
+	}
+	if len(stale) == 0 {
+		return
+	}
+	meta, _ := data["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	warnings, _ := meta["warnings"].([]string)
+	for _, p := range stale {
+		warnings = append(warnings,
+			fmt.Sprintf("dependency file %q modified since last index — source bytes may not match the symbol; re-index to refresh", p))
+	}
+	meta["warnings"] = warnings
+	// Append a single force-reindex next_step only if one isn't already
+	// present from the seed-staleness path (#317). A repeat would just
+	// noise the response — one force=true covers all stale files.
+	steps, _ := meta["next_steps"].([]map[string]string)
+	hasReindex := false
+	for _, st := range steps {
+		if st["tool"] == "index" && strings.Contains(st["args"], `"force":true`) {
+			hasReindex = true
+			break
+		}
+	}
+	if !hasReindex {
+		steps = append(steps, map[string]string{
+			"tool": "index",
+			"args": nextStepArgs(map[string]any{"path": root, "force": true}),
+			"why":  "dependency files changed since last index — re-index so byte offsets match the current source",
+		})
+		meta["next_steps"] = steps
+	}
+	data["_meta"] = meta
+}
+
 // fileHashOnDisk returns the xxh3 hex hash of the file at absPath
 // using the same format the indexer records (`fmt.Sprintf("%x", xxh3.Hash(content))`).
 // Returns (_, false) when the file can't be read; caller treats
@@ -3873,11 +3936,19 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	if next := suggestContextNextSteps(*sym); len(next) > 0 {
 		data["_meta"] = map[string]any{"next_steps": next}
 	}
-	// #317: warn if the seed file changed since indexing — same
-	// signal as in handleSymbol. Only the seed; checking every
-	// import would multiply the cost without much value.
+	// #317: warn if the seed file changed since indexing.
+	// #980: same check for imports/callees — they're read via the
+	// same byte-offset path and pre-fix shipped stale bytes silently
+	// when only the dependency file (not the seed) had been edited.
+	// The original "checking imports multiplies cost without much
+	// value" trade was invalidated by #978/#979's audit: stale-bytes
+	// warnings are the contract for byte-offset reads, full stop.
 	if root != "" {
 		s.attachStalenessWarning(data, sym.ProjectID, sym, root)
+		depPaths := make([]string, 0, len(importPaths)+len(calleePaths))
+		depPaths = append(depPaths, importPaths...)
+		depPaths = append(depPaths, calleePaths...)
+		s.attachStalenessWarningsForPaths(data, sym.ProjectID, depPaths, root)
 	}
 	// #712 C.2: project, but if the caller's `fields` named keys that
 	// don't exist on the response, warn instead of silently shipping a
