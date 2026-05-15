@@ -93,12 +93,14 @@ pincher init                             # ./CLAUDE.md (Claude Code, current dir
 pincher init --global                    # ~/.claude/CLAUDE.md (Claude Code, all projects)
 pincher init --target=cursor             # .cursor/rules/pincher.mdc
 pincher init --target=codex              # ~/.codex/config.toml (writes MCP server block)
+pincher init --target=vscode             # .github/copilot-instructions.md (Copilot rules)
+pincher init --target=vscode-mcp         # .vscode/mcp.json (Copilot Chat MCP server)
 pincher init --target=detect             # auto-detect from marker files in cwd
 
 # 3. Index your project
 pincher index /path/to/your/project
 
-# 4. Point your MCP client at the binary (Claude Code / Cursor / Codex / Zed below)
+# 4. Point your MCP client at the binary (Claude Code / Cursor / Codex / VS Code / Zed below)
 #    Or open the dashboard: pincher web
 ```
 
@@ -148,6 +150,25 @@ PINCHER_DATA_DIR = "/codex-isolated/data/dir"
 </details>
 
 <details>
+<summary><b>VS Code Copilot Chat</b> — <code>./.vscode/mcp.json</code> (run <code>pincher init --target=vscode-mcp</code>)</summary>
+
+```json
+{
+  "servers": {
+    "pincher": {
+      "type": "stdio",
+      "command": "/path/to/pincher",
+      "args": ["supervised"],
+      "env": { "PINCHER_DATA_DIR": "/vscode-isolated/data/dir" }
+    }
+  }
+}
+```
+
+`pincher init --target=vscode-mcp` writes this file (with a VS Code-isolated `PINCHER_DATA_DIR`) and preserves any other MCP servers you've added. Pair with `pincher init --target=vscode` to drop the Copilot instructions file at `.github/copilot-instructions.md` so Copilot Chat knows when to call pincher.
+</details>
+
+<details>
 <summary><b>Zed</b> — <code>settings.json</code> under <code>context_servers</code></summary>
 
 ```json
@@ -161,7 +182,7 @@ PINCHER_DATA_DIR = "/codex-isolated/data/dir"
 ```
 </details>
 
-Continue, Windsurf, Aider, and any MCP-compatible client follow the same pattern. For editors without MCP, use the [HTTP REST API](docs/REFERENCE.md#http-rest-api).
+Continue, Windsurf, Aider, Warp, Gemini CLI, and any MCP-compatible client follow the same pattern. For editors without MCP, use the [HTTP REST API](docs/REFERENCE.md#http-rest-api).
 
 For managed installs (Homebrew, systemd, launchd, Windows service, Docker), see [`packaging/README.md`](packaging/README.md).
 
@@ -171,6 +192,7 @@ End-to-end walkthroughs (~10 min each):
 
 - **[Claude Code](docs/tutorials/claude-code.md)** — install → index → `pincher init` → wire MCP → first query.
 - **[Cursor](docs/tutorials/cursor.md)** — same flow with `pincher init --target=cursor` and Cursor's `.mdc` rules format.
+- **[VS Code Copilot Chat](docs/tutorials/vscode-copilot.md)** — `pincher init --target=vscode` (rules) + `--target=vscode-mcp` (MCP), verify Copilot picks up pincher tools.
 - **[HTTP dashboard](docs/tutorials/http-dashboard.md)** — `pincher --http`, dashboard panels, REST API with `curl`, reverse-proxy notes.
 
 ---
