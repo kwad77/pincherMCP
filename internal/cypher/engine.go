@@ -2179,7 +2179,18 @@ func (e *Executor) runNodeScan(ctx context.Context, q *queryAST, pat pattern) (*
 	// silently returned the clamp instead of the cardinality.
 	// Non-aggregating queries keep the safety clamp so a runaway
 	// query can't drag the entire symbols table into memory.
-	if !hasAggregation(q) {
+	//
+	// #929: same family for `RETURN DISTINCT`. The scan LIMIT ran
+	// BEFORE DISTINCT was applied in-Go, so a query like
+	// `MATCH (n) RETURN DISTINCT n.kind ORDER BY n.kind LIMIT 100`
+	// silently returned 4 of 15 kinds because the SQL fetched the
+	// alphabetically-first 200 rows and DISTINCT ran on that subset.
+	// Skip the safety LIMIT here; in-Go DISTINCT + the post-DISTINCT
+	// LIMIT in buildResult bound the response size correctly.
+	// (Memory: 200 fewer scan rows traded for a complete answer; the
+	// scan is project_id-scoped + WHERE-pushed, so the typical worst
+	// case is "all symbols in one project" = ~5K rows.)
+	if !hasAggregation(q) && !q.distinct {
 		sqlQ += " LIMIT ?"
 		args = append(args, scanLimitFor(e.maxRows(), filter))
 	}
@@ -2506,7 +2517,8 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	}
 
 	// #308: same skip-when-aggregating treatment as runNodeScan.
-	if !hasAggregation(q) {
+	// #929: same DISTINCT-skip-LIMIT — see runNodeScan for rationale.
+	if !hasAggregation(q) && !q.distinct {
 		sqlQ += " LIMIT ?"
 		args = append(args, scanLimitFor(e.maxRows(), filter))
 	}
