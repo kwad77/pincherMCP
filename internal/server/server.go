@@ -2441,6 +2441,21 @@ func (s *Server) resolveProjectID(projectArg string) (string, error) {
 		s.storeProjectIDCache(projectArg, p.ID)
 		return p.ID, nil
 	}
+	// #997: if projectArg looks like an absolute path, try canonicalizing
+	// it via ProjectIDFromPath and looking up the canonical form. On
+	// case-insensitive filesystems (Windows NTFS, macOS APFS) a user can
+	// reasonably pass either casing — e.g. `D:\ClaudeCode\pincher-repo`
+	// or `d:\claudecode\pincher-repo` — but GetProject above is an
+	// exact-string match against the stored ID. Without this fallback,
+	// the lookup misses despite the directory being byte-identical.
+	if filepath.IsAbs(projectArg) {
+		if canonicalID := db.ProjectIDFromPath(projectArg); canonicalID != projectArg {
+			if cp, cErr := s.store.GetProject(canonicalID); cErr == nil && cp != nil {
+				s.storeProjectIDCache(projectArg, cp.ID)
+				return cp.ID, nil
+			}
+		}
+	}
 	// Try matching by name. When multiple projects share the same
 	// name (common after a project gets moved or renamed on disk —
 	// the stale row stays in the DB until prune_dead), prefer one
