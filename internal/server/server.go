@@ -8170,6 +8170,12 @@ func taskHintFromString(task string) string {
 		"internal": true, "external": true, "global": true, "local": true,
 		"stub":     true, "stubs":   true, "static":   true, "dynamic":  true,
 	}
+	// #942: strip apostrophes before tokenizing so contractions don't
+	// leave stray single-letter tokens. Pre-fix "indexer's" split into
+	// ["indexer", "s"] — the stray "s" survived stopword filtering and
+	// corrupted the hint. Both ASCII (') and curly Unicode (’) handled.
+	task = strings.ReplaceAll(task, "'", "")
+	task = strings.ReplaceAll(task, "’", "")
 	tokens := strings.FieldsFunc(task, func(r rune) bool {
 		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
 	})
