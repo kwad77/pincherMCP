@@ -1683,7 +1683,7 @@ func openAPIComponentSchemas() map[string]any {
 					},
 				},
 				"warnings":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Non-fatal advisories — typo'd args, unknown property names, etc. (#473, #499, #501)."},
-				"celebration": map[string]any{"type": "string", "description": "One-shot tier-milestone line, fired exactly once per installation per tier (#494)."},
+				"celebration": map[string]any{"type": "string", "description": "One-shot tier-milestone line, fired exactly once per installation per tier (#494). Opt-in: only present when PINCHER_CELEBRATIONS=1 is set (default off — #863)."},
 				"request_id":  map[string]any{"type": "string", "description": "Correlation ID for end-to-end request tracing (#657). Echoes the inbound X-Request-ID header, or a freshly minted UUID v7 when the request carries none. Also returned in the X-Request-ID response header."},
 			},
 			"required": []any{"latency_ms", "tokens_used", "request_id"},
@@ -8297,6 +8297,15 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 // crossed the line.
 func (s *Server) maybeFormatCelebration() string {
 	if s.store == nil {
+		return ""
+	}
+	// #863: celebrations are opt-in, default off. They're one-shot per
+	// threshold per installation by design — but any workflow that
+	// spins up fresh DBs (the dogfood loop's per-temp-dir installs, CI,
+	// throwaway indexes) re-fires every tier from zero each time, so the
+	// "dopamine" line becomes recurring noise rather than a rare signal.
+	// PINCHER_CELEBRATIONS=1 re-enables it for users who want the marker.
+	if os.Getenv("PINCHER_CELEBRATIONS") != "1" {
 		return ""
 	}
 	_, _, persisted, _, err := s.store.GetAllTimeSavings()

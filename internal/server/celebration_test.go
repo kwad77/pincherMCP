@@ -7,12 +7,24 @@ import (
 	"time"
 )
 
-// TestMaybeFormatCelebration_FiresOnThresholdCrossing pins #494: when
-// the in-flight session pushes cumulative tokens_saved past a tier,
-// maybeFormatCelebration produces a one-line dopamine signal — and only
-// once per installation.
+// TestMaybeFormatCelebration_DefaultOff_Silent pins #863: celebrations
+// are opt-in. Without PINCHER_CELEBRATIONS=1, a threshold crossing
+// produces no line — the default path stays quiet.
+func TestMaybeFormatCelebration_DefaultOff_Silent(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	atomic.StoreInt64(&srv.statsTokensSaved, 150_000)
+
+	if got := srv.maybeFormatCelebration(); got != "" {
+		t.Errorf("celebrations must be silent without PINCHER_CELEBRATIONS=1; got %q", got)
+	}
+}
+
+// TestMaybeFormatCelebration_FiresOnThresholdCrossing pins #494: with
+// PINCHER_CELEBRATIONS=1, when the in-flight session pushes cumulative
+// tokens_saved past a tier, maybeFormatCelebration produces a one-line
+// signal — and only once per installation.
 func TestMaybeFormatCelebration_FiresOnThresholdCrossing(t *testing.T) {
-	t.Parallel()
+	t.Setenv("PINCHER_CELEBRATIONS", "1")
 	srv, _, _ := newTestServer(t)
 	atomic.StoreInt64(&srv.statsTokensSaved, 150_000)
 
@@ -37,7 +49,7 @@ func TestMaybeFormatCelebration_FiresOnThresholdCrossing(t *testing.T) {
 }
 
 func TestMaybeFormatCelebration_BelowFirstTier_Silent(t *testing.T) {
-	t.Parallel()
+	t.Setenv("PINCHER_CELEBRATIONS", "1")
 	srv, _, _ := newTestServer(t)
 	atomic.StoreInt64(&srv.statsTokensSaved, 50_000)
 
@@ -47,7 +59,7 @@ func TestMaybeFormatCelebration_BelowFirstTier_Silent(t *testing.T) {
 }
 
 func TestMaybeFormatCelebration_PersistedCounted(t *testing.T) {
-	t.Parallel()
+	t.Setenv("PINCHER_CELEBRATIONS", "1")
 	srv, store, _ := newTestServer(t)
 
 	// Persisted session contributes 80k; in-flight contributes 30k.
