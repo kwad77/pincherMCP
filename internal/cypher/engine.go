@@ -93,6 +93,10 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	// unconditionally (not gated on Total==0) so a typo'd kind in a
 	// multi-pattern query still surfaces even if other patterns matched.
 	warnings = append(warnings, collectUnknownEdgeKindWarnings(q)...)
+	// #869: a backwards variable-length range (`*3..1`) used to silently
+	// collapse to `*3..3`. parseHops now swaps to the intended range;
+	// surface the swap so a transposed-bounds typo teaches.
+	warnings = append(warnings, collectHopRangeWarnings(q)...)
 	res, err := e.run(ctx, q)
 	if err != nil {
 		return res, err
@@ -312,6 +316,28 @@ func collectCrossColumnWarnings(q *queryAST) []string {
 var knownEdgeKinds = map[string]bool{
 	"CALLS": true, "HTTP_CALLS": true, "ASYNC_CALLS": true,
 	"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
+}
+
+// collectHopRangeWarnings (#869) warns when a variable-length pattern
+// was written with its bounds backwards (`*3..1`). Pre-fix that silently
+// collapsed to `*3..3` (the `max = min` clamp) — a transposed-bounds
+// typo returned depth-N-only results that matched neither the written
+// range nor the likely intent. parseHops now swaps the bounds to the
+// intended `*1..3` and flags it; this surfaces the swap so the caller
+// learns rather than guessing.
+func collectHopRangeWarnings(q *queryAST) []string {
+	if q == nil {
+		return nil
+	}
+	var out []string
+	for _, pat := range q.patterns {
+		if pat.invertedHops {
+			out = append(out, fmt.Sprintf(
+				"variable-length hop range was written with bounds backwards — interpreted as *%d..%d. Write the lower bound first to silence this warning.",
+				pat.minHops, pat.maxHops))
+		}
+	}
+	return out
 }
 
 // collectUnknownEdgeKindWarnings (#867) walks the MATCH patterns for
@@ -802,10 +828,14 @@ type pattern struct {
 	edgeKinds []string
 	minHops   int
 	maxHops   int
-	toVar     string
-	toKind    string
-	toProps   map[string]string
-	directed  bool // -> vs -
+	// invertedHops is set when the variable-length spec was written
+	// with bounds backwards (`*3..1`). parseHops swaps them to the
+	// intended range; this flag lets the engine warn (#869).
+	invertedHops bool
+	toVar        string
+	toKind       string
+	toProps      map[string]string
+	directed     bool // -> vs -
 }
 
 type condition struct {
@@ -1311,7 +1341,7 @@ func (p *parser) parsePattern() (pattern, error) {
 			}
 			if p.peek().kind == "HOPS" {
 				t := p.next()
-				pat.minHops, pat.maxHops = parseHops(t.value)
+				pat.minHops, pat.maxHops, pat.invertedHops = parseHops(t.value)
 			}
 			if err := p.expect("]"); err != nil {
 				return pat, err
@@ -1698,7 +1728,13 @@ func operatorHint(op string) (string, bool) {
 	return "", false
 }
 
-func parseHops(s string) (min, max int) {
+// parseHops parses a variable-length hop spec (`1..3`, `2`, ``). The
+// `inverted` return is true when the bounds were written backwards
+// (`3..1`): pre-#869 that silently collapsed to `3..3` via `max = min`,
+// so a transposed-bounds typo returned depth-N-only results with no
+// signal. parseHops now swaps the bounds to the intended `1..3` and
+// flags it; the engine surfaces a warning.
+func parseHops(s string) (min, max int, inverted bool) {
 	min, max = 1, 1
 	if s == "" {
 		return
@@ -1710,6 +1746,10 @@ func parseHops(s string) (min, max int) {
 	} else if len(parts) == 1 && parts[0] != "" {
 		n, _ := strconv.Atoi(parts[0])
 		min, max = n, n
+	}
+	if max < min {
+		min, max = max, min
+		inverted = true
 	}
 	if min < 1 {
 		min = 1

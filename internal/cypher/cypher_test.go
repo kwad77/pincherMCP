@@ -149,20 +149,23 @@ func TestParseHops(t *testing.T) {
 	cases := []struct {
 		s        string
 		min, max int
+		inverted bool
 	}{
-		{"1..3", 1, 3},
-		{"2..5", 2, 5},
-		{"3", 3, 3},
-		{"", 1, 1},
+		{"1..3", 1, 3, false},
+		{"2..5", 2, 5, false},
+		{"3", 3, 3, false},
+		{"", 1, 1, false},
 		// min < 1: clamp to 1
-		{"0..3", 1, 3},
-		// max < min: clamp max to min
-		{"3..1", 3, 3},
+		{"0..3", 1, 3, false},
+		// #869: max < min — bounds written backwards. Swapped to the
+		// intended range and flagged (pre-fix this collapsed to 3..3).
+		{"3..1", 1, 3, true},
+		{"5..2", 2, 5, true},
 	}
 	for _, c := range cases {
-		mn, mx := parseHops(c.s)
-		if mn != c.min || mx != c.max {
-			t.Errorf("parseHops(%q) = (%d,%d), want (%d,%d)", c.s, mn, mx, c.min, c.max)
+		mn, mx, inv := parseHops(c.s)
+		if mn != c.min || mx != c.max || inv != c.inverted {
+			t.Errorf("parseHops(%q) = (%d,%d,%v), want (%d,%d,%v)", c.s, mn, mx, inv, c.min, c.max, c.inverted)
 		}
 	}
 }
