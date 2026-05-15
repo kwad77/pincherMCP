@@ -28,7 +28,7 @@ func TestGhostProjectAdvisory_FlagsSubstantialSymbolsZeroEdges(t *testing.T) {
 	if strings.Contains(got, "healthy-repo") {
 		t.Errorf("advisory must NOT name a healthy project; got %q", got)
 	}
-	if !strings.Contains(got, "ZERO edges") {
+	if !strings.Contains(got, "0 edges") {
 		t.Errorf("advisory must call out the zero-edges shape; got %q", got)
 	}
 	if !strings.Contains(got, "re-index") && !strings.Contains(got, "pincher index") {
