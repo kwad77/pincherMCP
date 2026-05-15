@@ -6099,6 +6099,16 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	//            they need to refine via the new `id` parameter.
 	var starts []db.Symbol
 	var seedID string
+	// #1052: cross-project leak warning, mirroring #1049 / #1050 / #1051.
+	// Trace's id-mode does an unscoped GetSymbol — the seed can land in
+	// ANY indexed project that carries the id, but the BFS traversal
+	// runs against `projectID` (the session by default). When those
+	// diverge, edges live in the seed's project but the traversal
+	// queries the session's project → hops=0, silently. Pre-fix the
+	// caller had no signal whether "no hops" was a real result or a
+	// scope mismatch. Warn whenever the seed came from a different
+	// project than the traversal target.
+	var traceCrossProjectWarning string
 	if id != "" {
 		seed, lookupErr := s.store.GetSymbol(id)
 		if lookupErr != nil || seed == nil {
@@ -6114,6 +6124,19 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 						"why": "if no project matches, the right project may not be indexed"},
 				},
 			), nil
+		}
+		// #1052: detect cross-project resolution. projectArg=="" means
+		// projectID defaulted to the session; if the seed came from a
+		// different project, the BFS will silently return 0 hops because
+		// edges are project-scoped. Skip the warning when the caller
+		// passed an explicit project (deliberate scope) or "*" (the
+		// allow-cross-project sentinel).
+		if projectArg := str(args, "project"); projectArg == "" &&
+			seed.ProjectID != projectID && projectID != "" {
+			traceCrossProjectWarning = fmt.Sprintf(
+				"seed %q resolved from project %q but the BFS traversal scopes to %q (the session project) — edges live in the seed's project, so hops will silently be 0. Re-issue with project=%q to traverse where the seed lives, or project=%q to anchor on the session project (and use a session-local id).",
+				id, seed.ProjectID, projectID, seed.ProjectID, projectID,
+			)
 		}
 		starts = []db.Symbol{*seed}
 		seedID = seed.ID
@@ -6291,6 +6314,9 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	if traceIDNameWarning != "" {
 		traceWarnings = append(traceWarnings, traceIDNameWarning)
+	}
+	if traceCrossProjectWarning != "" {
+		traceWarnings = append(traceWarnings, traceCrossProjectWarning)
 	}
 	traceWarnings = append(traceWarnings, traceKindWarnings...)
 	if len(traceWarnings) > 0 {
