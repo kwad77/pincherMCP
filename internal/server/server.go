@@ -4120,8 +4120,30 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		results = results[offset:end]
 	}
 
-	// Resolve project root once for snippet reads.
+	// Resolve project root once for single-project snippet reads.
+	// #941: when project="*" (cross-repo search) projectID is "" and
+	// resolveProjectRoot returns "" — pre-fix snippet stayed empty
+	// for every cross-project result because the disk read short-
+	// circuited on root=="". Per-symbol resolution + small cache fixes
+	// the cross-project case without regressing single-project
+	// performance (the loop below caches root by project so we hit
+	// the DB once per project, not once per symbol).
 	root, _ := s.resolveProjectRoot(projectID)
+	projectRoots := map[string]string{}
+	if projectID != "" && root != "" {
+		projectRoots[projectID] = root
+	}
+	rootFor := func(pid string) string {
+		if pid == "" {
+			return root
+		}
+		if r, ok := projectRoots[pid]; ok {
+			return r
+		}
+		r, _ := s.resolveProjectRoot(pid)
+		projectRoots[pid] = r
+		return r
+	}
 
 	// Build field allow-set for projection (nil = all fields).
 	var fieldSet map[string]bool
@@ -4180,8 +4202,8 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 				// the snippet was always empty for Document hits, breaking
 				// the "skip a follow-up call" contract search advertises.
 				src = r.Symbol.Docstring
-			} else if root != "" {
-				if s, err := index.ReadSymbolSourceCapped(root, r.Symbol, snippetReadCap); err == nil {
+			} else if symRoot := rootFor(r.Symbol.ProjectID); symRoot != "" {
+				if s, err := index.ReadSymbolSourceCapped(symRoot, r.Symbol, snippetReadCap); err == nil {
 					src = s
 				}
 			}
