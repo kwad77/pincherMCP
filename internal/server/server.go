@@ -7945,8 +7945,12 @@ func inferAuditPinchQL(task string) (pinchql, why string) {
 		// #923: scope to Go — regex-tier languages don't populate
 		// is_test reliably, so they flood the result with false
 		// positives.
-		return `MATCH (n:Function) WHERE n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path LIMIT 50`,
-			"structural audit — pinchQL lists exported non-test Go functions. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
+		// #943: include Methods alongside Functions. The MCP server has
+		// many handleX methods that should be audited the same way as
+		// top-level functions. Pre-fix the template only matched
+		// `(n:Function)` — Go's method-heavy idioms slipped through.
+		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
+			"structural audit — pinchQL lists exported non-test Go functions AND methods. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
 	default:
 		// Docstring audit is the canonical #467 example and still the
 		// most common shapeAudit query — keep it as the fallback.
@@ -7955,8 +7959,11 @@ func inferAuditPinchQL(task string) (pinchql, why string) {
 		// filter), and test functions don't need docstrings by
 		// convention. Pre-fix the top results were JS handlers, Bash
 		// helpers, and `TestDashboardJS_*` — pure noise.
-		return `MATCH (n:Function) WHERE n.docstring IS NULL AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path LIMIT 50`,
-			"structural audit — pinchQL filters on docstring/is_exported directly. Scoped to Go (AST-extracted docstrings) and non-test functions so regex-tier languages and tests don't flood the result. BM25 search of the literal phrase wouldn't surface anything"
+		// #943: include Methods alongside Functions. On a method-heavy
+		// codebase (Go MCP server pattern) the previous Function-only
+		// template hid the majority of the coverage gap.
+		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.docstring IS NULL AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
+			"structural audit — pinchQL filters on docstring/is_exported directly across Functions AND Methods. Scoped to Go (AST-extracted docstrings) and non-test symbols so regex-tier languages and tests don't flood the result. BM25 search of the literal phrase wouldn't surface anything"
 	}
 }
 
