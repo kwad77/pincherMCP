@@ -80,8 +80,17 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 		// pinit.ResolveTargets already names the valid targets in its
 		// error message; wrap with rich envelope so the recovery hints
 		// surface alongside the named values.
+		//
+		// #1018: ResolveTargets's "one of: ..." enumeration is the CLI's
+		// valid-targets list and includes `continue`. The MCP handler
+		// hard-rejects `continue` above (line 69), so listing it as
+		// valid for an MCP caller misleads — telling them they CAN pass
+		// it when in fact they can't. Strip it from the enumeration in
+		// MCP context so the error stays truthful.
+		msg := fmt.Sprintf("init: %v", err)
+		msg = strings.ReplaceAll(msg, ", continue,", ",")
 		return s.errResultRich(
-			fmt.Sprintf("init: %v", err),
+			msg,
 			[]map[string]string{
 				{"tool": "init", "args": `{"target":"detect","project_path":"` + absProjectPath + `"}`,
 					"why": "detect picks the best target based on .claude/, .cursor/, .vscode/, etc."},
