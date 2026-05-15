@@ -6873,6 +6873,41 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		}
 	}
 
+	// #1044: ghost-extraction diagnosis. When the project has substantial
+	// symbol count but ZERO edges, dead_code is confidently wrong: with
+	// no inbound edges anywhere, EVERY function looks unreferenced. Pre-
+	// fix this surfaced a populated dead_symbols list with "verify before
+	// deletion" next_steps — guiding the caller to read source for what
+	// are categorically FPs. The empty-result path was also misleading:
+	// the "lower min_confidence" hint had nothing to grip on because the
+	// resolver phase, not the confidence floor, is what produced zero
+	// edges. Same family as #1040 (architecture) / #1042 (schema) /
+	// #1043 (query) + the existing #1009 doctor advisory. Closes
+	// ghost-extraction diagnosis across every code-graph tool.
+	if symCount, edgeCount, _, _, gerr := s.store.GraphStats(projectID); gerr == nil &&
+		edgeCount == 0 && symCount >= 100 {
+		var diagnosis string
+		if len(dead) > 0 {
+			diagnosis = fmt.Sprintf(
+				"dead_code returned %d candidates BUT the scoped project has %d symbols and ZERO edges — ghost-extraction signature (#815). With no inbound edges anywhere in the project, every function looks unreferenced; these results are likely all false positives. Confirm via `architecture` / `doctor` before treating any of them as dead.",
+				len(dead), symCount)
+		} else {
+			diagnosis = fmt.Sprintf(
+				"no dead_code candidates AND the scoped project has %d symbols but ZERO edges — ghost-extraction signature (#815). dead_code can't run meaningfully without an edge graph; the empty result is the resolver failure, not the min_confidence floor. Use `architecture` or `doctor` to confirm.",
+				symCount)
+		}
+		ghostSteps := []map[string]string{
+			{"tool": "architecture", "args": "{}",
+				"why": "confirm the ghost-extraction shape (langs histogram + 0 edges)"},
+			{"tool": "doctor", "args": "{}",
+				"why": "extraction_failures list may explain why the resolver phase produced no edges"},
+		}
+		data["_meta"] = map[string]any{
+			"diagnosis":  diagnosis,
+			"next_steps": ghostSteps,
+		}
+	}
+
 	// #851: attach unknown-kind warnings to whichever _meta map the
 	// branches above built. jsonResultWithMeta's unknown-args merge
 	// appends to this same key, so set rather than risk a clobber.
