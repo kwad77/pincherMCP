@@ -72,6 +72,7 @@ var AllTargets = []Target{
 	ZedTarget,
 	GeminiTarget,
 	WarpTarget,
+	VSCodeTarget,
 }
 
 // FindTarget looks up a target by its --target value.
@@ -359,7 +360,6 @@ var GeminiTarget = Target{
 	WriteFn: MergePolicyBlock,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // warp (./WARP.md, ~/.warp/WARP.md global — same shape as claude)
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -389,6 +389,50 @@ var WarpTarget = Target{
 		}
 		if _, err := os.Stat(filepath.Join(cwd, ".warp")); err == nil {
 			return true
+		}
+		return false
+	},
+	WriteFn: MergePolicyBlock,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// vscode (./.github/copilot-instructions.md — GitHub Copilot's documented
+// project-rules convention, picked up by VS Code Copilot Chat, Codespaces,
+// and GitHub.com when reasoning over the repo)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Per GitHub's documented convention, Copilot reads
+// `.github/copilot-instructions.md` at the repo root and includes it as
+// system context for chat/completion. Plain-markdown shape, so the
+// shared MergePolicyBlock writer handles marker-block idempotency
+// without modification. The file lives under `.github/` rather than the
+// project root, so the writer signature is unchanged but the PathFn
+// joins the subdirectory before the filename.
+//
+// "vscode" is the target name users will reach for; the file is more
+// accurately a GitHub Copilot artifact, but VS Code is the dominant
+// surface that reads it (Copilot Chat in VS Code, JetBrains Copilot,
+// Codespaces all consume the same file). #658 wave-1.5 — VS Code share
+// makes this a first-class citizen, not a wave-2 deferral.
+
+var VSCodeTarget = Target{
+	Name:     "vscode",
+	Describe: "VS Code / GitHub Copilot: ./.github/copilot-instructions.md (project-only, per GitHub's documented convention)",
+	PathFn: func(cwd string, global bool) (string, error) {
+		if global {
+			return "", fmt.Errorf("vscode target has no global variant; copilot-instructions.md is per-repo by design")
+		}
+		return filepath.Join(cwd, ".github", "copilot-instructions.md"), nil
+	},
+	DetectFn: func(cwd string) bool {
+		for _, marker := range []string{
+			filepath.Join(".github", "copilot-instructions.md"),
+			".vscode",
+			filepath.Join(".github", "instructions"),
+		} {
+			if _, err := os.Stat(filepath.Join(cwd, marker)); err == nil {
+				return true
+			}
 		}
 		return false
 	},
