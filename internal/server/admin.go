@@ -43,24 +43,51 @@ type doctorProjectSummary struct {
 }
 
 // ghostProjectAdvisory returns a human-readable health advisory when a
-// project has substantial symbols but zero edges — the "ghost-edges"
-// signature of #815 / #836 (zelosMCP user report). Extraction half-
-// succeeded: symbols got persisted but the resolver phase never ran
-// (or its writes got lost). At scale, the broken project still answers
-// `search` happily, then `trace`/`query` over the symbol returns zero
-// rows that look like a real empty result. Pre-#1009, doctor reported
-// the totals as bare numbers — a 368k-symbol project with 0 edges
-// looked identical to a healthy 368k/N project in the listing.
+// project has substantial symbols but zero (or vanishingly few) edges —
+// the "ghost-edges" signature of #815 / #836 (zelosMCP user report).
+// Extraction half-succeeded: symbols got persisted but the resolver
+// phase never ran (or its writes got lost). At scale, the broken
+// project still answers `search` happily, then `trace`/`query` over
+// the symbol returns zero rows that look like a real empty result.
+// Pre-#1009, doctor reported the totals as bare numbers — a 368k-symbol
+// project with 0 edges looked identical to a healthy 368k/N project in
+// the listing.
 //
-// Threshold = 1000 symbols. Below that, a true pure-config /
-// pure-docs repo can legitimately land at 0 edges. At 1000+ symbols
-// the project almost certainly contains code files, and code without
-// edges means the resolver lost its work.
+// Two thresholds, both anchored in dogfood-observed numbers:
+//
+//   - Strict (Symbols >= 1000 && Edges == 0): the original #1009 gate.
+//     Below 1000 symbols a true pure-config / pure-docs repo can
+//     legitimately land at 0 edges. At 1000+ symbols the project
+//     almost certainly contains code files, and code without edges
+//     means the resolver lost its work.
+//
+//   - Ratio (Symbols >= 1000 && Edges/Symbols < 0.001): the #1010
+//     extension. Some ghost projects leak a handful of edges but the
+//     resolver-failure shape is the same. Empirical: warp_rc indexed
+//     at 1.4M symbols / 247 edges (ratio 0.000175) — clearly ghost
+//     but the strict gate missed it. Healthy projects on the same DB
+//     sit at >= 0.01 edges/symbol (Codex hits 0.040 in worst case);
+//     the 0.001 floor is two orders of magnitude below the lowest
+//     healthy ratio.
 func ghostProjectAdvisory(projects []doctorProjectSummary) string {
 	const symThreshold = 1000
+	// #1010: ratio floor for the "vanishingly few edges" arm. Picked
+	// to sit two orders of magnitude below the worst-case healthy
+	// project's ratio (~0.04 on the dogfood box). Tightening below
+	// 0.001 risks tripping on legitimate config-heavy repos with a
+	// small Go cmd directory; widening above risks missing the
+	// ratio-class ghosts the strict gate already misses.
+	const minHealthyRatio = 0.001
 	var ghosts []doctorProjectSummary
 	for _, p := range projects {
-		if p.Symbols >= symThreshold && p.Edges == 0 {
+		if p.Symbols < symThreshold {
+			continue
+		}
+		if p.Edges == 0 {
+			ghosts = append(ghosts, p)
+			continue
+		}
+		if float64(p.Edges)/float64(p.Symbols) < minHealthyRatio {
 			ghosts = append(ghosts, p)
 		}
 	}
@@ -75,11 +102,18 @@ func ghostProjectAdvisory(projects []doctorProjectSummary) string {
 	}
 	var names []string
 	for _, g := range ghosts {
-		names = append(names, fmt.Sprintf("%q (%d symbols, %d files)", g.Name, g.Symbols, g.Files))
+		if g.Edges == 0 {
+			names = append(names, fmt.Sprintf("%q (%d symbols, %d files, 0 edges)",
+				g.Name, g.Symbols, g.Files))
+		} else {
+			names = append(names, fmt.Sprintf("%q (%d symbols, %d files, %d edges — ratio %.6f)",
+				g.Name, g.Symbols, g.Files, g.Edges,
+				float64(g.Edges)/float64(g.Symbols)))
+		}
 	}
-	msg := fmt.Sprintf("project%s with substantial symbols but ZERO edges (ghost-extraction signature, #815): %s. ",
+	msg := fmt.Sprintf("project%s with substantial symbols but vanishingly few edges (ghost-extraction signature, #815): %s. ",
 		pluralS(len(ghosts)), strings.Join(names, "; "))
-	msg += "Symbols were extracted but the resolver phase produced no graph — `trace` / `query` over these projects will silently return zero rows. " +
+	msg += "Symbols were extracted but the resolver phase produced no real graph — `trace` / `query` over these projects will silently return zero rows. " +
 		"Remediation: re-index from a fresh CWD (`pincher index <path>`) and check `doctor`'s extraction_failures list for the underlying cause."
 	return msg
 }
