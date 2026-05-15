@@ -3873,6 +3873,23 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// #400: response-level field projection. Caller-driven cut.
 	fieldSet := parseFieldsArg(str(args, "fields"))
 
+	// #1039: context's schema declares a `project` arg ("Project name
+	// or ID. Defaults to session project.") but the handler used to
+	// ignore it entirely. A typo'd project name silently fell through
+	// to the unscoped lookup — no signal the scope hint failed. Same
+	// contract-drift family as #1024 (stats) / #1028 (guide). Surface
+	// the resolution failure via _meta.warnings on success, or stack
+	// it into the not-found error (#1037 pattern) when the symbol is
+	// also missing.
+	var contextProjectWarning string
+	if projectArg := str(args, "project"); projectArg != "" {
+		if _, perr := s.resolveProjectID(projectArg); perr != nil {
+			contextProjectWarning = fmt.Sprintf(
+				"context: project %q did not resolve — falling back to unscoped symbol lookup. Call `list` to see indexed projects.",
+				projectArg)
+		}
+	}
+
 	sym, err := s.store.GetSymbol(id)
 	if err != nil || sym == nil {
 		// #1008: context shared handleSymbol's bare not-found envelope.
@@ -3880,8 +3897,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		// path is identical: search by short name + list as fallback
 		// when the project isn't indexed. Without next_steps, agents
 		// hit "symbol not found" on stale-but-recoverable IDs and stop.
+		errMsg := fmt.Sprintf("symbol %q not found", id)
+		if contextProjectWarning != "" {
+			errMsg = contextProjectWarning + " ALSO: " + errMsg
+		}
 		return s.errResultRich(
-			fmt.Sprintf("symbol %q not found", id),
+			errMsg,
 			[]map[string]string{
 				{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, shortNameFromID(id)),
 					"why": "id resolution failed — search by short name to recover the current ID"},
@@ -3927,6 +3948,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		// enough to keep on the lite path.
 		if root != "" {
 			s.attachStalenessWarning(liteData, sym.ProjectID, sym, root)
+		}
+		// #1039: lite-path also surfaces project-resolve failure.
+		if contextProjectWarning != "" {
+			attachWarning(liteData, contextProjectWarning)
 		}
 		liteResponseJSON, _ := json.Marshal(liteData)
 		return s.jsonResultWithMeta(liteData, start, tool, args,
@@ -4094,6 +4119,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		} else {
 			data = projected
 		}
+	}
+	// #1039: surface the project-resolve failure on success too — the
+	// caller's scope hint was ignored but the symbol resolved via the
+	// unscoped path. attachWarning merges into _meta.warnings.
+	if contextProjectWarning != "" {
+		attachWarning(data, contextProjectWarning)
 	}
 	responseJSON, _ := json.Marshal(data)
 	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(sym.ProjectID, root, allPaths, responseJSON)), nil
