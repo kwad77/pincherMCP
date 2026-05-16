@@ -508,7 +508,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ListExtractionFailures":         true,
 	"ListRecentExtractionFailuresAcrossProjects":  true, // #1205 doctor cross-project query
 	"CountRecentExtractionFailuresAcrossProjects": true, // #1205 doctor truncation-count
-	"ExtractionFailureCountsByReason": true,
+	"EstimateProjectBytes":                        true, // #1220 doctor per-project byte estimate (pure SELECT)
+	"ExtractionFailureCountsByReason":             true,
 	"ListSlowQueries":         true,
 	// HealthCheck is pure SELECT — previously misclassified under writer
 	// "for transactional consistency" but there is no write path. Moved

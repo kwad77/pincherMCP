@@ -3725,6 +3725,83 @@ func (s *Store) CountRecentExtractionFailuresAcrossProjects(cutoffUnix int64) (i
 	return n, nil
 }
 
+// EstimateProjectBytes returns a best-effort per-project on-disk byte
+// estimate, keyed by project_id. The estimate sums the LENGTH of every
+// text column in `symbols` and `edges` plus a flat per-row overhead
+// approximating index + b-tree storage, and includes a rough FTS5
+// contribution (~50% of the symbols-text payload, since the FTS5 vtab
+// re-stores qualified_name + signature + docstring tokens).
+//
+// This is *not* an exact attribution — SQLite page allocation is whole-
+// page granular and pages are shared across projects on multi-project
+// installs, so the sum across projects will undershoot the real
+// db_size_bytes by 10-40% (the gap is page-fragmentation slack + WAL +
+// schema overhead that can't be cheaply attributed per project). The
+// load-bearing property is *relative ordering*: doctor consumers use
+// these numbers to decide which project to delete first when the DB
+// hits multi-GB. Absolute precision would require parsing the b-tree
+// (out of scope; see #1219 pincher vacuum for that path). #1220.
+//
+// Reads via the reader pool — pure SELECT.
+func (s *Store) EstimateProjectBytes() (map[string]int64, error) {
+	// Symbols contribution: every text column LENGTH'd, plus 64 bytes/row
+	// for index entries (idx_sym_project + idx_sym_file + idx_sym_kind +
+	// idx_sym_name + idx_sym_qn each add ~12 bytes per symbol).
+	symQ := `SELECT project_id, SUM(
+	    LENGTH(id) + LENGTH(file_path) + LENGTH(name) + LENGTH(qualified_name) +
+	    LENGTH(kind) + LENGTH(language) +
+	    LENGTH(COALESCE(signature, '')) + LENGTH(COALESCE(return_type, '')) +
+	    LENGTH(COALESCE(docstring, '')) + LENGTH(COALESCE(parent, '')) +
+	    LENGTH(COALESCE(file_hash, ''))
+	  ) + COUNT(*) * 64 AS bytes
+	  FROM symbols
+	  GROUP BY project_id`
+	out := map[string]int64{}
+	rows, err := s.ro.Query(symQ)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var pid string
+		var bytes int64
+		if err := rows.Scan(&pid, &bytes); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		// FTS5 contribution: symbols vtabs re-store the searchable text.
+		// 50% of the symbol-text payload is a conservative midpoint of
+		// the typical 40-80% range observed on real corpora.
+		out[pid] = bytes + bytes/2
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// Edges contribution: id-strings + kind + properties + 32 bytes/row
+	// for idx_edge_from + idx_edge_to.
+	edgeQ := `SELECT project_id, SUM(
+	    LENGTH(from_id) + LENGTH(to_id) + LENGTH(kind) + LENGTH(COALESCE(properties, ''))
+	  ) + COUNT(*) * 32 AS bytes
+	  FROM edges
+	  GROUP BY project_id`
+	rows2, err := s.ro.Query(edgeQ)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var pid string
+		var bytes int64
+		if err := rows2.Scan(&pid, &bytes); err != nil {
+			return nil, err
+		}
+		out[pid] += bytes
+	}
+	return out, rows2.Err()
+}
+
 // ExtractionFailureCountsByReason returns a map of reason → count for the
 // project's extraction_failures rows. Powers the corpus-snapshot QN-
 // collision gate: any non-zero count for `qualified_name_collision` or
