@@ -5981,9 +5981,28 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if len(queryPaths) > 0 && !allowAllProjects {
 		root, _ := s.resolveProjectRoot(projectID)
 		tokensSaved = s.savedVsFileSizesSession(projectID, root, queryPaths, responseJSON)
+	} else if len(rows) == 0 {
+		// #1157: an empty-result query still represents work the agent
+		// saved itself — the alternative was running `grep -r <name>`
+		// against the project and reading the empty result (stdout
+		// "no matches" or shell exit code) plus the agent's
+		// interpretation overhead. ~200 tokens is a conservative
+		// constant — small enough not to inflate the headline savings
+		// figure, large enough that audit-shape "find symbols without
+		// X" queries that legitimately answer zero rows show non-zero
+		// savings instead of looking like wasted calls.
+		tokensSaved = emptyResultBaselineTokens
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
 }
+
+// emptyResultBaselineTokens credits an empty-result pinchQL query
+// (#1157) with the avoided grep+empty-read cycle the agent would
+// otherwise have run. 200 tokens is the order-of-magnitude estimate
+// from the issue body — grep stdout plus tool-call overhead. Kept as
+// a named constant so the "what number?" question is answered in one
+// place rather than three.
+const emptyResultBaselineTokens = 200
 
 // harvestRowFilePaths walks pinchQL result rows and collects distinct
 // values from any column whose key looks like a file-path projection
