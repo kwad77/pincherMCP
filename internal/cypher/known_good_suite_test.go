@@ -134,6 +134,21 @@ func TestExecute_KnownGoodSuite_NoWarnings(t *testing.T) {
 
 		// Comparison + AND on numeric column.
 		{"numeric_range", `MATCH (n:Function) WHERE n.complexity >= 2 AND n.complexity <= 8 RETURN n.name`},
+
+		// Shapes added by v0.59 fixes — these must keep producing
+		// zero warnings across all the new emitters (#1123/#1127/
+		// #1129/#1133/#1136/#1139/#1140 territory).
+		{"aliased_return_with_aliased_orderby", `MATCH (n:Function) RETURN n.name AS title, n.complexity AS cx ORDER BY cx DESC`},
+		{"aliased_return_orderby_source", `MATCH (n:Function) RETURN n.name AS title, n.complexity AS cx ORDER BY n.complexity DESC`},
+		{"grouped_aggregate_orderby_count_star", `MATCH (n:Function) RETURN n.language, COUNT(*) ORDER BY COUNT(*) DESC`},
+		{"distinct_grouped_aggregate", `MATCH (n:Function) RETURN DISTINCT n.language, COUNT(*) ORDER BY COUNT(*) DESC`},
+		{"aggregate_min_max_int", `MATCH (n:Function) WHERE n.complexity > 0 RETURN MIN(n.complexity), MAX(n.complexity)`},
+		{"edge_with_confidence_predicate", `MATCH (a:Function)-[r:CALLS]->(b) WHERE r.confidence > 0.5 RETURN a.name, r.confidence LIMIT 5`},
+		{"valid_kind_in_aggregate_pattern", `MATCH (n:Function) RETURN COUNT(*)`},
+		{"return_bare_bound_variable", `MATCH (n:Function) RETURN n LIMIT 1`},
+		{"is_null_with_aggregate", `MATCH (n:Function) WHERE n.docstring IS NULL RETURN COUNT(*)`},
+		{"is_not_null_with_aggregate", `MATCH (n:Function) WHERE n.docstring IS NOT NULL RETURN COUNT(*)`},
+		{"nested_not_or_in_where", `MATCH (n:Function) WHERE NOT (n.is_test = true OR n.is_exported = false) RETURN COUNT(*)`},
 	}
 
 	for _, tc := range cases {
