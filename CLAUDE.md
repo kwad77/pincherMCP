@@ -84,10 +84,24 @@ These fail when changes elsewhere don't update them in lockstep:
 make build PINCHER_BIN=./pincher.exe     # Windows
 make build                               # Linux/macOS
 
-# Build + swap the on-PATH binary (autonomous dogfood path — supervisor
-# auto-restart picks up the swap on next MCP tool call, no manual /mcp).
+# Build + swap the on-PATH binary (autonomous dogfood path).
 # Uses scripts/swap-active-binary.sh's rename-out trick on Windows where
 # `cp` over a running .exe fails with "Device or resource busy" (#705).
+#
+# PREREQUISITES (per #1151 — fresh clones miss these silently):
+#   1. An on-PATH `pincher` (Linux/macOS) or `pincher.exe` (Windows) must
+#      exist. The script swaps the binary at that path; no on-PATH binary
+#      → script exits 1. One-time bootstrap:
+#        cp ./pincher $HOME/.local/bin/pincher   # Linux/macOS
+#        copy pincher.exe %USERPROFILE%\bin\pincher.exe   # Windows
+#   2. For "no manual /mcp" auto-pickup, EITHER (a) the running MCP
+#      child must have been launched as `pincher supervised`, OR
+#      (b) PINCHER_AUTO_RESTART_ON_DRIFT=1 must be set in the MCP
+#      child's env. Without one of these, the swap lands on disk but
+#      the running process keeps serving the old binary until manual
+#      /mcp reconnect. `mcp__pincher__health` reports
+#      `binary_stale: true` when the swap landed but the running
+#      process didn't pick it up.
 make install PINCHER_BIN=./pincher.exe   # Windows
 make install                             # Linux/macOS
 

@@ -58,10 +58,23 @@ fi
 if [[ -z "$TARGET" ]]; then
     if ! TARGET="$(command -v "pincher${EXE_SUFFIX}" 2>/dev/null)"; then
         if ! TARGET="$(command -v pincher 2>/dev/null)"; then
-            echo "swap-active-binary: no pincher${EXE_SUFFIX} or pincher found in PATH" >&2
-            echo "  pass --target=PATH explicitly, or install once via:" >&2
-            echo "    cp $SOURCE \$HOME/.local/bin/pincher${EXE_SUFFIX}   # ensure on PATH" >&2
-            exit 1
+            # #1151: no on-PATH pincher is the fresh-clone case for
+            # contributors who run the in-repo binary directly. Pre-fix
+            # this was a hard error that broke `make install` on every
+            # fresh clone. Treat as a successful no-op: the new bytes
+            # are already at $SOURCE, the running child (if any) loads
+            # from there or won't pick up changes without /mcp anyway.
+            # The advisory tells the user how to enable the auto-swap
+            # path for next time without forcing a one-time setup wall.
+            echo "swap-active-binary: no pincher${EXE_SUFFIX} or pincher found in PATH"
+            echo "  ${SOURCE} is the freshly-built binary; the running MCP child"
+            echo "  (if any) won't pick it up without /mcp reconnect."
+            echo ""
+            echo "  To enable auto-swap on future builds, bootstrap once:"
+            echo "    cp $SOURCE \$HOME/.local/bin/pincher${EXE_SUFFIX}   # Linux/macOS"
+            echo "  Then either launch \`pincher supervised\` OR set"
+            echo "  PINCHER_AUTO_RESTART_ON_DRIFT=1 in the MCP child's env."
+            exit 0
         fi
     fi
 fi
