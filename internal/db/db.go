@@ -1963,10 +1963,17 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 		VALUES (?,?,?,?,0,0,0,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
+			-- #1086: COALESCE the existing schema_version_at_index to 0 so
+			-- pre-v18 projects (NULL value) can be re-stamped on re-index.
+			-- Pre-fix, 'excluded.schema_version_at_index >= NULL' evaluated
+			-- to NULL (false in CASE WHEN) and 'MAX(NULL, 26)' returned NULL
+			-- (scalar SQLite MAX propagates NULL), so binary_version and
+			-- schema_version_at_index stayed NULL forever — the drift
+			-- warning fired permanently even after a force re-index.
 			binary_version=CASE
-				WHEN excluded.schema_version_at_index >= schema_version_at_index
+				WHEN excluded.schema_version_at_index >= COALESCE(schema_version_at_index, 0)
 				THEN excluded.binary_version ELSE binary_version END,
-			schema_version_at_index=MAX(schema_version_at_index, excluded.schema_version_at_index)`,
+			schema_version_at_index=MAX(COALESCE(schema_version_at_index, 0), excluded.schema_version_at_index)`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
 		currentSchema, p.BinaryVersion,
 	)
