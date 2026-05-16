@@ -3118,8 +3118,8 @@ func (s *Server) registerTools() {
 		Description: "**Use when you need structural relationships, not text matches** — pinchQL graph queries over the symbol graph. pinchQL is a pragmatic Cypher-shaped subset: `MATCH`, `WHERE`, `RETURN`, `LIMIT`, single-hop joins (`-[:CALLS]->`), and bounded variable-length BFS (`-[:CALLS*1..3]->`). Examples: callers `MATCH (a)-[:CALLS]->(b) WHERE b.name=\"Open\" RETURN a.name`; classes in a file `MATCH (n:Class) WHERE n.file_path CONTAINS \"server\" RETURN n.name`; multi-hop `MATCH (a)-[:CALLS*1..3]->(b) WHERE a.name=\"main\" RETURN b.name`. The legacy `cypher` parameter name is still accepted as a soft alias for one release. Prefer `search` for name/text lookups, `trace` for fixed-shape callgraph BFS — both are cheaper.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
-				"pinchql":{"type":"string","description":"pinchQL query. Example: MATCH (f:Function)-[:CALLS]->(g) WHERE f.name='main' RETURN g.name LIMIT 20. Alias: cypher (deprecated, kept for one release)."},
-				"cypher":{"type":"string","description":"Deprecated alias for pinchql; kept for one release. Pass either, not both."},
+				"pinchql":{"type":"string","description":"pinchQL query. Example: MATCH (f:Function)-[:CALLS]->(g) WHERE f.name='main' RETURN g.name LIMIT 20. Alias: cypher (deprecated since #712; honored with a per-call deprecation warning, slated for removal in v1.0 per #638's tool-schema-freeze)."},
+				"cypher":{"type":"string","description":"Deprecated alias for pinchql; honored with a per-call deprecation warning, slated for removal in v1.0 (#638). Pass either, not both."},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project. Pass '*' to query across every indexed project (cross-repo graph lookups)."},
 				"max_rows":{"type":"integer","description":"Max rows (default 200, max 10000)"},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default 0.0 (no filter). Filters rows whose query selects an extraction_confidence column; rows from queries that don't return confidence are unaffected."}
@@ -5844,7 +5844,7 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			"action", "honored cypher arg",
 			"recommendation", "rename the parameter to `pinchql`; the cypher alias will be removed in a future release")
 		queryWarnings = append(queryWarnings,
-			"the `cypher` parameter is a deprecated alias kept for one release — rename it to `pinchql` before the alias is removed")
+			"the `cypher` parameter is a deprecated alias honored with this warning; the alias is slated for removal in v1.0 (#638) — rename it to `pinchql`")
 	}
 	if cql == "" {
 		// #712: failure-as-pedagogy — pinchQL is unfamiliar; show a

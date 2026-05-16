@@ -318,7 +318,7 @@
     "input_schema": {
       "properties": {
         "cypher": {
-          "description": "Deprecated alias for pinchql; kept for one release. Pass either, not both.",
+          "description": "Deprecated alias for pinchql; honored with a per-call deprecation warning, slated for removal in v1.0 (#638). Pass either, not both.",
           "type": "string"
         },
         "max_rows": {
@@ -330,7 +330,7 @@
           "type": "number"
         },
         "pinchql": {
-          "description": "pinchQL query. Example: MATCH (f:Function)-[:CALLS]-\u003e(g) WHERE f.name='main' RETURN g.name LIMIT 20. Alias: cypher (deprecated, kept for one release).",
+          "description": "pinchQL query. Example: MATCH (f:Function)-[:CALLS]-\u003e(g) WHERE f.name='main' RETURN g.name LIMIT 20. Alias: cypher (deprecated since #712; honored with a per-call deprecation warning, slated for removal in v1.0 per #638's tool-schema-freeze).",
           "type": "string"
         },
         "project": {
