@@ -7233,27 +7233,41 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 	// edges. Same family as #1040 (architecture) / #1042 (schema) /
 	// #1043 (query) + the existing #1009 doctor advisory. Closes
 	// ghost-extraction diagnosis across every code-graph tool.
-	if symCount, edgeCount, _, _, gerr := s.store.GraphStats(projectID); gerr == nil &&
-		edgeCount == 0 && symCount >= 100 {
-		var diagnosis string
-		if len(dead) > 0 {
-			diagnosis = fmt.Sprintf(
-				"dead_code returned %d candidates BUT the scoped project has %d symbols and ZERO edges — ghost-extraction signature (#815). With no inbound edges anywhere in the project, every function looks unreferenced; these results are likely all false positives. Confirm via `architecture` / `doctor` before treating any of them as dead.",
-				len(dead), symCount)
-		} else {
-			diagnosis = fmt.Sprintf(
-				"no dead_code candidates AND the scoped project has %d symbols but ZERO edges — ghost-extraction signature (#815). dead_code can't run meaningfully without an edge graph; the empty result is the resolver failure, not the min_confidence floor. Use `architecture` or `doctor` to confirm.",
-				symCount)
-		}
-		ghostSteps := []map[string]string{
-			{"tool": "architecture", "args": "{}",
-				"why": "confirm the ghost-extraction shape (langs histogram + 0 edges)"},
-			{"tool": "doctor", "args": "{}",
-				"why": "extraction_failures list may explain why the resolver phase produced no edges"},
-		}
-		data["_meta"] = map[string]any{
-			"diagnosis":  diagnosis,
-			"next_steps": ghostSteps,
+	if symCount, edgeCount, _, _, gerr := s.store.GraphStats(projectID); gerr == nil {
+		if edgeCount == 0 && symCount >= 100 {
+			var diagnosis string
+			if len(dead) > 0 {
+				diagnosis = fmt.Sprintf(
+					"dead_code returned %d candidates BUT the scoped project has %d symbols and ZERO edges — ghost-extraction signature (#815). With no inbound edges anywhere in the project, every function looks unreferenced; these results are likely all false positives. Confirm via `architecture` / `doctor` before treating any of them as dead.",
+					len(dead), symCount)
+			} else {
+				diagnosis = fmt.Sprintf(
+					"no dead_code candidates AND the scoped project has %d symbols but ZERO edges — ghost-extraction signature (#815). dead_code can't run meaningfully without an edge graph; the empty result is the resolver failure, not the min_confidence floor. Use `architecture` or `doctor` to confirm.",
+					symCount)
+			}
+			ghostSteps := []map[string]string{
+				{"tool": "architecture", "args": "{}",
+					"why": "confirm the ghost-extraction shape (langs histogram + 0 edges)"},
+				{"tool": "doctor", "args": "{}",
+					"why": "extraction_failures list may explain why the resolver phase produced no edges"},
+			}
+			data["_meta"] = map[string]any{
+				"diagnosis":  diagnosis,
+				"next_steps": ghostSteps,
+			}
+		} else if symCount >= 1000 && edgeCount > 0 &&
+			float64(edgeCount)/float64(symCount) < 0.001 {
+			// #1071: ratio-class ghost-extraction warning. Same shape as
+			// #1010 (doctor) / #1067 (architecture) / #1068 (schema).
+			// When the project has a handful of edges but most symbols
+			// have no inbound edge, dead_code's candidates are
+			// disproportionately false positives from the un-resolved
+			// portion of the corpus. Attached as a warning (not a
+			// diagnosis-replacement) so the result list stays usable
+			// for the small subset that did resolve.
+			attachWarning(data, fmt.Sprintf(
+				"project has %d symbols and %d edges — ratio %.6f, well below the healthy floor of ~0.01 (ghost-extraction signature, #815). The %d dead_code candidate(s) above may be FPs from the un-resolved bulk of the corpus rather than genuinely-unused symbols. Force a re-index; if the ratio doesn't improve, treat dead_code output as untrusted on this project.",
+				symCount, edgeCount, float64(edgeCount)/float64(symCount), len(dead)))
 		}
 	}
 
