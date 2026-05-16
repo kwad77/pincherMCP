@@ -1959,13 +1959,175 @@ func extractTypeScript(source []byte, relPath string) *FileResult {
 	}
 	result := tsRE.extract(source, relPath, "TypeScript", opts)
 	// #1158 v0.61: the new methodRE matches `name(` at line start, which
-	// catches class methods but also accidentally matches control-flow
-	// statements like `if (cond) {` / `for (i = 0; ...)` / `while (x)`
+	// catches control-flow statements like `if (cond) {` / `for (i = 0; ...)`
 	// when those appear inside a class body. Filter them out by name.
-	// Same shape as #1148's C reserved-keyword filter — exact-match
-	// against an explicit blocklist; lookalikes pass through.
 	result.Symbols = dropTSKeywordFalsePositives(result.Symbols)
+	// #1208 v0.66 DOGFOOD: drop TS function-overload SIGNATURES, keep
+	// only the implementation. A TS overload set looks like:
+	//
+	//   export function law(a: string): string;
+	//   export function law(a: number): number;
+	//   export function law(a: any): any { return a; }
+	//
+	// Pre-fix the regex emitted three Function symbols all named `law`
+	// with identical qualified_name → qualified_name_collision diagnostic
+	// fired. The first two are declaration-only signatures (no body,
+	// line ends with `;`); only the third is the real implementation.
+	// Same shape as dropCForwardDecls.
+	result.Symbols = dropTSOverloadSignatures(result.Symbols, source)
 	return result
+}
+
+// dropTSOverloadSignatures removes Function symbols whose source position
+// is a `function name(...): T;` overload signature rather than a
+// `function name(...): T { ... }` implementation. The signature-only
+// form has no body to fetch and collides on qualified_name with the
+// matching implementation (#1208). Detection walks forward from the
+// symbol's StartByte, tracking parenthesis depth across the parameter
+// list AND any return-type annotation, then inspects the first
+// non-whitespace, non-comment character after the type annotation
+// closes. `;` → overload signature (drop). `{` → implementation
+// (keep). `=>` → arrow function (keep — the regex shouldn't have
+// matched but the harmless case is to keep). Anything else is treated
+// as an implementation to err on the side of keeping symbols.
+//
+// Multi-line signatures (parameters and return types on separate
+// lines) walk until a top-level `;` or `{` is found.
+func dropTSOverloadSignatures(syms []ExtractedSymbol, source []byte) []ExtractedSymbol {
+	if len(syms) == 0 {
+		return syms
+	}
+	out := syms[:0]
+	for _, s := range syms {
+		// Only candidate-drop Function symbols whose declaration uses
+		// the `function` keyword. Arrow-function consts (`const x =
+		// (...) => expr;`) and object-property arrows match funcRE's
+		// other alternatives — their `;` terminates the EXPRESSION,
+		// not a signature; the signature-vs-impl distinction doesn't
+		// apply.
+		if s.Kind == "Function" && tsSignatureLineUsesFunctionKeyword(s.Signature) && isTSOverloadSignature(source, s.StartByte) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// tsSignatureLineUsesFunctionKeyword returns true when the captured
+// source line uses the `function` keyword form (the only TS shape that
+// has a signature-vs-implementation distinction). Arrow consts and
+// object-property arrows match funcRE's other alternatives — they're
+// always implementations.
+func tsSignatureLineUsesFunctionKeyword(sig string) bool {
+	// The regex captures lines like `export function name(...)`,
+	// `async function name(...)`, or `function name(...)`. Substring
+	// search is sufficient — `function` is a reserved word so it
+	// can't appear as an identifier where it'd false-match.
+	return strings.Contains(sig, "function ") || strings.HasPrefix(strings.TrimSpace(sig), "function(")
+}
+
+// isTSOverloadSignature returns true when the function symbol starting
+// at off is a `function name(...): T;` overload signature with no body.
+// Walks parens to skip past `(...)` and `: Type` (including `Type<A,B>`
+// generics) then checks whether the first body-position token is `;`.
+func isTSOverloadSignature(source []byte, off int) bool {
+	// Find the first `(` to start parameter-list traversal.
+	i := off
+	for i < len(source) && source[i] != '(' {
+		if source[i] == '\n' && i-off > 200 {
+			// Defensive: signature lines are short; if we walked
+			// past 200 bytes without a `(`, the symbol probably
+			// isn't a function declaration. Treat as
+			// non-signature so we keep it.
+			return false
+		}
+		i++
+	}
+	if i >= len(source) {
+		return false
+	}
+	depth := 0
+	for ; i < len(source); i++ {
+		switch source[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				// Param list closed; scan past optional `: ReturnType`
+				// (with possible generics like `Foo<A,B>` or
+				// `Promise<{ a: number }>`) until we hit `;` (overload)
+				// or `{` (implementation) at depth 0.
+				return scanForTSBodyOrSemicolon(source, i+1)
+			}
+		}
+	}
+	return false
+}
+
+// scanForTSBodyOrSemicolon walks from `start` past optional whitespace,
+// return-type annotation, and generic args, and returns true iff the
+// first body-position character is `;` (overload signature). `{`
+// indicates an implementation. `=>` is treated as not-a-signature
+// (caller already established this is a `function` declaration; the
+// `=>` case shouldn't happen but errs on safe-keep). Stops at end of
+// source.
+func scanForTSBodyOrSemicolon(source []byte, start int) bool {
+	depth := 0    // generic / object-type brace depth
+	bracket := 0  // square-bracket depth
+	for i := start; i < len(source); i++ {
+		c := source[i]
+		// Skip line comments.
+		if c == '/' && i+1 < len(source) && source[i+1] == '/' {
+			for i < len(source) && source[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		// Skip block comments.
+		if c == '/' && i+1 < len(source) && source[i+1] == '*' {
+			i += 2
+			for i+1 < len(source) && !(source[i] == '*' && source[i+1] == '/') {
+				i++
+			}
+			i++ // step past the closing `/`
+			continue
+		}
+		if c == '<' {
+			depth++
+			continue
+		}
+		if c == '>' && depth > 0 {
+			depth--
+			continue
+		}
+		if c == '[' {
+			bracket++
+			continue
+		}
+		if c == ']' && bracket > 0 {
+			bracket--
+			continue
+		}
+		if depth > 0 || bracket > 0 {
+			continue
+		}
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		// Top-level interesting character.
+		if c == ';' {
+			return true
+		}
+		if c == '{' {
+			return false
+		}
+		// Anything else (letters, `:`, `,`, `|`, `&`, identifier chars
+		// for a return-type expression) keeps scanning.
+	}
+	// Reached EOF without a `;` or `{` — treat as implementation
+	// rather than over-drop on truncated files.
+	return false
 }
 
 // tsReservedKeywords is the set of TS/JS reserved words and common

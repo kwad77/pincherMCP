@@ -1430,6 +1430,24 @@ func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, r
 	if lang == "Markdown" {
 		return
 	}
+	// #1208 v0.66 DOGFOOD: skip the diagnostic for TypeScript. After
+	// dropTSOverloadSignatures handles the most common dup source
+	// (overload signatures), the residual TS collisions are legitimate
+	// real-world shapes the regex extractor can't scope-resolve without
+	// an AST:
+	//   - top-level `const law = (s) => ...` PLUS an object-property
+	//     `{ law: (s) => ... }` elsewhere in the same file
+	//   - JSX/TSX polymorphic component variants sharing a name
+	//   - re-exports + local declarations of the same identifier
+	// disambiguateDuplicates still appends `~<line>` so every symbol
+	// remains individually addressable; suppressing the diagnostic
+	// keeps doctor's failure list focused on real bugs rather than
+	// codifying-a-TS-AST-as-a-prerequisite work. Same UX call as the
+	// Markdown carve-out above. When the v0.62+ TS AST extractor lands
+	// (#1177 area), this suppression should be reconsidered.
+	if lang == "TypeScript" {
+		return
+	}
 	if len(result.QNCollisions) == 0 {
 		return
 	}
