@@ -1658,10 +1658,23 @@ func (p *parser) parseQuery() (*queryAST, error) {
 			if isAggFn(p.peek().value) {
 				fn := strings.ToUpper(p.next().value)
 				p.skip("(")
-				v := p.next().value
-				if p.peek().value == "." {
+				// #1120: COUNT(*) — the tokenizer reads `*` as an empty
+				// HOPS token (see #946 in parseReturn for the same shape).
+				// Pre-fix the argument became v="" and q.orderBy rendered
+				// as "COUNT()" — which didn't match the projection
+				// column "COUNT(*)" emitted by aggColName, so the sort
+				// silently no-op'd. Preserve "*" literally so the
+				// ORDER-BY key round-trips with the projection.
+				var v string
+				if t2 := p.peek(); t2.kind == "HOPS" && t2.value == "" {
 					p.next()
-					v += "." + p.next().value
+					v = "*"
+				} else {
+					v = p.next().value
+					if p.peek().value == "." {
+						p.next()
+						v += "." + p.next().value
+					}
 				}
 				if err := p.expect(")"); err != nil {
 					return nil, err
