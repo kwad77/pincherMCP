@@ -7,6 +7,23 @@ minors.
 
 ## [Unreleased]
 
+## [0.63.0] — 2026-05-16 — Stub-tier language audit: 6 of 7 stubs promoted to regex-tier
+
+v0.63 theme: audit the 7 stub-tier languages (Scala, Lua, Zig, Elixir, Haskell, Dart, R) and decide promote-or-defer. Outcome: 6 of 7 promoted to regex-tier this release. **Lua / Elixir / Zig** (round 1) and **Scala / Dart / R** (round 2). Haskell is the only stub-tier language remaining — its indentation-sensitive layout with no `{`/`def`/`function` anchor makes regex-tier representation significantly harder; proper extractor deferred to v0.64+ with rationale documented inline. All 6 promoted extractors opt into the v0.62 regex-tier CALLS pass; confidence 0.70. With v0.63 shipped, every detected language emits symbols + same-file CALLS edges except Haskell. AST extractors for Rust/Java + Python real-corpus validation + TS receiver-type resolver carried from v0.62 are tracked under #1177/#1182/#1183/#1184 and roll forward to v0.64+ as multi-day work.
+
+### Added
+- ast: Scala / Dart / R promoted from stub-tier to regex-tier (#1161, v0.63 round 2). Following the v0.63 round 1 batch (Lua/Elixir/Zig). With this, Haskell is the only stub-tier language remaining. Decisions per the v0.63 audit:
+- **Scala** — `def name`, `class`/`object`/`trait` for scope. Modifier-rich keyword stack handled in funcRE: `private`/`protected`/`override`/`final`/`abstract`/`implicit`/`sealed`. `object` and `case class` both surface as Class scope.
+- **Dart** — C-family function shape (`returnType name(args)`). Optional modifiers: `static`/`external`/`abstract`/`async`. Reuses TS's `dropTSKeywordFalsePositives` since Dart inherits JS/TS control-flow vocabulary.
+- **R** — `name <- function(...)` and `name = function(...)` assignment-style definition. Accepts dotted names (`helper.fn`) since R conventionally uses `.` in identifiers.
+All three opt into the v0.62 regex-tier CALLS pass. Confidence 0.70. Haskell remains stub — its indentation-sensitive layout with no `{`/`def`/`function` anchor makes regex-tier representation significantly harder; a proper extractor is tracked as v0.64+ work.
+Tests pin the contract: positive function-extraction for each of the three, Haskell-stays-stub regression guard, and the round-1 Lua/Elixir/Zig tests continue to pass.
+- ast: Lua / Elixir / Zig promoted from stub-tier to regex-tier (#1161, v0.63). Pre-fix, all 7 stub-tier languages emitted zero symbols — `IsSourceFile` returned true but the `FileResult` was always empty, leaving the corpus invisible to `search`/`query`/`trace`. v0.63 promotes the three easiest (well-defined function-definition syntax, common in real repos):
+- **Lua** — `function name(...)`, `local function name(...)`, `function obj:method(...)`, `function ns.name(...)` patterns. Uses `end`-keyword block closing like Ruby.
+- **Zig** — `pub fn name(...)`, `export fn name(...)`, `extern fn name(...)`, plus top-level `const Name = struct` as Class.
+- **Elixir** — `def`/`defp`/`defmacro` for functions, `defmodule` for module-as-class scope. Uses `end`-keyword block closing.
+All three opt into the v0.62 regex-tier CALLS pass via `extractCalls=true`. Confidence 0.70 (regex-tier). Scala / Haskell / Dart / R remain stub-tier this release — Haskell's indentation-sensitive layout, Scala's mixed-paradigm syntax, and Dart/R requiring more nuanced detection make regex-tier representation significantly harder. Decide-or-defer for those tracked under v0.63 follow-ups.
+8 tests pin the contract: function-extraction + per-file-CALLS for each of the three promoted languages (6 tests), a defmodule-emits-Class cross-check, and a stub-tier-stays-stub regression guard for the four still-deferred languages.
 ## [0.62.0] — 2026-05-16 — Regex-tier CALLS sweep: every regex-tier language emits CALLS edges
 
 Closes the #858 edge-graph-empty warning surface for the regex-tier language set. Pre-v0.62, only Go (AST), Python (AST, #856), C (#858), and TS (#1158 v0.61) emitted CALLS edges — every other regex-tier project's `trace`/`dead_code`/`neighborhood` returned the edge-graph-empty warning. v0.62 lights up Rust, Java, PHP, C#, Kotlin, Swift, and Ruby; each opts into the shared `extractCalls=true` path via `regexCallScan`. Required generalizing `regexCallScan`'s signature-skip from `{`-only to `{`-or-first-newline so Ruby's end-keyword block bodies parse the same as C-family. Same-file calls resolve immediately; cross-file resolution is v0.63+ resolver work — deferred under #1177/#1182/#1183/#1184. Per-language AST extractors for Rust/Java + Python real-corpus validation deferred under v0.63 milestone for the same reason.
