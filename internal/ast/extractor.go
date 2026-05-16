@@ -1662,9 +1662,20 @@ var regexCallKeywords = map[string]bool{
 // (0.7), an honest regex-tier signal. Per-name dedup keeps a hot helper
 // called ten times from emitting ten identical edges.
 func regexCallScan(body []byte, fromQN string) []ExtractedEdge {
+	// Skip past the signature so the function's own name doesn't
+	// self-match. C-family bodies open with `{`; the byte after `{`
+	// is the body's first content. Ruby (and other end-keyword
+	// languages) have no `{` — the signature is the first line and
+	// the body begins on the next line, so fall back to "skip past
+	// the first newline." #1159 v0.62: extended fallback so Ruby's
+	// per-file CALLS pass works the same as the {-bodied languages.
 	open := bytes.IndexByte(body, '{')
 	if open < 0 {
-		return nil
+		nl := bytes.IndexByte(body, '\n')
+		if nl < 0 {
+			return nil
+		}
+		open = nl
 	}
 	var edges []ExtractedEdge
 	seen := map[string]bool{}
@@ -2030,6 +2041,10 @@ var rubyRE = &regexExtractor{
 func extractRuby(source []byte, relPath string) *FileResult {
 	opts := simpleOpts("::", 0)
 	opts.endKeyword = true // Ruby closes def/class/module/do with `end` (#805)
+	// #1159 v0.62: per-file CALLS pass — regexCallScan falls back to
+	// "skip past first newline" when there is no `{`, so Ruby's
+	// end-keyword block bodies work the same as C-family.
+	opts.extractCalls = true
 	return rubyRE.extract(source, relPath, "Ruby", opts)
 }
 
