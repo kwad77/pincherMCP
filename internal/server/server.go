@@ -8832,7 +8832,46 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return errResult(fmt.Sprintf("server returned HTTP %d for %s", resp.StatusCode, rawURL)), nil
+		// #1106: rich envelope for non-2xx responses. Pre-fix the bare
+		// errResult lost the recovery context for the most common
+		// fetch failure modes — 401/403 (auth required), 404 (wrong
+		// URL or page moved), 429 (rate limit), 5xx (upstream issue).
+		// The status-specific next_step lets the agent take the right
+		// next action instead of re-trying the same URL blindly.
+		var statusHint string
+		var statusSteps []map[string]string
+		switch {
+		case resp.StatusCode == 401 || resp.StatusCode == 403:
+			statusHint = "the resource requires authentication or is forbidden — fetch is unauthenticated and can only retrieve public URLs"
+			statusSteps = []map[string]string{
+				{"tool": "search", "args": `{"query":"<topic>","corpus":"docs"}`,
+					"why": "the doc may already be indexed locally — try docs corpus before pulling externally"},
+			}
+		case resp.StatusCode == 404:
+			statusHint = "page not found — verify the URL, the doc may have moved or never existed at this path"
+			statusSteps = []map[string]string{
+				{"tool": "fetch", "args": `{"url":"<corrected-url>"}`,
+					"why": "re-issue with the correct URL — fetch does not auto-redirect on 404"},
+			}
+		case resp.StatusCode == 429:
+			statusHint = "rate-limited by upstream — wait and retry, or use a different source"
+			statusSteps = []map[string]string{
+				{"tool": "fetch", "args": fmt.Sprintf(`{"url":%q}`, rawURL),
+					"why": "retry after the rate-limit window elapses (commonly 60s)"},
+			}
+		case resp.StatusCode >= 500:
+			statusHint = "upstream server error — transient; retry, or find an alternate source"
+			statusSteps = []map[string]string{
+				{"tool": "fetch", "args": fmt.Sprintf(`{"url":%q}`, rawURL),
+					"why": "5xx errors are typically transient — retry once before pivoting"},
+			}
+		default:
+			statusHint = fmt.Sprintf("unexpected HTTP %d", resp.StatusCode)
+		}
+		return s.errResultRich(
+			fmt.Sprintf("server returned HTTP %d for %s — %s", resp.StatusCode, rawURL, statusHint),
+			statusSteps,
+		), nil
 	}
 
 	rawBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
