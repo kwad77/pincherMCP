@@ -398,7 +398,7 @@
           "type": "integer"
         },
         "min_confidence": {
-          "description": "Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. Rationale: 0.71 filters bottom-floor doc-section symbols that can BM25-match wide queries; an exact identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned.",
+          "description": "Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. corpus='docs' also defaults to 0.0 regardless of query shape — Markdown section symbols are the intentional target on docs searches, not noise to filter out. Rationale for 0.71 on phrase/wildcard code queries: filters bottom-floor doc-section symbols that can BM25-match wide queries when they cross the corpus boundary; an exact-identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned.",
           "type": "number"
         },
         "offset": {
