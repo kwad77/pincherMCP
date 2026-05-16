@@ -10,7 +10,9 @@ import (
 // only consulted outbound edges, so Cypher's undirected semantics
 // (match either direction) silently produced only half the rows.
 // pinchQL now rejects the syntax with a remediation pointing at the
-// directed forms or a client-side union.
+// directed form + variable-swap workaround (#1115 made the remediation
+// honest — the inbound `<-[r:KIND]-` form was suggested pre-fix but
+// not actually implemented, so agents trying it got the same error).
 
 func TestExecute_UndirectedEdge_Rejected(t *testing.T) {
 	db := newTestDB(t)
@@ -24,11 +26,11 @@ func TestExecute_UndirectedEdge_Rejected(t *testing.T) {
 		t.Fatal("undirected edge must produce a parse error; got success")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "undirected edges") {
-		t.Errorf("error message must explain the issue; got %q", msg)
+	if !strings.Contains(msg, "outbound arrow") {
+		t.Errorf("error message must explain the supported form; got %q", msg)
 	}
-	if !strings.Contains(msg, "-[r:KIND]->") || !strings.Contains(msg, "<-[r:KIND]-") {
-		t.Errorf("error message must name the directed-form remediations; got %q", msg)
+	if !strings.Contains(msg, "swap the variables") {
+		t.Errorf("error message must name the variable-swap remediation; got %q", msg)
 	}
 }
 

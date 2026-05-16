@@ -1712,9 +1712,19 @@ func (p *parser) parsePattern() (pattern, error) {
 				// remediation rather than half-implement. Same shape here:
 				// fail cleanly so the user sees the actual coverage gap.
 				return pat, fmt.Errorf(
-					"pinchQL: undirected edges (-[r:KIND]-) are not supported. " +
-						"Use -[r:KIND]-> for outbound, <-[r:KIND]- for inbound, " +
-						"or run both directions as separate MATCH queries and union the results client-side")
+					// #1115: pinchQL implements only the outbound arrow form
+					// (-[r:KIND]->). Pre-fix the error suggested the inbound
+					// form (<-[r:KIND]-) as a remediation, but that syntax is
+					// also rejected by this same code path — agents trying
+					// the suggested form got the same error in a loop. The
+					// honest remediation is to swap variable order in the
+					// outbound form: `MATCH (caller)-[r:CALLS]->(target)`
+					// instead of `MATCH (target)<-[r:CALLS]-(caller)`.
+					"pinchQL: only the outbound arrow form (-[r:KIND]->) is supported. " +
+						"For inbound traversal, swap the variables on either side of the arrow: " +
+						"write `MATCH (caller)-[r:KIND]->(target) WHERE target.name=...` " +
+						"instead of `MATCH (target)<-[r:KIND]-(caller)`. " +
+						"For both directions, run two MATCH queries and union the results client-side")
 			}
 		}
 
