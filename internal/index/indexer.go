@@ -192,6 +192,15 @@ type IndexResult struct {
 	Blocked    int // files refused by ast.ShouldSkip (lockfiles, minified bundles, source maps)
 	Deleted    int // files removed from disk since last index — symbols GC'd this run (#326)
 	DurationMS int64
+
+	// #1231 v0.66 DOGFOOD: post-pass parity check. ParityMismatchFiles
+	// is the count of files whose persisted symbol count is < 90% of
+	// extracted. ParityMissingSymbols is the sum of (expected - actual)
+	// across those files. Both default to 0 on healthy runs. Non-zero
+	// is a strong signal of silent persistence loss — see #1231 for the
+	// root-cause investigation.
+	ParityMismatchFiles   int
+	ParityMissingSymbols  int
 }
 
 // Index indexes a repository at the given path (incremental by default).
@@ -359,6 +368,14 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		bufMu          sync.Mutex
 		lastStatsFlush time.Time           // throttle for in-flight project counts; guarded by bufMu
 		seenFiles      = map[string]bool{} // #326: relPaths the walker yielded this run; tail-pass GC's symbols for files NOT in this set. Populated in the main (single-threaded) loop so no mutex.
+		// #1231 v0.66 DOGFOOD: per-file expected symbol count. Filled
+		// in the per-file goroutine (after disambiguateDuplicates + the
+		// symBuf append, under bufMu). Compared post-pass against the
+		// DB COUNT(*) GROUP BY file_path to detect silent symbol loss
+		// during persistence — the bug shape where pincher-repo's
+		// server.go has 73 source methods but only 8 in the index after
+		// a force-reindex.
+		expectedPerFile = map[string]int{}
 	)
 
 	// Process files
@@ -672,6 +689,14 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			pendingImport = append(pendingImport, deferredImports...)
 			pendingCalls = append(pendingCalls, deferredCalls...)
 			pendingReads = append(pendingReads, deferredReads...)
+			// #1231 v0.66 DOGFOOD: record this file's extracted-symbol
+			// count under bufMu so the post-pass parity check
+			// (Index() tail) can compare against the DB's
+			// COUNT(*) GROUP BY file_path. Sum across multiple
+			// re-extractions of the same file in one pass — rare
+			// but possible if the walker yields a file twice (e.g.,
+			// symlink loop the gocodewalker default doesn't catch).
+			expectedPerFile[relPath] += len(syms)
 			// Flush when buffer is large enough
 			if len(symBuf) >= 500 {
 				totalSymbols += len(symBuf)
@@ -783,6 +808,9 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		totalDeleted++
 	}
 
+	// #1231 v0.66 DOGFOOD: post-pass parity check guard.
+	parityMismatchFiles, parityMissingSymbols := idx.runParityCheck(projectID, projectName, expectedPerFile)
+
 	duration := time.Since(start)
 
 	// Update project stats — use DB totals so incremental runs reflect the full graph.
@@ -847,16 +875,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	_ = idx.store.CheckpointTruncate()
 
 	result := &IndexResult{
-		ProjectID:  projectID,
-		Project:    projectName,
-		Path:       absPath,
-		Files:      totalFiles,
-		Symbols:    totalSymbols,
-		Edges:      totalEdges,
-		Skipped:    totalSkipped,
-		Blocked:    totalBlocked,
-		Deleted:    totalDeleted,
-		DurationMS: duration.Milliseconds(),
+		ProjectID:            projectID,
+		Project:              projectName,
+		Path:                 absPath,
+		Files:                totalFiles,
+		Symbols:              totalSymbols,
+		Edges:                totalEdges,
+		Skipped:              totalSkipped,
+		Blocked:              totalBlocked,
+		Deleted:              totalDeleted,
+		DurationMS:           duration.Milliseconds(),
+		ParityMismatchFiles:  parityMismatchFiles,
+		ParityMissingSymbols: parityMissingSymbols,
 	}
 
 	// #654: index_complete — the single success return, so this fires
@@ -876,6 +906,60 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	})
 
 	return result, nil
+}
+
+// runParityCheck compares the per-file extracted-symbol counts (from
+// the indexer's in-memory `expectedPerFile` map, filled under bufMu in
+// the per-file goroutines) against the persisted DB counts (one
+// COUNT(*) GROUP BY file_path SELECT). Any file whose actual count is
+// < expected*0.9 (>10% loss) trips a per-file `slog.Warn` plus, when
+// any losses are found, a single summary warning naming #1231.
+// Returns (mismatch_files, missing_symbols) for IndexResult.
+//
+// Threshold rationale: a strict 100% equality check is unreliable —
+// rare extractor paths (disambiguateDuplicates merging two extractor
+// outputs with identical IDs after suffix) can legitimately produce
+// small count drift. 90% catches the #1231 shape (8 of 73 methods =
+// 89% loss) without false-positive on small edges.
+//
+// Failure handling: if the DB query itself fails, log the err and
+// return (0, 0) — the parity check is observation-only, never gates
+// a successful index run.
+func (idx *Indexer) runParityCheck(projectID, projectName string, expectedPerFile map[string]int) (int, int) {
+	actualCounts, err := idx.store.SymbolCountsByFile(projectID)
+	if err != nil {
+		slog.Warn("pincher.index.parity.query.err", "err", err)
+		return 0, 0
+	}
+	mismatchFiles, missingSymbols := 0, 0
+	for fp, expected := range expectedPerFile {
+		if expected == 0 {
+			continue
+		}
+		actual := actualCounts[fp]
+		// >=90% retained = healthy; anything below trips the guard.
+		if actual*10 >= expected*9 {
+			continue
+		}
+		mismatchFiles++
+		missingSymbols += expected - actual
+		slog.Warn("pincher.index.parity.mismatch",
+			"project", projectName,
+			"file", fp,
+			"expected", expected,
+			"actual", actual,
+			"missing", expected-actual,
+		)
+	}
+	if mismatchFiles > 0 {
+		slog.Warn("pincher.index.parity.summary",
+			"project", projectName,
+			"files_with_loss", mismatchFiles,
+			"missing_symbols", missingSymbols,
+			"hint", "see #1231 — silent persistence loss in shared-DB multi-Watch environments. Run `pincher index --force` to retry; if loss persists, capture this log and attach to the issue.",
+		)
+	}
+	return mismatchFiles, missingSymbols
 }
 
 // flushBuffers writes accumulated symbols and edges to the DB then resets the slices.
