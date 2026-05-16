@@ -4494,7 +4494,17 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		var err error
 		projectID, err = s.resolveProjectID(projectArg)
 		if err != nil {
-			return errResult(err.Error()), nil
+			// #1063: rich envelope on project-not-found so search
+			// matches every other per-project tool (architecture /
+			// query / symbol / etc. all go through mustProject and
+			// get the same `list` + `index` next_steps). Pre-fix,
+			// search was the sole exception — bare errResult with
+			// no _meta or next_steps, leaving agents without the
+			// structured recovery affordance other tools provide.
+			return s.errResultRich(err.Error(), []map[string]string{
+				{"tool": "list", "args": `{}`, "why": "see every indexed project with its exact id + on-disk path"},
+				{"tool": "index", "args": `{"path":"/abs/path/to/repo"}`, "why": "onboard a new project from a directory path"},
+			}), nil
 		}
 	}
 
