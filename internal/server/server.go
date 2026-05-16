@@ -2967,9 +2967,116 @@ func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 	// #657: wrap once at the single registration chokepoint so every
 	// tool — over stdio AND streamable-HTTP — stamps _meta.request_id.
 	wrapped := s.withRequestID(handler)
+	// #1078 + #1076 (MCP spec 2025-11-25): inject spec-standard Title +
+	// Annotations from the side table so each tool's literal stays
+	// focused on Name + Description + InputSchema. Only sets when the
+	// tool literal didn't already set them explicitly, so future tool-
+	// specific overrides keep working.
+	if md, ok := toolMetadata[tool.Name]; ok {
+		if tool.Title == "" {
+			tool.Title = md.Title
+		}
+		if tool.Annotations == nil && md.Annotations != nil {
+			tool.Annotations = md.Annotations
+		}
+	}
 	s.mcp.AddTool(tool, wrapped)
 	s.handlers[tool.Name] = wrapped
 	s.tools[tool.Name] = tool
+}
+
+// toolMetadataEntry pairs a display Title (#1078) with the spec-standard
+// Annotations object (#1076) for each registered tool. Maintained as a
+// side table so the addTool call sites stay focused on the schema +
+// description (the load-bearing parts agents consume); UI labels and
+// behavioral hints are declarative metadata that benefits from being
+// grouped in one place.
+type toolMetadataEntry struct {
+	Title       string
+	Annotations *mcp.ToolAnnotations
+}
+
+// Bool helpers for the optional Annotations fields (the SDK uses
+// pointers so "not set" is distinguishable from "explicitly false").
+func ptrTrue() *bool { v := true; return &v }
+func ptrFalse() *bool { v := false; return &v }
+
+// Pre-built annotation presets covering the 4 behavioral classes per #1076:
+//   - readOnly: ReadOnlyHint=true, idempotent, closed-world (DB-local SELECT)
+//   - write: not readOnly, not destructive, idempotent, closed-world (in-DB writes
+//     where re-running with the same args has no extra effect)
+//   - destructive: not readOnly, destructive, idempotent, closed-world (delete /
+//     overwrite paths — re-running won't undo, but won't re-delete more either)
+//   - external: not readOnly, not destructive, not idempotent, open-world
+//     (HTTP fetch into the DB — repeat calls may return different content)
+var (
+	annotationsReadOnly = &mcp.ToolAnnotations{
+		ReadOnlyHint:    true,
+		IdempotentHint:  true,
+		DestructiveHint: ptrFalse(),
+		OpenWorldHint:   ptrFalse(),
+	}
+	annotationsWrite = &mcp.ToolAnnotations{
+		ReadOnlyHint:    false,
+		IdempotentHint:  true,
+		DestructiveHint: ptrFalse(),
+		OpenWorldHint:   ptrFalse(),
+	}
+	annotationsDestructive = &mcp.ToolAnnotations{
+		ReadOnlyHint:    false,
+		IdempotentHint:  true,
+		DestructiveHint: ptrTrue(),
+		OpenWorldHint:   ptrFalse(),
+	}
+	annotationsExternal = &mcp.ToolAnnotations{
+		ReadOnlyHint:    false,
+		IdempotentHint:  false,
+		DestructiveHint: ptrFalse(),
+		OpenWorldHint:   ptrTrue(),
+	}
+)
+
+// toolMetadata maps tool name → Title + Annotations. Per #1076 / #1078.
+// Titles only set where the Name reads ambiguously (the #1078 table —
+// search/symbol/symbols/trace/changes read fine, no Title needed).
+// Annotations set for every tool; action-dependent tools (adr, init)
+// pick the conservative annotation (mutate-path classification covers
+// the worst case).
+var toolMetadata = map[string]toolMetadataEntry{
+	// Index / mutate paths.
+	"index":       {Annotations: annotationsWrite}, // re-indexes are idempotent at content level
+	"init":        {Title: "Seed editor MCP config", Annotations: annotationsWrite},
+	"rebuild_fts": {Title: "Admin: rebuild FTS5 indexes", Annotations: annotationsDestructive},
+	"self_test":   {Title: "Admin: install smoke test", Annotations: annotationsReadOnly},
+
+	// Read-shape navigation / retrieval.
+	"search":       {Annotations: annotationsReadOnly},
+	"symbol":       {Annotations: annotationsReadOnly},
+	"symbols":      {Annotations: annotationsReadOnly},
+	"context":      {Title: "Symbol with imports & callees", Annotations: annotationsReadOnly},
+	"query":        {Title: "pinchQL graph query", Annotations: annotationsReadOnly},
+	"trace":        {Annotations: annotationsReadOnly},
+	"changes":      {Annotations: annotationsReadOnly},
+	"architecture": {Annotations: annotationsReadOnly},
+	"schema":       {Annotations: annotationsReadOnly},
+	"list":         {Annotations: annotationsReadOnly},
+	"neighborhood": {Title: "Same-file symbols", Annotations: annotationsReadOnly},
+	"dead_code":    {Title: "Unreachable symbols", Annotations: annotationsReadOnly},
+	"guide":        {Annotations: annotationsReadOnly},
+
+	// Diagnostics (read-only, idempotent).
+	"health":  {Annotations: annotationsReadOnly},
+	"stats":   {Annotations: annotationsReadOnly},
+	"doctor":  {Annotations: annotationsReadOnly},
+
+	// ADR — action-dependent. Classified as write because the conservative
+	// case (set/delete) mutates; get/list paths still benefit from the
+	// idempotency hint.
+	"adr": {Title: "Project decision store", Annotations: annotationsWrite},
+
+	// External-world: fetches HTTP content, repeat calls may return
+	// different bytes.
+	"fetch": {Annotations: annotationsExternal},
 }
 
 // (v0.52: addOperatorTool + makeOperatorRedirectHandler removed. The
@@ -10715,8 +10822,16 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// PINCHER_DEBUG_META=1 for human-eyeball debugging of raw MCP
 	// traffic.
 	out := marshalMetaJSON(data)
+	// #1077 (MCP spec 2025-11-25): populate `structuredContent`
+	// alongside the text content. Compliant clients use the structured
+	// field directly and skip re-parsing the JSON text — saves the
+	// re-parse cost on every tool call. Same `data` map already
+	// marshalled into the text content; serialization is automatic.
+	// TextContent is preserved for back-compat with clients that don't
+	// understand `structuredContent` yet.
 	result := &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: string(out)}},
+		Content:           []mcp.Content{&mcp.TextContent{Text: string(out)}},
+		StructuredContent: data,
 	}
 
 	// #364: every tool response is a restart trigger. When
