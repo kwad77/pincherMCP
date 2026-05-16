@@ -193,6 +193,117 @@ func largeDBAdvisory(dbSizeBytes int64, projects []doctorProjectSummary) string 
 	return msg
 }
 
+// nestedProjectAdvisory returns a human-readable advisory when one
+// indexed project's path is a strict subdirectory of another's. Same
+// source files end up indexed under two different project IDs, which
+// (a) doubles disk pressure on the symbols/edges/FTS5 tables, and (b)
+// makes audit-shape queries against the parent project surface symbols
+// that the user thinks of as belonging to the child project — even
+// after the per-project collision detector (#1209 part 1) correctly
+// keeps the rows distinct, the user-visible duplication is the
+// confusing part.
+//
+// Discovery context: v0.66 DOGFOOD found `warp_rc` (1.45M syms) and
+// `warp-fork` (1.07M syms, located at `warp_rc/warp-fork/`) both
+// registered. The user did not realize the inner project was a strict
+// subdir of the outer; doctor's advisory list said nothing about it.
+//
+// Algorithm: for every pair (A, B) where A != B, B is nested under A
+// iff normalize(B.Path) has prefix normalize(A.Path)+sep. Normalize
+// case-folds and forward-slash-normalizes for Windows portability.
+// Path-separator-after-parent guard avoids `warp_rc` falsely matching
+// `warp_rc_fork`. The advisory names the inner project (the
+// "redundant" one); the outer was almost always indexed first and is
+// the one the user wants to keep.
+//
+// Caps at the worst 3 pairs by inner-project symbol count so the
+// advisory stays scannable. #1209.
+func nestedProjectAdvisory(projects []doctorProjectSummary) string {
+	type nestedPair struct {
+		inner doctorProjectSummary
+		outer doctorProjectSummary
+	}
+	var pairs []nestedPair
+	normalized := make([]string, len(projects))
+	for i, p := range projects {
+		normalized[i] = normalizePathForNesting(p.Path)
+	}
+	for i, inner := range projects {
+		ni := normalized[i]
+		if ni == "" {
+			continue
+		}
+		// Find the most-specific outer that contains inner. Multiple
+		// nested levels are possible (`a/`, `a/b/`, `a/b/c/`); naming
+		// the immediate parent (`a/b/` for `a/b/c/`) is most actionable.
+		var bestOuter *doctorProjectSummary
+		var bestOuterLen int
+		for j, outer := range projects {
+			if i == j {
+				continue
+			}
+			no := normalized[j]
+			if no == "" {
+				continue
+			}
+			// Strict prefix with trailing separator to avoid
+			// `warp_rc` matching `warp_rc_fork`. ni and no are
+			// already lowercased + forward-slash; the trailing
+			// "/" sentinel is the inner's separator boundary.
+			if len(ni) > len(no)+1 &&
+				strings.HasPrefix(ni, no+"/") &&
+				len(no) > bestOuterLen {
+				outerCopy := outer
+				bestOuter = &outerCopy
+				bestOuterLen = len(no)
+			}
+		}
+		if bestOuter != nil {
+			pairs = append(pairs, nestedPair{inner: inner, outer: *bestOuter})
+		}
+	}
+	if len(pairs) == 0 {
+		return ""
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].inner.Symbols > pairs[j].inner.Symbols
+	})
+	if len(pairs) > 3 {
+		pairs = pairs[:3]
+	}
+	var names []string
+	for _, p := range pairs {
+		names = append(names, fmt.Sprintf("%q (%d symbols) is indexed inside %q",
+			p.inner.Name, p.inner.Symbols, p.outer.Name))
+	}
+	msg := fmt.Sprintf("nested project registration%s: %s. ",
+		pluralS(len(pairs)), strings.Join(names, "; "))
+	msg += "Same source files are indexed under both project IDs, " +
+		"doubling DB load and surfacing duplicates in cross-project queries. " +
+		"Remediation: choose one root (usually the outer), `list prune_dead=true` " +
+		"after deleting the redundant project from disk, or use `pincher project rm` " +
+		"on the inner project if it remains on disk. See #1209."
+	return msg
+}
+
+// normalizePathForNesting lowercases and forward-slash-normalizes a
+// project path for case-insensitive prefix comparison. Windows uses
+// `D:\ClaudeCode\warp_rc` while macOS / Linux use `/home/u/warp_rc`;
+// both need to compare against their nested children under one rule.
+// Returns "" for empty input so the caller can skip projects with no
+// recorded path.
+func normalizePathForNesting(path string) string {
+	if path == "" {
+		return ""
+	}
+	low := strings.ToLower(path)
+	low = strings.ReplaceAll(low, `\`, "/")
+	// Trim trailing slash so the prefix-with-"/"+sep check below is
+	// unambiguous regardless of whether the stored path ended in a
+	// separator.
+	return strings.TrimRight(low, "/")
+}
+
 // handleDoctor builds a structured diagnostic report from the live DB:
 // schema version, file sizes, project staleness, recent extraction
 // failures, recent slow queries. Read-only — no DB mutations.
@@ -330,11 +441,16 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// the `top`-truncated one) so a ghost project ranked below `top` by
 	// symbol count is still surfaced. Re-fetch the full list cheaply —
 	// the previous ListProjects round-trip is shadowed by truncation.
+	// #1209: nested-project advisory uses the same full-list pass —
+	// the inner project is often ranked below the outer by symbol count
+	// (the resolver phase failed on the inner so it shows up as a small
+	// ghost), so any `top`-truncated view risks dropping the pair.
 	{
 		all := []doctorProjectSummary{}
 		for _, p := range plist {
 			all = append(all, doctorProjectSummary{
 				Name:    p.Name,
+				Path:    p.Path,
 				Files:   p.FileCount,
 				Symbols: p.SymCount,
 				Edges:   p.EdgeCount,
@@ -342,6 +458,9 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 		sort.Slice(all, func(i, j int) bool { return all[i].Symbols > all[j].Symbols })
 		if a := ghostProjectAdvisory(all); a != "" {
+			advisories = append(advisories, a)
+		}
+		if a := nestedProjectAdvisory(all); a != "" {
 			advisories = append(advisories, a)
 		}
 	}
