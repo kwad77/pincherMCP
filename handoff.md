@@ -21,7 +21,19 @@ Four v0.66 PRs merged this session, on top of the six already in flight:
 
 Total v0.66 PRs merged across both halves of the day: **10** (#1210/#1211/#1214/#1215/#1216/#1218/#1221/#1222/#1223/#1229).
 
-## CRITICAL — #1231 awaiting investigation
+## #1231 status: parity-check guard shipped, root cause still open
+
+**Partial fix shipped this session** — PR #1233 (in v0.66): post-pass parity-check guard surfaces silent symbol loss in real time. Per-file goroutine records extracted-symbol count; after final flush + resolvers, compares against DB COUNT(*) GROUP BY file_path. Any file with <90% retention trips a per-file `pincher.index.parity.mismatch` slog.Warn + a summary warn naming #1231 with remediation hint. `IndexResult.ParityMismatchFiles` / `ParityMissingSymbols` surface in CLI `--json-summary` and MCP `index` tool response. Observation-only — never gates a successful index run.
+
+**The root cause is still open.** Next-session investigation: when the guard fires in production with concrete numbers (file, expected, actual), use those to narrow which code path is losing the symbols. Candidates from this session's investigation:
+- `flushBuffers` silent error path (line 884): on `flushBatch` error, syms slice NOT cleared + SetFileHash NOT called, but error is just logged-and-ignored. Retry should eventually persist; final-flush failure loses entire batch.
+- Multi-process Watch contention on the shared DB (4 pincher.exe daemons running on the box per `tasklist`).
+- Per-file delete-then-insert race across processes.
+- Possibly: extractor itself producing different output in long-running daemon vs clean-room CLI (state contamination?).
+
+**Repro:** copy pincher-repo's `internal/server/server.go` to `/tmp/probe-src/`, run `/c/tools/pincher.exe index --json-summary --data-dir /tmp/probe-db /tmp/probe-src` → 75 Methods. Same file via the shared-DB live indexer → 8 Methods.
+
+## Original CRITICAL #1231 background (for context)
 
 **The most important find this session.** v0.66 DOGFOOD EXPLORE pass surfaced silent symbol-loss in pincher's own dogfood corpus:
 
