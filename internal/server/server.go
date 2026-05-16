@@ -9124,7 +9124,15 @@ func classifyTaskShape(task string) guideShape {
 		// and "callers", so the substring check fell through to
 		// shapeUnknown. "nothing calls" / "never used" are the same
 		// survey intent.
-		"no inbound caller", "no inbound edge", "nothing calls", "never used"):
+		"no inbound caller", "no inbound edge", "nothing calls", "never used",
+		// #1107: idiomatic English "no one calls" / "nobody calls" is
+		// the most natural-language phrasing for the dead-code survey
+		// ("find functions in this repo that no one calls"). Pre-fix
+		// this routed to shapeUnknown → search+context with a single-
+		// word discriminator (e.g. "one") plucked from the task —
+		// totally unrelated to dead_code. Same family as #768 (the
+		// gap between "no" and "callers").
+		"no one call", "nobody call"):
 		return shapeDeadCode
 	// #608/#780: structural-audit pattern ("find every X without Y")
 	// routes to a pinchQL audit query. Runs before shapeFix — otherwise
