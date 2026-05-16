@@ -1845,12 +1845,36 @@ func extractJavaScript(source []byte, relPath string) *FileResult {
 // covers simple type names + generics + array/index forms. Function-
 // typed returns (`(): (x: number) => number => …`) still fall
 // through silently.
+//
+// #1158 (v0.61): methodRE added so class methods extract as Method
+// symbols with Parent = enclosing class. Before this, the TS
+// extractor emitted Class symbols but the methods inside were
+// invisible — `class Cart { add(item: Item): void { ... } }` produced
+// only `Class:Cart`, no `Method:Cart.add`. The pipeline's
+// currentClass scope tracking (extractor.go:1438) routes
+// inside-class matches to methodRE when set, falling back to funcRE
+// otherwise — so this regex needs to match the method shape NOT
+// covered by the existing funcRE alternations (no `function` keyword,
+// no arrow). Captures:
+//   - optional `public`/`private`/`protected`/`readonly` modifier
+//   - optional `static`
+//   - optional `async`
+//   - optional `*` for generators
+//   - method name (identifier; constructors land as `constructor`)
+//   - opening paren
+// Excludes lines that start with `function`/`const`/`let`/`var`/`=`/
+// `if`/`for`/`while`/`switch` (already-handled or definitely-not-method).
+// Foundational piece of the v0.61 TS receiver-type stack — without
+// Method symbols there is nothing for the resolver to bind X.method
+// calls to in later releases (#1158).
 var tsRE = &regexExtractor{
 	funcRE: regexp.MustCompile(
 		`(?m)(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)|` +
 			`(?m)(?:^|\s)(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\((?:[^()]|\([^)]*\))*\)\s*(?::\s*[\w<>\[\]\s,|&'"]+\s*)?=>|` +
 			`(?m)^\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s+)?function\s*\(|` +
 			`(?m)^\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s*)?\((?:[^()]|\([^)]*\))*\)\s*(?::\s*[\w<>\[\]\s,|&'"]+\s*)?=>`),
+	methodRE: regexp.MustCompile(
+		`(?m)^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)?(?:static\s+)?(?:async\s+)?\*?\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
 	// #261: top-level const/let/var emit Variable symbols (TS parity
 	// with JS).
 	varRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=`),
@@ -1869,7 +1893,68 @@ func extractTypeScript(source []byte, relPath string) *FileResult {
 			return strings.HasPrefix(name, "test") || strings.HasPrefix(name, "describe")
 		},
 	}
-	return tsRE.extract(source, relPath, "TypeScript", opts)
+	result := tsRE.extract(source, relPath, "TypeScript", opts)
+	// #1158 v0.61: the new methodRE matches `name(` at line start, which
+	// catches class methods but also accidentally matches control-flow
+	// statements like `if (cond) {` / `for (i = 0; ...)` / `while (x)`
+	// when those appear inside a class body. Filter them out by name.
+	// Same shape as #1148's C reserved-keyword filter — exact-match
+	// against an explicit blocklist; lookalikes pass through.
+	result.Symbols = dropTSKeywordFalsePositives(result.Symbols)
+	return result
+}
+
+// tsReservedKeywords is the set of TS/JS reserved words and common
+// control-flow keywords that the methodRE accidentally captures when
+// they appear inside class bodies. None can legally be a TS method
+// name (the language reserves them at the parser level), so dropping
+// them at extraction is safe. Intentionally narrow — only the
+// keywords actually observable as funcRE/methodRE captures in
+// real-world TS code. `constructor` IS a valid method name in TS so
+// it's NOT in this list.
+var tsReservedKeywords = map[string]struct{}{
+	"if":       {},
+	"else":     {},
+	"for":      {},
+	"while":    {},
+	"do":       {},
+	"switch":   {},
+	"case":     {},
+	"default":  {},
+	"break":    {},
+	"continue": {},
+	"return":   {},
+	"throw":    {},
+	"try":      {},
+	"catch":    {},
+	"finally":  {},
+	"typeof":   {},
+	"instanceof": {},
+	"new":      {},
+	"delete":   {},
+	"void":     {},
+	"yield":    {},
+	"await":    {},
+}
+
+// dropTSKeywordFalsePositives filters Function/Method symbols whose
+// Name is a TS reserved word per tsReservedKeywords. Kept Function-
+// or-Method-only so a Class/Interface that happens to share a name
+// with a keyword (unusual but parseable in some TS idioms) survives.
+func dropTSKeywordFalsePositives(syms []ExtractedSymbol) []ExtractedSymbol {
+	if len(syms) == 0 {
+		return syms
+	}
+	out := syms[:0]
+	for _, s := range syms {
+		if s.Kind == "Function" || s.Kind == "Method" {
+			if _, isKeyword := tsReservedKeywords[s.Name]; isKeyword {
+				continue
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 var rustRE = &regexExtractor{
