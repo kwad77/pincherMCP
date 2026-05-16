@@ -201,6 +201,20 @@ type Server struct {
 	statsQueriesRetriedSucceeded int64
 	statsTokensBurned            int64
 
+	// #635 v0.64: per-call event buffer feeding the dashboard
+	// triangulating panels (entropy / payload distribution / per-tier
+	// saved-pct). jsonResultWithMeta appends an event; flushSession
+	// drains the buffer into a batch INSERT via Store.RecordToolCalls.
+	// Mutex over channel because the flush is bursty (drain everything
+	// every 10s) and the producer is hot-path (one append per tool
+	// call) — channel + per-event goroutine context-switch cost is the
+	// wrong shape. Cap the buffer at toolCallEventCap to bound memory
+	// when a flush is delayed (DB busy, etc.); overflow is dropped with
+	// a one-shot warning rather than blocking the response.
+	toolCallEventsMu   sync.Mutex
+	toolCallEvents     []db.ToolCallEvent
+	toolCallOverflowed bool
+
 	// lastZeroQuery holds the most-recent zero-result tool call's
 	// (tool, normalized-query) pair within this session. When the very
 	// next call uses the same tool with the same primary query string
@@ -513,6 +527,87 @@ func (s *Server) flushSession() {
 	}
 	if err := s.store.RecordSessionWithMetrics(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID, s.snapshotCallsByLanguage(), qm); err != nil {
 		slog.Warn("pincher.session.flush.err", "err", err)
+	}
+
+	// #635 v0.64: drain the per-call event buffer onto session_tool_calls.
+	// One transaction per flush regardless of how many calls accumulated —
+	// the 10s window absorbs the write cost. Failure logs but doesn't
+	// retry; events are advisory (dashboard panels degrade gracefully on
+	// missing rows), so a transient DB error doesn't merit blocking the
+	// flush ticker.
+	s.drainToolCallEvents()
+}
+
+// toolCallEventCap bounds the in-memory event buffer between flushes.
+// Sized at 10× the typical sub-second burst (~200 calls/sec at the
+// extreme end of one session's load) to ride out short flush stalls.
+// Overflow is dropped + logged once per cap-cross — silent loss of
+// per-call detail would mislead the dashboard panels that consume
+// these rows.
+const toolCallEventCap = 2048
+
+// recordToolCallEvent appends one per-call event to the in-memory
+// buffer drained by flushSession. Hot path — must not block. Drops
+// + logs once on cap overflow rather than blocking the response.
+func (s *Server) recordToolCallEvent(tool, baselineMethod string, tokensUsed, tokensSaved, responseBytes int, meta map[string]any) {
+	tier := toolComplexityTier(tool)
+	requestID, _ := meta["request_id"].(string)
+
+	var savedPtr *int64
+	var pctPtr *float64
+	if baselineMethod != baselineMethodNone {
+		v := int64(tokensSaved)
+		savedPtr = &v
+		if pct, ok := meta["tokens_saved_pct"].(float64); ok {
+			p := pct
+			pctPtr = &p
+		}
+	}
+
+	ev := db.ToolCallEvent{
+		SessionID:      s.persistentSessionID,
+		Tool:           tool,
+		ComplexityTier: tier,
+		ResponseBytes:  int64(responseBytes),
+		TokensUsed:     int64(tokensUsed),
+		TokensSaved:    savedPtr,
+		TokensSavedPct: pctPtr,
+		TS:             time.Now(),
+		RequestID:      requestID,
+	}
+
+	s.toolCallEventsMu.Lock()
+	defer s.toolCallEventsMu.Unlock()
+	if len(s.toolCallEvents) >= toolCallEventCap {
+		if !s.toolCallOverflowed {
+			slog.Warn("pincher.tool_call_buffer.overflow",
+				"cap", toolCallEventCap,
+				"hint", "flush stalled — dashboard panels may show truncated detail")
+			s.toolCallOverflowed = true
+		}
+		return
+	}
+	if s.toolCallOverflowed && len(s.toolCallEvents) == 0 {
+		s.toolCallOverflowed = false
+	}
+	s.toolCallEvents = append(s.toolCallEvents, ev)
+}
+
+// drainToolCallEvents takes the buffered events under the lock, then
+// persists them via Store.RecordToolCalls outside the lock. Splitting
+// the lock minimizes time the response hot path waits on a flush.
+func (s *Server) drainToolCallEvents() {
+	s.toolCallEventsMu.Lock()
+	if len(s.toolCallEvents) == 0 {
+		s.toolCallEventsMu.Unlock()
+		return
+	}
+	batch := s.toolCallEvents
+	s.toolCallEvents = nil
+	s.toolCallEventsMu.Unlock()
+	if err := s.store.RecordToolCalls(batch); err != nil {
+		slog.Warn("pincher.tool_call_buffer.flush.err",
+			"err", err, "dropped_rows", len(batch))
 	}
 }
 
@@ -2734,7 +2829,7 @@ func computeCapabilities(s *Server) []string {
 		// Schema version — always reflects the current migration head.
 		// Routers can pin a minimum schema or refuse to talk to older
 		// pincher binaries via this tag.
-		"schema_v26",
+		"schema_v27",
 
 		// PreToolUse hook intercept (#625, #626, #627, v0.36).
 		// `pincher hook-check` is built into every binary post-v0.36;
@@ -10427,6 +10522,15 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// Query-failure / retry-rate counters (#241). Only the four
 	// query-shaped tools contribute; everything else is a no-op.
 	s.recordQueryMetrics(tool, args, data, tokensUsed)
+
+	// #635 v0.64: append per-call event for dashboard triangulating
+	// panels. Buffer is drained by flushSession every 10s; cap is the
+	// only producer-side gate so a delayed flush (DB busy, paused
+	// session) can't unbounded-grow memory. Overflow is dropped with
+	// a one-shot warning log — the dashboard panels degrade
+	// gracefully (rows < 50 hide the panel), so a partial buffer
+	// drop doesn't corrupt the displayed signal.
+	s.recordToolCallEvent(tool, baselineMethod, tokensUsed, tokensSaved, len(b), meta)
 
 	// First call of a new session: flush immediately so the dashboard sees
 	// the session within milliseconds rather than waiting for the 10s ticker.

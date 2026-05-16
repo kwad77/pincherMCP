@@ -1165,6 +1165,52 @@ END;`,
 	// keeps every existing row valid under the NOT NULL DEFAULT and
 	// the binding pass falls back to its pre-#760 heuristic.
 	`ALTER TABLE pending_edges ADD COLUMN base_type TEXT NOT NULL DEFAULT '';`,
+
+	// v26 → v27: session_tool_calls — per-call event log feeding the
+	// v0.64 dashboard "triangulating panels" (#635). The existing
+	// session_stats table aggregates per-session totals; per-call
+	// breakdown was never persisted, so the dashboard couldn't
+	// compute tool-call entropy, response-size distribution, or
+	// per-tier saved-percentage medians without writing each call
+	// to disk. This table is the minimum substrate for all three.
+	//
+	// Schema:
+	//   session_id        FK to sessions.session_id (text, indexed)
+	//   tool              MCP tool name (search/symbol/...)
+	//   complexity_tier   lite/standard/heavy from toolComplexityTiers
+	//   response_bytes    marshalled JSON size (excluding _meta)
+	//   tokens_used       db.ApproxTokens(response_body)
+	//   tokens_saved      computed savings vs baseline_method
+	//   tokens_saved_pct  saved / (saved + used) * 100, rounded
+	//   ts                UnixNano of call completion
+	//   request_id        UUID stamped on _meta.request_id (#657)
+	//
+	// Indexes: (session_id), (ts), (tool, ts) — supports the three
+	// canonical query shapes the dashboard runs (per-session
+	// entropy, trailing-7d window scans, per-tool aggregation).
+	//
+	// Retention: not gated here. The dashboard panels filter on a
+	// trailing window (typically 7d); a separate housekeeping pass
+	// in a later release can prune. Pre-1.0 with low call volume
+	// (single-user SQLite), table growth is bounded by usage so
+	// "delete rows older than 30d on session-start" is the
+	// expected v0.65+ follow-up.
+	`
+	CREATE TABLE IF NOT EXISTS session_tool_calls (
+		session_id        TEXT    NOT NULL,
+		tool              TEXT    NOT NULL,
+		complexity_tier   TEXT    NOT NULL DEFAULT '',
+		response_bytes    INTEGER NOT NULL DEFAULT 0,
+		tokens_used       INTEGER NOT NULL DEFAULT 0,
+		tokens_saved      INTEGER,
+		tokens_saved_pct  REAL,
+		ts                INTEGER NOT NULL,
+		request_id        TEXT    NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_session_tool_calls_session ON session_tool_calls(session_id);
+	CREATE INDEX IF NOT EXISTS idx_session_tool_calls_ts ON session_tool_calls(ts);
+	CREATE INDEX IF NOT EXISTS idx_session_tool_calls_tool_ts ON session_tool_calls(tool, ts);
+	`,
 }
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
@@ -3882,6 +3928,100 @@ func (s *Store) RecordSessionWithMetrics(sessionID string, startedAt time.Time, 
 	return err
 }
 
+// RecordToolCalls bulk-inserts per-call events into session_tool_calls
+// (schema v27, #635). Single transaction so the 10s flush is one
+// fsync regardless of how many calls accumulated since the last
+// flush. Caller owns the slice; this method does not retain it.
+//
+// Returns the first error encountered — the partial rows that landed
+// before the error are committed because the transaction stays open
+// across them. That's safe: the events are append-only / advisory;
+// the next flush won't double-insert because the buffer's been
+// drained server-side before this call runs.
+//
+// Writer-routed (mutates session_tool_calls).
+func (s *Store) RecordToolCalls(events []ToolCallEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO session_tool_calls(
+		session_id, tool, complexity_tier, response_bytes,
+		tokens_used, tokens_saved, tokens_saved_pct, ts, request_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+	for _, e := range events {
+		var savedArg any
+		if e.TokensSaved != nil {
+			savedArg = *e.TokensSaved
+		}
+		var pctArg any
+		if e.TokensSavedPct != nil {
+			pctArg = *e.TokensSavedPct
+		}
+		if _, err := stmt.Exec(
+			e.SessionID, e.Tool, e.ComplexityTier, e.ResponseBytes,
+			e.TokensUsed, savedArg, pctArg, e.TS.UnixNano(), e.RequestID,
+		); err != nil {
+			return fmt.Errorf("insert: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// RecentToolCallsForSession returns rows from session_tool_calls
+// matching the given session_id, newest first. Used by tests and
+// future dashboard panels reading per-session detail. Reader-routed.
+func (s *Store) RecentToolCallsForSession(sessionID string, limit int) ([]ToolCallEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.ro.Query(
+		`SELECT session_id, tool, complexity_tier, response_bytes,
+		        tokens_used, tokens_saved, tokens_saved_pct, ts, request_id
+		   FROM session_tool_calls
+		  WHERE session_id = ?
+		  ORDER BY ts DESC
+		  LIMIT ?`,
+		sessionID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToolCallEvent{}
+	for rows.Next() {
+		var e ToolCallEvent
+		var saved sql.NullInt64
+		var pct sql.NullFloat64
+		var tsNanos int64
+		if err := rows.Scan(
+			&e.SessionID, &e.Tool, &e.ComplexityTier, &e.ResponseBytes,
+			&e.TokensUsed, &saved, &pct, &tsNanos, &e.RequestID,
+		); err != nil {
+			return nil, err
+		}
+		if saved.Valid {
+			v := saved.Int64
+			e.TokensSaved = &v
+		}
+		if pct.Valid {
+			v := pct.Float64
+			e.TokensSavedPct = &v
+		}
+		e.TS = time.Unix(0, tsNanos)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // QueryMetrics carries the v17 query-failure / retry-rate counters
 // flushed onto every sessions row (#241). Pre-v17 rows hold zero on
 // every counter — agents that haven't been instrumented yet stay
@@ -3911,6 +4051,34 @@ type QueryMetrics struct {
 	// calls. This is pure overhead — tokens the agent paid for a
 	// response that ultimately required a retry to be useful.
 	TokensBurnedOnFailures int64
+}
+
+// ToolCallEvent is one row in session_tool_calls — emitted by the
+// server's jsonResultWithMeta hot path and bulk-persisted via
+// RecordToolCalls. The fields are exactly the substrate the v0.64
+// dashboard triangulating panels (#635) need:
+//
+//   - tool + complexity_tier   → per-tier saved-pct medians, entropy
+//   - response_bytes           → median payload size
+//   - tokens_used / saved / pct → existing _meta accounting frozen at the call
+//   - ts                       → 7-day window filtering
+//   - request_id               → correlate with hook_invocations + logs (#657)
+//
+// Zero-value friendliness: TokensSaved + TokensSavedPct are *float64
+// in pointer form for "none" baseline tools (architecture / list /
+// schema etc. — see baselineMethodNone in server). Stored as SQL NULL
+// when nil; dashboard SQL filters with `WHERE tokens_saved IS NOT NULL`
+// to avoid distorting medians with non-applicable rows.
+type ToolCallEvent struct {
+	SessionID       string
+	Tool            string
+	ComplexityTier  string
+	ResponseBytes   int64
+	TokensUsed      int64
+	TokensSaved     *int64
+	TokensSavedPct  *float64
+	TS              time.Time
+	RequestID       string
 }
 
 // SessionRow holds per-session stats for historical display.
