@@ -37,6 +37,14 @@ type doctorProjectSummary struct {
 	Files                int    `json:"files"`
 	Symbols              int    `json:"symbols"`
 	Edges                int    `json:"edges"`
+	// DBBytesEstimate is a best-effort per-project on-disk byte
+	// estimate. Sum across projects undershoots db_size_bytes by
+	// 10-40% (the gap is page slack + WAL + schema overhead that
+	// can't be cheaply attributed per project). Load-bearing is
+	// relative ordering, not absolute bytes — agents use this to
+	// answer "which project should I delete first?" when the DB
+	// crosses GB. #1220.
+	DBBytesEstimate      int64  `json:"db_bytes_estimate"`
 	IndexedAt            string `json:"indexed_at"`
 	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
 	BinaryVersion        string `json:"binary_version,omitempty"`
@@ -379,6 +387,11 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 
 	projects := []doctorProjectSummary{}
 	plist, err := s.store.ListProjects()
+	// #1220: one extra reader-pool SELECT (two grouped SUMs against
+	// symbols/edges) so each project summary can carry a best-effort
+	// db_bytes_estimate. Missing entries (e.g. a freshly upserted
+	// project with no symbols yet) default to 0, which is honest.
+	projectBytes, _ := s.store.EstimateProjectBytes()
 	if err == nil {
 		for _, p := range plist {
 			projects = append(projects, doctorProjectSummary{
@@ -388,6 +401,7 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 				Files:                p.FileCount,
 				Symbols:              p.SymCount,
 				Edges:                p.EdgeCount,
+				DBBytesEstimate:      projectBytes[p.ID],
 				IndexedAt:            p.IndexedAt.Format(time.RFC3339),
 				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
 				BinaryVersion:        p.BinaryVersion,
