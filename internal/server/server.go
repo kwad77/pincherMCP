@@ -10465,7 +10465,18 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 		}
 	}
 
-	out, _ := json.MarshalIndent(data, "", "  ")
+	// #1089: default to compact JSON. `mcp.TextContent` is a wire
+	// format clients parse — they never display the raw text, so the
+	// two-space indent is pure byte overhead (~10-15% per response on
+	// representative shapes). Pretty-print preserved behind
+	// PINCHER_DEBUG_META=1 for human-eyeball debugging of raw MCP
+	// traffic.
+	var out []byte
+	if os.Getenv("PINCHER_DEBUG_META") == "1" {
+		out, _ = json.MarshalIndent(data, "", "  ")
+	} else {
+		out, _ = json.Marshal(data)
+	}
 	result := &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(out)}},
 	}
