@@ -2825,11 +2825,20 @@ func toolIsIdempotent(tool string) bool {
 // reflected — a deliberate simplification. If we need runtime-mutable
 // capabilities later, the field becomes a func that re-evaluates.
 func computeCapabilities(s *Server) []string {
+	// #1202 v0.66: schema_vN tag is a runtime probe, not a compiled-in
+	// constant. Pre-fix the tag was hardcoded to whatever the schema
+	// happened to be at binary build time. Subsequent migrations (a
+	// fresh binary indexes against a DB whose schema was bumped by
+	// another concurrent process; or an older binary holds onto a DB
+	// the running migrations promoted past the binary's known head)
+	// silently lied — the advertised tag stopped matching reality.
+	// Recomputed against db.CurrentSchemaVersion() now, so a binary
+	// running at schema head N always advertises schema_vN.
 	caps := []string{
 		// Schema version — always reflects the current migration head.
 		// Routers can pin a minimum schema or refuse to talk to older
 		// pincher binaries via this tag.
-		"schema_v27",
+		fmt.Sprintf("schema_v%d", db.CurrentSchemaVersion()),
 
 		// PreToolUse hook intercept (#625, #626, #627, v0.36).
 		// `pincher hook-check` is built into every binary post-v0.36;
