@@ -3191,7 +3191,7 @@ func (s *Server) registerTools() {
 	// warning so agents confirm with the user before invoking.
 	s.addTool(&mcp.Tool{
 		Name:        "init",
-		Description: "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / cursor / cursor-legacy / windsurf / aider / codex / zed / gemini / warp / vscode (Copilot rules) / vscode-mcp (Copilot Chat MCP) / detect / all. The continue target is rejected (always-global, escapes project scope from an MCP context). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out}.",
+		Description: "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / cursor / cursor-legacy / windsurf / aider / codex / zed / gemini / warp / vscode (Copilot rules) / vscode-mcp (Copilot Chat MCP) / detect / all. The continue target is rejected outright (always-global; whole request errors); the codex target appears as a `skipped_always_global` per-result entry (its config is always under ~/.codex — use the `pincher init --target=codex` CLI to write it). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out} for in-scope writes, or {target, action: \"skipped_always_global\", reason} for filtered targets.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"target":{"type":"string","description":"Editor target: claude|cursor|cursor-legacy|windsurf|aider|codex|zed|gemini|warp|vscode|vscode-mcp|detect|all. Default: detect."},
