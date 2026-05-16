@@ -94,6 +94,45 @@ func (m *markdownExtractor) Extract(source []byte, _, relPath string, _ ExtractO
 		return ast.WalkContinue, nil
 	})
 
+	// #1097: synthetic preamble Section. The extractor used to skip
+	// any content before the first heading (banner, badges, title,
+	// tagline, navigation in READMEs; intro paragraph in design docs).
+	// On pincher's own README that's lines 1-20 — invisible to search
+	// corpus=docs even though it's exactly the content users land on
+	// first via the repo landing page. Self-dogfood gap: pincher
+	// couldn't find its own tagline via `search query="Codebase
+	// intelligence server"`. Emit a synthetic Section covering the
+	// pre-heading content (or the whole file when there are no
+	// headings at all) so the preamble text indexes into FTS5.
+	preambleEnd := len(source)
+	if len(headings) > 0 {
+		preambleEnd = lineStartAt(source, headings[0].startTxt)
+	}
+	if hasMarkdownContent(source[:preambleEnd]) {
+		startLine := 1
+		endLine := byteOffsetToLine(source, preambleEnd)
+		if endLine < startLine {
+			endLine = startLine
+		}
+		// Trim trailing newlines so the preamble end doesn't alias
+		// against the first heading's start byte.
+		trimmedEnd := preambleEnd
+		for trimmedEnd > 0 && (source[trimmedEnd-1] == '\n' || source[trimmedEnd-1] == '\r') {
+			trimmedEnd--
+		}
+		result.Symbols = append(result.Symbols, ExtractedSymbol{
+			Name:          "preamble",
+			QualifiedName: "preamble",
+			Kind:          "Section",
+			StartByte:     0,
+			EndByte:       trimmedEnd,
+			StartLine:     startLine,
+			EndLine:       endLine,
+			Signature:     "(preamble — content before the first heading)",
+			IsExported:    true,
+		})
+	}
+
 	if len(headings) == 0 {
 		return result
 	}
@@ -268,6 +307,24 @@ func byteOffsetToLine(source []byte, off int) int {
 		}
 	}
 	return line
+}
+
+// #1097: hasMarkdownContent decides whether the pre-heading slice
+// carries enough text to be worth emitting as a synthetic preamble
+// Section. A file that opens with `# Title` on line 1 has an empty
+// preamble (preambleEnd == 0) — no symbol. A file with banner +
+// badges + tagline before the first heading has hundreds of bytes —
+// emit the symbol. Whitespace-only doesn't count.
+func hasMarkdownContent(slice []byte) bool {
+	for _, b := range slice {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func init() {
