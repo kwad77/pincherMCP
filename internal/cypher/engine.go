@@ -903,7 +903,25 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 	if e == nil || e.DB == nil || q == nil {
 		return nil
 	}
-	type probe struct{ prop, value string }
+	// #1132: scope the probe to the right side of the graph. `WHERE
+	// r.kind = "READS"` on a pattern with edge variable `r` was being
+	// probed against `symbols.kind` (which holds Function/Method/Class/
+	// etc.) and emitted a warning listing symbol kinds even though the
+	// user named an edge variable. Same silent-confidently-wrong shape
+	// the warning itself was meant to fix — except the warning lied
+	// about which vocabulary the user got wrong. Detect edge-bound
+	// variables and route them to an edge-side probe instead.
+	edgeVars := map[string]bool{}
+	for _, pat := range q.patterns {
+		if pat.edgeVar != "" {
+			edgeVars[pat.edgeVar] = true
+		}
+	}
+	type probe struct {
+		prop  string
+		value string
+		edge  bool // true → list edges.kind, false → list symbols.kind
+	}
 	probes := map[probe]bool{}
 	consider := func(c condition) {
 		if c.op != "=" || c.value == "" {
@@ -916,7 +934,7 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 		if col == "" {
 			return
 		}
-		probes[probe{prop: col, value: c.value}] = true
+		probes[probe{prop: col, value: c.value, edge: edgeVars[c.variable]}] = true
 	}
 	for _, c := range q.conditions {
 		consider(c)
@@ -957,6 +975,9 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 		keys = append(keys, p)
 	}
 	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].edge != keys[j].edge {
+			return !keys[i].edge // symbol-side first
+		}
 		if keys[i].prop != keys[j].prop {
 			return keys[i].prop < keys[j].prop
 		}
@@ -965,7 +986,15 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 
 	out := []string{}
 	for _, p := range keys {
-		known := e.distinctSymbolsColumn(ctx, p.prop)
+		var known []string
+		var domainNoun string
+		if p.edge {
+			known = e.distinctEdgesColumn(ctx, p.prop)
+			domainNoun = "edges"
+		} else {
+			known = e.distinctSymbolsColumn(ctx, p.prop)
+			domainNoun = "symbols"
+		}
 		if known == nil {
 			continue
 		}
@@ -973,8 +1002,8 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 			continue
 		}
 		out = append(out, fmt.Sprintf(
-			"WHERE %s = %q matched no symbols. Known %s values in this project: %s. (typo? wrong property — e.g. did you mean name = %q?)",
-			p.prop, p.value, p.prop, strings.Join(known, ", "), p.value,
+			"WHERE %s = %q matched no %s. Known %s %s values in this project: %s. (typo? wrong property — e.g. did you mean name = %q?)",
+			p.prop, p.value, domainNoun, domainNoun, p.prop, strings.Join(known, ", "), p.value,
 		))
 	}
 	return out
@@ -992,6 +1021,37 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 //
 // Returns nil on any DB error; callers treat nil as "skip the warning,
 // don't false-positive on transient failures."
+// distinctEdgesColumn is the edge-side twin of distinctSymbolsColumn
+// (#1132). Used when an unknown-enum probe is rooted on an edge-bound
+// variable so the warning lists edge-kind vocabulary (CALLS, READS,
+// WRITES, IMPORTS, REFERENCES) rather than symbol-kind vocabulary
+// (Function, Method, Class…).
+func (e *Executor) distinctEdgesColumn(ctx context.Context, col string) []string {
+	var rows *sql.Rows
+	var err error
+	if e.ProjectID != "" {
+		rows, err = e.DB.QueryContext(ctx,
+			"SELECT DISTINCT "+col+" FROM edges WHERE project_id=? AND "+col+" != '' ORDER BY "+col,
+			e.ProjectID)
+	} else {
+		rows, err = e.DB.QueryContext(ctx,
+			"SELECT DISTINCT "+col+" FROM edges WHERE "+col+" != '' ORDER BY "+col)
+	}
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 func (e *Executor) distinctSymbolsColumn(ctx context.Context, col string) []string {
 	var rows *sql.Rows
 	var err error
