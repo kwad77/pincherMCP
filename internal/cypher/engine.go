@@ -1518,6 +1518,20 @@ func nearestClauseKeyword(tok string) string {
 	return ""
 }
 
+// isCypherWriteKeyword (#1117) reports whether tok is one of the
+// Cypher graph-write keywords pinchQL deliberately doesn't support.
+// Pre-fix these got the generic "unexpected token — expected a clause
+// keyword" error, which reads as a syntax bug the agent can fix; the
+// real story is pinchQL is read-only and the right path is to
+// re-extract via `index force=true`.
+func isCypherWriteKeyword(tok string) bool {
+	switch strings.ToUpper(tok) {
+	case "CREATE", "DELETE", "DETACH", "SET", "REMOVE", "MERGE", "DROP", "FOREACH":
+		return true
+	}
+	return false
+}
+
 // editDistanceAtMost1 reports whether a and b differ by at most one
 // insertion, deletion, or substitution (Levenshtein distance ≤ 1).
 func editDistanceAtMost1(a, b string) bool {
@@ -1707,6 +1721,19 @@ func (p *parser) parseQuery() (*queryAST, error) {
 			// with a did-you-mean hint when the token is a keyword
 			// near-miss.
 			bad := p.peek().value
+			// #1117: explicit "pinchQL is read-only" message for
+			// Cypher write keywords. Pre-fix CREATE / DELETE / SET /
+			// MERGE / REMOVE got the generic "unexpected token" error
+			// pointing at WHERE/RETURN/ORDER BY/LIMIT — agents trying
+			// a write didn't learn pinchQL is read-only at all, just
+			// that "CREATE" wasn't accepted at "this position", which
+			// reads as a syntax bug they can fix. Naming the read-only
+			// contract upfront short-circuits the wrong fix.
+			if isCypherWriteKeyword(bad) {
+				return nil, fmt.Errorf(
+					"pinchQL: %q is a Cypher write keyword — pinchQL is read-only and supports MATCH/WHERE/RETURN/ORDER BY/LIMIT only. To modify the graph, re-extract (run the `index` tool with force=true)",
+					bad)
+			}
 			if kw := nearestClauseKeyword(bad); kw != "" {
 				return nil, fmt.Errorf(
 					"pinchQL: unexpected token %q — did you mean %q? expected a clause keyword (WHERE, RETURN, ORDER BY, LIMIT) at this position",
