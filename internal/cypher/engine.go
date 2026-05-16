@@ -153,6 +153,12 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	// filter; this warning surfaces the implicit equality so the caller
 	// understands why the row count looks like self-loops only.
 	warnings = append(warnings, collectRepeatedPatternVarWarnings(q)...)
+	// #1135: `RETURN name` (no var prefix) where `name` is a valid
+	// property name but not a bound variable. Pre-fix this rendered
+	// as `{name: {}}` — an empty object under a column named like
+	// a real property — and the caller's audit silently read "this
+	// row has nothing." Surface the missing prefix.
+	warnings = append(warnings, collectReturnBarePropertyWarnings(q)...)
 	res, err := e.run(ctx, q)
 	if err != nil {
 		return res, err
@@ -735,6 +741,79 @@ func collectUnknownOrderByWarnings(q *queryAST) []string {
 	return []string{fmt.Sprintf(
 		"ORDER BY %q targets a column not in the property whitelist — the sort was silently dropped and results are returned in scan order. Valid properties: %s.",
 		ob, strings.Join(knownPropertyList, ", "))}
+}
+
+// collectReturnBarePropertyWarnings (#1135) catches `RETURN name`
+// (no var prefix) where `name` is a valid property but not a bound
+// variable. Pre-fix this rendered as `{name: {}}` — an empty object
+// under a column name matching a real property — and the caller's
+// audit read "this row has no name set." Same silent-confidently-
+// wrong family as #1116 (WHERE on unbound var), worse because the
+// column name itself looks like data.
+//
+// The fix shape: surface the missing `<var>.` prefix so the user
+// rewrites their query. Auto-resolving to "the only bound var" was
+// considered and rejected — it would mask the typo class
+// `RETURN nme` (intended n.name) by silently mapping nme to n.nme,
+// and the WHERE-side warning would still fire confusingly.
+func collectReturnBarePropertyWarnings(q *queryAST) []string {
+	if q == nil {
+		return nil
+	}
+	bound := map[string]bool{}
+	for _, pat := range q.patterns {
+		if pat.fromVar != "" {
+			bound[pat.fromVar] = true
+		}
+		if pat.toVar != "" {
+			bound[pat.toVar] = true
+		}
+		if pat.edgeVar != "" {
+			bound[pat.edgeVar] = true
+		}
+	}
+	if len(bound) == 0 {
+		return nil
+	}
+	var out []string
+	for _, rv := range q.returnVars {
+		// Skip aggregates (their target is the variable INSIDE the
+		// function call, validated separately) and aliased shapes
+		// (the alias is a freeform column name, not a binding).
+		if rv.fn != "" {
+			continue
+		}
+		if rv.property != "" {
+			continue // qualified — covered by the existing checks
+		}
+		if rv.variable == "" || rv.variable == "*" {
+			continue
+		}
+		if bound[rv.variable] {
+			continue // legitimate "return whole node" form
+		}
+		// Bare name that isn't a bound variable. If it matches a
+		// known property, that's the typical typo (RETURN name vs
+		// RETURN n.name).
+		if cypherPropToCol(rv.variable) == "" {
+			continue
+		}
+		boundList := make([]string, 0, len(bound))
+		for b := range bound {
+			boundList = append(boundList, b)
+		}
+		sort.Strings(boundList)
+		suggestion := ""
+		if len(boundList) == 1 {
+			suggestion = fmt.Sprintf(" Did you mean `RETURN %s.%s`?", boundList[0], rv.variable)
+		} else {
+			suggestion = fmt.Sprintf(" Bound variables: %s. Prefix one of them, e.g. `%s.%s`.", strings.Join(boundList, ", "), boundList[0], rv.variable)
+		}
+		out = append(out, fmt.Sprintf(
+			"RETURN %s has no var prefix — bare names are interpreted as variable references, and %q is not bound, so this projects an empty object under column %q.%s",
+			rv.variable, rv.variable, rv.variable, suggestion))
+	}
+	return out
 }
 
 // collectOrderByAggregateWithoutGroupingWarnings (#1122) warns when
