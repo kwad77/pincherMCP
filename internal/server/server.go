@@ -7077,13 +7077,18 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 	// language-filter diagnosis (#xxx). Unknown languages are kept in
 	// the filter (not dropped) so the SQL still runs the way the caller
 	// asked; the warning surfaces the actual cause of the empty result.
+	// #1093: track whether the language filter excludes every symbol so
+	// the empty-result diagnosis can name the real cause (filter) instead
+	// of suggesting an irrelevant min_confidence drop.
+	var langFilterExcludesAll bool
+	var langAvailable []string
 	if language != "" {
 		var langCount int
 		row := s.store.RO().QueryRow(
 			`SELECT COUNT(*) FROM symbols WHERE project_id=? AND language=?`,
 			projectID, language)
 		if err := row.Scan(&langCount); err == nil && langCount == 0 {
-			var availableLangs []string
+			langFilterExcludesAll = true
 			rows, qerr := s.store.RO().Query(
 				`SELECT language FROM symbols WHERE project_id=? GROUP BY language ORDER BY COUNT(*) DESC LIMIT 12`,
 				projectID)
@@ -7092,14 +7097,14 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 				for rows.Next() {
 					var l string
 					if rows.Scan(&l) == nil && l != "" {
-						availableLangs = append(availableLangs, l)
+						langAvailable = append(langAvailable, l)
 					}
 				}
 			}
-			if len(availableLangs) > 0 {
+			if len(langAvailable) > 0 {
 				kindWarnings = append(kindWarnings, fmt.Sprintf(
 					"language=%q matched 0 symbols in this project — filter cannot return any rows. Available languages: %s",
-					language, strings.Join(availableLangs, ", ")))
+					language, strings.Join(langAvailable, ", ")))
 			} else {
 				kindWarnings = append(kindWarnings, fmt.Sprintf(
 					"language=%q matched 0 symbols in this project — filter cannot return any rows",
@@ -7193,6 +7198,38 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 				{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"inbound"}`, topName),
 					"why": "double-check inbound callers — name-based trace catches references the symbol-id graph might miss for regex-extracted languages"},
 			},
+		}
+	} else if langFilterExcludesAll {
+		// #1093: language filter matched zero symbols — that's the real
+		// cause of the empty result, not min_confidence. Pre-fix the
+		// generic min_confidence-suggestion diagnosis ran here too,
+		// telling the agent to lower a threshold that wouldn't help.
+		var diag string
+		if len(langAvailable) > 0 {
+			diag = fmt.Sprintf(
+				"language=%q matched no symbols in this project — dead_code can't run against a non-existent language. Available: %s. Drop the filter or pick one of those.",
+				language, strings.Join(langAvailable, ", "))
+		} else {
+			diag = fmt.Sprintf(
+				"language=%q matched no symbols in this project — dead_code can't run against a non-existent language. Drop the filter.",
+				language)
+		}
+		nextSteps := []map[string]string{
+			{"tool": "dead_code", "args": `{}`,
+				"why": "drop the language filter — runs against every indexed language in the project"},
+			{"tool": "health", "args": `{}`,
+				"why": "per-language extraction coverage shows what's actually indexed"},
+		}
+		if len(langAvailable) > 0 {
+			nextSteps = append(nextSteps, map[string]string{
+				"tool": "dead_code",
+				"args": fmt.Sprintf(`{"language":%q}`, langAvailable[0]),
+				"why":  fmt.Sprintf("rerun with the most-symbol-rich language (%s) instead", langAvailable[0]),
+			})
+		}
+		data["_meta"] = map[string]any{
+			"diagnosis":  diag,
+			"next_steps": nextSteps,
 		}
 	} else if gap := s.edgeCoverageGap(projectID); gap != "" {
 		// #858: the empty result isn't "no dead code" — it's "this
