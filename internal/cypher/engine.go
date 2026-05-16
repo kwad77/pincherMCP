@@ -181,6 +181,15 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 			res.Total = cap
 		}
 		res.Warnings = append(res.Warnings, warnings...)
+		// #1139: pattern-label typos (`MATCH (n:Funtion)`) are structural
+		// — the user spelled a label that isn't a kind in this project.
+		// Pre-fix, the Total==0 gate skipped the probe for aggregate
+		// queries because `RETURN COUNT(*)` returns 1 row regardless of
+		// whether any rows matched the pattern. So `MATCH (n:Funtion)
+		// RETURN COUNT(*)` returned {COUNT(*): 0} silently. Run the
+		// pattern-label probe unconditionally so the typo gets flagged
+		// in both aggregate and non-aggregate shapes.
+		res.Warnings = append(res.Warnings, e.collectKindLabelTypoWarnings(ctx, q)...)
 		// #501: when the result set is empty AND the query filters on
 		// an enum-shaped property (kind / language) with a value not
 		// in the project, suggest valid values. Same failure-as-pedagogy
@@ -188,7 +197,7 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 		// but the property VALUE. Skipped on non-empty results because
 		// "you found rows AND we have a complaint about your filter"
 		// would be noise — the agent isn't confused.
-		if res.Total == 0 {
+		if isEffectivelyZero(res, q) {
 			res.Warnings = append(res.Warnings, e.collectUnknownEnumValueWarnings(ctx, q)...)
 			// #744: a node label that's a valid kind but doesn't match
 			// the kind of the WHERE-named symbol — same silent-zero class.
@@ -978,6 +987,91 @@ var enumValuedProperties = map[string]bool{
 // Each unique (property, value) becomes at most one DB query
 // (`SELECT DISTINCT col FROM symbols WHERE project_id=?`); on a typical
 // corpus the result is a 5-15-row list cached implicitly by SQLite.
+// collectKindLabelTypoWarnings (#1139) runs unconditionally and only
+// probes pattern labels (fromKind / toKind on each MATCH pattern).
+// These are structural typos — `MATCH (n:Funtion)` is a misspelled
+// label that pattern-matches against `symbols.kind = "Funtion"` and
+// returns 0 hits regardless of whether the surrounding query
+// aggregates. Pre-fix, the Total==0 outer gate ran the probe for
+// non-aggregate empty queries but skipped aggregate empty queries
+// (`RETURN COUNT(*)` always returns 1 row), so `MATCH (n:Funtion)
+// RETURN COUNT(*)` returned `{COUNT(*): 0}` silently.
+//
+// WHERE-side enum-value probes (`WHERE n.kind = "Funtion"`) stay
+// gated on isEffectivelyZero — a non-empty result there is proof
+// the user got at least one hit somehow, and the warning would be
+// noise.
+func (e *Executor) collectKindLabelTypoWarnings(ctx context.Context, q *queryAST) []string {
+	if e == nil || e.DB == nil || q == nil {
+		return nil
+	}
+	type probe struct{ value string }
+	probes := map[probe]bool{}
+	for _, pat := range q.patterns {
+		if pat.fromKind != "" {
+			probes[probe{value: pat.fromKind}] = true
+		}
+		if pat.toKind != "" {
+			probes[probe{value: pat.toKind}] = true
+		}
+	}
+	if len(probes) == 0 {
+		return nil
+	}
+	known := e.distinctSymbolsColumn(ctx, "kind")
+	if known == nil {
+		return nil
+	}
+	var values []string
+	for p := range probes {
+		values = append(values, p.value)
+	}
+	sort.Strings(values)
+	var out []string
+	for _, v := range values {
+		if containsString(known, v) {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"MATCH (...:%s) — %q is not a kind in this project. Known kinds: %s. (typo? note that kinds are PascalCase in pincher: Function, Method, Class, …)",
+			v, v, strings.Join(known, ", ")))
+	}
+	return out
+}
+
+// isEffectivelyZero reports whether a result represents a zero-row
+// outcome from the user's perspective. For non-aggregate queries
+// this is `res.Total == 0`. For aggregate queries (`RETURN COUNT(*)`
+// returns 1 row regardless of match count), inspect the first
+// projection: if it's 0 / null, the user got a zero outcome and
+// the silent-empty warnings should still fire (#1139).
+func isEffectivelyZero(res *Result, q *queryAST) bool {
+	if res == nil {
+		return true
+	}
+	if res.Total == 0 {
+		return true
+	}
+	if !hasAggregation(q) {
+		return false
+	}
+	if len(res.Rows) == 0 || len(res.Columns) == 0 {
+		return true
+	}
+	first := res.Rows[0][res.Columns[0]]
+	switch v := first.(type) {
+	case nil:
+		return true
+	case int:
+		return v == 0
+	case int64:
+		return v == 0
+	case float64:
+		return v == 0
+	}
+	return false
+}
+
 func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *queryAST) []string {
 	if e == nil || e.DB == nil || q == nil {
 		return nil
@@ -1032,18 +1126,9 @@ func (e *Executor) collectUnknownEnumValueWarnings(ctx context.Context, q *query
 	}
 	walk(q.where)
 
-	// MATCH pattern labels: `MATCH (n:Funtion)` is a typo'd kind that
-	// behaves like `WHERE n.kind = 'Funtion'` — same silent-zero,
-	// same pedagogy needed. fromKind/toKind feed the same `kind`
-	// column, so probe them under the same enum machinery.
-	for _, pat := range q.patterns {
-		if pat.fromKind != "" {
-			probes[probe{prop: "kind", value: pat.fromKind}] = true
-		}
-		if pat.toKind != "" {
-			probes[probe{prop: "kind", value: pat.toKind}] = true
-		}
-	}
+	// Pattern-label probes (MATCH (n:Funtion)) moved to
+	// collectKindLabelTypoWarnings (#1139), which runs unconditionally
+	// so aggregate queries with a typo'd label also get the warning.
 
 	if len(probes) == 0 {
 		return nil
