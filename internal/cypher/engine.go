@@ -649,6 +649,15 @@ func collectHopRangeWarnings(q *queryAST) []string {
 				"variable-length hop range was written with bounds backwards — interpreted as *%d..%d. Write the lower bound first to silence this warning.",
 				pat.minHops, pat.maxHops))
 		}
+		// #1109: *0..N silently coerces to *1..N because pincher's BFS
+		// emits only length≥1 hops. Cypher's *0..N includes the seed
+		// itself (length-0 path). The agent reads the result as
+		// seed-inclusive when it's actually seed-exclusive.
+		if pat.minHopsClamped {
+			out = append(out, fmt.Sprintf(
+				"variable-length hop range *0..%d coerced to *1..%d — pincher's BFS does not emit length-0 paths (seed itself). To include the seed in results, add a separate MATCH for the seed or call symbol/context on it directly.",
+				pat.maxHops, pat.maxHops))
+		}
 	}
 	return out
 }
@@ -1145,6 +1154,12 @@ type pattern struct {
 	// with bounds backwards (`*3..1`). parseHops swaps them to the
 	// intended range; this flag lets the engine warn (#869).
 	invertedHops bool
+	// #1109: minHopsClamped is set when the user wrote *0..N — Cypher
+	// allows zero-length paths (the seed itself) but pincher's BFS
+	// silently coerces min to 1 (line 2135-2137 in parseHops). The
+	// agent reads the result as the *0..N expected (seed-inclusive)
+	// when it's actually *1..N. Flag so the engine surfaces the clamp.
+	minHopsClamped bool
 	toVar        string
 	toKind       string
 	toProps      map[string]string
@@ -1672,7 +1687,7 @@ func (p *parser) parsePattern() (pattern, error) {
 			}
 			if p.peek().kind == "HOPS" {
 				t := p.next()
-				pat.minHops, pat.maxHops, pat.invertedHops = parseHops(t.value)
+				pat.minHops, pat.maxHops, pat.invertedHops, pat.minHopsClamped = parseHops(t.value)
 			}
 			if err := p.expect("]"); err != nil {
 				return pat, err
@@ -2115,7 +2130,12 @@ func operatorHint(op string) (string, bool) {
 // so a transposed-bounds typo returned depth-N-only results with no
 // signal. parseHops now swaps the bounds to the intended `1..3` and
 // flags it; the engine surfaces a warning.
-func parseHops(s string) (min, max int, inverted bool) {
+//
+// `minClamped` is set when the user wrote *0..N — Cypher allows
+// length-0 paths (seed itself) but pincher's BFS only emits length≥1
+// hops. parseHops coerces min=0 → min=1; the flag lets the engine
+// warn so the agent doesn't think the seed was excluded silently (#1109).
+func parseHops(s string) (min, max int, inverted, minClamped bool) {
 	min, max = 1, 1
 	if s == "" {
 		return
@@ -2133,6 +2153,8 @@ func parseHops(s string) (min, max int, inverted bool) {
 		inverted = true
 	}
 	if min < 1 {
+		// #1109: track the clamp so the engine can warn.
+		minClamped = true
 		min = 1
 	}
 	if max < min {

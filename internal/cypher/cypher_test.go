@@ -163,7 +163,7 @@ func TestParseHops(t *testing.T) {
 		{"5..2", 2, 5, true},
 	}
 	for _, c := range cases {
-		mn, mx, inv := parseHops(c.s)
+		mn, mx, inv, _ := parseHops(c.s)
 		if mn != c.min || mx != c.max || inv != c.inverted {
 			t.Errorf("parseHops(%q) = (%d,%d,%v), want (%d,%d,%v)", c.s, mn, mx, inv, c.min, c.max, c.inverted)
 		}
