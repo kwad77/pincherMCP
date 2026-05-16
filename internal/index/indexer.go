@@ -1416,6 +1416,20 @@ func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, r
 	// disambiguateDuplicates suffixed them with `~<line>` so all symbols
 	// survive — but the underlying scope-blindness still merits the
 	// diagnostic so reviewers see when a new collision pattern appears.
+	//
+	// #1207 v0.66 DOGFOOD: skip the diagnostic for Markdown specifically.
+	// Sibling headings with identical text are a COMMON shape in real
+	// documentation (reference docs with repeated subsection structure,
+	// auto-generated index pages, tutorial scaffolds). The collision is
+	// the goldmark walker correctly emitting one Section per H2/H3/etc.
+	// — not the "regex got the scope wrong" symptom this diagnostic was
+	// designed to surface in code. Disambiguation by line still kicks
+	// in (`~<line>` suffix), so every Section survives. Skipping the
+	// failure row keeps the diagnostic surface focused on the real
+	// regex-scope blindness cases in code corpora.
+	if lang == "Markdown" {
+		return
+	}
 	if len(result.QNCollisions) == 0 {
 		return
 	}
