@@ -507,6 +507,14 @@ func emitSnapshotJSON(store *db.Store, result *index.IndexResult, dataDir string
 		"db_size_kb":             dbSizeKB,
 		"duration_ms":            result.DurationMS,
 	}
+	// #1231 v0.66 DOGFOOD: surface parity-check counts when non-zero so
+	// the agent has a programmatic signal of silent persistence loss
+	// without grepping slog output. Zero-valued fields are omitted to
+	// keep the healthy-run snapshot diff small (snapshot-stable).
+	if result.ParityMismatchFiles > 0 {
+		summary["parity_mismatch_files"] = result.ParityMismatchFiles
+		summary["parity_missing_symbols"] = result.ParityMissingSymbols
+	}
 
 	// extraction_failures_by_reason: per-corpus count of each
 	// extraction_failure reason. The cross-cutting QN-collision gate.

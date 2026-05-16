@@ -3829,6 +3829,33 @@ func (s *Store) ListSymbolFilePaths(projectID string) ([]string, error) {
 	return out, rows.Err()
 }
 
+// SymbolCountsByFile returns a {file_path: count} map for every file in
+// project_id that has at least one persisted symbol. Used by the
+// indexer's post-pass parity-check guard (#1231): compare against the
+// indexer's in-memory per-file extracted count to detect silent symbol
+// loss during persistence. Read-only.
+func (s *Store) SymbolCountsByFile(projectID string) (map[string]int, error) {
+	rows, err := s.ro.Query(
+		`SELECT file_path, COUNT(*) FROM symbols WHERE project_id=? GROUP BY file_path`,
+		projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var (
+			p string
+			c int
+		)
+		if err := rows.Scan(&p, &c); err != nil {
+			return nil, err
+		}
+		out[p] = c
+	}
+	return out, rows.Err()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ADR operations
 // ─────────────────────────────────────────────────────────────────────────────
