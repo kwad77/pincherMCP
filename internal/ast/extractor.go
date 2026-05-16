@@ -430,10 +430,36 @@ func init() {
 	// Detected-but-no-extractor languages (confidence 0; FileResult always empty).
 	// Preserves prior IsSourceFile behaviour while making the gap visible via
 	// the registry's Confidence() == 0.
+	// #1161 v0.63: Lua / Elixir / Zig promoted from stub-tier (0.0) to
+	// regex-tier (0.70). The remaining stubs are languages with
+	// significantly harder regex-tier representation (Haskell indentation-
+	// sensitive, Scala mixed-paradigm, Dart/R requiring more nuanced
+	// detection); decide-or-defer documented in their issues under v0.63.
 	Register(stubAdapter("Scala", ".scala"))
-	Register(stubAdapter("Lua", ".lua"))
-	Register(stubAdapter("Zig", ".zig"))
-	Register(stubAdapter("Elixir", ".ex", ".exs"))
+	Register(&langAdapter{
+		primary:    "Lua",
+		exts:       map[string]string{".lua": "Lua"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractLua(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary:    "Zig",
+		exts:       map[string]string{".zig": "Zig"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractZig(s, p)
+		},
+	})
+	Register(&langAdapter{
+		primary:    "Elixir",
+		exts:       map[string]string{".ex": "Elixir", ".exs": "Elixir"},
+		confidence: 0.70,
+		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			return extractElixir(s, p)
+		},
+	})
 	Register(stubAdapter("Haskell", ".hs"))
 	Register(stubAdapter("Dart", ".dart"))
 	// Bash is registered separately by bashExtractor in bash.go (real parser).
@@ -2443,6 +2469,56 @@ func extractSwift(source []byte, relPath string) *FileResult {
 	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
 	opts.extractCalls = true
 	return swiftRE.extract(source, relPath, "Swift", opts)
+}
+
+// #1161 v0.63 — Lua / Elixir / Zig regex-tier extractors promoted
+// from stub. Patterns are deliberately minimal: function-definition
+// keyword + name capture. Block-end heuristics fall through to the
+// regex pipeline's blockEnd() — Lua uses `end`-keyword closing
+// (similar to Ruby), Zig uses `{`, Elixir uses `end`.
+
+var luaRE = &regexExtractor{
+	// Lua: `function name(...)`, `local function name(...)`,
+	// `function obj:method(...)`, `function ns.name(...)`.
+	// Capture the trailing identifier (after any module / receiver
+	// prefix) so the symbol surfaces with its callable name.
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:local\s+)?function\s+(?:[A-Za-z_][A-Za-z0-9_.]*[.:])?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
+}
+
+func extractLua(source []byte, relPath string) *FileResult {
+	opts := simpleOpts(".", 0)
+	opts.endKeyword = true // Lua closes function/if/for/while with `end`.
+	// CALLS pass shares regexCallScan's newline-fallback (#1159 v0.62
+	// Ruby work) so Lua's end-keyword bodies parse the same.
+	opts.extractCalls = true
+	return luaRE.extract(source, relPath, "Lua", opts)
+}
+
+var zigRE = &regexExtractor{
+	// Zig: `fn name(...)`, `pub fn name(...)`, `export fn name(...)`.
+	funcRE:  regexp.MustCompile(`(?m)^\s*(?:pub\s+|export\s+|extern\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
+	classRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*struct`),
+}
+
+func extractZig(source []byte, relPath string) *FileResult {
+	opts := simpleOpts(".", '{')
+	opts.extractCalls = true
+	return zigRE.extract(source, relPath, "Zig", opts)
+}
+
+var elixirRE = &regexExtractor{
+	// Elixir: `def name`, `defp name`, `defmacro name`. Optional
+	// argument list with parens is captured implicitly by the
+	// blockEnd() pass.
+	funcRE:  regexp.MustCompile(`(?m)^\s*(?:def|defp|defmacro)\s+(?P<name>[A-Za-z_][A-Za-z0-9_?!]*)`),
+	classRE: regexp.MustCompile(`(?m)^\s*defmodule\s+(?P<name>[A-Z][A-Za-z0-9_.]*)\s*do`),
+}
+
+func extractElixir(source []byte, relPath string) *FileResult {
+	opts := simpleOpts(".", 0)
+	opts.endKeyword = true // Elixir closes def / defmodule with `end`.
+	opts.extractCalls = true
+	return elixirRE.extract(source, relPath, "Elixir", opts)
 }
 
 // simpleOpts returns extractOpts for languages where every symbol is exported
