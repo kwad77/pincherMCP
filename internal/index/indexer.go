@@ -1763,56 +1763,154 @@ func stripPlatformSuffix(name string) string {
 // `String()` Method *as a receiver-method call from another package*
 // loses that edge. Direct-QN-match calls from within the same package
 // still resolve through the QN path, not this fallback.
+//
+// #1158 (v0.61): retained as the Go-specific entry point. The Go
+// resolver call sites at indexer.go:2278 / :2687 continue to call
+// this name. New per-language equivalents live in
+// `polymorphicMethodNamesByLanguage` — `isPolymorphicMethodName(name,
+// lang)` dispatches to whichever language's set applies. This keeps
+// the v0.62/v0.63 TS/Python/Rust resolvers ready to consume the same
+// pattern without re-litigating the Go-specific list.
 func isPolymorphicInterfaceMethodName(name string) bool {
-	switch name {
-	// fmt.Stringer / error
-	case "String", "Error", "GoString":
-		return true
-	// io interfaces
-	case "Read", "Write", "Close", "Seek", "ReadAt", "WriteAt",
-		"ReadFrom", "WriteTo", "ReadByte", "WriteByte",
-		"ReadString", "WriteString", "ReadRune", "WriteRune",
-		"UnreadByte", "UnreadRune":
-		return true
-	// sync.Locker family
-	case "Lock", "Unlock", "RLock", "RUnlock", "TryLock":
-		return true
-	// sort.Interface
-	case "Len", "Less", "Swap":
-		return true
-	// http.Handler / net interfaces
-	case "ServeHTTP":
-		return true
-	// encoding interfaces — common JSON/text/binary marshalers
-	case "MarshalJSON", "UnmarshalJSON",
-		"MarshalText", "UnmarshalText",
-		"MarshalBinary", "UnmarshalBinary",
-		"MarshalYAML", "UnmarshalYAML":
-		return true
-	// fmt.Formatter / fmt.Scanner
-	case "Format", "Scan":
-		return true
-	// time.Time methods that pair with common local-var names
-	// (deadline.Add, expiry.Sub, ts.Now, etc.)
-	case "Now", "Add", "Sub", "Before", "After", "Equal":
-		return true
-	// context.Context
-	case "Deadline", "Done", "Err", "Value":
-		return true
-	// errors.Is / errors.As / errors.Unwrap target methods
-	case "Is", "As", "Unwrap":
-		return true
-	// #567: `Run` is canonical for *exec.Cmd, *http.Server, *cron.Cron,
-	// goroutine pools, worker structs, lifecycle handlers — extremely
-	// common name. Without this, every `cmd.Run()` (`*exec.Cmd`) call
-	// in a Go project false-binds to any in-project Method named Run.
-	// The #423 receiver-type resolver can still bind same-package
-	// `s.runner.Run()` precisely via the struct_fields lookup, so the
-	// blocklist's side effect is largely contained.
-	case "Run":
-		return true
+	_, ok := polymorphicMethodNamesByLanguage["Go"][name]
+	return ok
+}
+
+// isPolymorphicMethodName is the language-aware entry point added in
+// #1158 (v0.61). The Go resolver continues to call
+// isPolymorphicInterfaceMethodName for backward-compatibility shape;
+// future TS/Python/Rust resolvers pass their own language tag and pick
+// up the matching set. Unknown languages return false (no filtering),
+// matching pre-v0.61 behavior for any path that didn't already opt in.
+func isPolymorphicMethodName(name, language string) bool {
+	if names, ok := polymorphicMethodNamesByLanguage[language]; ok {
+		_, hit := names[name]
+		return hit
 	}
 	return false
+}
+
+// polymorphicMethodNamesByLanguage maps language → method names that
+// resolve to stdlib/runtime interfaces in that language. The
+// per-language entries reflect the typical false-positive surface a
+// receiver-type-less name-fallback resolver hits when the project
+// happens to define a Method whose name collides with a polymorphic
+// stdlib API.
+//
+// Adding a language: enumerate the names that appear on widely-used
+// stdlib types whose name (without the import scope) would collide
+// with an in-project Method definition. Conservative inclusion —
+// only well-known interface methods, NOT every imaginable method
+// name. Each entry must have a real-world false-positive case
+// motivating it; otherwise legitimate calls get filtered out.
+//
+// Pre-v0.61 the Go set was hardcoded in isPolymorphicInterfaceMethodName.
+// v0.61 (#1158) generalized to this map so TS/Python receivers can
+// share the same shape when their resolvers land.
+var polymorphicMethodNamesByLanguage = map[string]map[string]struct{}{
+	"Go": {
+		// fmt.Stringer / error
+		"String": {}, "Error": {}, "GoString": {},
+		// io interfaces
+		"Read": {}, "Write": {}, "Close": {}, "Seek": {},
+		"ReadAt": {}, "WriteAt": {},
+		"ReadFrom": {}, "WriteTo": {},
+		"ReadByte": {}, "WriteByte": {},
+		"ReadString": {}, "WriteString": {},
+		"ReadRune": {}, "WriteRune": {},
+		"UnreadByte": {}, "UnreadRune": {},
+		// sync.Locker family
+		"Lock": {}, "Unlock": {}, "RLock": {}, "RUnlock": {}, "TryLock": {},
+		// sort.Interface
+		"Len": {}, "Less": {}, "Swap": {},
+		// http.Handler / net interfaces
+		"ServeHTTP": {},
+		// encoding interfaces — common marshalers
+		"MarshalJSON": {}, "UnmarshalJSON": {},
+		"MarshalText": {}, "UnmarshalText": {},
+		"MarshalBinary": {}, "UnmarshalBinary": {},
+		"MarshalYAML": {}, "UnmarshalYAML": {},
+		// fmt.Formatter / fmt.Scanner
+		"Format": {}, "Scan": {},
+		// time.Time methods that pair with common local-var names
+		"Now": {}, "Add": {}, "Sub": {}, "Before": {}, "After": {}, "Equal": {},
+		// context.Context
+		"Deadline": {}, "Done": {}, "Err": {}, "Value": {},
+		// errors.Is / errors.As / errors.Unwrap
+		"Is": {}, "As": {}, "Unwrap": {},
+		// #567: *exec.Cmd / *http.Server / *cron.Cron / pool workers
+		"Run": {},
+	},
+	// TypeScript — built-in types + DOM + Promise + Iterator
+	// + the typical "every class overrides this" methods. Resolver
+	// will consume this when the v0.62+ TS receiver-type binding
+	// piece lands. Conservatively scoped to names that have real-
+	// world false-positive impact on TS codebases mirroring the Go
+	// patterns: toString collides with Object.prototype.toString on
+	// every TS Class, hasOwnProperty with Object.prototype, etc.
+	"TypeScript": {
+		// Object.prototype universal methods — every TS class
+		// effectively defines these.
+		"toString": {}, "valueOf": {}, "hasOwnProperty": {},
+		"isPrototypeOf": {}, "propertyIsEnumerable": {},
+		"toLocaleString": {},
+		// Promise / thenable
+		"then": {}, "catch": {}, "finally": {},
+		// Iterator / async iterator
+		"next": {}, "return": {}, "throw": {},
+		// Common Map/Set/Array members aliased on user types
+		"size": {}, "length": {},
+		"clear": {}, "delete": {}, "has": {}, "get": {}, "set": {},
+		"add": {}, "remove": {},
+		"forEach": {}, "map": {}, "filter": {}, "reduce": {},
+		"push": {}, "pop": {}, "shift": {}, "unshift": {},
+		// Error.prototype
+		"message": {}, "name": {}, "stack": {},
+		// DOM EventTarget / EventEmitter
+		"addEventListener": {}, "removeEventListener": {},
+		"dispatchEvent": {}, "emit": {}, "on": {}, "off": {},
+		"once": {},
+		// Lifecycle (React / Angular / Vue / web-components)
+		"render": {}, "constructor": {}, "destroy": {},
+		"connectedCallback": {}, "disconnectedCallback": {},
+		"attributeChangedCallback": {},
+	},
+	// Python — dunder methods + common protocol methods. Same
+	// shape: when a user Class defines __str__ etc., every print(x)
+	// call would otherwise false-bind to that single user Method.
+	// Resolver will consume this when the v0.62 Python AST resolver
+	// gains cross-file binding.
+	"Python": {
+		// Universal dunders
+		"__init__": {}, "__del__": {}, "__repr__": {}, "__str__": {},
+		"__bytes__": {}, "__format__": {}, "__hash__": {},
+		"__bool__": {}, "__dir__": {},
+		// Comparison
+		"__lt__": {}, "__le__": {}, "__eq__": {}, "__ne__": {},
+		"__gt__": {}, "__ge__": {},
+		// Attribute access
+		"__getattr__": {}, "__getattribute__": {}, "__setattr__": {},
+		"__delattr__": {},
+		// Container
+		"__len__": {}, "__getitem__": {}, "__setitem__": {},
+		"__delitem__": {}, "__contains__": {}, "__iter__": {},
+		"__next__": {}, "__reversed__": {},
+		// Callable
+		"__call__": {},
+		// Context manager
+		"__enter__": {}, "__exit__": {},
+		// Async
+		"__aenter__": {}, "__aexit__": {},
+		"__aiter__": {}, "__anext__": {},
+		"__await__": {},
+		// Numeric protocol — common subset
+		"__add__": {}, "__sub__": {}, "__mul__": {}, "__truediv__": {},
+		"__floordiv__": {}, "__mod__": {}, "__pow__": {},
+		"__neg__": {}, "__pos__": {}, "__abs__": {},
+		// Common protocol methods on built-ins
+		"close": {}, "read": {}, "write": {}, "flush": {},
+		"send": {}, "recv": {},
+	},
 }
 
 // isFixturePath reports whether filePath is inside an isolated test-
