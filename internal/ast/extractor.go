@@ -1985,8 +1985,71 @@ func extractC(source []byte, relPath string) *FileResult {
 	result := cRE.extract(source, relPath, "C", cOpts)
 	rewriteCMacroSymbols(result, source, relPath)
 	result.Symbols = dropCForwardDecls(result.Symbols, source)
+	// #1148: drop symbols whose name is a C reserved keyword. The
+	// `(?:\w+\s+)+name\s*\(` regex shape occasionally captures inside
+	// expressions like `size_t n = sizeof(struct foo)` — `sizeof` lifts
+	// to a Function symbol per occurrence, three matches in one file
+	// collide on the qualified name, and `pincher doctor` reports
+	// `qualified_name_collision`. Same shape for `struct`, `typeof`,
+	// `offsetof`. These are C reserved keywords that can NEVER be
+	// function names in valid C, so dropping them at extraction is
+	// safe and eliminates the dominant collision class on kernel/
+	// embedded corpora.
+	result.Symbols = dropCKeywordFalsePositives(result.Symbols)
 	result.Symbols = append(result.Symbols, extractCBareMacros(source, relPath, result.Symbols)...)
 	return result
+}
+
+// cReservedKeywords is the set of C99/C11 reserved keywords that the
+// regex extractor can accidentally lift to a Function symbol. They
+// are syntactically illegal as function names, so dropping them is
+// safe regardless of context. Limited to keywords actually observed
+// in #1148's kernel-corpus collision repro; intentionally NOT the
+// full C keyword list — we don't want to silently drop a legal
+// function named `int_func` because someone half-thinks `int` is a
+// reserved word elsewhere. Each entry must be a name the C compiler
+// itself rejects as an identifier.
+var cReservedKeywords = map[string]struct{}{
+	"sizeof":   {},
+	"offsetof": {},
+	"typeof":   {},
+	"struct":   {},
+	"union":    {},
+	"enum":     {},
+	"if":       {},
+	"else":     {},
+	"for":      {},
+	"while":    {},
+	"do":       {},
+	"switch":   {},
+	"case":     {},
+	"default":  {},
+	"break":    {},
+	"continue": {},
+	"return":   {},
+	"goto":     {},
+}
+
+// dropCKeywordFalsePositives filters out Function symbols whose Name
+// is a C reserved keyword (per cReservedKeywords). The regex can
+// emit these when an expression like `n = sizeof(struct foo)` happens
+// to satisfy the column-0 `<types> name(` shape after tokenization.
+// Kind != Function symbols pass through (Class/Setting are extracted
+// from struct/typedef contexts and have separate handling).
+func dropCKeywordFalsePositives(syms []ExtractedSymbol) []ExtractedSymbol {
+	if len(syms) == 0 {
+		return syms
+	}
+	out := syms[:0]
+	for _, s := range syms {
+		if s.Kind == "Function" {
+			if _, isKeyword := cReservedKeywords[s.Name]; isKeyword {
+				continue
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // rewriteCMacroSymbols post-processes regex output to replace macro-style
