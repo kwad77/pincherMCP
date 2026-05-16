@@ -7048,6 +7048,14 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 	// "those kinds are all clean". Unknown kinds are dropped (not failed)
 	// so the rest of the filter still works, exactly like trace.
 	var kindWarnings []string
+	// #1094: track whether EVERY caller-supplied kind was unknown so the
+	// empty-result branch can surface a filter-specific diagnosis instead
+	// of dropping to "no kinds filter" and returning all-kinds data with
+	// only a per-kind warning. Pre-fix kinds="BogusKind" → kinds=[] →
+	// SQL sees no kind filter → returns full kind set; the agent gets
+	// confidently-wrong results that ignore the filter.
+	allKindsUnknown := false
+	var validKindsForDiag []string
 	if len(kinds) > 0 {
 		if _, _, kindCounts, _, statErr := s.store.GraphStats(projectID); statErr == nil && len(kindCounts) > 0 {
 			validKinds := make([]string, 0, len(kindCounts))
@@ -7055,7 +7063,9 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 				validKinds = append(validKinds, k)
 			}
 			sort.Strings(validKinds)
+			validKindsForDiag = validKinds
 			validated := []string{}
+			callerKindCount := len(kinds)
 			for _, k := range kinds {
 				if _, ok := kindCounts[k]; ok {
 					validated = append(validated, k)
@@ -7065,7 +7075,18 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 						k, strings.Join(validKinds, ", ")))
 				}
 			}
-			kinds = validated
+			if callerKindCount > 0 && len(validated) == 0 {
+				// #1094: caller passed only unknown kinds. Pre-fix we
+				// dropped to kinds=[] (no filter) which silently returned
+				// all-kinds data — contradicting the caller's intent.
+				// Now: keep one of the bad values so SQL returns 0 rows
+				// and the empty-result branch can emit a filter-specific
+				// diagnosis. The original kinds value rides through; SQL
+				// IN ("BogusKind") matches zero, the warning above stays.
+				allKindsUnknown = true
+			} else {
+				kinds = validated
+			}
 		}
 	}
 	// #1045: validate language= against the project's actual language
@@ -7197,6 +7218,25 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 					"why": "read the top dead symbol's source before recommending deletion — confirm the graph isn't missing an inbound edge"},
 				{"tool": "trace", "args": fmt.Sprintf(`{"name":"%s","direction":"inbound"}`, topName),
 					"why": "double-check inbound callers — name-based trace catches references the symbol-id graph might miss for regex-extracted languages"},
+			},
+		}
+	} else if allKindsUnknown {
+		// #1094: caller's kinds filter contained only unknown values.
+		// Same shape as #1093 langFilterExcludesAll — surface the real
+		// cause (bad filter) instead of suggesting min_confidence.
+		validList := "(none)"
+		if len(validKindsForDiag) > 0 {
+			validList = strings.Join(validKindsForDiag, ", ")
+		}
+		data["_meta"] = map[string]any{
+			"diagnosis": fmt.Sprintf(
+				"every value in kinds=%v is unknown for this project — dead_code can't filter to a non-existent kind. Available kinds: %s. Drop the filter or pick a real one.",
+				kinds, validList),
+			"next_steps": []map[string]string{
+				{"tool": "dead_code", "args": `{}`,
+					"why": "drop the kinds filter — runs against every kind in the project"},
+				{"tool": "schema", "args": `{}`,
+					"why": "lists every node kind present in the index with counts"},
 			},
 		}
 	} else if langFilterExcludesAll {
