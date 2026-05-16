@@ -2043,7 +2043,10 @@ var phpRE = &regexExtractor{
 }
 
 func extractPHP(source []byte, relPath string) *FileResult {
-	return phpRE.extract(source, relPath, "PHP", simpleOpts("\\", '{'))
+	opts := simpleOpts("\\", '{')
+	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
+	opts.extractCalls = true
+	return phpRE.extract(source, relPath, "PHP", opts)
 }
 
 var cRE = &regexExtractor{
@@ -2396,7 +2399,10 @@ var csRE = &regexExtractor{
 }
 
 func extractCSharp(source []byte, relPath string) *FileResult {
-	return csRE.extract(source, relPath, "C#", simpleOpts(".", '{'))
+	opts := simpleOpts(".", '{')
+	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
+	opts.extractCalls = true
+	return csRE.extract(source, relPath, "C#", opts)
 }
 
 var kotlinRE = &regexExtractor{
@@ -2405,7 +2411,10 @@ var kotlinRE = &regexExtractor{
 }
 
 func extractKotlin(source []byte, relPath string) *FileResult {
-	return kotlinRE.extract(source, relPath, "Kotlin", simpleOpts(".", '{'))
+	opts := simpleOpts(".", '{')
+	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
+	opts.extractCalls = true
+	return kotlinRE.extract(source, relPath, "Kotlin", opts)
 }
 
 var swiftRE = &regexExtractor{
@@ -2415,7 +2424,10 @@ var swiftRE = &regexExtractor{
 }
 
 func extractSwift(source []byte, relPath string) *FileResult {
-	return swiftRE.extract(source, relPath, "Swift", simpleOpts(".", '{'))
+	opts := simpleOpts(".", '{')
+	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
+	opts.extractCalls = true
+	return swiftRE.extract(source, relPath, "Swift", opts)
 }
 
 // simpleOpts returns extractOpts for languages where every symbol is exported
