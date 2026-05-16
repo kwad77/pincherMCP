@@ -1390,7 +1390,18 @@ func safeExtractWithModule(idx *Indexer, projectID, lang, relPath string, conten
 func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, result *ast.FileResult) {
 	for _, s := range result.Symbols {
 		// byte_range_negative
-		if s.EndByte <= s.StartByte {
+		//
+		// #1203 v0.66 DOGFOOD: Module symbols emitted for legitimately
+		// empty files (Python package-marker `__init__.py` with zero
+		// bytes, empty Go files with just `package main`) land with
+		// EndByte == StartByte == 0. That is correct — there's no body
+		// to span — but the pre-fix invariant `EndByte <= StartByte`
+		// flagged it as a failure, flooding extraction_failures with
+		// low-signal noise. Other symbol kinds (Function / Method /
+		// Class / etc.) with zero or negative span are still real bugs:
+		// an extractor produced a symbol but couldn't anchor its
+		// source. Carve out Module specifically.
+		if s.EndByte < s.StartByte || (s.EndByte == s.StartByte && s.Kind != "Module") {
 			details := fmt.Sprintf("symbol %q (%s): end_byte=%d <= start_byte=%d",
 				s.QualifiedName, s.Kind, s.EndByte, s.StartByte)
 			if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "byte_range_negative", details); err != nil {
