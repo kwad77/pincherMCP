@@ -866,6 +866,13 @@ func isTestFile(filePath string) bool {
 		".spec.js", ".spec.ts", ".spec.tsx", ".spec.jsx",
 		"test.java", "test.kt", "test.scala",
 		"spec.java", "spec.kt", "spec.scala",
+		// #1213 v0.66 DOGFOOD: bash test scripts. pincher-repo itself
+		// ships `_test.sh` scripts (scripts/release-channel_test.sh,
+		// scripts/pr-issue-consistency_test.sh) and the dead_code /
+		// architecture filters missed them because the suffix list
+		// only had _test.go and _test.py. Now bash test conventions
+		// match the Go convention: `_test.sh`.
+		"_test.sh",
 	}
 	for _, sfx := range suffixes {
 		if strings.HasSuffix(base, sfx) {
@@ -874,6 +881,11 @@ func isTestFile(filePath string) bool {
 	}
 	// Python `test_*.py` prefix.
 	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
+		return true
+	}
+	// #1213 v0.66 DOGFOOD: bash `test_*.sh` prefix convention,
+	// mirroring Python's test_*.py.
+	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".sh") {
 		return true
 	}
 	return false
