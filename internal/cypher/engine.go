@@ -146,6 +146,13 @@ func (e *Executor) Execute(ctx context.Context, query string) (*Result, error) {
 	// the structurally adjacent case where the projection itself is
 	// missing the aggregate that ORDER BY needs.
 	warnings = append(warnings, collectOrderByAggregateWithoutGroupingWarnings(q)...)
+	// #1124: repeated pattern variable — `MATCH (a)-[:CALLS]->(a)` — is
+	// standard Cypher for "self-loops on a". Pre-fix the engine bound
+	// the two `a`s independently and returned every CALLS edge instead
+	// of just self-edges. runJoinQuery now injects an `a.id = b.id`
+	// filter; this warning surfaces the implicit equality so the caller
+	// understands why the row count looks like self-loops only.
+	warnings = append(warnings, collectRepeatedPatternVarWarnings(q)...)
 	res, err := e.run(ctx, q)
 	if err != nil {
 		return res, err
@@ -768,6 +775,36 @@ func collectOrderByAggregateWithoutGroupingWarnings(q *queryAST) []string {
 	return []string{fmt.Sprintf(
 		"ORDER BY %s in a query with no aggregate in RETURN: there is no grouping context, so the aggregate evaluates to one value across all rows, the sort silently no-ops, and results come back in scan order. Add the same aggregate to RETURN to enable grouped sorting (e.g. RETURN n.language, %s ORDER BY %s DESC).",
 		ob, ob, ob)}
+}
+
+// collectRepeatedPatternVarWarnings (#1124) surfaces when a pattern
+// reuses the same variable name on both ends of an edge — e.g.
+// `MATCH (a:Function)-[:CALLS]->(a)`. Standard Cypher treats this as
+// self-loop semantics: bind `a` once and return only edges where
+// from_id == to_id. Pre-fix, pincher's runJoinQuery bound `a` on the
+// left and `a` on the right independently and returned every edge
+// rather than just self-loops — a recursion-finder query silently
+// returned every CALLS edge in the graph. runJoinQuery now appends
+// `AND a.id = b.id` to enforce the standard semantics; this warning
+// surfaces the implicit equality so the row count is teachable rather
+// than mysterious.
+//
+// Out of scope: variable-length self-loops (`MATCH (a)-[:CALLS*1..3]->(a)`)
+// expressing cycle detection. BFS does not natively support cycle
+// detection; we leave that as a separate concern.
+func collectRepeatedPatternVarWarnings(q *queryAST) []string {
+	if q == nil {
+		return nil
+	}
+	var out []string
+	for _, pat := range q.patterns {
+		if pat.fromVar != "" && pat.fromVar == pat.toVar && pat.minHops <= 1 && pat.maxHops <= 1 {
+			out = append(out, fmt.Sprintf(
+				"pattern reuses the variable %q on both ends of the edge — interpreted as a self-loop filter (from_id = to_id). If you meant two independently-bound endpoints that happen to be the same kind, rename one (e.g. `MATCH (%s)-[:KIND]->(b)`).",
+				pat.fromVar, pat.fromVar))
+		}
+	}
+	return out
 }
 
 // collectHopRangeWarnings (#869) warns when a variable-length pattern
@@ -2778,6 +2815,15 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	// the {name:"X"} and returned callers of every Function.
 	appendInlinePropFilters(&sqlQ, &args, "a.", pat.fromProps)
 	appendInlinePropFilters(&sqlQ, &args, "b.", pat.toProps)
+	// #1124: repeated pattern variable — `MATCH (a)-[:CALLS]->(a)` — is
+	// standard Cypher for "self-loops on a". Pre-fix the engine bound `a`
+	// independently on left and right; every CALLS edge came back, not
+	// just self-edges. Enforce the equality here so the row set matches
+	// the standard semantics; the warning surfaces the rewrite so the
+	// caller learns rather than guessing why the row count changed.
+	if pat.fromVar != "" && pat.fromVar == pat.toVar {
+		sqlQ += " AND a.id = b.id"
+	}
 
 	// Push down WHERE conditions. #358 + #362: tree-aware pushdown gate —
 	// only AND-chains-of-leaves push to SQL; richer trees are fully
