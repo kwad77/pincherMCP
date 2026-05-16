@@ -3181,7 +3181,7 @@ func (s *Server) registerTools() {
 	// 10. architecture — agent-facing orient tool. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
 		Name:        "architecture",
-		Description: "**Call once at the start of unfamiliar work** to orient. Returns language breakdown, entry points, hotspot functions (most-called = highest change risk), and graph statistics. Hotspots default to production code only (test helpers are filtered); pass include_tests=true to surface them too. Much cheaper than reading files to understand the structure.",
+		Description: "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), and `edge_kinds` (per-kind edge count). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
