@@ -6870,7 +6870,13 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 			nextScopeSteps = append(nextScopeSteps, map[string]string{
 				"tool": "changes",
 				"args": fmt.Sprintf(`{"scope":%q}`, other),
-				"why":  fmt.Sprintf("try scope=%q to see what %s captures", other, scopeDescription(other)),
+				// #1113: pre-fix the format string was "to see what %s
+				// captures" and scopeDescription("staged") started with
+				// "what's ..." — the composition produced "see what what's
+				// already added" with a doubled "what what's". Reading the
+				// descriptions as standalone noun-phrase summaries reads
+				// cleaner: "try scope=X — what's already added ...".
+				"why":  fmt.Sprintf("try scope=%q — %s", other, scopeDescription(other)),
 			})
 		}
 		if len(otherScopesWithChanges) > 0 {
