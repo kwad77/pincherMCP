@@ -5807,10 +5807,18 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// confidence are unaffected — Cypher might project arbitrary columns.
 	rows := result.Rows
 	confs := make([]float64, 0, len(rows))
+	// #1103: track whether ANY row carried an extraction_confidence column
+	// so a caller passing min_confidence=N on a RETURN that doesn't
+	// project confidence learns the filter was a no-op. Pre-fix the
+	// filter silently passed every row through; the user thought they
+	// were filtering by confidence and got an unfiltered result. Same
+	// silent-confidently-wrong family as #1094 / #1096.
+	anyRowHadConfidence := false
 	if minConfidence > 0 {
 		filtered := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			if c, ok := rowConfidence(row); ok {
+				anyRowHadConfidence = true
 				if c >= minConfidence {
 					filtered = append(filtered, row)
 					confs = append(confs, c)
@@ -5827,6 +5835,15 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				confs = append(confs, c)
 			}
 		}
+	}
+	// #1103: warn when min_confidence was passed but the query shape made
+	// it a no-op. Guarded on len(result.Rows) > 0 — a zero-row query
+	// already gets the empty-result advisory, so adding "filter was a
+	// no-op" on top is redundant noise.
+	if minConfidence > 0 && !anyRowHadConfidence && len(result.Rows) > 0 {
+		queryWarnings = append(queryWarnings, fmt.Sprintf(
+			"min_confidence=%g passed but no row projected extraction_confidence — filter was a no-op. Add `n.extraction_confidence` to your RETURN clause (or drop min_confidence) so the filter actually applies.",
+			minConfidence))
 	}
 
 	// #338: ensure rows is never nil so JSON marshals as [] not null.
