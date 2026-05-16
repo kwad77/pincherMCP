@@ -125,6 +125,45 @@ func pluralS(n int) string {
 	return "s"
 }
 
+// walBloatAdvisory returns a human-readable health advisory when the
+// pincher WAL has grown well past its configured 256 MiB
+// journal_size_limit, or "" when it's fine. #1206 v0.66 DOGFOOD: WAL
+// bloat is the hidden symptom of checkpoint failure under sustained
+// concurrent indexing pressure (readers pin the WAL across the
+// truncate). The user doesn't see it until vacuum or until a tool
+// call latency blows out (the WAL has to be touched on every read).
+//
+// Threshold: 512 MiB OR > 10% of the DB. Either is large enough to
+// merit surfacing; smaller WALs aren't a problem worth a warning.
+// Remediation: `pincher vacuum` runs a wal_checkpoint(TRUNCATE)
+// + VACUUM cycle, which reclaims the WAL space. Tracking issue
+// #1206 / related #1149 (vacuum's own wal_reader_busy advisory).
+func walBloatAdvisory(dbSizeBytes, walSizeBytes int64) string {
+	const absThreshold = 512 << 20 // 512 MiB
+	// The percent rule (WAL > 10% of DB) is only meaningful once the
+	// DB itself is large enough that the ratio reflects real bloat.
+	// Test DBs and fresh installs land at a few KB of data; 1 MB WAL
+	// is normal there and not worth surfacing. Skip the percent rule
+	// below 100 MiB DB size.
+	const minDBForPercent = 100 << 20 // 100 MiB
+	percentBloat := dbSizeBytes >= minDBForPercent && walSizeBytes*10 > dbSizeBytes
+	if walSizeBytes < absThreshold && !percentBloat {
+		return ""
+	}
+	walMB := float64(walSizeBytes) / (1 << 20)
+	msg := fmt.Sprintf("WAL file is %.0f MB — past the 256 MB journal_size_limit soft cap.", walMB)
+	if dbSizeBytes > 0 {
+		msg += fmt.Sprintf(" That's %.0f%% of the DB (%.1f GB).",
+			float64(walSizeBytes)/float64(dbSizeBytes)*100,
+			float64(dbSizeBytes)/(1<<30))
+	}
+	msg += " Under sustained indexing pressure, checkpoints can't always truncate the WAL " +
+		"(busy readers pin pages across the cycle). Every tool call touches the WAL first, " +
+		"so a large WAL inflates latency on otherwise-cheap reads. Remediation: run `pincher vacuum` " +
+		"to force a checkpoint + truncate + reclaim cycle. See #1206."
+	return msg
+}
+
 // largeDBAdvisory returns a human-readable health advisory when the
 // pincher DB is pathologically large, or "" when it's fine. #732:
 // failure-as-pedagogy for the diagnostic itself — `doctor` used to
@@ -267,6 +306,24 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// after the `top` truncation above.
 	advisories := []string{}
 	if a := largeDBAdvisory(dbSizeBytes, projects); a != "" {
+		advisories = append(advisories, a)
+	}
+	// #1206 v0.66 DOGFOOD: WAL bloat advisory. Pincher's WAL is
+	// supposed to be bounded by journal_size_limit=256 MiB (set in
+	// the schema config) + CheckpointTruncate() on every Index()
+	// tail. journal_size_limit is a SOFT cap: SQLite honors it
+	// after a successful checkpoint, but if checkpoints can't
+	// complete (busy readers pin the WAL across the truncate), the
+	// WAL grows past the limit. Real-world observation on an 11GB
+	// DB: WAL reached 2.3GB (9x the configured limit) — caller has
+	// no signal until vacuum surfaces the wal_reader_busy bit
+	// (#1149), too late to remediate proactively.
+	//
+	// Threshold: 512 MiB OR > 10% of the DB. Either is large
+	// enough that the user should know; smaller WALs aren't a
+	// problem worth surfacing. Bare number with a remediation
+	// hint, same shape as largeDBAdvisory.
+	if a := walBloatAdvisory(dbSizeBytes, walSizeBytes); a != "" {
 		advisories = append(advisories, a)
 	}
 	// #1009: ghost-project advisory. Walks the full project list (not
