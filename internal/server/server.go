@@ -1508,11 +1508,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		page, total, hasMore := sliceWindow(projects, parsePageParams(r, 50, 200))
+		// #707: MCP↔HTTP parity. /v1/projects used to dump every row in
+		// the store including dead-on-disk paths and worktree fan-out
+		// (~92-row dashboard responses with ~half being noise). Apply
+		// the same orientation filters MCP `list` uses, with the same
+		// defaults (active=true, active_within_days=14,
+		// include_dead=false, min_edges=1). Callers opt back into the
+		// legacy unfiltered shape via ?active=false&include_dead=true
+		// &min_edges=0.
+		opts := projectFilterOptsFromQuery(r)
+		filtered, drops := filterProjects(projects, opts)
+		page, total, hasMore := sliceWindow(filtered, parsePageParams(r, 50, 200))
 		json.NewEncoder(w).Encode(map[string]any{
 			"projects": page,
 			"total":    total,
 			"has_more": hasMore,
+			"filtered_out": drops.DeadPath + drops.Inactive + drops.LowEdges,
+			"filtered_breakdown": map[string]any{
+				"dead_path": drops.DeadPath,
+				"inactive":  drops.Inactive,
+				"low_edges": drops.LowEdges,
+			},
 		})
 		return
 	}
