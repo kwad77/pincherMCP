@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -109,7 +110,18 @@ func injectRequestID(res *mcp.CallToolResult, id string) {
 		data["_meta"] = meta
 	}
 	meta["request_id"] = id
-	if b, err := json.Marshal(data); err == nil {
+	// #1089: respect the same compact-vs-pretty flag jsonResultWithMeta
+	// uses. Without this, the middleware's re-encode after request-id
+	// injection would always reset the response to compact even when
+	// PINCHER_DEBUG_META=1 had asked for pretty.
+	var b []byte
+	var err error
+	if os.Getenv("PINCHER_DEBUG_META") == "1" {
+		b, err = json.MarshalIndent(data, "", "  ")
+	} else {
+		b, err = json.Marshal(data)
+	}
+	if err == nil {
 		tc.Text = string(b)
 	}
 }
