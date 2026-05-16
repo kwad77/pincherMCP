@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1956,8 +1957,38 @@ func (s *Store) UpdateProjectCounts(projectID string, files, syms, edges int) er
 // The #724 monotonic guard on schema_version_at_index / binary_version
 // is preserved exactly — a stale orphan re-walker can't stomp newer
 // schema metadata even via this path.
+//
+// #1154: the schema-version guard alone isn't enough across orphan
+// processes of the same schema_version. Two pincher children of
+// the same minor version (different git-commit-count dev builds)
+// race: the older one's watcher stamps `binary_version` back over
+// the newer one's write because schema equality lets the CASE pass.
+// Read-then-compare in Go preserves the correct binary_version when
+// an older writer races a newer one. Same shape as the schema guard,
+// just one level down for matching-schema dev-build pairs.
 func (s *Store) UpsertProjectMeta(p Project) error {
 	currentSchema := len(schemaMigrations) + 1
+	// #1154 guard: if an older binary_version would overwrite a newer
+	// one (same schema), skip the binary_version write but still
+	// update path/name/indexed_at. Done in Go because semver-with-
+	// commit-count comparison (`0.58.0-44-g91e9c0f` vs `0.58.0-10-
+	// gdeb797d`) is impractical in pure SQL — the dash-separated
+	// commit count is the deciding bit for dev builds and isn't a
+	// single sortable lexical prefix.
+	var existingBV sql.NullString
+	if err := s.ro.QueryRow(
+		`SELECT binary_version FROM projects WHERE id = ?`, p.ID,
+	).Scan(&existingBV); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	binaryToWrite := p.BinaryVersion
+	if existingBV.Valid && existingBV.String != "" {
+		if compareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
+			// Incoming is older — don't downgrade. Keep the existing
+			// value by writing back what's already there.
+			binaryToWrite = existingBV.String
+		}
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version)
 		VALUES (?,?,?,?,0,0,0,?,?)
@@ -1970,14 +2001,99 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 			-- (scalar SQLite MAX propagates NULL), so binary_version and
 			-- schema_version_at_index stayed NULL forever — the drift
 			-- warning fired permanently even after a force re-index.
+			--
+			-- #1154: binary_version is already version-clamped in Go above
+			-- (binaryToWrite param). The schema_version_at_index guard
+			-- below still catches cross-schema downgrades.
 			binary_version=CASE
 				WHEN excluded.schema_version_at_index >= COALESCE(schema_version_at_index, 0)
 				THEN excluded.binary_version ELSE binary_version END,
 			schema_version_at_index=MAX(COALESCE(schema_version_at_index, 0), excluded.schema_version_at_index)`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		currentSchema, p.BinaryVersion,
+		currentSchema, binaryToWrite,
 	)
 	return err
+}
+
+// compareBinaryVersion compares pincher build version strings of the
+// form "0.58.0", "0.58.0-44-g91e9c0f", or "dev". Returns -1 if a < b,
+// 0 if equal, +1 if a > b. Parse-failure falls back to string compare
+// so callers that pass weird values get a deterministic-if-arbitrary
+// answer rather than panicking — and a totally-unparseable incoming
+// version never silently displaces a real one because the equal-
+// string case skips the write either way.
+//
+// Format expected: [v]MAJOR.MINOR.PATCH[-COMMITS-gSHA]
+// "dev" (the unstamped go build sentinel) is treated as the lowest
+// possible version — it must never displace a real release stamp.
+func compareBinaryVersion(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == "dev" && b != "dev" {
+		return -1
+	}
+	if b == "dev" && a != "dev" {
+		return 1
+	}
+	ai, aOK := parseBinaryVersion(a)
+	bi, bOK := parseBinaryVersion(b)
+	if !aOK || !bOK {
+		// Unparseable — fall back to string compare for determinism.
+		if a < b {
+			return -1
+		}
+		if a > b {
+			return 1
+		}
+		return 0
+	}
+	for i := 0; i < 4; i++ {
+		if ai[i] < bi[i] {
+			return -1
+		}
+		if ai[i] > bi[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+// parseBinaryVersion extracts the four numeric components from a
+// pincher build version: [v]MAJOR.MINOR.PATCH[-COMMITS-gSHA]. Returns
+// [major, minor, patch, commits] and an ok flag. COMMITS defaults to
+// 0 when the version is a clean release tag. Returns (zeros, false)
+// on unrecognizable input.
+func parseBinaryVersion(s string) ([4]int, bool) {
+	var out [4]int
+	v := strings.TrimPrefix(s, "v")
+	// Split off "-COMMITS-gSHA" if present.
+	core := v
+	if dash := strings.Index(v, "-"); dash >= 0 {
+		core = v[:dash]
+		rest := v[dash+1:]
+		// rest looks like "44-g91e9c0f" — take the leading digits.
+		if dash2 := strings.Index(rest, "-"); dash2 > 0 {
+			rest = rest[:dash2]
+		}
+		commits, err := strconv.Atoi(rest)
+		if err != nil {
+			return out, false
+		}
+		out[3] = commits
+	}
+	parts := strings.SplitN(core, ".", 3)
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i := 0; i < 3; i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // ListProjects returns all indexed projects.
