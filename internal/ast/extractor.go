@@ -2125,8 +2125,21 @@ var cRE = &regexExtractor{
 // AND at least one underscore (single-word ALL CAPS like `MAIN` are real
 // function names in some embedded codebases). Two-letter all-caps like
 // `IO` would also be ambiguous; the underscore requirement filters those.
+//
+// #1204 v0.66 DOGFOOD: the leading `[ \t]*` was wrong. extractCBareMacros
+// runs FindAllSubmatchIndex over the whole source, so any indented
+// SCREAM_CASE(arg, ...) inside a function body got lifted to a Symbol.
+// Unreal Engine corpora repeat `UE_LOG(LogTemp, ...)` 4-11 times per
+// file, each landing as a `LogTemp` Symbol and triggering a
+// qualified_name_collision per file. Restricting to column 0 keeps the
+// intended bare-prefix-declaration case (EXPORT_SYMBOL, MODULE_PARM,
+// DEFINE_LOG_CATEGORY) — those land at column 0 in real code — while
+// dropping the indented call-site overextraction. rewriteCMacroSymbols
+// is unaffected: funcRE itself is column-0-only, so the line it inspects
+// is already column 0 and the regex still matches without the
+// permissive whitespace prefix.
 var cMacroRE = regexp.MustCompile(
-	`(?m)^[ \t]*(?:static\s+)?(?P<macro>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\s*\(\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)`)
+	`(?m)^(?:static\s+)?(?P<macro>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\s*\(\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)`)
 
 // extractC runs the regex extractor over a C source file, then applies
 // three post-processing passes that the regex alone can't handle:
