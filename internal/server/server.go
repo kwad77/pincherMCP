@@ -3845,10 +3845,18 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// projects, not N per-row warnings. Skipped on scoped lookups
 	// (resolvedProjectID != "") since those can't leak.
 	crossProjectSources := map[string]int{}
+	// #1066: track not-found IDs separately so the top-level response can
+	// surface them as a first-class field (not_found_ids) and a warning
+	// names them with the recovery affordance. Pre-fix, missing IDs were
+	// only discoverable by iterating `symbols` and checking for the
+	// `error` field per entry — easy for an agent to miss when the
+	// response's top-level `count` claims all N IDs resolved.
+	var notFoundIDs []string
 	for _, id := range ids {
 		sym, ok := bySymID[id]
 		if !ok || sym == nil {
 			results = append(results, map[string]any{"id": id, "error": "not found"})
+			notFoundIDs = append(notFoundIDs, id)
 			continue
 		}
 		if resolvedProjectID == "" && projectArg == "" &&
@@ -3923,6 +3931,20 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	data := map[string]any{
 		"symbols": results,
 		"count":   len(results),
+	}
+	// #1066: surface batch-level not-found summary so a partial-hit
+	// response is obviously partial. `count` historically lumps
+	// found+not-found together; agents that read only top-level fields
+	// concluded all N IDs resolved when the not-found stubs were buried
+	// in the symbols array.
+	if len(notFoundIDs) > 0 {
+		data["not_found_ids"] = notFoundIDs
+		data["count_found"] = len(results) - len(notFoundIDs)
+		data["count_not_found"] = len(notFoundIDs)
+		attachWarning(data, fmt.Sprintf(
+			"%d of %d id(s) did not resolve: %v. Call `search` with the short name to find current IDs; ids change when a file is renamed or a function's qualified-name changes.",
+			len(notFoundIDs), len(ids), notFoundIDs,
+		))
 	}
 	// #1027: surface the unresolved-project failure so the caller
 	// sees their scope hint was ignored.
