@@ -9459,7 +9459,8 @@ func classifyTaskShape(task string) guideShape {
 	// flow that never mentions dead_code. The shapeToolAudit case above
 	// already claimed "find FPs in dead_code" (it carries the tool name),
 	// so a plain dead-code survey lands here.
-	case contains("dead code", "dead-code", "unused function", "unused method",
+	case contains("dead code", "dead-code", "dead function", "dead method", "dead symbol",
+		"unused function", "unused method",
 		"unused code", "unreachable", "zero callers", "no callers",
 		"never called", "uncalled",
 		// #768: "no callers" misses the more technical phrasings a dev
