@@ -134,12 +134,19 @@ func TestExtractMarkdown_EmptyDocument(t *testing.T) {
 	}
 }
 
-// TestExtractMarkdown_ProseOnly — a file with prose but no headings
-// MUST produce zero symbols (we don't index paragraphs as symbols).
+// TestExtractMarkdown_ProseOnly — a file with prose but no headings.
+// #1097 update (2026-05-16): pre-#1097 this produced zero symbols
+// (prose disappeared from the docs corpus). Post-#1097 it produces
+// exactly one synthetic preamble Section covering the whole file so
+// the content is searchable. The pre-#1097 contract was wrong — it
+// dropped legitimate README / design-doc content from the index.
 func TestExtractMarkdown_ProseOnly(t *testing.T) {
 	syms := mdExtract(t, "Just some prose with no headings.\n\nAnother paragraph.\n")
-	if len(syms) != 0 {
-		t.Errorf("prose-only doc produced %d symbols, want 0", len(syms))
+	if len(syms) != 1 {
+		t.Errorf("prose-only doc produced %d symbols, want 1 (the preamble)", len(syms))
+	}
+	if len(syms) > 0 && syms[0].QualifiedName != "preamble" {
+		t.Errorf("prose-only doc's single symbol QN = %q, want preamble", syms[0].QualifiedName)
 	}
 }
 
