@@ -534,6 +534,11 @@ var readerRoutedStoreMethods = map[string]bool{
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).
 	"RO": true,
+
+	// #635 v0.64: session_tool_calls per-call detail (dashboard
+	// triangulating panels). RecentToolCallsForSession is pure
+	// SELECT — reader-routed.
+	"RecentToolCallsForSession": true,
 }
 
 var writerRoutedStoreMethods = map[string]bool{
@@ -579,6 +584,10 @@ var writerRoutedStoreMethods = map[string]bool{
 	// Configuration (operates on the reader pool but is itself a write
 	// to the *Store — classified writer).
 	"SetReaderPoolSize": true,
+
+	// #635 v0.64: bulk-insert per-call events into session_tool_calls.
+	// Writer-routed (mutates table).
+	"RecordToolCalls": true,
 }
 
 // TestStore_AllExportedMethodsClassified is the routing classification
