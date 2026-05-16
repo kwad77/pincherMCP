@@ -221,7 +221,7 @@ func TestOpen_WALGuardrailEngaged(t *testing.T) {
 func TestVacuum_Idempotent(t *testing.T) {
 	s := newTestStore(t)
 	for i := 0; i < 3; i++ {
-		if err := s.Vacuum(); err != nil {
+		if _, err := s.Vacuum(); err != nil {
 			t.Fatalf("Vacuum (call %d): %v", i+1, err)
 		}
 	}
@@ -252,7 +252,7 @@ func TestVacuum_ReclaimsAfterDelete(t *testing.T) {
 	if err := s.DeleteProject("bloat"); err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
-	if err := s.Vacuum(); err != nil {
+	if _, err := s.Vacuum(); err != nil {
 		t.Fatalf("Vacuum: %v", err)
 	}
 	shrunk := dbFileSizeForTest(t, s.Path)

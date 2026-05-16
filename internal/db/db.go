@@ -371,19 +371,44 @@ func (s *Store) CheckpointTruncate() error {
 // which is exactly why it lives behind a deliberate `pincher vacuum` CLI
 // step (#732) rather than in the hot MCP path. CheckpointTruncate runs
 // first so the WAL is folded in before the rewrite.
-func (s *Store) Vacuum() error {
-	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		return err
+//
+// #1149: returns walReaderBusy=true when the pre-VACUUM checkpoint
+// couldn't fully roll forward — typically a running MCP server child
+// holding an open reader snapshot. Pre-fix, that case silently
+// reclaimed 0 B and the user concluded `pincher vacuum` was a no-op.
+// VacuumResult lets the CLI surface a targeted advisory.
+func (s *Store) Vacuum() (VacuumResult, error) {
+	var res VacuumResult
+	// Run a probing checkpoint first so we can detect open readers
+	// before VACUUM swallows the time. wal_checkpoint(TRUNCATE) returns
+	// (busy, log, checkpointed). busy=1 means another connection
+	// prevented full truncation — equivalent to "a reader is on an
+	// older snapshot." Surface that to the caller.
+	var busy, logFrames, ckptFrames int64
+	if err := s.db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &ckptFrames); err != nil {
+		return res, err
 	}
+	res.WalReaderBusy = busy != 0
 	if _, err := s.db.Exec("VACUUM"); err != nil {
-		return err
+		return res, err
 	}
 	// In WAL mode the VACUUM rewrite lands in the WAL, not the main file.
 	// Checkpoint again so the on-disk `pincher.db` actually shrinks — the
 	// whole point of the command — rather than just shuffling the bytes
 	// into a fat WAL the caller can't see.
-	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
-	return err
+	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// VacuumResult carries diagnostic signals from the VACUUM run so the
+// CLI can render a targeted advisory. WalReaderBusy=true is the
+// #1149 signal: an open reader pinned the freelist pages VACUUM would
+// have reclaimed; advise the user to close the running MCP child (or
+// retry post-/mcp-reconnect) and re-vacuum.
+type VacuumResult struct {
+	WalReaderBusy bool
 }
 
 // RebuildFTS drops every per-corpus FTS5 vtab (`symbols_code_fts` /

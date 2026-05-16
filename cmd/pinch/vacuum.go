@@ -42,8 +42,9 @@ func runVacuumCLI(args []string) {
 	defer store.Close()
 
 	before := dbFileSize(store.Path)
-	if err := store.Vacuum(); err != nil {
-		fmt.Fprintf(os.Stderr, "pincher vacuum: %v\n", err)
+	vacRes, vacErr := store.Vacuum()
+	if vacErr != nil {
+		fmt.Fprintf(os.Stderr, "pincher vacuum: %v\n", vacErr)
 		os.Exit(1)
 	}
 	after := dbFileSize(store.Path)
@@ -52,20 +53,39 @@ func runVacuumCLI(args []string) {
 		reclaimed = 0
 	}
 
+	// #1149: when an open WAL reader pinned the freelist, VACUUM
+	// silently reclaims 0 B and the user reads it as "vacuum is a
+	// no-op." The probing checkpoint's busy result tells us this
+	// happened — surface a targeted advisory so the user sees the
+	// real cause and the recovery path (close the running MCP child
+	// or retry post-/mcp-reconnect).
+	walAdvisory := ""
+	if vacRes.WalReaderBusy && reclaimed == 0 {
+		walAdvisory = "another pincher process holds an open reader — WAL freelist pages are pinned and VACUUM cannot reclaim them. Restart the MCP server (or run after active sessions disconnect), then retry."
+	}
+
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{
-			"vacuumed":             true,
-			"bytes_before":         before,
-			"bytes_after":          after,
-			"bytes_reclaimed":      reclaimed,
-			"path":                 store.Path,
-		})
+		payload := map[string]any{
+			"vacuumed":        true,
+			"bytes_before":    before,
+			"bytes_after":     after,
+			"bytes_reclaimed": reclaimed,
+			"path":            store.Path,
+			"wal_reader_busy": vacRes.WalReaderBusy,
+		}
+		if walAdvisory != "" {
+			payload["advisory"] = walAdvisory
+		}
+		_ = enc.Encode(payload)
 		return
 	}
 	fmt.Fprintf(os.Stdout, "Vacuumed %s\n  before:    %s\n  after:     %s\n  reclaimed: %s\n",
 		store.Path, humanBytes(before), humanBytes(after), humanBytes(reclaimed))
+	if walAdvisory != "" {
+		fmt.Fprintf(os.Stdout, "\nNote: %s\n", walAdvisory)
+	}
 }
 
 // dbFileSize returns the size of the database file in bytes, or 0 if it
