@@ -156,13 +156,17 @@ func TestTrace_UnknownEdgeKindWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleTrace: %v", err)
 	}
-	if res.IsError {
-		t.Fatalf("trace returned IsError: %s", textOf(t, res))
+	// #1096: all-unknown edge kinds now fail loudly with a rich
+	// envelope (was: warn-but-proceed, which silently widened to
+	// all-edge-kinds). The error string still names the bad value;
+	// the warning shape is preserved in the rich envelope.
+	if !res.IsError {
+		t.Fatalf("expected IsError on all-unknown kinds; got: %s", textOf(t, res))
 	}
 	body := decode(t, res)
-	ws := metaWarnings(t, body)
-	if !warningsContain(ws, "unknown edge kind") {
-		t.Errorf("expected an unknown-edge-kind warning; got warnings: %v", ws)
+	errStr, _ := body["error"].(string)
+	if !strings.Contains(errStr, "INVALID_EDGE_KIND") {
+		t.Errorf("expected error to name the bad kind; got %q", errStr)
 	}
 }
 

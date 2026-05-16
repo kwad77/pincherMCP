@@ -6153,10 +6153,19 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
 	}
 	var traceKindWarnings []string
+	// #1096: track whether EVERY caller-supplied edge kind was unknown
+	// so the empty-result branch can fail loudly with a kind-filter
+	// diagnosis instead of silently widening to "all edge kinds" (the
+	// pre-fix shape — dropping unknowns + an empty edgeKinds list both
+	// produced unfiltered traversals). Same fix shape as #1094
+	// (dead_code all-unknown kinds).
+	allEdgeKindsUnknown := false
+	var rawTraceKindCount int
 	if kindsArg != "" {
 		for _, k := range strings.Split(kindsArg, ",") {
 			k = strings.ToUpper(strings.TrimSpace(k))
 			if k != "" {
+				rawTraceKindCount++
 				if !knownEdgeKinds[k] {
 					traceKindWarnings = append(traceKindWarnings,
 						fmt.Sprintf("unknown edge kind %q ignored — valid kinds: CALLS, HTTP_CALLS, ASYNC_CALLS, READS, WRITES, IMPORTS, REFERENCES", k))
@@ -6165,11 +6174,33 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				edgeKinds = append(edgeKinds, k)
 			}
 		}
+		if rawTraceKindCount > 0 && len(edgeKinds) == 0 {
+			allEdgeKindsUnknown = true
+		}
 	}
 
 	projectID, errRes := s.mustProject(args)
 	if errRes != nil {
 		return errRes, nil
+	}
+
+	// #1096: short-circuit when every caller-supplied edge kind was
+	// unknown. Pre-fix the trace silently widened to all-edge-kinds —
+	// the warning named the bad value but the result contradicted it
+	// (same shape as dead_code #1094). Fail loudly with a 0-hop
+	// response + kind-filter diagnosis so the agent sees the filter
+	// was the cause, not "no edges in this graph."
+	if allEdgeKindsUnknown {
+		return s.errResultRich(
+			fmt.Sprintf("trace: every value in kinds=%q is unknown — valid edge kinds: CALLS, HTTP_CALLS, ASYNC_CALLS, READS, WRITES, IMPORTS, REFERENCES. Drop the kinds filter or pick a real one.", kindsArg),
+			[]map[string]string{
+				{"tool": "trace", "args": fmt.Sprintf(`{"name":%q}`, str(args, "name")),
+					"why": "drop the kinds filter — traces all edge kinds"},
+				{"tool": "trace", "args": fmt.Sprintf(`{"name":%q,"kinds":"CALLS"}`, str(args, "name")),
+					"why": "CALLS is the most-common edge kind; start there"},
+				{"tool": "schema", "args": `{}`,
+					"why": "lists every edge kind present in the index with counts"},
+			}), nil
 	}
 
 	// Resolve the start symbol. Two paths:
