@@ -1,3 +1,18 @@
+//go:build sdkexample
+// +build sdkexample
+
+// NOTE: the build tag above excludes this file from the default
+// `go test ./...` walk because it imports github.com/kwad77/pincher-sdk-go
+// which only exists after the user runs scripts/generate-sdks.sh AND
+// wires a `replace` directive against the generated tree (per the
+// instructions block below). Build the example explicitly with:
+//
+//   go run -tags sdkexample sdks/go/examples/search.go ProcessPayment
+//
+// Without the tag, CI's `go test ./...` would fail with "no required
+// module provides package github.com/kwad77/pincher-sdk-go" on every
+// run of every PR — even when the PR has nothing to do with the SDK.
+
 // Minimal example: call `pincher search` from Go via the generated SDK.
 // Assumes you've run `scripts/generate-sdks.sh go` against a running
 // pincher. To consume the local generated SDK without publishing, add
