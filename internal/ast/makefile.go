@@ -46,8 +46,17 @@ import (
 // The `^[A-Za-z0-9_]` prefix gate is the key constraint that distinguishes
 // rule lines from variable assignments (which start with the same shape
 // but are followed by `=`/`:=` not `:` followed by space/end-of-line).
+// #1344 v0.71: tightened the two `\s*` clauses to `[ \t]*` so they do
+// NOT consume newlines. Pre-fix, `deps:\n\techo deps` was matched as
+// a single logical rule with prereqs="echo deps" — the recipe line was
+// folded into the prerequisites. Pre-fix this was invisible because
+// only Function symbols were emitted (the recipe-fold didn't change
+// the captured name); post-fix's CALLS pass surfaced it as a spurious
+// `deps → deps` self-edge. The new bounded character class keeps
+// horizontal-whitespace tolerance (which IS legal in Makefiles for
+// `target : deps`) while refusing the next-line spillover.
 var makeRuleRE = regexp.MustCompile(
-	`(?m)^(?P<name>[A-Za-z0-9_][A-Za-z0-9_./-]*)\s*::?\s*([^=].*)?$`)
+	`(?m)^(?P<name>[A-Za-z0-9_][A-Za-z0-9_./-]*)[ \t]*::?[ \t]*([^=\n].*)?$`)
 
 // makePhonyRE matches a .PHONY declaration. Captures: 1 = space-separated
 // list of phony target names that follow.
@@ -89,7 +98,13 @@ func extractMakefile(source []byte, relPath string) *FileResult {
 		}
 	}
 
-	// Pass 1: rule targets.
+	// Pass 1: rule targets. Collect deps alongside so the post-pass
+	// can emit CALLS edges between intra-file rules (#1344 v0.71).
+	type rulePrereqs struct {
+		name      string
+		prereqStr string
+	}
+	var collectedRules []rulePrereqs
 	for _, m := range makeRuleRE.FindAllSubmatchIndex(source, -1) {
 		nameStart, nameEnd := m[2], m[3]
 		name := string(source[nameStart:nameEnd])
@@ -135,6 +150,54 @@ func extractMakefile(source []byte, relPath string) *FileResult {
 			EndLine:       endLine,
 			IsExported:    phonySet[name],
 		})
+
+		// Capture the prerequisites half of the rule for the post-pass
+		// CALLS-edge emission. The regex's optional group 2 captures
+		// everything after the colon up to end-of-line; m[4],m[5] are
+		// its start/end byte offsets (or -1,-1 when absent for a no-
+		// dep rule). #1344 v0.71.
+		depStr := ""
+		if m[4] >= 0 && m[5] > m[4] {
+			depStr = string(source[m[4]:m[5]])
+		}
+		collectedRules = append(collectedRules, rulePrereqs{name: name, prereqStr: depStr})
+	}
+
+	// CALLS edges: rule-to-rule prerequisites. Built after the rule
+	// pass so we know which prerequisite names resolve to in-file rule
+	// symbols (the others are external files / pattern stems / variable
+	// references and intentionally drop). #1344 v0.71.
+	ruleNames := make(map[string]struct{}, len(collectedRules))
+	for _, r := range collectedRules {
+		ruleNames[r.name] = struct{}{}
+	}
+	for _, r := range collectedRules {
+		if r.prereqStr == "" {
+			continue
+		}
+		seen := make(map[string]struct{})
+		for _, prereq := range strings.Fields(r.prereqStr) {
+			// Skip variable-reference prerequisites: $(BUILD_DEPS),
+			// ${X}, $X. The resolver has no way to bind these to a
+			// concrete rule, and emitting an unresolved-shape edge
+			// would surface as #1340-class drop with no signal.
+			if strings.ContainsAny(prereq, "$%") {
+				continue
+			}
+			if _, isRule := ruleNames[prereq]; !isRule {
+				continue
+			}
+			if _, dup := seen[prereq]; dup {
+				continue
+			}
+			seen[prereq] = struct{}{}
+			out.Edges = append(out.Edges, ExtractedEdge{
+				FromQN:     r.name,
+				ToName:     prereq,
+				Kind:       "CALLS",
+				Confidence: 1.0,
+			})
+		}
 	}
 
 	// Pass 2: variable definitions.
