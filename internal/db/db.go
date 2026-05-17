@@ -1369,6 +1369,30 @@ END;`,
 	ALTER TABLE files         ADD COLUMN branch TEXT NOT NULL DEFAULT '';
 	ALTER TABLE pending_edges ADD COLUMN branch TEXT NOT NULL DEFAULT '';
 	`,
+
+	// v31 → v32: projects.current_branch — the git branch the project
+	// was last indexed on. Captured via `git rev-parse --abbrev-ref HEAD`
+	// at index time. Empty when the project root isn't a git working
+	// tree or HEAD is detached (the indexer falls back to the commit SHA
+	// in that case — see indexer.detectGitBranch).
+	//
+	// Purpose: enables a doctor advisory that fires when the user's
+	// currently-checked-out branch differs from the last-indexed branch,
+	// surfacing the stale-index condition that's silently bitten users
+	// who switch branches between sessions (#1303 root cause).
+	//
+	// Pre-existing rows default to '' meaning "indexed before branch
+	// awareness landed; the next re-index will populate it." The
+	// `pincher index` flow stamps this column unconditionally on
+	// completion so the advisory becomes reliable after one re-index.
+	//
+	// PK widening on symbols/edges/files (Phase 2b — true multi-branch
+	// coexistence) intentionally deferred to a follow-up PR. That
+	// migration requires the v28-style table rebuild + FTS5 vtab
+	// recreate + coordinated query-layer changes; this PR is the safer
+	// stamping-only slice that proves out branch detection on real
+	// pre-release dogfooding before compounding the schema risk.
+	`ALTER TABLE projects ADD COLUMN current_branch TEXT NOT NULL DEFAULT '';`,
 }
 
 // v28RebuildSymbolsCompositePK is the SQL portion of v28 that drops
@@ -2211,6 +2235,14 @@ type Project struct {
 	// stamp it. health uses this to surface re-index recommendations
 	// when extraction or call-resolution rules have evolved.
 	BinaryVersion string `json:"binary_version,omitempty"`
+	// CurrentBranch is the git branch the project was last indexed on
+	// (#1303 Phase 2a, schema v32). Captured via `git rev-parse
+	// --abbrev-ref HEAD` at index time. Empty when the project root
+	// isn't a git working tree; when HEAD is detached, the indexer
+	// falls back to a short commit SHA. Doctor uses this to surface a
+	// stale-index advisory when the user's checked-out branch has
+	// drifted from the last-indexed branch.
+	CurrentBranch string `json:"current_branch,omitempty"`
 }
 
 // SearchResult is a FTS5 match returned by SearchSymbols.
@@ -2244,17 +2276,18 @@ func (s *Store) UpsertProject(p Project) error {
 	// re-walk of the same files is still accurate for them. The full
 	// reaping fix (parent-liveness self-exit) is the other half of #724.
 	_, err := s.db.Exec(`
-		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version)
-		VALUES (?,?,?,?,?,?,?,?,?)
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
 			file_count=excluded.file_count, sym_count=excluded.sym_count, edge_count=excluded.edge_count,
 			binary_version=CASE
 				WHEN excluded.schema_version_at_index >= schema_version_at_index
 				THEN excluded.binary_version ELSE binary_version END,
-			schema_version_at_index=MAX(schema_version_at_index, excluded.schema_version_at_index)`,
+			schema_version_at_index=MAX(schema_version_at_index, excluded.schema_version_at_index),
+			current_branch=excluded.current_branch`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, p.BinaryVersion,
+		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, p.BinaryVersion, p.CurrentBranch,
 	)
 	return err
 }
@@ -2320,8 +2353,8 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 		}
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version)
-		VALUES (?,?,?,?,0,0,0,?,?)
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch)
+		VALUES (?,?,?,?,0,0,0,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
 			-- #1086: COALESCE the existing schema_version_at_index to 0 so
@@ -2338,9 +2371,15 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 			binary_version=CASE
 				WHEN excluded.schema_version_at_index >= COALESCE(schema_version_at_index, 0)
 				THEN excluded.binary_version ELSE binary_version END,
-			schema_version_at_index=MAX(COALESCE(schema_version_at_index, 0), excluded.schema_version_at_index)`,
+			schema_version_at_index=MAX(COALESCE(schema_version_at_index, 0), excluded.schema_version_at_index),
+			-- #1303 Phase 2a: current_branch flips on every UpsertProjectMeta
+			-- (the start-of-Index() call) so the value reflects the branch
+			-- that's about to be indexed, not the prior one. This makes the
+			-- post-checkout-then-reindex doctor advisory accurate even if
+			-- the indexing run crashes midway.
+			current_branch=excluded.current_branch`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		currentSchema, binaryToWrite,
+		currentSchema, binaryToWrite, p.CurrentBranch,
 	)
 	return err
 }
@@ -2430,7 +2469,7 @@ func parseBinaryVersion(s string) ([4]int, bool) {
 func (s *Store) ListProjects() ([]Project, error) {
 	// Reader pool (#51).
 	rows, err := s.ro.Query(
-		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version FROM projects ORDER BY name`)
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -2441,7 +2480,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 		var ts int64
 		var schemaVer sql.NullInt64
 		var binVer sql.NullString
-		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer); err != nil {
+		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer, &p.CurrentBranch); err != nil {
 			return nil, err
 		}
 		p.IndexedAt = time.Unix(ts, 0)
@@ -2516,12 +2555,12 @@ func pathContains(parent, child string) bool {
 func (s *Store) GetProject(id string) (*Project, error) {
 	// Reader pool (#51).
 	row := s.ro.QueryRow(
-		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version FROM projects WHERE id=?`, id)
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch FROM projects WHERE id=?`, id)
 	var p Project
 	var ts int64
 	var schemaVer sql.NullInt64
 	var binVer sql.NullString
-	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer); err == sql.ErrNoRows {
+	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer, &p.CurrentBranch); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
