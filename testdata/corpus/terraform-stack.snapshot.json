@@ -18,7 +18,7 @@
   "files_blocked": 0,
   "files_indexed": 7,
   "files_seen": 7,
-  "schema_version": 27,
+  "schema_version": 28,
   "search_relevance": [
     {
       "corpus": "config",

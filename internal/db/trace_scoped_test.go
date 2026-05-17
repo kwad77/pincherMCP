@@ -146,13 +146,23 @@ func TestGetSymbolScoped_RejectsCrossProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// p-B was the last writer; vanilla GetSymbol returns p-B's row.
+	// Schema v28 (#1231): composite PRIMARY KEY (project_id, id) means
+	// BOTH p-A's row AND p-B's row coexist — same id, two rows. Pre-v28
+	// the bare-id PK forced INSERT OR REPLACE to clobber p-A's row when
+	// p-B wrote; the test below used to assert that bug-behaviour. With
+	// the composite PK fix, scoped lookups return each project's own
+	// row distinctly.
+
+	// Unscoped GetSymbol on a colliding id is now ambiguous — it returns
+	// one of the rows (which one depends on storage order). The exact
+	// row isn't a contract; what matters is that the scoped paths
+	// disambiguate correctly. Just assert a non-nil result.
 	got, err := store.GetSymbol(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || got.Signature != "B" {
-		t.Errorf("unscoped GetSymbol expected last-writer (B); got %+v", got)
+	if got == nil {
+		t.Errorf("unscoped GetSymbol returned nil on colliding id; want one of A or B")
 	}
 
 	// GetSymbolScoped("p-B", id) returns p-B's row.
@@ -164,15 +174,16 @@ func TestGetSymbolScoped_RejectsCrossProject(t *testing.T) {
 		t.Errorf("scoped p-B: expected B's row, got %+v", got)
 	}
 
-	// GetSymbolScoped("p-A", id) returns nil — the row at this ID belongs
-	// to p-B, not p-A. Pre-fix this would have returned B's row to a
-	// caller asking about A.
+	// GetSymbolScoped("p-A", id) now returns A's row (not nil). Pre-v28
+	// it would have returned nil because A's row was clobbered by B's
+	// write; that was the #1231 bug shape on shared DBs. With composite
+	// PK both rows coexist and the scoped lookup picks the right one.
 	got, err = store.GetSymbolScoped("p-A", id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != nil {
-		t.Errorf("scoped p-A: must NOT return B's row; got %+v", got)
+	if got == nil || got.Signature != "A" {
+		t.Errorf("scoped p-A: expected A's row (composite PK preserves it post-v28), got %+v", got)
 	}
 
 	// Empty projectID is a misuse — explicit error so callers don't

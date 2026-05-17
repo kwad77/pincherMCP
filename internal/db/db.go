@@ -1247,7 +1247,121 @@ END;`,
 	CREATE INDEX IF NOT EXISTS idx_session_tool_calls_ts ON session_tool_calls(ts);
 	CREATE INDEX IF NOT EXISTS idx_session_tool_calls_tool_ts ON session_tool_calls(tool, ts);
 	`,
+
+	// v27 → v28: composite PRIMARY KEY (project_id, id) on symbols.
+	//
+	// #1231 ROOT CAUSE: pre-v28 the bare id was the symbols PK.
+	// MakeSymbolID returns "{file_path}::{qualified_name}#{kind}" with
+	// no project scope, so two projects sharing the same relative file
+	// path with the same qualified-name+kind produced colliding rows.
+	// INSERT OR REPLACE silently flipped the row's project_id to the
+	// latest writer. Live shape: pincher-repo's server.go showed 8 of
+	// 75 Methods because sniffer (an older pincher mirror) also
+	// indexed internal/server/server.go and clobbered the 67
+	// pre-existing rows.
+	//
+	// SQLite can't ALTER PRIMARY KEY in place, so the migration
+	// rebuilds the table:
+	//   1. Drop FTS5 triggers (they reference `symbols` directly).
+	//      The vtabs themselves stay (they're independent storage);
+	//      the triggers get re-created from the same ftsCorpusSplitDDL
+	//      that produced them.
+	//   2. Create symbols_new with composite PK (project_id, id).
+	//   3. INSERT INTO symbols_new SELECT * FROM symbols. Cross-
+	//      project ID collisions in the pre-v28 DB are already
+	//      irrecoverable (one project's row WAS overwritten); the
+	//      migration just preserves whatever's there. ON CONFLICT IGNORE
+	//      is defensive against any composite-PK violation discovered
+	//      post-collision-cleanup; in practice the source rows are
+	//      already (id, project_id)-unique because the bare-id PK
+	//      enforced uniqueness on id alone.
+	//   4. DROP + RENAME.
+	//   5. Recreate indexes including the new idx_sym_id for bare-id
+	//      lookup (most byte-offset retrieval paths pass id without
+	//      project scope; without this index the composite-PK lookup
+	//      degrades to a full scan).
+	//   6. Recreate FTS5 triggers via the canonical ftsCorpusSplitDDL
+	//      body — same source of truth the baseline schema uses.
+	//
+	// JOIN sites in db.go / cypher/engine.go are updated in the same
+	// PR to add `AND symbols.project_id = edges.project_id` so cross-
+	// project edge traversal can't surface a different project's
+	// symbol row even when ids collide. Schema is the structural
+	// guard; the JOIN updates are the query-time guard.
+	v28RebuildSymbolsCompositePK + ftsCorpusSplitDDL,
 }
+
+// v28RebuildSymbolsCompositePK is the SQL portion of v28 that drops
+// FTS5 triggers + vtabs, rebuilds the symbols table with a composite
+// PRIMARY KEY (project_id, id), recreates indexes, then leaves the
+// FTS5 vtabs + triggers + populate-from-symbols work to a concat of
+// ftsCorpusSplitDDL (the canonical source of truth — see line ~1854).
+// Splitting it this way means the FTS5 setup never drifts from the
+// migrate-on-fresh-DB path: both run the same DDL.
+const v28RebuildSymbolsCompositePK = `
+	DROP TRIGGER IF EXISTS sym_fts_corpus_insert;
+	DROP TRIGGER IF EXISTS sym_fts_corpus_delete;
+	DROP TRIGGER IF EXISTS sym_fts_corpus_update;
+	-- Drop FTS5 vtabs entirely. Pre-v28 entries reference the old
+	-- symbols table's rowids; after the rebuild those rowids no
+	-- longer match. ftsCorpusSplitDDL (appended) recreates fresh
+	-- vtabs in external-content mode tied to the new symbols table.
+	DROP TABLE IF EXISTS symbols_code_fts;
+	DROP TABLE IF EXISTS symbols_config_fts;
+	DROP TABLE IF EXISTS symbols_docs_fts;
+
+	CREATE TABLE symbols_new (
+		id             TEXT    NOT NULL,
+		project_id     TEXT    NOT NULL REFERENCES projects(id),
+		file_path      TEXT    NOT NULL,
+		name           TEXT    NOT NULL,
+		qualified_name TEXT    NOT NULL,
+		kind           TEXT    NOT NULL,
+		language       TEXT    NOT NULL,
+		start_byte     INTEGER NOT NULL,
+		end_byte       INTEGER NOT NULL,
+		start_line     INTEGER NOT NULL,
+		end_line       INTEGER NOT NULL,
+		signature      TEXT,
+		return_type    TEXT,
+		docstring      TEXT,
+		parent         TEXT,
+		complexity     INTEGER DEFAULT 0,
+		is_exported    INTEGER DEFAULT 0,
+		is_test        INTEGER DEFAULT 0,
+		is_entry_point INTEGER DEFAULT 0,
+		file_hash      TEXT,
+		extraction_confidence REAL NOT NULL DEFAULT 1.0,
+		symbol_id      TEXT GENERATED ALWAYS AS (id) VIRTUAL,
+		PRIMARY KEY (project_id, id)
+	);
+
+	INSERT OR IGNORE INTO symbols_new (
+		id, project_id, file_path, name, qualified_name, kind, language,
+		start_byte, end_byte, start_line, end_line,
+		signature, return_type, docstring, parent,
+		complexity, is_exported, is_test, is_entry_point, file_hash,
+		extraction_confidence
+	)
+	SELECT
+		id, project_id, file_path, name, qualified_name, kind, language,
+		start_byte, end_byte, start_line, end_line,
+		signature, return_type, docstring, parent,
+		complexity, is_exported, is_test, is_entry_point, file_hash,
+		extraction_confidence
+	FROM symbols;
+
+	DROP TABLE symbols;
+	ALTER TABLE symbols_new RENAME TO symbols;
+
+	CREATE INDEX IF NOT EXISTS idx_sym_project ON symbols(project_id);
+	CREATE INDEX IF NOT EXISTS idx_sym_id      ON symbols(id);
+	CREATE INDEX IF NOT EXISTS idx_sym_file    ON symbols(project_id, file_path);
+	CREATE INDEX IF NOT EXISTS idx_sym_kind    ON symbols(project_id, kind);
+	CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(project_id, name);
+	CREATE INDEX IF NOT EXISTS idx_sym_qn      ON symbols(project_id, qualified_name);
+	CREATE INDEX IF NOT EXISTS idx_sym_qnkind  ON symbols(project_id, qualified_name, kind);
+`
 
 // migrate applies the baseline schema then runs any pending numbered migrations.
 //
@@ -1828,8 +1942,15 @@ CREATE TABLE IF NOT EXISTS projects (
 
 -- Stable ID format: "{file_path}::{qualified_name}#{kind}"
 -- Stable across re-indexing so agents can persist symbol references.
+-- v28 (#1231): primary key is COMPOSITE (project_id, id). Pre-v28 the
+-- bare id was PK, which collided across projects when two repos share
+-- the same relative file path containing the same qualified-name +
+-- kind. INSERT OR REPLACE silently flipped the row's project_id to
+-- the latest writer; ~89% of one file's methods vanished from queries
+-- scoped to the original project. Composite PK eliminates the collision
+-- structurally — same id in two projects is two rows.
 CREATE TABLE IF NOT EXISTS symbols (
-    id             TEXT    PRIMARY KEY,
+    id             TEXT    NOT NULL,
     project_id     TEXT    NOT NULL REFERENCES projects(id),
     file_path      TEXT    NOT NULL,
     name           TEXT    NOT NULL,
@@ -1856,9 +1977,17 @@ CREATE TABLE IF NOT EXISTS symbols (
     is_test        INTEGER DEFAULT 0,
     is_entry_point INTEGER DEFAULT 0,
 
-    file_hash      TEXT
+    file_hash      TEXT,
+    PRIMARY KEY (project_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_sym_project ON symbols(project_id);
+-- v28: bare-id lookup index. Most byte-offset retrieval paths
+-- (symbol, context) pass the id without a project scope because
+-- callers cache IDs across sessions. Without this index the composite-
+-- PK lookup degrades to a full scan on bare-id queries. The index
+-- covers the symbol-id-only access pattern; cross-project resolution
+-- still goes through the explicit project_id filter on top.
+CREATE INDEX IF NOT EXISTS idx_sym_id      ON symbols(id);
 CREATE INDEX IF NOT EXISTS idx_sym_file    ON symbols(project_id, file_path);
 CREATE INDEX IF NOT EXISTS idx_sym_kind    ON symbols(project_id, kind);
 CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(project_id, name);
@@ -2881,7 +3010,8 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 		       s.extraction_confidence
 		FROM symbols s
 		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
-		ORDER BY cnt DESC LIMIT ?`, projectID, limit)
+		WHERE s.project_id=?
+		ORDER BY cnt DESC LIMIT ?`, projectID, projectID, limit)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3933,8 +4063,8 @@ func (s *Store) FilesWithEdgesToFile(projectID, target string) ([]string, error)
 	rows, err := s.ro.Query(`
 		SELECT DISTINCT s_from.file_path
 		FROM edges e
-		JOIN symbols s_from ON e.from_id = s_from.id
-		JOIN symbols s_to   ON e.to_id   = s_to.id
+		JOIN symbols s_from ON e.from_id = s_from.id AND e.project_id = s_from.project_id
+		JOIN symbols s_to   ON e.to_id   = s_to.id   AND e.project_id = s_to.project_id
 		WHERE e.project_id = ?
 		  AND s_to.file_path = ?
 		  AND s_from.file_path != s_to.file_path`,
