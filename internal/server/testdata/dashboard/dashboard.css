@@ -121,6 +121,14 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .entropy-top{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-top:14px;margin-bottom:6px}
 .entropy-rank{list-style:decimal;padding-left:24px;margin:0;font-size:13px;line-height:1.7}
 .entropy-rank code{background:#0b1018;padding:1px 6px;border-radius:4px;font-size:12px}
+.backend-status{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.backend-chip{display:inline-flex;align-items:baseline;gap:6px;font-size:11px;padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--surface);font-variant:tabular-nums}
+.backend-chip-label{font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+.backend-chip-value{font-weight:500}
+.backend-chip-on{border-color:rgba(57,211,83,.4)}
+.backend-chip-on .backend-chip-value{color:var(--green)}
+.backend-chip-off .backend-chip-value{color:var(--muted)}
+.backend-chip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
 
 /* ── Project cards ── */
 .proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s;position:relative}
