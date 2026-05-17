@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -53,6 +54,26 @@ type Indexer struct {
 	mu       sync.Mutex
 	active   map[string]bool         // projectID → indexing in progress
 	progress sync.Map                // projectID → *IndexProgress
+
+	// currentBranchByProject — populated at Index() start with the
+	// detected git branch and consumed by flushBatch to stamp
+	// Symbol.Branch / Edge.Branch on every per-file write (#1303
+	// Phase 2a). Cleared in the same defer that drops idx.active.
+	// Concurrent Index() runs on different projects each have their
+	// own entry; the sync.Map handles the cross-goroutine read of
+	// projectID's value during the per-file flush goroutines.
+	currentBranchByProject sync.Map // projectID → string
+
+	// branchCacheByProject caches the result of detectGitBranch per
+	// project for branchCacheTTL so the Watch() poll cycle doesn't
+	// fork `git rev-parse` every 2 seconds (#1303 Phase 2a +
+	// regression caught by TestIndex_NoChange_SkipsResolvePass —
+	// the subprocess spawn adds ~100 allocations per tick, blowing
+	// the 800-alloc budget the watcher gates on). Branches change
+	// rarely; a 30-second TTL means the doctor advisory still picks
+	// up checkout-without-reindex within one user-perceivable poll
+	// of the moment they re-run any pincher tool.
+	branchCacheByProject sync.Map // projectID → branchCacheEntry
 
 	// maxFileSize is the per-file byte ceiling. Files larger than this are
 	// recorded as "file_too_large" extraction failures and skipped without
@@ -238,6 +259,23 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	projectID := db.ProjectIDFromPath(absPath)
 	projectName := db.ProjectNameFromPath(absPath)
 
+	// #1303 Phase 2a: detect the git branch once per Index() call. The
+	// value flows into projects.current_branch (via UpsertProjectMeta
+	// below and UpsertProject at the tail) AND onto every Symbol/Edge
+	// stamped by flushBatch via the per-project cache. Empty when the
+	// project root isn't a git working tree; detached-HEAD falls back
+	// to a short commit SHA so the value stays meaningful for diagnostics.
+	//
+	// detectGitBranchCached fronts the subprocess spawn with a 30s
+	// per-project TTL so the Watch() poll cycle (every 2s active /
+	// 30s idle) doesn't allocate a `git rev-parse` per tick on
+	// no-change runs. force=true bypasses the cache so a manual
+	// `pincher index --force` after a branch switch picks up the
+	// new branch immediately rather than waiting out the TTL.
+	currentBranch := idx.detectGitBranchCached(projectID, absPath, force)
+	idx.currentBranchByProject.Store(projectID, currentBranch)
+	defer idx.currentBranchByProject.Delete(projectID)
+
 	// #1163 traces half (indexer scope): one OTLP span per index pass.
 	// Uses the global tracer provider — when no OTLP endpoint is
 	// configured, this is a zero-allocation no-op pair. The span's
@@ -343,6 +381,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		Name:          projectName,
 		IndexedAt:     start,
 		BinaryVersion: priorBinaryVersion,
+		CurrentBranch: currentBranch,
 	}); err != nil {
 		return nil, fmt.Errorf("upsert project: %w", err)
 	}
@@ -927,6 +966,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		SymCount:      dbSyms,
 		EdgeCount:     dbEdges,
 		BinaryVersion: idx.binaryVersion,
+		CurrentBranch: currentBranch,
 	}); err != nil {
 		slog.Warn("pincher.index.update_project.err", "err", err)
 	}
@@ -1144,6 +1184,25 @@ func (idx *Indexer) flushBuffers(projectID string, syms *[]db.Symbol, edges *[]d
 }
 
 func (idx *Indexer) flushBatch(projectID string, syms []db.Symbol, edges []db.Edge) error {
+	// #1303 Phase 2a: stamp the current git branch on every Symbol/Edge
+	// before upsert. Looked up from the per-project cache populated at
+	// Index() start; flushBatch is the single chokepoint for per-file
+	// writes so stamping here covers every extractor without threading
+	// branch through their result types. Resolve-pass edges go through
+	// their own paths and are stamped where they call BulkUpsertEdges.
+	branch := idx.currentBranchFor(projectID)
+	if branch != "" {
+		for i := range syms {
+			if syms[i].Branch == "" {
+				syms[i].Branch = branch
+			}
+		}
+		for i := range edges {
+			if edges[i].Branch == "" {
+				edges[i].Branch = branch
+			}
+		}
+	}
 	// Detect file moves before upserting (non-fatal: a failure just means
 	// stale IDs won't redirect, but indexing still succeeds).
 	if len(syms) > 0 {
@@ -1163,6 +1222,98 @@ func (idx *Indexer) flushBatch(projectID string, syms []db.Symbol, edges []db.Ed
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte-offset source retrieval
 // ─────────────────────────────────────────────────────────────────────────────
+
+// branchCacheEntry is the per-project cache value for the git-branch
+// lookup used by detectGitBranchCached. #1303 Phase 2a.
+type branchCacheEntry struct {
+	branch    string
+	cachedAt  time.Time
+}
+
+const branchCacheTTL = 30 * time.Second
+
+// detectGitBranchCached wraps detectGitBranch with a 30-second
+// per-project TTL so the Watch() poll cycle doesn't allocate a
+// subprocess per tick. The TTL is short enough that a user who
+// switches branches and runs any pincher tool within 30s sees the
+// branch-drift advisory fire promptly. #1303 Phase 2a regression
+// fix for TestIndex_NoChange_SkipsResolvePass.
+//
+// bypass=true skips the cache and forces a fresh git rev-parse —
+// used by `--force` index calls so a user who just ran
+// `git checkout` followed by `pincher index --force <path>` sees
+// the new branch stamped immediately rather than waiting out the
+// 30s TTL. Watcher ticks and incremental re-index runs pass
+// bypass=false to keep the alloc budget.
+func (idx *Indexer) detectGitBranchCached(projectID, absPath string, bypass bool) string {
+	if !bypass {
+		if v, ok := idx.branchCacheByProject.Load(projectID); ok {
+			if e, ok := v.(branchCacheEntry); ok && time.Since(e.cachedAt) < branchCacheTTL {
+				return e.branch
+			}
+		}
+	}
+	branch := detectGitBranch(absPath)
+	idx.branchCacheByProject.Store(projectID, branchCacheEntry{branch: branch, cachedAt: time.Now()})
+	return branch
+}
+
+// currentBranchFor returns the git branch cached for projectID by the
+// in-flight Index() call, or "" when no Index() is active for that
+// project (e.g. legacy callers that wrote symbols outside the Index()
+// dispatcher — none exist in the current tree, but the empty-fallback
+// keeps the behaviour conservative). #1303 Phase 2a.
+func (idx *Indexer) currentBranchFor(projectID string) string {
+	v, ok := idx.currentBranchByProject.Load(projectID)
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// detectGitBranch returns the symbolic branch name for the working
+// tree at absPath, or a short commit SHA when HEAD is detached, or
+// "" when the directory isn't a git working tree. Wraps `git
+// rev-parse --abbrev-ref HEAD` with a 2s timeout — pincher's index
+// path runs sync so we cap the worst case rather than block a
+// re-index forever on a hung git process. #1303 Phase 2a.
+//
+// Reasoning for the fallback shape:
+//   - Symbolic branch (`main`, `feat/foo`): primary case, what the
+//     advisory compares against.
+//   - Detached HEAD: `--abbrev-ref` returns the literal "HEAD" in this
+//     case, which is useless. We re-run `git rev-parse --short HEAD`
+//     to get a content-addressed identifier so the advisory at least
+//     distinguishes "indexed at SHA abc1234" from "indexed at SHA
+//     def5678" — the user can act on that even without a branch name.
+//   - Not a git repo: both commands fail; return "". The advisory
+//     short-circuits the comparison when either side is empty.
+//
+// Exec failures (git not on PATH, permission denied) all collapse to
+// "" — pincher never refuses to index a non-git directory and never
+// flips the value into a confusing pseudo-branch like "<no-git>".
+func detectGitBranch(absPath string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "git", "-C", absPath, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch != "" && branch != "HEAD" {
+		return branch
+	}
+	// Detached HEAD — fall back to short SHA.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	sha, err := exec.CommandContext(ctx2, "git", "-C", absPath, "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(sha))
+}
 
 // ReadSymbolSource retrieves the source code for a symbol using O(1) byte-offset seeking.
 // This is the core pincherMCP innovation: no re-parsing, no line scanning.

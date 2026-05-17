@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -263,8 +265,99 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*Do
 			r.Advisories = append(r.Advisories, a)
 		}
 	}
+	// #1303 Phase 2a: branch-drift advisory. Mirrors the MCP doctor's
+	// logic in internal/server/admin.go — the two copies must stay
+	// behaviourally identical (per CLAUDE.md bounded-duplication
+	// convention).
+	if plist, err := store.ListProjects(); err == nil {
+		if a := branchDriftAdvisory(plist); a != "" {
+			r.Advisories = append(r.Advisories, a)
+		}
+	}
 
 	return r, nil
+}
+
+// branchDriftAdvisory mirrors internal/server/admin.go's copy.
+// Bounded-duplication convention documented on largeDBAdvisory above.
+func branchDriftAdvisory(projects []db.Project) string {
+	const perProjectTimeout = 1 * time.Second
+	const maxProjectsToProbe = 30
+	const maxToShow = 5
+
+	type drift struct {
+		Name        string
+		LastIndexed string
+		OnDisk      string
+	}
+	var drifts []drift
+
+	probed := 0
+	for _, p := range projects {
+		if probed >= maxProjectsToProbe {
+			break
+		}
+		if p.CurrentBranch == "" {
+			continue
+		}
+		probed++
+		ctx, cancel := context.WithTimeout(context.Background(), perProjectTimeout)
+		out, err := exec.CommandContext(ctx, "git", "-C", p.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		cancel()
+		if err != nil {
+			continue
+		}
+		onDisk := strings.TrimSpace(string(out))
+		if onDisk == "" || onDisk == p.CurrentBranch {
+			continue
+		}
+		if onDisk == "HEAD" {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), perProjectTimeout)
+			sha, err := exec.CommandContext(ctx2, "git", "-C", p.Path, "rev-parse", "--short", "HEAD").Output()
+			cancel2()
+			if err != nil {
+				continue
+			}
+			onDisk = strings.TrimSpace(string(sha))
+			if onDisk == p.CurrentBranch {
+				continue
+			}
+		}
+		drifts = append(drifts, drift{Name: p.Name, LastIndexed: p.CurrentBranch, OnDisk: onDisk})
+	}
+
+	if len(drifts) == 0 {
+		return ""
+	}
+
+	sort.Slice(drifts, func(i, j int) bool { return drifts[i].Name < drifts[j].Name })
+
+	var b strings.Builder
+	b.WriteString("Branch drift on ")
+	if len(drifts) == 1 {
+		b.WriteString("1 project: ")
+	} else {
+		fmt.Fprintf(&b, "%d projects: ", len(drifts))
+	}
+	show := drifts
+	extra := 0
+	if len(show) > maxToShow {
+		extra = len(show) - maxToShow
+		show = show[:maxToShow]
+	}
+	for i, d := range show {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s (indexed=%s, on-disk=%s)", d.Name, d.LastIndexed, d.OnDisk)
+	}
+	if extra > 0 {
+		fmt.Fprintf(&b, "; +%d more", extra)
+	}
+	b.WriteString(". The on-disk branch differs from the one the project was last indexed against, " +
+		"so symbol byte-offsets may point at the wrong spans for the current working tree. " +
+		"Run `pincher index <path>` against each drifted project to refresh. See #1303.")
+	return b.String()
 }
 
 // toolMixStuckAdvisory mirrors internal/server/admin.go's copy.

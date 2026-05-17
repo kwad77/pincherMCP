@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -132,6 +133,113 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// branchDriftAdvisory returns a human-readable advisory when one or
+// more projects' on-disk git branch has drifted from the branch they
+// were last indexed against. #1303 Phase 2a. The mismatch is the
+// silent-stale-results footgun the column was added to catch: index
+// against branch `main`, check out `feat/foo`, query — pincher returns
+// `main`'s symbol byte-offsets, which point at the wrong spans in the
+// `feat/foo` working tree.
+//
+// Lookup is per-project `git rev-parse --abbrev-ref HEAD` with a 1s
+// per-project timeout, capped at the first 30 projects so a busy
+// install doesn't slow the doctor query. The cap matches the spirit
+// of payloadOutlierAdvisory's bounded scan — 30 covers every real
+// install, anything bigger is the user-pincher dogfood case where
+// re-running doctor is acceptable.
+//
+// Projects with empty `current_branch` (indexed before #1303 Phase 2a
+// landed) are skipped — re-index will populate the value and the
+// advisory becomes reliable. Projects whose on-disk path isn't a git
+// repo are also skipped (the rev-parse fails and we have nothing to
+// compare).
+//
+// Output: one line per drifted project, sorted by project name for
+// deterministic snapshot tests, capped at 5 in the rendered output
+// with a "+N more" suffix when there are more.
+func branchDriftAdvisory(projects []db.Project) string {
+	const perProjectTimeout = 1 * time.Second
+	const maxProjectsToProbe = 30
+	const maxToShow = 5
+
+	type drift struct {
+		Name        string
+		LastIndexed string
+		OnDisk      string
+	}
+	var drifts []drift
+
+	probed := 0
+	for _, p := range projects {
+		if probed >= maxProjectsToProbe {
+			break
+		}
+		if p.CurrentBranch == "" {
+			continue // pre-#1303-Phase-2a row; skip
+		}
+		probed++
+		ctx, cancel := context.WithTimeout(context.Background(), perProjectTimeout)
+		out, err := exec.CommandContext(ctx, "git", "-C", p.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		cancel()
+		if err != nil {
+			continue
+		}
+		onDisk := strings.TrimSpace(string(out))
+		if onDisk == "" || onDisk == p.CurrentBranch {
+			continue
+		}
+		// Detached HEAD: --abbrev-ref returns "HEAD". Fall back to
+		// the short SHA so the comparison against indexer-detected
+		// "abc1234" still works.
+		if onDisk == "HEAD" {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), perProjectTimeout)
+			sha, err := exec.CommandContext(ctx2, "git", "-C", p.Path, "rev-parse", "--short", "HEAD").Output()
+			cancel2()
+			if err != nil {
+				continue
+			}
+			onDisk = strings.TrimSpace(string(sha))
+			if onDisk == p.CurrentBranch {
+				continue
+			}
+		}
+		drifts = append(drifts, drift{Name: p.Name, LastIndexed: p.CurrentBranch, OnDisk: onDisk})
+	}
+
+	if len(drifts) == 0 {
+		return ""
+	}
+
+	sort.Slice(drifts, func(i, j int) bool { return drifts[i].Name < drifts[j].Name })
+
+	var b strings.Builder
+	b.WriteString("Branch drift on ")
+	if len(drifts) == 1 {
+		b.WriteString("1 project: ")
+	} else {
+		fmt.Fprintf(&b, "%d projects: ", len(drifts))
+	}
+	show := drifts
+	extra := 0
+	if len(show) > maxToShow {
+		extra = len(show) - maxToShow
+		show = show[:maxToShow]
+	}
+	for i, d := range show {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s (indexed=%s, on-disk=%s)", d.Name, d.LastIndexed, d.OnDisk)
+	}
+	if extra > 0 {
+		fmt.Fprintf(&b, "; +%d more", extra)
+	}
+	b.WriteString(". The on-disk branch differs from the one the project was last indexed against, " +
+		"so symbol byte-offsets may point at the wrong spans for the current working tree. " +
+		"Run `pincher index <path>` against each drifted project to refresh. See #1303.")
+	return b.String()
 }
 
 // walBloatAdvisory returns a human-readable health advisory when the
@@ -616,6 +724,16 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 		if a := toolMixStuckAdvisory(tallyRows); a != "" {
 			advisories = append(advisories, a)
 		}
+	}
+	// #1303 Phase 2a: branch-drift advisory. For each project whose
+	// `current_branch` (stamped at index time) differs from the branch
+	// currently checked out on disk, surface a re-index prompt. Catches
+	// the silent "I switched branches and forgot to re-index → stale
+	// symbol byte-offsets" failure mode. Walks the full project list
+	// (not the top-truncated one) so a small-by-symbol-count project
+	// on a drifted branch still surfaces.
+	if a := branchDriftAdvisory(plist); a != "" {
+		advisories = append(advisories, a)
 	}
 	data["advisories"] = advisories
 
