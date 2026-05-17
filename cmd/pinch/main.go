@@ -274,6 +274,17 @@ func main() {
 	// keeps serving. The --no-stdio without --http combination is rejected
 	// earlier in startup, before DB open, so the binary fails fast with a
 	// clear message regardless of DB state.
+	// #1163: graceful OTLP-tracer shutdown so the BatchSpanProcessor's
+	// final spans reach the collector before this process exits. Safe
+	// when OTLP is unconfigured (no-op). 5s timeout bounds the shutdown
+	// — pincher should not hang on a slow / unreachable collector when
+	// the user just pressed Ctrl-C.
+	defer func() {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelShutdown()
+		_ = srv.ShutdownTracer(shutdownCtx)
+	}()
+
 	if *noStdio {
 		<-ctx.Done()
 		return

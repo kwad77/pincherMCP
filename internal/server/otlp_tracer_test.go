@@ -143,6 +143,34 @@ func TestWithTracing_HTTPInheritsRequestID(t *testing.T) {
 	}
 }
 
+// ShutdownTracer must be safe on the default (no-op) tracer + on the
+// nil-Server path. Both cover the early-return branches.
+func TestShutdownTracer_NoOpAndNilPaths(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// Default newTestServer has the no-op tracer (no env var) — no exporter,
+	// so Shutdown returns nil without doing anything.
+	if err := srv.ShutdownTracer(context.Background()); err != nil {
+		t.Errorf("ShutdownTracer on no-op tracer should return nil; got %v", err)
+	}
+	// Nil-server path.
+	var nilSrv *Server
+	if err := nilSrv.ShutdownTracer(context.Background()); err != nil {
+		t.Errorf("ShutdownTracer on nil server should return nil; got %v", err)
+	}
+}
+
+// ShutdownTracer on a wired tracer flushes via ForceFlush + Shutdown.
+// Uses a real SDK provider (no exporter) so the Shutdown actually has
+// state to flush — covers the Shutdown happy path.
+func TestShutdownTracer_RealProvider(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rec := installRecorder(t, srv) // installs a real SDK provider behind the tracer
+	_ = rec
+	if err := srv.ShutdownTracer(context.Background()); err != nil {
+		t.Errorf("ShutdownTracer with real provider returned %v; want nil", err)
+	}
+}
+
 func attrMap(kvs []attribute.KeyValue) map[string]any {
 	out := make(map[string]any, len(kvs))
 	for _, kv := range kvs {

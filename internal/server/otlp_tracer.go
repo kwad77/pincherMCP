@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -117,15 +116,17 @@ func newOTLPTracer(version string) *pincherTracer {
 	}
 }
 
-// Tracer returns the embedded tracer. Always non-nil after newOTLPTracer.
-func (t *pincherTracer) Tracer() trace.Tracer { return t.tracer }
-
 // Enabled reports whether the tracer is wired to a real OTLP exporter
-// (vs the no-op fallback). Drives the traces_otlp capability advertisement.
+// (vs the no-op fallback). Drives the traces_otlp capability advertisement
+// AND the health-tool observability-surface render. The only external
+// consumers; the embedded tracer is reached via tracerOrNoop().
 func (t *pincherTracer) Enabled() bool { return t.provider != nil }
 
-// Shutdown flushes pending spans. Called from Server.Stop / signal
-// handlers; safe to call when the exporter is nil (no-op tracer).
+// Shutdown flushes pending spans then closes the exporter. Safe to
+// call when the exporter is nil (no-op tracer / unconfigured) — the
+// nil-guard makes the cmd/pinch defer site unconditional. Without
+// this call, the BatchSpanProcessor's final spans may not reach the
+// collector before the process exits.
 func (t *pincherTracer) Shutdown(ctx context.Context) error {
 	if t == nil || t.provider == nil {
 		return nil
@@ -134,6 +135,18 @@ func (t *pincherTracer) Shutdown(ctx context.Context) error {
 		t.provider.ForceFlush(ctx),
 		t.provider.Shutdown(ctx),
 	)
+}
+
+// ShutdownTracer flushes pending OTLP spans then closes the exporter.
+// Safe to call when no OTLP endpoint is configured (the no-op tracer
+// path returns nil). Called from cmd/pinch's signal-shutdown defer so
+// the BatchSpanProcessor's final spans reach the collector before
+// the process exits.
+func (s *Server) ShutdownTracer(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return s.tracer.Shutdown(ctx)
 }
 
 // withTracing wraps a tool handler in a per-tool-call OTLP span.
@@ -211,11 +224,3 @@ func (s *Server) tracerOrNoop() trace.Tracer {
 	return noopTracer
 }
 
-// formatOTLPEndpoint is a small helper used by log lines; kept here so
-// the format string lives next to the env-var contract it documents.
-func formatOTLPEndpoint(raw string) string {
-	if raw == "" {
-		return "(disabled — set OTEL_EXPORTER_OTLP_ENDPOINT)"
-	}
-	return fmt.Sprintf("OTLP traces → %s", raw)
-}
