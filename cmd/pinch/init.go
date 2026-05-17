@@ -30,6 +30,7 @@ func runInitCLI(args []string) {
 	dataDir := fs.String("data-dir", "", "Override data directory (used to discover the running HTTP dashboard URL)")
 	targetFlag := fs.String("target", "claude", "Editor target: "+strings.Join(pinit.TargetNames(), ", "))
 	noHook := fs.Bool("no-hook", false, "(claude target only) Skip writing the .claude/settings.json PreToolUse hook. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
+	gitHooks := fs.Bool("git-hooks", false, "Install post-checkout / post-merge / post-rewrite git hooks into .git/hooks so branch switches and rebases trigger an eager reindex (#1261). Pincher-managed hooks carry a marker comment; pre-existing non-pincher hooks are skipped unless --force is set.")
 	quiet := fs.Bool("quiet", false, "Suppress the per-language extraction-tier profile printed after the wiring step (#631). The wiring itself still runs.")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher init [--target=NAME] [--global] [--dry-run] [--force]")
@@ -44,7 +45,6 @@ func runInitCLI(args []string) {
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
-	_ = force
 
 	out := os.Stdout
 	cwd, err := os.Getwd()
@@ -73,6 +73,17 @@ func runInitCLI(args []string) {
 				fmt.Fprintf(os.Stderr, "pincher init: hook install: %v\n", err)
 				os.Exit(1)
 			}
+		}
+	}
+
+	// #1261: git hooks are independent of target — install once when
+	// requested, regardless of which editor/agent rules files were
+	// written. --global skips them since hooks live in .git/hooks/
+	// (per-repo, not per-user).
+	if *gitHooks && !*global {
+		if err := installGitHooks(out, cwd, *dryRun, *force); err != nil {
+			fmt.Fprintf(os.Stderr, "pincher init: git-hooks install: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
