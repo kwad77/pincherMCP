@@ -291,3 +291,44 @@ func TestBench_FileBytesAsTokens_MissingFile(t *testing.T) {
 		t.Errorf("fileBytesAsTokens(missing) = %d, want 0", got)
 	}
 }
+
+// TestBench_MatchProjectByName (#1412) — bench --project NAME (not
+// just exact ID) resolves via matchProject. Pre-fix bench was the
+// only project-arg subcommand requiring literal ID, breaking the
+// canonical hygiene-tool family (verify/doctor/bench) for any agent
+// that already had the project name from `list`.
+//
+// Test exercises matchProject directly with a realistic shape: ID
+// is a stable path, name is the basename. Asserts that the name
+// alone resolves to the project's ID — the resolution layer the
+// bench CLI hooks into pre-execution.
+func TestBench_MatchProjectByName(t *testing.T) {
+	projects := []db.Project{
+		{ID: `d:\claudecode\pincher-repo`, Name: "pincher-repo"},
+		{ID: `d:\codex`, Name: "Codex"},
+	}
+
+	// Exact name match — the case that used to fail at the bench
+	// boundary because bench passed the raw string straight to a
+	// stable-ID lookup.
+	matches, status := matchProject(projects, "pincher-repo")
+	if status != matchExact {
+		t.Fatalf("name match status = %v, want matchExact", status)
+	}
+	if len(matches) != 1 || matches[0].ID != `d:\claudecode\pincher-repo` {
+		t.Fatalf("name match resolved to %v, want pincher-repo's full ID", matches)
+	}
+
+	// Exact ID match still works (back-compat: pre-#1412 invocations
+	// passing the full ID must keep behaving).
+	matches, status = matchProject(projects, `d:\claudecode\pincher-repo`)
+	if status != matchExact {
+		t.Errorf("exact-ID status = %v, want matchExact", status)
+	}
+
+	// Unknown match surfaces matchNone so bench can refuse with a
+	// fail-loud error instead of silently picking the largest.
+	if _, status := matchProject(projects, "definitely-not-a-real-project"); status != matchNone {
+		t.Errorf("nonexistent match status = %v, want matchNone", status)
+	}
+}
