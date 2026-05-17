@@ -654,6 +654,20 @@ The cursor target preserves any user-edited YAML frontmatter (`description`, `gl
 
 After writing, prints a short next-steps recipe + the URL of any running pincher HTTP dashboard discovered via the v11 sessions table.
 
+### `pincher init --git-hooks`
+
+```bash
+pincher init --git-hooks                  # install post-checkout / post-merge / post-rewrite
+pincher init --git-hooks --dry-run        # preview what would be written
+pincher init --git-hooks --force          # replace non-pincher hooks (backed up to .pincher-backup)
+```
+
+Installs git hooks into `.git/hooks/` so branch switches, fast-forward merges, and rebases trigger an eager reindex (#1261 §1). Without these, the `Watch()` poller catches the changes one diff-pass at a time, leaving a window where the index reflects a mix of both branches.
+
+Each hook carries the `pincher.io/managed` marker so future runs can safely replace pincher-managed hooks without clobbering hand-written user hooks. The hook is a small POSIX sh script that calls `pincher index "$REPO_ROOT" --force` in the background — git operations don't block, and the indexer fires as soon as `git checkout` returns. `command -v pincher` guard means a missing pincher binary never breaks the user's git workflow.
+
+§2 (schema `branch` column for branch-aware queries — `search`/`query` filterable by branch dimension) deferred to its own issue.
+
 ### `pincher project`
 
 Surface the HTTP `DELETE /v1/projects` and the `list` MCP tool as CLI verbs so users on the stdio binary don't need a SQL or curl one-liner.
