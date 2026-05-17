@@ -1342,6 +1342,33 @@ END;`,
 	// returned a superset that disagreed with the CTE path (#1162
 	// measurement caught this).
 	`ALTER TABLE closure ADD COLUMN via_kind TEXT NOT NULL DEFAULT ''`,
+
+	// v30 → v31: branch column on symbols / edges / files / pending_edges
+	// for the branch-aware index invalidation work (#1303 Phase 1).
+	// Pre-fix the index was single-branch — switching branches required
+	// a full re-index, and the post-checkout hook from #1261 §1 fired
+	// unconditionally even for same-branch fresh checkouts.
+	//
+	// Phase 1 (this migration): add the column with DEFAULT '' so every
+	// existing row carries the empty-branch sentinel meaning "indexed
+	// before branch awareness landed; treat as current branch for back-
+	// compat queries." The indexer doesn't yet stamp branch — that's
+	// Phase 2's work. The column existing now means subsequent re-
+	// indexes can start populating it without another schema migration.
+	//
+	// PRIMARY KEY / UNIQUE constraints intentionally NOT widened in
+	// this migration. Multi-branch coexistence (Phase 2) requires
+	// rebuilding the symbols / edges / files tables with branch in the
+	// composite key, plus rebuilding FTS5 vtabs that depend on the
+	// symbols rowids. That's the v28-PK-rebuild shape and is its own
+	// PR per the issue's design choice. Same-branch-overwrite stays
+	// the semantic until Phase 2.
+	`
+	ALTER TABLE symbols       ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+	ALTER TABLE edges         ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files         ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+	ALTER TABLE pending_edges ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+	`,
 }
 
 // v28RebuildSymbolsCompositePK is the SQL portion of v28 that drops
@@ -2111,6 +2138,15 @@ type Symbol struct {
 	IsEntryPoint           bool
 	FileHash               string
 	ExtractionConfidence   float64 // 1.0 = AST-exact (Go); <1.0 = regex-approximate
+	// Branch is the git branch the symbol was extracted on, captured
+	// from `git rev-parse --abbrev-ref HEAD` at index time. Empty
+	// when the project root isn't a git working tree, when the
+	// indexer ran before #1303 Phase 2 wired branch stamping, or when
+	// HEAD is detached (the indexer falls back to the commit SHA in
+	// that case — Phase 2's call). #1303 Phase 1: column exists but
+	// the indexer doesn't populate it yet; all rows carry '' until
+	// Phase 2 lands.
+	Branch                 string
 }
 
 // MakeSymbolID produces the stable, human-readable symbol ID.
@@ -2135,6 +2171,11 @@ type Edge struct {
 	// "resolve_pass" so a project-wide DELETE-then-INSERT can atomically
 	// replace cross-file output without nuking per-file edges.
 	Source string
+	// Branch is the git branch the edge was emitted on. Empty until
+	// #1303 Phase 2 wires index-time branch stamping. Phase 2 will
+	// widen the UNIQUE constraint to include branch so the same
+	// (from_id, to_id, kind) tuple can coexist across branches.
+	Branch string
 }
 
 // Project summarises an indexed repository.
@@ -2807,8 +2848,8 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 			 start_byte, end_byte, start_line, end_line,
 			 signature, return_type, docstring, parent,
 			 complexity, is_exported, is_test, is_entry_point, file_hash,
-			 extraction_confidence)
-		VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?)`)
+			 extraction_confidence, branch)
+		VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?)`)
 		if err != nil {
 			return err
 		}
@@ -2824,7 +2865,7 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 				sym.StartByte, sym.EndByte, sym.StartLine, sym.EndLine,
 				ns(sym.Signature), ns(sym.ReturnType), ns(sym.Docstring), ns(sym.Parent),
 				sym.Complexity, bi(sym.IsExported), bi(sym.IsTest), bi(sym.IsEntryPoint),
-				ns(sym.FileHash), conf,
+				ns(sym.FileHash), conf, sym.Branch,
 			)
 			if err != nil {
 				return err
@@ -3023,7 +3064,7 @@ func (s *Store) GetDeadCode(projectID string, kinds []string, language string, m
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
 		       s.signature, s.return_type, s.docstring, s.parent,
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
-		       s.extraction_confidence
+		       s.extraction_confidence, s.branch
 		FROM symbols s
 		WHERE s.project_id = ?
 		  AND s.is_exported = 0
@@ -3082,7 +3123,7 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
 		       s.signature, s.return_type, s.docstring, s.parent,
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
-		       s.extraction_confidence
+		       s.extraction_confidence, s.branch
 		FROM symbols s
 		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
 		WHERE s.project_id=?
@@ -3133,7 +3174,7 @@ func (s *Store) SearchSymbolsByCorpus(projectID, query, kind, language, corpus s
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
 		       s.signature, s.return_type, s.docstring, s.parent,
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
-		       s.extraction_confidence,
+		       s.extraction_confidence, s.branch,
 		       bm25(` + vtab + `) AS score
 		FROM ` + vtab + `
 		JOIN symbols s ON s.rowid = ` + vtab + `.rowid
@@ -3190,8 +3231,8 @@ func (s *Store) BulkUpsertEdges(edges []Edge) error {
 	}
 	return s.withTx(func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(`
-		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source)
-		VALUES (?,?,?,?,?,?,?)`)
+		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source, branch)
+		VALUES (?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
@@ -3207,7 +3248,7 @@ func (s *Store) BulkUpsertEdges(edges []Edge) error {
 			if source == "" {
 				source = "per_file"
 			}
-			if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source); err != nil {
+			if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source, e.Branch); err != nil {
 				return err
 			}
 		}
@@ -4968,7 +5009,7 @@ const symSelectFrom = `
 	       start_byte, end_byte, start_line, end_line,
 	       signature, return_type, docstring, parent,
 	       complexity, is_exported, is_test, is_entry_point, file_hash,
-	       extraction_confidence
+	       extraction_confidence, branch
 	FROM symbols`
 
 // querySymbols runs q with args and returns all symbols scanned from the result set.
@@ -4992,7 +5033,7 @@ func scanOneSymbol(row *sql.Row) (*Symbol, error) {
 		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
 		&sig, &ret, &doc, &par,
 		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
-		&sym.ExtractionConfidence,
+		&sym.ExtractionConfidence, &sym.Branch,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -5024,7 +5065,7 @@ func scanSymbolRowsRow(rows *sql.Rows, sym *Symbol) error {
 		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
 		&sig, &ret, &doc, &par,
 		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
-		&sym.ExtractionConfidence,
+		&sym.ExtractionConfidence, &sym.Branch,
 	); err != nil {
 		return err
 	}
@@ -5041,7 +5082,7 @@ func scanSymbolRow(rows *sql.Rows, sym *Symbol, score *float64) error {
 		&sym.StartByte, &sym.EndByte, &sym.StartLine, &sym.EndLine,
 		&sig, &ret, &doc, &par,
 		&sym.Complexity, &isExp, &isTest, &isEntry, &fh,
-		&sym.ExtractionConfidence, score,
+		&sym.ExtractionConfidence, &sym.Branch, score,
 	); err != nil {
 		return err
 	}

@@ -40,7 +40,8 @@ func newTestDB(t *testing.T) *sql.DB {
 			signature TEXT,
 			return_type TEXT,
 			docstring TEXT,
-			is_test INTEGER DEFAULT 0
+			is_test INTEGER DEFAULT 0,
+			branch TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE edges (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

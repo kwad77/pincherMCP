@@ -453,7 +453,8 @@ func TestEnsureSymbolIDColumn_OptionAReplica(t *testing.T) {
 			is_test INTEGER,
 			is_entry_point INTEGER,
 			file_hash TEXT,
-			extraction_confidence REAL DEFAULT 1.0
+			extraction_confidence REAL DEFAULT 1.0,
+			branch TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 		// Mark the DB as already at the current schema_version so

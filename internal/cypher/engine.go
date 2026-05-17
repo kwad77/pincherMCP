@@ -1479,7 +1479,7 @@ func (e *Executor) kindsForSymbolName(ctx context.Context, name string) []string
 // matched all-or-none because the row map didn't carry the column.
 const symCols = `id, project_id, file_path, name, qualified_name, kind, language,
 	start_byte, end_byte, start_line, end_line, is_exported, is_entry_point, complexity,
-	extraction_confidence, signature, return_type, docstring, is_test`
+	extraction_confidence, signature, return_type, docstring, is_test, branch`
 
 // inPlaceholders returns a comma-separated "?,?,..." string for n items.
 func inPlaceholders(n int) string {
@@ -2801,6 +2801,9 @@ type symRow struct {
 	ReturnType sql.NullString
 	Docstring  sql.NullString
 	IsTest     bool
+	// #1303 Phase 1: branch column on symbols. Empty until Phase 2
+	// wires indexer stamping.
+	Branch string
 }
 
 func (e *Executor) maxRows() int {
@@ -3183,10 +3186,10 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 	sqlQ := `SELECT
 		a.id, a.project_id, a.file_path, a.name, a.qualified_name, a.kind, a.language,
 		a.start_byte, a.end_byte, a.start_line, a.end_line, a.is_exported, a.is_entry_point, a.complexity,
-		a.extraction_confidence, a.signature, a.return_type, a.docstring, a.is_test,
+		a.extraction_confidence, a.signature, a.return_type, a.docstring, a.is_test, a.branch,
 		b.id, b.project_id, b.file_path, b.name, b.qualified_name, b.kind, b.language,
 		b.start_byte, b.end_byte, b.start_line, b.end_line, b.is_exported, b.is_entry_point, b.complexity,
-		b.extraction_confidence, b.signature, b.return_type, b.docstring, b.is_test,
+		b.extraction_confidence, b.signature, b.return_type, b.docstring, b.is_test, b.branch,
 		e.kind, e.confidence
 		FROM edges e
 		JOIN symbols a ON a.id = e.from_id AND a.project_id = e.project_id
@@ -3953,7 +3956,7 @@ func scanSymRow(rows *sql.Rows) (*symRow, error) {
 	if err := rows.Scan(
 		&n.ID, &n.ProjectID, &n.FilePath, &n.Name, &n.QualifiedName, &n.Kind, &n.Language,
 		&n.StartByte, &n.EndByte, &n.StartLine, &n.EndLine, &isExp, &isEntry, &n.Complexity,
-		&n.ExtractionConfidence, &n.Signature, &n.ReturnType, &n.Docstring, &isTest,
+		&n.ExtractionConfidence, &n.Signature, &n.ReturnType, &n.Docstring, &isTest, &n.Branch,
 	); err != nil {
 		return nil, err
 	}
@@ -3970,10 +3973,10 @@ func scanJoinRow(rows *sql.Rows) (a, b *symRow, edgeKind string, conf float64, e
 	err = rows.Scan(
 		&a.ID, &a.ProjectID, &a.FilePath, &a.Name, &a.QualifiedName, &a.Kind, &a.Language,
 		&a.StartByte, &a.EndByte, &a.StartLine, &a.EndLine, &isExpA, &isEntryA, &a.Complexity,
-		&a.ExtractionConfidence, &a.Signature, &a.ReturnType, &a.Docstring, &isTestA,
+		&a.ExtractionConfidence, &a.Signature, &a.ReturnType, &a.Docstring, &isTestA, &a.Branch,
 		&b.ID, &b.ProjectID, &b.FilePath, &b.Name, &b.QualifiedName, &b.Kind, &b.Language,
 		&b.StartByte, &b.EndByte, &b.StartLine, &b.EndLine, &isExpB, &isEntryB, &b.Complexity,
-		&b.ExtractionConfidence, &b.Signature, &b.ReturnType, &b.Docstring, &isTestB,
+		&b.ExtractionConfidence, &b.Signature, &b.ReturnType, &b.Docstring, &isTestB, &b.Branch,
 		&edgeKind, &conf,
 	)
 	a.IsExported = isExpA.Int64 != 0
