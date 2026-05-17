@@ -2692,7 +2692,14 @@ func operatorHint(op string) (string, bool) {
 		return "use =~ ('name =~ \".*foo.*\"')", true
 	case "STARTS_WITH":
 		return "use STARTS WITH (two words, no underscore)", true
-	// ENDS WITH is now a first-class operator (#340) — no hint needed.
+	case "ENDS_WITH":
+		// #1406: ENDS WITH (two words) is the first-class operator
+		// (#340); the hint redirects callers who typed Cypher's
+		// idiomatic single-token form. Pre-fix users typing
+		// `ENDS_WITH` (the underscore form most adapters and
+		// tutorials use) hit a bare "unsupported operator" with no
+		// recovery affordance. Mirror the STARTS_WITH case above.
+		return "use ENDS WITH (two words, no underscore)", true
 	case "MATCHES":
 		return "use =~ for regex match", true
 	case "IN":
