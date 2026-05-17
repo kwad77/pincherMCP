@@ -242,6 +242,79 @@ func TestHandleDoctor_WithProject(t *testing.T) {
 	}
 }
 
+// TestHandleDoctor_ProjectFilter (#1401) — `project` arg restricts the
+// projects + extraction_failures sections to projects whose name or id
+// contains the case-insensitive substring. Database-level advisories
+// stay project-wide (asserted indirectly: response shape stays normal,
+// and no error from the unfiltered advisory walks).
+func TestHandleDoctor_ProjectFilter(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	for _, c := range []struct{ id, name string }{
+		{"alpha", "alpha-proj"},
+		{"beta", "beta-proj"},
+	} {
+		store.UpsertProject(db.Project{
+			ID: c.id, Path: "/tmp/" + c.id, Name: c.name,
+			IndexedAt: time.Now(), SymCount: 10,
+		})
+		_ = store.RecordExtractionFailure(c.id, c.id+".go", "Go", "extractor_panicked", "boom")
+	}
+
+	// Filter to "alpha" — only alpha-proj + its failure row visible.
+	result, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{
+		"top": 50, "project": "alpha",
+	}))
+	if err != nil {
+		t.Fatalf("handleDoctor: %v", err)
+	}
+	body := decode(t, result)
+	if body["project_filter"] != "alpha" {
+		t.Errorf("project_filter echo missing: %v", body["project_filter"])
+	}
+	projects, _ := body["projects"].([]any)
+	if len(projects) != 1 {
+		t.Fatalf("filter alpha matched %d projects, want 1: %v", len(projects), projects)
+	}
+	if got := projects[0].(map[string]any)["name"]; got != "alpha-proj" {
+		t.Errorf("filtered project name = %v, want alpha-proj", got)
+	}
+	failures, _ := body["extraction_failures"].([]any)
+	if len(failures) != 1 {
+		t.Fatalf("filter alpha extraction_failures = %d, want 1: %v", len(failures), failures)
+	}
+	if got := failures[0].(map[string]any)["file"]; got != "alpha.go" {
+		t.Errorf("filtered failure file = %v, want alpha.go", got)
+	}
+
+	// Case-insensitive substring: "BETA" matches beta-proj.
+	resultB, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{
+		"top": 50, "project": "BETA",
+	}))
+	if err != nil {
+		t.Fatalf("handleDoctor BETA: %v", err)
+	}
+	bodyB := decode(t, resultB)
+	projectsB, _ := bodyB["projects"].([]any)
+	if len(projectsB) != 1 || projectsB[0].(map[string]any)["name"] != "beta-proj" {
+		t.Errorf("case-insensitive BETA matched %v, want one beta-proj", projectsB)
+	}
+
+	// Empty filter = unchanged behavior (no project_filter key emitted).
+	resultAll, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{"top": 50}))
+	if err != nil {
+		t.Fatalf("handleDoctor (no filter): %v", err)
+	}
+	bodyAll := decode(t, resultAll)
+	if _, ok := bodyAll["project_filter"]; ok {
+		t.Errorf("project_filter must be absent when filter unset; got %v", bodyAll["project_filter"])
+	}
+	projectsAll, _ := bodyAll["projects"].([]any)
+	if len(projectsAll) != 2 {
+		t.Errorf("unfiltered call returned %d projects, want 2", len(projectsAll))
+	}
+}
+
 func TestHandleRebuildFTS_DryRunByDefault(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)

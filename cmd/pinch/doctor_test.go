@@ -21,7 +21,7 @@ func TestDoctorReport_EmptyDatabase(t *testing.T) {
 	}
 	defer store.Close()
 
-	r, err := buildDoctorReport(store, dir, 168, 10)
+	r, err := buildDoctorReport(store, dir, 168, 10, "")
 	if err != nil {
 		t.Fatalf("buildDoctorReport: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDoctorReport_WithFailuresAndSlowQueries(t *testing.T) {
 		}
 	}
 
-	r, err := buildDoctorReport(store, dir, 168, 10)
+	r, err := buildDoctorReport(store, dir, 168, 10, "")
 	if err != nil {
 		t.Fatalf("buildDoctorReport: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestDoctorReport_LookbackFilters(t *testing.T) {
 	}
 
 	// Lookback = 1 hour — old row excluded, fresh row included.
-	r, err := buildDoctorReport(store, dir, 1, 10)
+	r, err := buildDoctorReport(store, dir, 1, 10, "")
 	if err != nil {
 		t.Fatalf("buildDoctorReport: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestDoctorReport_BinaryVersionPopulated(t *testing.T) {
 	}
 	defer store.Close()
 
-	r, err := buildDoctorReport(store, dir, 168, 10)
+	r, err := buildDoctorReport(store, dir, 168, 10, "")
 	if err != nil {
 		t.Fatalf("buildDoctorReport: %v", err)
 	}
@@ -539,3 +539,104 @@ func TestDoctorCLI_Binary_LookbackFlag(t *testing.T) {
 		t.Errorf("expected '24 hours' lookback window in output:\n%s", got)
 	}
 }
+
+// TestDoctorReport_ProjectFilter (#1401) — --project NAME|ID|SUBSTR
+// restricts the projects + extraction_failures sections to matched
+// projects. Other projects' rows disappear from those sections.
+func TestDoctorReport_ProjectFilter(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	// Two projects, each with one extraction failure.
+	for _, c := range []struct{ id, name, file string }{
+		{"alpha", "alpha-proj", "alpha.go"},
+		{"beta", "beta-proj", "beta.go"},
+	} {
+		if err := store.UpsertProject(db.Project{
+			ID: c.id, Path: "/" + c.id, Name: c.name, IndexedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("UpsertProject %s: %v", c.id, err)
+		}
+		if err := store.RecordExtractionFailure(c.id, c.file, "Go", "extractor_panicked", "boom"); err != nil {
+			t.Fatalf("RecordExtractionFailure %s: %v", c.id, err)
+		}
+	}
+
+	// Filter to "alpha" — only alpha-proj should show, with only its
+	// failure row. beta-proj is invisible to this section.
+	r, err := buildDoctorReport(store, dir, 168, 10, "alpha")
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if len(r.Projects) != 1 || r.Projects[0].Name != "alpha-proj" {
+		t.Errorf("filter alpha matched projects = %+v, want one alpha-proj", r.Projects)
+	}
+	if len(r.ExtractionFailures) != 1 || r.ExtractionFailures[0].File != "alpha.go" {
+		t.Errorf("filter alpha extraction_failures = %+v, want one alpha.go row", r.ExtractionFailures)
+	}
+
+	// Case-insensitive + substring: "ALPHA" matches alpha-proj.
+	rUpper, err := buildDoctorReport(store, dir, 168, 10, "ALPHA")
+	if err != nil {
+		t.Fatalf("buildDoctorReport ALPHA: %v", err)
+	}
+	if len(rUpper.Projects) != 1 || rUpper.Projects[0].Name != "alpha-proj" {
+		t.Errorf("case-insensitive filter ALPHA matched projects = %+v, want one alpha-proj", rUpper.Projects)
+	}
+
+	// Empty filter = no filter applied: both projects visible.
+	rAll, err := buildDoctorReport(store, dir, 168, 10, "")
+	if err != nil {
+		t.Fatalf("buildDoctorReport (no filter): %v", err)
+	}
+	if len(rAll.Projects) != 2 {
+		t.Errorf("empty filter matched %d projects, want 2", len(rAll.Projects))
+	}
+	if len(rAll.ExtractionFailures) != 2 {
+		t.Errorf("empty filter extraction_failures = %d, want 2", len(rAll.ExtractionFailures))
+	}
+
+	// No-match filter = empty projects + empty failures but report still
+	// renders. The database-level advisories (large-DB, ghost, etc.) are
+	// store-wide so they may or may not fire — assert only the scoped
+	// sections.
+	rNone, err := buildDoctorReport(store, dir, 168, 10, "nonexistent-project-xyz")
+	if err != nil {
+		t.Fatalf("buildDoctorReport (no match): %v", err)
+	}
+	if len(rNone.Projects) != 0 {
+		t.Errorf("no-match filter matched %d projects, want 0", len(rNone.Projects))
+	}
+	if len(rNone.ExtractionFailures) != 0 {
+		t.Errorf("no-match filter extraction_failures = %d, want 0", len(rNone.ExtractionFailures))
+	}
+}
+
+// TestDoctorProjectMatches pins the substring-match helper used by the
+// --project flag. Same shape as `pincher project rm` /
+// `pincher verify --project`.
+func TestDoctorProjectMatches(t *testing.T) {
+	p := db.Project{ID: "d:\\ClaudeCode\\pincher-repo", Name: "pincher-repo"}
+	cases := []struct {
+		filter string
+		want   bool
+	}{
+		{"pincher", true},     // substring of name
+		{"PINCHER", true},     // case-insensitive
+		{"REPO", true},        // tail substring
+		{"claudecode", true},  // matches id
+		{"ClaudeCode", true},  // case-insensitive id match
+		{"warp_rc", false},    // unrelated
+		{"", true},            // empty matches everything
+	}
+	for _, c := range cases {
+		if got := doctorProjectMatches(p, c.filter); got != c.want {
+			t.Errorf("doctorProjectMatches(%q) = %v, want %v", c.filter, got, c.want)
+		}
+	}
+}
+

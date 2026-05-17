@@ -42,10 +42,12 @@ func runDoctorCLI(args []string) {
 	lookbackHours := fs.Int("lookback", 168, "Hours of history to include in failure / slow-query lists (default 168 = 7 days)")
 	top := fs.Int("top", 10, "Maximum number of failures / slow queries to list per section")
 	fix := fs.Bool("fix", false, "Auto-resolve the safe subset of advisories (currently: VACUUM the DB when >50 MB of reclaimable space; prune extraction_failures rows whose last_seen_at predates their project's indexed_at). Destructive remediations (project deletion, force-reindex) stay explicit-action — run their targeted subcommands. (#1260 §3, #1382/#1386)")
+	projectFilter := fs.String("project", "", "#1401 — restrict the projects + extraction_failures sections to projects whose name or id contains this case-insensitive substring (same shape as `pincher project rm` / `pincher verify --project`). Empty = all projects. Database-level advisories (large-DB / WAL / ghost / nested / branch drift) remain project-wide.")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher doctor [--json] [--fix] [--data-dir DIR] [--lookback HOURS] [--top N]")
+		fmt.Fprintln(os.Stderr, "usage: pincher doctor [--json] [--fix] [--data-dir DIR] [--lookback HOURS] [--top N] [--project NAME|ID|SUBSTR]")
 		fmt.Fprintln(os.Stderr, "  Prints a diagnostic report from the local pincher database.")
 		fmt.Fprintln(os.Stderr, "  Pass --fix to auto-resolve the safe subset of advisories (VACUUM bloated DB, prune stale extraction_failures).")
+		fmt.Fprintln(os.Stderr, "  Pass --project to scope the projects + extraction_failures sections to a single project.")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -75,7 +77,7 @@ func runDoctorCLI(args []string) {
 	}
 	defer store.Close()
 
-	report, err := buildDoctorReport(store, dir, *lookbackHours, *top)
+	report, err := buildDoctorReport(store, dir, *lookbackHours, *top, *projectFilter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: doctor failed: %v\n", err)
 		os.Exit(1)
@@ -154,7 +156,15 @@ type DoctorSlowQueryRow struct {
 // buildDoctorReport gathers all facts. Each section degrades gracefully
 // — a failed read on (say) extraction_failures doesn't kill the whole
 // report; we emit a partial one so the user still sees what worked.
-func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*DoctorReport, error) {
+//
+// projectFilter (#1401) is an optional case-insensitive substring
+// matched against project name OR id (same shape as `pincher project
+// rm` and `pincher verify --project`). Empty = include every project.
+// Filtering applies to the projects + extraction_failures sections;
+// the database-level advisories (large-DB / WAL / ghost / nested /
+// branch drift) deliberately keep walking every project — they're
+// store-wide signals, not per-project diagnostics.
+func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, projectFilter string) (*DoctorReport, error) {
 	r := &DoctorReport{
 		GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
 		BinaryVersion:        version,
@@ -188,9 +198,27 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*Do
 
 	// Projects
 	projects, err := store.ListProjects()
+	// #1401: pre-build the matched-id set so the projects loop AND
+	// the extraction_failures section share one membership predicate.
+	// nil means "no filter — include everything" (avoid allocating a
+	// map for the default case).
+	var matchedProjectIDs map[string]struct{}
+	if projectFilter != "" {
+		matchedProjectIDs = make(map[string]struct{}, len(projects))
+		for _, p := range projects {
+			if doctorProjectMatches(p, projectFilter) {
+				matchedProjectIDs[p.ID] = struct{}{}
+			}
+		}
+	}
 	if err == nil {
 		current := db.CurrentSchemaVersion()
 		for _, p := range projects {
+			if matchedProjectIDs != nil {
+				if _, ok := matchedProjectIDs[p.ID]; !ok {
+					continue
+				}
+			}
 			summary := DoctorProjectSummary{
 				ID:                   p.ID,
 				Name:                 p.Name,
@@ -210,6 +238,11 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int) (*Do
 	// lookback window, capped at top N per project.
 	cutoff := time.Now().Add(-time.Duration(lookbackHours) * time.Hour)
 	for _, p := range projects {
+		if matchedProjectIDs != nil {
+			if _, ok := matchedProjectIDs[p.ID]; !ok {
+				continue
+			}
+		}
 		fails, err := store.ListExtractionFailures(p.ID, top)
 		if err != nil {
 			continue
@@ -650,4 +683,44 @@ func truncEnd(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// doctorProjectMatches reports whether project p matches the
+// substring-style filter used by the doctor CLI's --project flag
+// (#1401). Same shape as `pincher project rm` and
+// `pincher verify --project`: case-insensitive substring against
+// the project's name OR its id. Empty filter matches everything.
+//
+// Mirrors `internal/server/admin.go::doctorProjectMatches` per the
+// bounded-duplication convention; the two must stay behaviorally
+// identical. The local doctor* prefix avoids colliding with verify's
+// `projectMatches` once both subcommands ship in the same binary
+// (#1399/#1400) — same algorithm, different call sites.
+func doctorProjectMatches(p db.Project, filter string) bool {
+	return doctorSubstringFoldContains(p.Name, filter) ||
+		doctorSubstringFoldContains(p.ID, filter)
+}
+
+func doctorSubstringFoldContains(haystack, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	hL := doctorToLowerASCII(haystack)
+	nL := doctorToLowerASCII(needle)
+	for i := 0; i+len(nL) <= len(hL); i++ {
+		if hL[i:i+len(nL)] == nL {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorToLowerASCII(s string) string {
+	b := []byte(s)
+	for i := 0; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 32
+		}
+	}
+	return string(b)
 }

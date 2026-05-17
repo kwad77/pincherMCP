@@ -3853,7 +3853,8 @@ func (s *Server) registerTools() {
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"lookback_hours":{"type":"integer","description":"Hours of history to include in failures + slow-query lists. Default 168 (7 days)."},
-				"top":{"type":"integer","description":"Maximum entries returned per section — caps the extraction-failures list, the slow-queries list, AND the projects list (#575, response-size bound on multi-project installs). Projects are sorted by symbol count desc, so the largest are kept; projects_truncated reports the count omitted. Use the list tool for full project enumeration. Default 10, max 50 — values above 50 are clamped with a warning (#1054, the MCP per-call token cap)."}
+				"top":{"type":"integer","description":"Maximum entries returned per section — caps the extraction-failures list, the slow-queries list, AND the projects list (#575, response-size bound on multi-project installs). Projects are sorted by symbol count desc, so the largest are kept; projects_truncated reports the count omitted. Use the list tool for full project enumeration. Default 10, max 50 — values above 50 are clamped with a warning (#1054, the MCP per-call token cap)."},
+				"project":{"type":"string","description":"#1401 — restrict the projects + extraction_failures sections to projects whose name or id contains this case-insensitive substring (same shape as pincher project rm / pincher verify --project). Database-level advisories (large-DB, ghost-project, nested-project, WAL bloat, branch drift) stay project-wide — they're store-wide signals, not project-scoped. Empty/omitted = current behavior (all projects)."}
 			}
 		}`),
 	}, s.handleDoctor)
