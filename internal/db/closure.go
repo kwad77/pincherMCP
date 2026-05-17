@@ -71,23 +71,38 @@ func (s *Store) BuildClosure(ctx context.Context, projectID string, maxDepth int
 		return fmt.Errorf("BuildClosure: maxDepth must be ≥ 1, got %d", maxDepth)
 	}
 
-	// Read edges for the project into an adjacency list. For a 14k-edge
-	// project (pincher itself) this is ~500 KB of memory — bounded enough
-	// to keep in-process. For 10k-file repos we expect 250k–500k edges =
-	// ~10–20 MB; still bounded.
+	// Read edges for the project into an adjacency list. Filter to the
+	// default trace kind set so closure semantics match what TraceByID
+	// fast-paths through — pre-fix the closure traversed ALL edge kinds
+	// (READS, WRITES, IMPORTS, REFERENCES, etc.) while TraceViaCTE
+	// filtered to CALLS family by default, so the fast-path returned a
+	// superset that silently disagreed with the CTE path (#1162
+	// measurement surfaced the divergence; #685 closes the gap).
+	//
+	// For a 14k-edge project (pincher itself) this is ~500 KB of memory
+	// — bounded enough to keep in-process. For 10k-file repos we expect
+	// 250k–500k edges = ~10–20 MB; still bounded.
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT from_id, to_id FROM edges WHERE project_id = ?", projectID)
+		`SELECT from_id, to_id, kind FROM edges
+		  WHERE project_id = ?
+		    AND kind IN ('CALLS', 'HTTP_CALLS', 'ASYNC_CALLS')`, projectID)
 	if err != nil {
 		return fmt.Errorf("BuildClosure: read edges: %w", err)
 	}
-	adj := make(map[string][]string)
+	// edge holds the target + the kind that connects from→to. Used by the
+	// BFS to record via_kind on each closure row.
+	type edge struct {
+		to   string
+		kind string
+	}
+	adj := make(map[string][]edge)
 	for rows.Next() {
-		var from, to string
-		if err := rows.Scan(&from, &to); err != nil {
+		var from, to, kind string
+		if err := rows.Scan(&from, &to, &kind); err != nil {
 			rows.Close()
 			return fmt.Errorf("BuildClosure: scan edge: %w", err)
 		}
-		adj[from] = append(adj[from], to)
+		adj[from] = append(adj[from], edge{to: to, kind: kind})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -104,27 +119,33 @@ func (s *Store) BuildClosure(ctx context.Context, projectID string, maxDepth int
 		return fmt.Errorf("BuildClosure: delete prior: %w", err)
 	}
 	stmt, err := tx.PrepareContext(ctx,
-		"INSERT OR IGNORE INTO closure (project_id, from_id, to_id, depth) VALUES (?, ?, ?, ?)")
+		"INSERT OR IGNORE INTO closure (project_id, from_id, to_id, depth, via_kind) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("BuildClosure: prepare: %w", err)
 	}
 
 	// BFS per source. seen[v] = depth of first reach (= min depth, since
-	// BFS ascends in lockstep). frontier[d] holds nodes reached at depth d.
+	// BFS ascends in lockstep). frontier holds (node, last-hop-kind) so
+	// the kind of the edge that completed the path can be recorded on
+	// the closure row — closes the v0.54 phase-1 Via gap (#685).
+	type frontierNode struct {
+		id   string
+		kind string // kind of the edge that reached this node
+	}
 	for from := range adj {
 		seen := map[string]int{from: 0}
-		frontier := []string{from}
+		frontier := []frontierNode{{id: from}}
 		for d := 1; d <= maxDepth && len(frontier) > 0; d++ {
 			next := frontier[:0:0]
 			for _, u := range frontier {
-				for _, v := range adj[u] {
-					if _, ok := seen[v]; ok {
+				for _, e := range adj[u.id] {
+					if _, ok := seen[e.to]; ok {
 						continue
 					}
-					seen[v] = d
-					next = append(next, v)
-					if _, err := stmt.ExecContext(ctx, projectID, from, v, d); err != nil {
+					seen[e.to] = d
+					next = append(next, frontierNode{id: e.to, kind: e.kind})
+					if _, err := stmt.ExecContext(ctx, projectID, from, e.to, d, e.kind); err != nil {
 						stmt.Close()
 						tx.Rollback()
 						return fmt.Errorf("BuildClosure: insert: %w", err)
@@ -154,10 +175,11 @@ func (s *Store) ClosureRowCount(projectID string) (int64, error) {
 }
 
 // TraceViaClosure is the fast-path trace lookup against the materialized
-// closure table. Returns the same shape as TraceViaCTE — but the `via`
-// (edge-kind) field is empty in phase 1, since the closure table doesn't
-// store per-hop edge kinds. Callers needing `via` should fall back to
-// TraceViaCTEScoped explicitly.
+// closure table. Returns the same shape as TraceViaCTE — and as of
+// schema v30 / #685 the `via` (edge-kind) field is populated from the
+// closure row's via_kind column (the last-hop kind recorded at build
+// time). Pre-v30 rows have via_kind='' which surfaces as an empty Via,
+// matching the v0.54 phase-1 behaviour until a closure rebuild fires.
 //
 // Direction:
 //   - "outbound": all symbols reachable FROM startID
@@ -173,7 +195,7 @@ func (s *Store) TraceViaClosure(projectID, startID, direction string, maxDepth i
 	emit := func(rows *sql.Rows) error {
 		for rows.Next() {
 			var r TraceResult
-			if err := rows.Scan(&r.SymbolID, &r.Depth); err != nil {
+			if err := rows.Scan(&r.SymbolID, &r.Depth, &r.ViaKind); err != nil {
 				return err
 			}
 			out = append(out, r)
@@ -183,7 +205,7 @@ func (s *Store) TraceViaClosure(projectID, startID, direction string, maxDepth i
 
 	if direction == "outbound" || direction == "both" {
 		rows, err := s.db.Query(
-			"SELECT to_id, depth FROM closure WHERE project_id = ? AND from_id = ? AND depth <= ? ORDER BY depth, to_id LIMIT 500",
+			"SELECT to_id, depth, via_kind FROM closure WHERE project_id = ? AND from_id = ? AND depth <= ? ORDER BY depth, to_id LIMIT 500",
 			projectID, startID, maxDepth)
 		if err != nil {
 			return nil, fmt.Errorf("TraceViaClosure outbound: %w", err)
@@ -196,7 +218,7 @@ func (s *Store) TraceViaClosure(projectID, startID, direction string, maxDepth i
 	}
 	if direction == "inbound" || direction == "both" {
 		rows, err := s.db.Query(
-			"SELECT from_id, depth FROM closure WHERE project_id = ? AND to_id = ? AND depth <= ? ORDER BY depth, from_id LIMIT 500",
+			"SELECT from_id, depth, via_kind FROM closure WHERE project_id = ? AND to_id = ? AND depth <= ? ORDER BY depth, from_id LIMIT 500",
 			projectID, startID, maxDepth)
 		if err != nil {
 			return nil, fmt.Errorf("TraceViaClosure inbound: %w", err)

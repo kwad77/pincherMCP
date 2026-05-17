@@ -1314,13 +1314,20 @@ func (idx *Indexer) TraceByID(ctx context.Context, projectID, symbolID, directio
 		edgeKinds = []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
 	}
 
-	// #652 phase 1: closure-fast-path. When PINCHER_CLOSURE_TABLES=1 is
-	// set AND the project's closure table is populated AND the caller
-	// uses the default edge-kind set (the only set the closure was built
-	// for), do a single indexed SELECT instead of a recursive CTE.
-	// Phase-1 trade-off: closure rows don't store per-hop edge kind, so
-	// `Via` ends up empty on the fast-path. Callers needing `Via` get the
-	// CTE path automatically by passing a non-default edgeKinds slice.
+	// #652 phase 1 + #685 phase 2: closure-fast-path. When
+	// PINCHER_CLOSURE_TABLES=1 is set AND the project's closure table is
+	// populated AND the caller uses the default edge-kind set, do a
+	// single indexed SELECT instead of a recursive CTE. Closure
+	// traversal is itself filtered to the default kind set at build
+	// time (BuildClosure source-edge WHERE), so a non-default kinds
+	// query still falls through to CTE — the gate enforces that.
+	//
+	// Phase-2 (#685) closed the v0.54 trade-off: closure rows now
+	// record the last-hop edge kind in via_kind, so Via surfaces on
+	// fast-path results identically to the CTE path. Pre-v30 closure
+	// rows get via_kind='' which the trace UI renders as a hyphen —
+	// rebuild via `pincher closure rebuild` or the next Index() pass
+	// to backfill.
 	useClosure := db.ClosureEnabled() && projectID != "" && isDefaultTraceKinds(edgeKinds)
 	if useClosure {
 		if n, _ := idx.store.ClosureRowCount(projectID); n > 0 {
