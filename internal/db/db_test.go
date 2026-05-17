@@ -543,6 +543,9 @@ var readerRoutedStoreMethods = map[string]bool{
 	// triangulating panels). RecentToolCallsForSession is pure
 	// SELECT — reader-routed.
 	"RecentToolCallsForSession": true,
+	// #635 v0.67: per-tool aggregate over the trailing window. Pure
+	// SELECT with GROUP BY — reader-routed.
+	"ToolCallStatsByTool": true,
 }
 
 var writerRoutedStoreMethods = map[string]bool{

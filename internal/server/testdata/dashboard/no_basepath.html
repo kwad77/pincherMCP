@@ -75,6 +75,14 @@
   </div>
   <p class="section-title">PreToolUse Hook (last 7 days)</p>
   <div class="grid grid-3" id="hook-stats-cards"><div class="loading">Loading…</div></div>
+  <!-- #635 v0.67: per-tool breakdown panel — driven by
+       /v1/tool-call-stats over schema v27 session_tool_calls.
+       Visible immediately after onboarding once the first session
+       lands a few tool calls. -->
+  <p class="section-title">Tool Call Breakdown (last 7 days)</p>
+  <div class="tool-breakdown-card">
+    <div id="tool-breakdown-body"><div class="loading">Loading…</div></div>
+  </div>
 </main>
 </div>
 
