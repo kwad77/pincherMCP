@@ -47,24 +47,41 @@ func watchParent(ctx context.Context, onGone func()) {
 		return
 	}
 	go parentWatchLoop(ctx, ppid, parentWatchInterval, parentWatchHardExitGrace,
-		pidIsAlive, onGone, func() {
+		pidIsAlive, os.Getppid, onGone, func() {
 			slog.Warn("pincher.parent_gone.hard_exit", "ppid", ppid)
 			os.Exit(0)
 		})
 }
 
-// parentWatchLoop is the testable core of watchParent: poll aliveFn on
-// ppid every interval; on the first not-alive result call onGone, wait
-// up to hardExitGrace, then call hardExit. Returns early (without
-// reaping) when ctx is cancelled — the normal shutdown path. Split out
-// so tests can inject a fake liveness fn, short timings, and a
-// non-os.Exit hardExit.
+// parentWatchLoop is the testable core of watchParent. On each tick it
+// fires onGone (then waits hardExitGrace and calls hardExit) when any
+// of these signals reports the original parent gone:
+//
+//  1. **Reparent signal** (#1321 v0.71): currentPpidFn() != ppid OR
+//     <= 1. On Unix, the kernel reparents a child to init/launchd
+//     (PID 1) when its real parent dies, so Getppid() will return 1
+//     thereafter. This is PID-recycle-immune — the original PID being
+//     re-issued to an unrelated process can't fool the reparent check.
+//     User repro: three v0.58 stdio MCP children survived 10h / 14h /
+//     25h+ after their Claude Code parent disappeared because the
+//     pre-fix aliveFn(ppid) saw recycled PIDs as still-alive.
+//
+//  2. **PID-liveness signal** (pre-fix sole check): aliveFn(ppid) ==
+//     false. Catches the macOS edge case where a process group leader
+//     holds the PID open without reparenting, and catches Windows
+//     (which doesn't reparent — Getppid() stays stale forever after
+//     parent death). Kept as belt-and-suspenders.
+//
+// Returns early (without reaping) when ctx is cancelled — the normal
+// shutdown path. Split out so tests can inject fake fns and short
+// timings.
 func parentWatchLoop(
 	ctx context.Context,
 	ppid int,
 	interval time.Duration,
 	hardExitGrace time.Duration,
 	aliveFn func(int) bool,
+	currentPpidFn func() int,
 	onGone func(),
 	hardExit func(),
 ) {
@@ -75,11 +92,27 @@ func parentWatchLoop(
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if aliveFn(ppid) {
+			reason := ""
+			if currentPpidFn != nil {
+				cur := currentPpidFn()
+				if cur != ppid {
+					reason = "reparented"
+				} else if cur <= 1 {
+					// Defensive — currentPpidFn==ppid AND <=1 means the
+					// captured ppid itself was ≤1, which watchParent's
+					// early-return should have prevented. Treat as gone.
+					reason = "ppid_le_1"
+				}
+			}
+			if reason == "" && !aliveFn(ppid) {
+				reason = "pid_dead"
+			}
+			if reason == "" {
 				continue
 			}
 			slog.Warn("pincher.parent_gone",
 				"ppid", ppid,
+				"reason", reason,
 				"action", "graceful_shutdown_then_exit")
 			if onGone != nil {
 				onGone()
