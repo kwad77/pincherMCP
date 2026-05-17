@@ -3829,6 +3829,44 @@ func (s *Store) RecordExtractionFailure(projectID, filePath, language, reason, d
 	return err
 }
 
+// PruneExtractionFailuresForFile deletes extraction_failures rows for
+// (projectID, filePath) whose reason is NOT in keepReasons. Used by the
+// indexer after a per-file extraction completes — every reason that
+// would have fired this pass is in keepReasons; anything else in the
+// table is stale evidence from a prior buggy state and should not
+// continue to pollute doctor counts, snapshot gates, or dashboards.
+//
+// #1319 v0.71. Pre-fix the only purge was per-project on project delete
+// (db.go:2746); fixed-but-stale rows accumulated indefinitely. User
+// repro: README.md `qualified_name_collision` row 8 days old after
+// #1207's Markdown suppression made that diagnostic stop firing.
+//
+// Passing keepReasons=nil deletes ALL rows for the file (the "extraction
+// re-ran cleanly with zero failures" case).
+//
+// Writes via the writer pool — single-writer SQLite, classified in
+// writerRoutedStoreMethods.
+func (s *Store) PruneExtractionFailuresForFile(projectID, filePath string, keepReasons map[string]struct{}) error {
+	if len(keepReasons) == 0 {
+		_, err := s.db.Exec(
+			`DELETE FROM extraction_failures WHERE project_id = ? AND file_path = ?`,
+			projectID, filePath)
+		return err
+	}
+	args := []any{projectID, filePath}
+	placeholders := make([]string, 0, len(keepReasons))
+	for r := range keepReasons {
+		placeholders = append(placeholders, "?")
+		args = append(args, r)
+	}
+	q := fmt.Sprintf(
+		`DELETE FROM extraction_failures
+		   WHERE project_id = ? AND file_path = ? AND reason NOT IN (%s)`,
+		strings.Join(placeholders, ","))
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
 // ListExtractionFailures returns the most-recent extraction failures for a
 // project, ordered by last_seen_at DESC. limit <= 0 returns all rows.
 //

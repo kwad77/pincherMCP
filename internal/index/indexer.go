@@ -1573,6 +1573,15 @@ func safeExtractWithModule(idx *Indexer, projectID, lang, relPath string, conten
 //
 // #42 part 1 — diagnostic surface.
 func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, result *ast.FileResult) {
+	// #1319 v0.71: track which reasons this pass actually re-records, so
+	// the post-pass prune can delete stale rows whose underlying failure
+	// has been fixed since they were first observed. Pre-fix, a fix-the-
+	// bug PR left historical rows in extraction_failures forever — the
+	// user's repro: README.md `qualified_name_collision` row 8 days old
+	// after #1207's Markdown suppression made that diagnostic stop
+	// firing for Markdown entirely; no GC mechanism existed to remove it.
+	keep := make(map[string]struct{}, 2)
+
 	for _, s := range result.Symbols {
 		// byte_range_negative
 		//
@@ -1592,6 +1601,7 @@ func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, r
 			if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "byte_range_negative", details); err != nil {
 				slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
 			}
+			keep["byte_range_negative"] = struct{}{}
 		}
 	}
 	// qualified_name_collision — record once per file even if multiple QNs
@@ -1612,42 +1622,39 @@ func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, r
 	// in (`~<line>` suffix), so every Section survives. Skipping the
 	// failure row keeps the diagnostic surface focused on the real
 	// regex-scope blindness cases in code corpora.
-	if lang == "Markdown" {
-		return
-	}
-	// #1208 v0.66 DOGFOOD: skip the diagnostic for TypeScript. After
-	// dropTSOverloadSignatures handles the most common dup source
-	// (overload signatures), the residual TS collisions are legitimate
-	// real-world shapes the regex extractor can't scope-resolve without
-	// an AST:
-	//   - top-level `const law = (s) => ...` PLUS an object-property
-	//     `{ law: (s) => ... }` elsewhere in the same file
-	//   - JSX/TSX polymorphic component variants sharing a name
-	//   - re-exports + local declarations of the same identifier
-	// disambiguateDuplicates still appends `~<line>` so every symbol
-	// remains individually addressable; suppressing the diagnostic
-	// keeps doctor's failure list focused on real bugs rather than
-	// codifying-a-TS-AST-as-a-prerequisite work. Same UX call as the
-	// Markdown carve-out above. When the v0.62+ TS AST extractor lands
-	// (#1177 area), this suppression should be reconsidered.
-	if lang == "TypeScript" {
-		return
-	}
-	if len(result.QNCollisions) == 0 {
-		return
-	}
-	var worst string
-	worstCount := 0
-	for qn, n := range result.QNCollisions {
-		if n > worstCount {
-			worst = qn
-			worstCount = n
+	//
+	// #1208 v0.66 DOGFOOD: skip for TypeScript (same UX rationale —
+	// residual collisions are legitimate JSX/object-property/re-export
+	// shapes the regex tier can't scope-resolve). When the TS AST
+	// extractor lands (#1177 area), reconsider.
+	suppressCollision := lang == "Markdown" || lang == "TypeScript"
+	if !suppressCollision && len(result.QNCollisions) > 0 {
+		var worst string
+		worstCount := 0
+		for qn, n := range result.QNCollisions {
+			if n > worstCount {
+				worst = qn
+				worstCount = n
+			}
 		}
+		details := fmt.Sprintf("qualified_name %q appears %d times (extractor produced duplicates)",
+			worst, worstCount)
+		if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "qualified_name_collision", details); err != nil {
+			slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+		}
+		keep["qualified_name_collision"] = struct{}{}
 	}
-	details := fmt.Sprintf("qualified_name %q appears %d times (extractor produced duplicates)",
-		worst, worstCount)
-	if err := idx.store.RecordExtractionFailure(projectID, relPath, lang, "qualified_name_collision", details); err != nil {
-		slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+
+	// #1319 v0.71: prune extraction_failures rows whose reason no longer
+	// applies. A reason that stops firing (because the underlying bug
+	// was fixed, or because a per-language suppression was added — see
+	// #1207/#1208) should not leave evidence in the table forever; doing
+	// so pollutes `pincher doctor`'s failure count, the snapshot-gate
+	// `extraction_failures_by_reason` invariant, and the bench/dashboard
+	// failure metric. Pre-fix the only purge was per-project on project
+	// delete; per-file rows accumulated indefinitely.
+	if err := idx.store.PruneExtractionFailuresForFile(projectID, relPath, keep); err != nil {
+		slog.Warn("pincher.failure_prune.err", "err", err, "file", relPath)
 	}
 }
 
