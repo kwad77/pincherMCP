@@ -65,7 +65,29 @@ func extractJavaScriptAST(source []byte, relPath string) (*FileResult, bool) {
 		regexCache:  map[string]*regexp.Regexp{},
 	}
 	w.walkBlock(parsed.BlockStmt, false /*insideFunc*/)
-	return &FileResult{Symbols: w.symbols, Edges: w.edges}, true
+	// #1328 v0.71: signal to ExtractWithModule that this FileResult is
+	// AST-tier. The JavaScript langAdapter registers confidence=0.85
+	// (the regex fallback's honest floor — kept for the post-default-on
+	// failure-path); without ConfidenceOverride, AST-extracted symbols
+	// stamp the regex value and there's no way to distinguish AST from
+	// regex output in min_confidence filters, dashboards, or
+	// extraction_failures triage. Mirrors Python's pattern at #944.
+	return &FileResult{
+		Symbols:            w.symbols,
+		Edges:              w.edges,
+		ConfidenceOverride: 1.0,
+	}, true
+}
+
+// JavaScriptASTEnabled reports whether the JS AST extractor would run
+// for the next JS file. Exported so callers in /internal/server can
+// upgrade the "parser" label from "Regex" to "AST" at runtime, the same
+// way ast.PythonAvailable supports Python's auto-upgrade carve-out.
+// Pre-fix `pincher health` always reported `parser: "Regex"` for JS,
+// even though the AST path has been default-on since v0.20.0 (#266 /
+// #1328 drift).
+func JavaScriptASTEnabled() bool {
+	return jsASTEnabled()
 }
 
 // parseJSWithRecovery parses source. If the parser rejects a top-level

@@ -35,11 +35,12 @@ func TestPythonAST_ConfidenceOverride_BoostsSymbols(t *testing.T) {
 
 // FileResult.ConfidenceOverride at 0 (unset) keeps the langAdapter's
 // registered confidence — extractors that don't set the override get
-// the unchanged baseline.
+// the unchanged baseline. Uses JavaScript with the AST path explicitly
+// disabled to exercise the regex fallback (#1328 made JS AST the
+// default route, so without the opt-out this fixture would land on
+// the AST path and stamp 1.0 instead of the regex-tier 0.85).
 func TestExtractWithModule_NoOverride_UsesRegisteredConfidence(t *testing.T) {
-	// Use a regex-tier extractor by passing PINCHER_DISABLE_PY_AST or
-	// any non-Python language. JavaScript is regex-tier; its symbols
-	// should still stamp ~0.975 (registered 0.85 + signal compose).
+	t.Setenv("PINCHER_DISABLE_JS_AST", "1")
 	src := []byte("function foo() { return 1; }\nfunction bar() { return 2; }\n")
 	result := ExtractWithModule(src, "JavaScript", "pkg/mod.js", "")
 	if len(result.Symbols) == 0 {
