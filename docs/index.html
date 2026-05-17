@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>pincherMCP · Codebase intelligence for LLM agents</title>
-<meta name="description" content="Single Go binary that indexes any codebase into a byte-offset symbol store, knowledge graph, and BM25 search — exposed as 22 MCP tools or an HTTP REST API. Pure Go, no CGO, no cloud."/>
+<meta name="description" content="Single Go binary that indexes any codebase into a byte-offset symbol store, knowledge graph, and BM25 search — exposed as 22 MCP tools or an HTTP REST API. Token savings is the front door; the _meta envelope is the routing layer for your agent loop. Pure Go, no CGO, no cloud."/>
 <meta name="theme-color" content="#0d1117"/>
 
 <meta property="og:type" content="website"/>
@@ -117,9 +117,10 @@ footer a{color:var(--accent)}
   </a>
   <div class="links">
     <a href="#how">How it works</a>
-    <a href="#install">Install</a>
     <a href="#tools">Tools</a>
-    <a href="https://github.com/kwad77/pincherMCP">GitHub</a>
+    <a href="#install">Install</a>
+    <a href="#vision">Roadmap</a>
+    <a href="https://github.com/kwad77/pincher">GitHub</a>
   </div>
 </nav>
 
@@ -127,21 +128,21 @@ footer a{color:var(--accent)}
   <img src="assets/pinchy.png" alt="Pinchy, the pincherMCP mascot — a pixel-art crab holding a copper penny" class="pixel pinchy-hero"/>
   <div class="pill">Single binary · pure Go · no cloud</div>
   <h1>Codebase intelligence<br/>for LLM agents.</h1>
-  <p class="sub">pincherMCP indexes any repo into a byte-offset symbol store, a knowledge graph, and a BM25 full-text search — all populated in one AST pass — then exposes 22 tools over MCP stdio or HTTP REST. Agents get what they need in tokens, not files.</p>
+  <p class="sub">pincherMCP indexes any repo into a byte-offset symbol store, a knowledge graph, and a BM25 full-text search — all populated in one AST pass — then exposes 22 tools over MCP stdio or HTTP REST. Agents get what they need in tokens, not files. Every response carries a structured <code>_meta</code> envelope your agent loop can route on.</p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">Install</a>
-    <a class="btn btn-secondary" href="https://github.com/kwad77/pincherMCP">View on GitHub →</a>
+    <a class="btn btn-secondary" href="https://github.com/kwad77/pincher">View on GitHub →</a>
   </div>
 </section>
 
 <section>
   <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Why it matters</h2>
-  <p class="section-sub">Every tool response carries a real BPE token count. Real numbers on this codebase (13 files, 618 symbols, 5,785 edges):</p>
+  <p class="section-sub">Every tool response carries a real BPE token count. Real numbers on this codebase (~580 files, ~1,900 symbols, ~2,950 edges, v0.66):</p>
   <div class="stats">
     <div class="stat"><div class="num green">~95%</div><div class="label">Token reduction<br/>vs reading whole files</div></div>
     <div class="stat"><div class="num blue">&lt;1ms</div><div class="label">Symbol fetch<br/>(byte-offset seek)</div></div>
     <div class="stat"><div class="num purple">&lt;5ms</div><div class="label">BFS depth 3<br/>call-graph trace</div></div>
-    <div class="stat"><div class="num orange">19 langs</div><div class="label">6 AST-backed + 13 regex<br/>extractors</div></div>
+    <div class="stat"><div class="num orange">~25 langs</div><div class="label">10 AST-tier + 21 regex-tier<br/>extractors</div></div>
   </div>
 </section>
 
@@ -189,7 +190,7 @@ footer a{color:var(--accent)}
 
 <section id="install">
   <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Install</h2>
-  <p class="section-sub">Pick your platform. Every install produces the same single binary; service templates live under <a href="https://github.com/kwad77/pincherMCP/tree/master/packaging"><code>packaging/</code></a>.</p>
+  <p class="section-sub">Pick your platform. Every install produces the same single binary; service templates live under <a href="https://github.com/kwad77/pincher/tree/master/packaging"><code>packaging/</code></a>.</p>
 
   <div class="install-tabs">
     <button class="install-tab active" data-tab="source">From source</button>
@@ -199,8 +200,8 @@ footer a{color:var(--accent)}
   </div>
 
   <div class="install-pane active" id="pane-source">
-<pre><code>git clone https://github.com/kwad77/pincherMCP
-cd pincherMCP
+<pre><code>git clone https://github.com/kwad77/pincher
+cd pincher
 go build -o pincher ./cmd/pinch/
 
 # Drop the pincher policy block into your project's CLAUDE.md
@@ -235,8 +236,8 @@ brew services start pincher</code></pre>
 
   <div class="install-pane" id="pane-bin">
 <pre><code># Download the matching archive from the releases page, then:
-tar -xzf pincher-v0.3.0-linux-amd64.tar.gz
-sudo mv pincher-v0.3.0-linux-amd64 /usr/local/bin/pincher
+tar -xzf pincher-v0.66.0-linux-amd64.tar.gz
+sudo mv pincher-v0.66.0-linux-amd64 /usr/local/bin/pincher
 pincher --version</code></pre>
   </div>
 
@@ -267,6 +268,37 @@ pincher --version</code></pre>
   </div>
 </section>
 
+<section id="vision">
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Where pincher is going</h2>
+  <p class="section-sub">Pre-1.0. Everything between now and v1.0 is about making pincher great enough that the v1.0 adoption push lands on a product that earns retention, not just attention.</p>
+  <div class="cards">
+    <div class="card">
+      <h3>Token savings is the front door <span class="badge">today</span></h3>
+      <p>Every tool stamps real cl100k token counts vs the file-read baseline. The ~95% reduction headline isn't synthetic — it's what users see on their own corpus. That's the initial-grab story; it works because the math is honest.</p>
+    </div>
+    <div class="card">
+      <h3>Routing-enablement is the retention story <span class="badge">building</span></h3>
+      <p>The <code>_meta</code> envelope on every response is the agent loop's planning input — drift warnings, stale-index signals, the <code>empty_reason</code> taxonomy, idempotency declarations, request-ID correlation. Once your loop branches on <code>_meta</code>, pincher becomes infrastructure, not just a tool. v0.67's <code>context_for_task</code> composite tool is the concrete shape: one call replaces the typical 5-10 atomic calls an agent fires when picking up an investigation.</p>
+    </div>
+    <div class="card">
+      <h3>Cross-file resolution roadmap <span class="badge">v0.67 → v0.69</span></h3>
+      <p>Go and Python are full-resolution today (IMPORTS + CALLS + receiver-type binding). TypeScript, Rust, and Java are next — each gets a dedicated AST extractor + cross-file resolver pass so <code>trace</code>/<code>dead_code</code>/<code>neighborhood</code>/<code>context</code> work as well on a TypeScript monorepo as they do on a Go service. The 9-axis per-language matrix in the <a href="REFERENCE.md#language-support">reference</a> shows exactly where each language sits today.</p>
+    </div>
+    <div class="card">
+      <h3>Observability standardization <span class="badge">v0.67</span></h3>
+      <p>OTLP traces per tool call, Prometheus metrics for cumulative counters, <code>X-Request-ID</code> correlation already shipping. The goal: pincher fits the same operational shape as any other production service you run, so the SRE story for "pincher in our agent platform" is solved on the same day the feature lands.</p>
+    </div>
+    <div class="card">
+      <h3>v1.0: schema freeze + migration guide <span class="badge">planned</span></h3>
+      <p>Tool descriptions, MCP schemas, and <code>_meta</code> envelope shape lock at v1.0. <a href="https://github.com/kwad77/pincher/issues/638">Roadmap issue</a> tracks the phase structure (alpha → beta → rc → stable channels). Until then: minor versions can change surface; patch versions only fix bugs.</p>
+    </div>
+    <div class="card">
+      <h3>What we're <em>not</em> building <span class="badge">scope</span></h3>
+      <p>No cloud control plane. No telemetry beacons. No multi-tenant server mode. Local-first single-binary by design: your code never leaves your machine, every byte returned originates in your own <code>pincher.db</code>, and the install footprint stays one file. That constraint shapes everything else on this list.</p>
+    </div>
+  </div>
+</section>
+
 <section>
   <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>How it compares</h2>
   <p class="section-sub">Byte-offset retrieval, a knowledge graph, and FTS5 full-text search, co-located in a single pure-Go binary — populated by one AST pass, no external services.</p>
@@ -293,7 +325,7 @@ pincher --version</code></pre>
 </section>
 
 <footer>
-  MIT-licensed · <a href="https://github.com/kwad77/pincherMCP">GitHub</a> · <a href="https://github.com/kwad77/pincherMCP/issues">Issues</a> · <a href="https://github.com/kwad77/pincherMCP/blob/master/README.md">Full docs</a>
+  MIT-licensed · <a href="https://github.com/kwad77/pincher">GitHub</a> · <a href="https://github.com/kwad77/pincher/issues">Issues</a> · <a href="https://github.com/kwad77/pincher/blob/master/README.md">Full docs</a>
 </footer>
 
 <script>
