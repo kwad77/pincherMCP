@@ -229,6 +229,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	projectID := db.ProjectIDFromPath(absPath)
 	projectName := db.ProjectNameFromPath(absPath)
 
+	// #1163 traces half (indexer scope): one OTLP span per index pass.
+	// Uses the global tracer provider — when no OTLP endpoint is
+	// configured, this is a zero-allocation no-op pair. The span's
+	// outcome attributes (files/symbols/edges/duration) are stamped at
+	// the end of the function via finishIndexSpan; the lifecycle is a
+	// defer so an early return still ends the span cleanly.
+	ctx, span := startIndexSpan(ctx, projectID, projectName, absPath, force)
+	defer span.End()
+
 	// Serialise per-project (in-process).
 	idx.mu.Lock()
 	if idx.active[projectID] {
@@ -904,6 +913,10 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		"deleted":     totalDeleted,
 		"duration_ms": duration.Milliseconds(),
 	})
+
+	// #1163 traces half (indexer scope): stamp the post-pass outcome
+	// attributes on the OTLP span before defer span.End() fires.
+	finishIndexSpan(span, totalFiles, totalSymbols, totalEdges, totalSkipped, totalBlocked, totalDeleted, duration.Milliseconds(), nil)
 
 	return result, nil
 }

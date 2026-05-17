@@ -527,6 +527,14 @@ Per-tool-call spans are exported with the following attributes:
 - `pincher.request_id=<#657 correlation ID>` — joins cleanly with `_meta.request_id` and the `X-Request-ID` response header
 - `pincher.response_bytes=<int>`
 
+Per-index-pass spans (one per `Index()` call) are exported under instrumentation library `pincher.index` with span name `pincher.index.pass` and these attributes:
+
+- `pincher.project_id`, `pincher.project_name`, `pincher.repo_path`
+- `pincher.force=<bool>` — whether the pass was forced (re-index regardless of file hash)
+- `pincher.files_indexed`, `pincher.symbols_total`, `pincher.edges_total`
+- `pincher.files_skipped`, `pincher.files_blocked`, `pincher.files_deleted`
+- `pincher.duration_ms`
+
 Resource attributes: `service.name=pincher`, `service.version=<binary version>` so a router groups spans without parsing.
 
 If `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (the default), the tracer is a zero-allocation no-op — observability never breaks the hot path. The `traces_otlp` capability is advertised only when the OTLP exporter successfully initialized so consumers can distinguish "configured + working" from "best-effort no-op."
