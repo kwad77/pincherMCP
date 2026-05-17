@@ -546,6 +546,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	// #635 v0.67: per-tool aggregate over the trailing window. Pure
 	// SELECT with GROUP BY — reader-routed.
 	"ToolCallStatsByTool": true,
+	// #635 v0.67 panel 2: per-tier aggregate, same shape as above.
+	"ToolCallStatsByTier": true,
 }
 
 var writerRoutedStoreMethods = map[string]bool{

@@ -80,6 +80,19 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .tool-breakdown-table tfoot td{font-size:12px;color:var(--text);background:rgba(255,255,255,.025);border-top:2px solid var(--border)}
 .tool-breakdown-table code{background:transparent;border:none;padding:0;color:var(--text);font-weight:500}
 
+/* ── Tier breakdown panel (#635 panel 2) ── */
+.tier-breakdown-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:32px}
+.tier-bar{display:flex;height:18px;border-radius:6px;overflow:hidden;background:#0b1018;border:1px solid var(--border);margin-bottom:14px}
+.tier-bar-seg{transition:flex-basis .25s;min-width:2px}
+.tier-bar-seg:not(:first-child){border-left:1px solid rgba(0,0,0,.25)}
+.tier-breakdown-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+.tier-breakdown-table th,.tier-breakdown-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+.tier-breakdown-table th{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+.tier-breakdown-table tr:last-child td{border-bottom:none}
+.tier-breakdown-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.tier-breakdown-table .num.green{color:var(--green)}
+.tier-swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;vertical-align:middle}
+
 /* ── Project cards ── */
 .proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s;position:relative}
 .proj-card:hover{border-color:var(--accent)}

@@ -145,6 +145,83 @@ func TestToolCallStatsByTool_LimitCaps(t *testing.T) {
 	}
 }
 
+// Per-tier aggregate — mirror tests for ToolCallStatsByTier (#635 panel 2).
+// Lighter coverage since the implementation is structurally identical to
+// the per-tool query — these tests pin the tier-specific behaviour:
+// empty-tier filtering and the lite/standard/heavy GROUP BY shape.
+
+func TestToolCallStatsByTier_GroupsByTier(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	saved := int64(500)
+	events := []ToolCallEvent{
+		{SessionID: "s1", Tool: "search", ComplexityTier: "lite", TS: now, TokensUsed: 100, TokensSaved: &saved},
+		{SessionID: "s1", Tool: "symbol", ComplexityTier: "lite", TS: now, TokensUsed: 80, TokensSaved: &saved},
+		{SessionID: "s1", Tool: "trace", ComplexityTier: "standard", TS: now, TokensUsed: 250, TokensSaved: &saved},
+		{SessionID: "s1", Tool: "guide", ComplexityTier: "heavy", TS: now, TokensUsed: 400, TokensSaved: &saved},
+	}
+	if err := store.RecordToolCalls(events); err != nil {
+		t.Fatalf("RecordToolCalls: %v", err)
+	}
+
+	tallies, err := store.ToolCallStatsByTier(0)
+	if err != nil {
+		t.Fatalf("ToolCallStatsByTier: %v", err)
+	}
+	if len(tallies) != 3 {
+		t.Fatalf("expected 3 tier rows (lite/standard/heavy); got %d: %+v", len(tallies), tallies)
+	}
+	byTier := map[string]ToolCallTierTallyRow{}
+	for _, r := range tallies {
+		byTier[r.Tier] = r
+	}
+	if byTier["lite"].CallCount != 2 {
+		t.Errorf("lite call_count = %d; want 2 (search + symbol)", byTier["lite"].CallCount)
+	}
+	if byTier["standard"].CallCount != 1 {
+		t.Errorf("standard call_count = %d; want 1 (trace)", byTier["standard"].CallCount)
+	}
+	if byTier["heavy"].CallCount != 1 {
+		t.Errorf("heavy call_count = %d; want 1 (guide)", byTier["heavy"].CallCount)
+	}
+}
+
+func TestToolCallStatsByTier_EmptyTierRowsFiltered(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	// One row with empty tier (pre-#1191 shape) — should NOT surface.
+	// One row with a real tier — should surface.
+	events := []ToolCallEvent{
+		{SessionID: "s1", Tool: "old_tool", ComplexityTier: "", TS: now, TokensUsed: 50},
+		{SessionID: "s1", Tool: "search", ComplexityTier: "lite", TS: now, TokensUsed: 100},
+	}
+	if err := store.RecordToolCalls(events); err != nil {
+		t.Fatalf("RecordToolCalls: %v", err)
+	}
+
+	tallies, err := store.ToolCallStatsByTier(0)
+	if err != nil {
+		t.Fatalf("ToolCallStatsByTier: %v", err)
+	}
+	if len(tallies) != 1 || tallies[0].Tier != "lite" {
+		t.Errorf("expected 1 row (lite); got %+v — empty-tier row should be filtered", tallies)
+	}
+}
+
 // Cross-check: admin-shape tools without a Read/Grep baseline record
 // NULL in tokens_saved_pct. The avg should exclude NULL rather than
 // degrading toward zero on read-heavy sessions.
