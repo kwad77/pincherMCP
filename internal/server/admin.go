@@ -587,10 +587,22 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 		top = maxTop
 	}
 
+	// #1401: optional substring filter against project name/id. Same
+	// match shape as `pincher project rm` / `pincher verify --project`
+	// (case-insensitive substring against name OR id). When set, the
+	// projects + extraction_failures sections are filtered to matched
+	// project_ids; the store-wide advisories (large-DB, ghost-project,
+	// nested-project, WAL bloat, branch drift) intentionally still walk
+	// every project — they're database-level signals, not project-scoped.
+	projectFilter, _ := args["project"].(string)
+
 	data := map[string]any{
 		"generated_at":   time.Now().UTC().Format(time.RFC3339),
 		"binary_version": s.version,
 		"lookback_hours": lookbackHours,
+	}
+	if projectFilter != "" {
+		data["project_filter"] = projectFilter
 	}
 	for _, w := range clampWarnings {
 		attachWarning(data, w)
@@ -620,8 +632,26 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// db_bytes_estimate. Missing entries (e.g. a freshly upserted
 	// project with no symbols yet) default to 0, which is honest.
 	projectBytes, _ := s.store.EstimateProjectBytes()
+	// #1401: pre-build the set of project_ids that pass the substring
+	// filter so the projects loop AND the extraction_failures section
+	// can use the same membership without re-walking plist twice.
+	// matchedProjectIDs is nil when no filter is set (means "all").
+	var matchedProjectIDs map[string]struct{}
+	if projectFilter != "" {
+		matchedProjectIDs = make(map[string]struct{}, len(plist))
+		for _, p := range plist {
+			if doctorProjectMatches(p, projectFilter) {
+				matchedProjectIDs[p.ID] = struct{}{}
+			}
+		}
+	}
 	if err == nil {
 		for _, p := range plist {
+			if matchedProjectIDs != nil {
+				if _, ok := matchedProjectIDs[p.ID]; !ok {
+					continue
+				}
+			}
 			projects = append(projects, doctorProjectSummary{
 				ID:                   p.ID,
 				Name:                 p.Name,
@@ -778,6 +808,17 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	recentFails, err := s.store.ListRecentExtractionFailuresAcrossProjects(cutoffUnix, top)
 	if err == nil {
 		for _, f := range recentFails {
+			// #1401: respect the project filter on the failures section
+			// too. Filtering happens after the SQL fetch (rather than
+			// pushing a WHERE clause down to ListRecentExtractionFailures
+			// AcrossProjects) so the existing reader-pool path stays
+			// unchanged — the cost is one map lookup per row, bounded
+			// to `top` rows.
+			if matchedProjectIDs != nil {
+				if _, ok := matchedProjectIDs[f.ProjectID]; !ok {
+					continue
+				}
+			}
 			failures = append(failures, failureRow{
 				Project:    projectName[f.ProjectID],
 				File:       f.FilePath,
@@ -846,6 +887,45 @@ func isStaleFailure(failureLastSeen, indexedAt time.Time) bool {
 		return false
 	}
 	return failureLastSeen.Before(indexedAt)
+}
+
+// doctorProjectMatches reports whether project p matches the
+// substring-style filter used by the doctor MCP tool's `project`
+// arg (#1401). Same shape as `pincher project rm` and
+// `pincher verify --project`: case-insensitive substring against
+// the project's name OR its id. Empty filter matches everything.
+//
+// Mirrors `cmd/pinch/doctor.go::doctorProjectMatches` per the
+// bounded-duplication convention. The local prefix avoids clashing
+// with `cmd/pinch/verify.go::projectMatches` once verify lands; the
+// behaviors must stay identical.
+func doctorProjectMatches(p db.Project, filter string) bool {
+	return doctorSubstringFoldContains(p.Name, filter) ||
+		doctorSubstringFoldContains(p.ID, filter)
+}
+
+func doctorSubstringFoldContains(haystack, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	hL := doctorToLowerASCII(haystack)
+	nL := doctorToLowerASCII(needle)
+	for i := 0; i+len(nL) <= len(hL); i++ {
+		if hL[i:i+len(nL)] == nL {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorToLowerASCII(s string) string {
+	b := []byte(s)
+	for i := 0; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 32
+		}
+	}
+	return string(b)
 }
 
 // handleRebuildFTS rebuilds every FTS5 index from the canonical symbols
