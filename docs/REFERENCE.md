@@ -484,6 +484,7 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 | `/v1/tool-payload-stats` | GET | Yes | Per-tool response_bytes distribution (min/avg/max/sum) over the trailing window. Sorted by max_bytes DESC — the dashboard "outlier finder" view (#635 v0.67 panel 3). |
 | `/v1/metrics` | GET | No | Prometheus exposition format (#1163 v0.67). Standard counters/histograms/gauges for tool calls, latency, index pass, db/wal size. |
 | `/v1/bench-results` | GET | Yes | `pincher bench --persist` history per project (#1263 v0.68). Returns the most recent N runs joined with per-tool aggregates. Query params: `project` (optional; defaults to ALL projects, newest-first), `limit` (default 20, max 200). Drives the dashboard Bench History panel. |
+| `/v1/capabilities` | GET | Yes | One-shot read of the per-server capability slice (#1087 v0.69). Drop-in alternative for HTTP clients that don't want to pay the per-call `_meta.capabilities` cost — call once at session start, cache the result. Especially relevant when the operator has set `PINCHER_META_CAPABILITIES=off` to skip the per-call stamp. |
 
 CORS: all responses include `Access-Control-Allow-Origin: *` so browsers can call directly without a proxy.
 
