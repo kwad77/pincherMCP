@@ -344,11 +344,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// the rewrite — external imports stay unresolved as before.
 	modulePath := readGoModulePath(absPath)
 
-	// Python source-root prefixes (e.g. "src" for a src-layout repo).
-	// Bridges Python's module-path imports and pincher's file-path-derived
-	// QNs in resolveImports. Empty slice (only "") for non-Python projects
-	// is harmless: resolveImports still tries the identity candidate.
-	pythonRoots := ast.PythonSourceRoots(absPath)
+	// Python source-roots (e.g. "src" for a src-layout repo) are only
+	// consumed inside the resolve block below — gated by #1314 to skip
+	// on no-change ticks. Computing them here would be dead work
+	// (#1317: a full WalkDir per tick for ~13% of post-#1314 watcher
+	// allocations); declare here so the variable is in scope for the
+	// gated block, but defer the actual scan.
+	var pythonRoots []string
 
 	// Walk source files using gocodewalker (respects .gitignore)
 	fileListQueue := make(chan *gocodewalker.File, 256)
@@ -748,22 +750,41 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// pool, not just this run's in-memory pendingX slices. The DB rows
 	// include hash-skipped files' candidates from prior runs — which
 	// fixes #427's transitive edge-loss on incremental re-indexes.
-	// LoadPendingEdges returns nil/[] on the first index (no prior
-	// rows), at which point the resolve passes are effectively no-ops.
-	allImports := loadOrFallback(idx, projectID, "IMPORTS", pendingImport)
-	if n := idx.resolveImports(projectID, allImports, pythonRoots); n > 0 {
-		totalEdges += n
-	}
+	//
+	// #670 §2: gate the load+resolve block on actual change. On a
+	// watcher no-change tick (totalFiles == 0, not force), the
+	// candidate pool and the symbol table are both unchanged since
+	// the last run, so resolution would produce the same edges —
+	// INSERT OR IGNORE no-ops. Pre-gate measurement: resolveReads
+	// alone consumed 48% of allocations on the watcher hot path
+	// (14× alloc regression vs v0.60 baseline). Safe because pending
+	// edges only enter the table via per-file goroutines that
+	// re-extract — and those increment totalFiles. The GC pass below
+	// runs unconditionally and handles deleted files; resolve doesn't
+	// clean up edges to deleted symbols anyway, so deletions don't
+	// need to trigger a resolve.
+	resolveChanged := force || totalFiles > 0
+	if resolveChanged {
+		// #1317: deferred from the top of Index() — only the resolve
+		// block consumes pythonRoots, so on a no-change tick we skip
+		// the WalkDir entirely.
+		pythonRoots = ast.PythonSourceRoots(absPath)
 
-	allCalls := loadOrFallback(idx, projectID, "CALLS", pendingCalls)
-	if n := idx.resolveCalls(projectID, allCalls, pythonRoots); n > 0 {
-		totalEdges += n
-	}
+		allImports := loadOrFallback(idx, projectID, "IMPORTS", pendingImport)
+		if n := idx.resolveImports(projectID, allImports, pythonRoots); n > 0 {
+			totalEdges += n
+		}
 
-	allReads := loadOrFallback(idx, projectID, "READS", pendingReads)
-	allReads = append(allReads, loadOrFallback(idx, projectID, "WRITES", nil)...)
-	if n := idx.resolveReads(projectID, allReads); n > 0 {
-		totalEdges += n
+		allCalls := loadOrFallback(idx, projectID, "CALLS", pendingCalls)
+		if n := idx.resolveCalls(projectID, allCalls, pythonRoots); n > 0 {
+			totalEdges += n
+		}
+
+		allReads := loadOrFallback(idx, projectID, "READS", pendingReads)
+		allReads = append(allReads, loadOrFallback(idx, projectID, "WRITES", nil)...)
+		if n := idx.resolveReads(projectID, allReads); n > 0 {
+			totalEdges += n
+		}
 	}
 
 	// #326: Tail-pass GC for files removed from disk. The walker yields only
