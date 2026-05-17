@@ -883,6 +883,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		if seenFiles[stored] {
 			continue
 		}
+		// #1340 v0.71: synthetic external Module symbols live at file
+		// paths under `@external/` — the walker never sees those (they
+		// have no on-disk counterpart by design), so the GC would
+		// otherwise reap them every pass. resolveImports re-creates
+		// them each run; skipping the GC here means the symbols
+		// remain queryable between resolve passes too.
+		if strings.HasPrefix(stored, "@external/") {
+			continue
+		}
 		if err := idx.store.DeleteSymbolsForFile(projectID, stored); err != nil {
 			slog.Warn("pincher.index.gc.delete_symbols.err", "err", err, "file", stored)
 			continue
@@ -1056,6 +1065,66 @@ func (idx *Indexer) runParityCheck(projectID, projectName string, expectedPerFil
 		)
 	}
 	return mismatchFiles, missingSymbols
+}
+
+// externalModuleSymbol constructs a synthetic Module symbol that
+// represents an import target the in-project resolver couldn't bind to
+// any real symbol — `import os` (Python stdlib), `require('fs')` (Node
+// builtin), `{% extends "base.html" %}` (Jinja template outside the
+// indexed tree), `module "x" { source = "hashicorp/consul/aws" }` (HCL
+// registry), `[See](other.md)` (Markdown link to external doc), etc.
+//
+// #1340 v0.71 option (a). The symbol lives at the sentinel file_path
+// "@external/<sanitized-qn>" so future opt-out filters can identify
+// these rows with a single LIKE-prefix predicate. The qualified_name
+// is the literal to_name from the IMPORTS edge — keeps the symbol
+// addressable by the same string the extractor emitted.
+func externalModuleSymbol(projectID, toName string) db.Symbol {
+	filePath := "@external/" + sanitizeExternalPath(toName)
+	id := db.MakeSymbolID(filePath, toName, "Module")
+	name := toName
+	// Trim path-shape names down to the basename for display.
+	if i := strings.LastIndexAny(name, "/\\"); i >= 0 && i+1 < len(name) {
+		name = name[i+1:]
+	}
+	return db.Symbol{
+		ID:                   id,
+		ProjectID:            projectID,
+		FilePath:             filePath,
+		Name:                 name,
+		QualifiedName:        toName,
+		Kind:                 "Module",
+		Language:             "External",
+		StartByte:            0,
+		EndByte:              0,
+		StartLine:            0,
+		EndLine:              0,
+		IsExported:           true,
+		ExtractionConfidence: 1.0,
+	}
+}
+
+// sanitizeExternalPath replaces characters that aren't valid file-path
+// bytes on the filesystems pincher targets (Windows is the strict
+// limiter — `<>:"|?*` are illegal). The file_path string is never
+// passed to actual filesystem operations for synthetic externals, but
+// it does flow through doctor / list / search displays where weird
+// bytes would render as control characters or break filters.
+func sanitizeExternalPath(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '<', '>', ':', '"', '|', '?', '*', '\x00':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // flushBuffers writes accumulated symbols and edges to the DB then resets the slices.
@@ -1796,8 +1865,22 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 
 	// Dedupe by (fromID, toID) — one pair of files can appear many times
 	// when there are multiple Module rows per package.
+	//
+	// #1340 v0.71: when toID would otherwise be "" (the target name
+	// doesn't resolve to any in-project symbol), synthesize a placeholder
+	// external Module symbol and bind the edge to it. Pre-fix every
+	// `import os`, `require('fs')`, `{% extends "base.html" %}`,
+	// `[See](other.md)` IMPORTS edge silently dropped because the
+	// resolver had nothing to bind toID against — the user's measurement
+	// showed Python = 53 symbols / 0 IMPORTS, JS = 63 / 0, Jinja2 = 0,
+	// while Go (in-project resolution) had 16. Option (a) from the
+	// issue: synthesize lightweight Module symbols at file_path
+	// "@external/<to_name>" so to_id always binds. These rows show up
+	// in search by default — a known tradeoff per the issue, addressed
+	// by a future opt-out filter PR.
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
+	externals := make(map[string]db.Symbol)
 	for _, e := range pending {
 		fromID := lookup(e.FromQN)
 		var toID string
@@ -1806,7 +1889,19 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 		} else {
 			toID = lookup(e.ToName)
 		}
-		if fromID == "" || toID == "" {
+		if fromID == "" {
+			// FromQN didn't resolve at all — almost always means the
+			// source file produced no symbol the edge can hang on
+			// (preamble-scoped Jinja IMPORTS / HCL module / Markdown
+			// preamble-link). Drop, same as pre-#1340.
+			continue
+		}
+		if toID == "" && e.ToName != "" {
+			ext := externalModuleSymbol(projectID, e.ToName)
+			toID = ext.ID
+			externals[toID] = ext
+		}
+		if toID == "" {
 			continue
 		}
 		key := fromID + "\x00" + toID
@@ -1822,6 +1917,29 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 			Confidence: e.Confidence,
 			Source:     "resolve_pass",
 		})
+	}
+
+	// #1340: persist the synthetic external Module symbols BEFORE the
+	// edges that reference them — the FK semantics of the symbols table
+	// don't enforce it, but downstream consumers that join symbols and
+	// edges expect the symbol row to exist by the time the edge does.
+	if len(externals) > 0 {
+		extSyms := make([]db.Symbol, 0, len(externals))
+		for _, s := range externals {
+			extSyms = append(extSyms, s)
+		}
+		if err := idx.store.BulkUpsertSymbols(extSyms); err != nil {
+			slog.Warn("pincher.imports.external_upsert.err", "err", err, "count", len(extSyms))
+			// Drop the synthetic edges too — they'd dangle into a
+			// non-existent symbol. The non-external edges still land.
+			filtered := edges[:0]
+			for _, edge := range edges {
+				if _, isExt := externals[edge.ToID]; !isExt {
+					filtered = append(filtered, edge)
+				}
+			}
+			edges = filtered
+		}
 	}
 
 	// #475: atomic replace of the prior resolve pass's IMPORTS edges.

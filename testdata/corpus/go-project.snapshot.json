@@ -8,7 +8,7 @@
   },
   "edge_count_by_kind": {
     "CALLS": 4,
-    "IMPORTS": 1
+    "IMPORTS": 3
   },
   "extraction_failures_by_reason": {},
   "files_blocked": 0,
@@ -39,7 +39,7 @@
     "Class": 1,
     "Function": 4,
     "Method": 1,
-    "Module": 2,
+    "Module": 4,
     "Section": 2
   }
 }
