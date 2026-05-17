@@ -1,1 +1,0 @@
-OTLP tracer coverage push (#1164 deliverable): `newOTLPTracer` 12.5% → 87.5%, `tracerOrNoop` 40% → 100%, total server package 92.0% → 92.4%. Six new tests exercise the live-exporter init path against a localhost stub collector — covers scheme strip, insecure-via-env-flag, trailing-slash endpoint, noop fallback contract, and the nil-server / nil-tracer defensive branches.
