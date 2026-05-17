@@ -21,6 +21,8 @@ The long-form reference. The [README](../README.md) is the pitch + quickstart; t
   - [Refusing obvious bloat traps](#refusing-obvious-bloat-traps)
   - [Cross-process safety](#cross-process-safety)
 - [HTTP REST API](#http-rest-api)
+  - [Additional HTTP endpoints](#additional-http-endpoints)
+  - [Observability](#observability-1163-654-628)
 - [CLI subcommands](#cli-subcommands)
   - [`pincher index`](#pincher-index)
   - [`pincher doctor`](#pincher-doctor)
@@ -474,8 +476,60 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 | `/v1/projects` | DELETE | Yes | Remove a project and all its symbols. Body: `{"id":"<project-id>"}`. |
 | `/v1/index-progress` | POST | Yes | Live indexing progress: `{files_done, files_total, active}`. |
 | `/v1/events` | GET | Yes* | Server-Sent Events stream — `index_started`, `index_complete`, `binary_drift`. Sends a `binary_drift` snapshot on connect, then live events. Optional `?project=<id>` filter. \*Honors `--http-key` when set. |
+| `/v1/hook-stats` | GET | Yes | Hook conversion-rate + raw counts over the last 7 days (#628). Powers the Overview tab's Hook Stats panel. |
+| `/v1/tool-call-stats` | GET | Yes | Per-tool aggregate over the trailing window (default 7d) — call_count, avg_tokens_used, sum_tokens_saved, avg_tokens_saved_pct, avg_response_bytes (#635 v0.67). Query params: `window_seconds`, `limit`. |
+| `/v1/tool-tier-stats` | GET | Yes | Per-complexity-tier aggregate (lite/standard/heavy) over the trailing window (#635 v0.67 panel 2). |
+| `/v1/tool-payload-stats` | GET | Yes | Per-tool response_bytes distribution (min/avg/max/sum) over the trailing window. Sorted by max_bytes DESC — the dashboard "outlier finder" view (#635 v0.67 panel 3). |
+| `/v1/metrics` | GET | No | Prometheus exposition format (#1163 v0.67). Standard counters/histograms/gauges for tool calls, latency, index pass, db/wal size. |
 
 CORS: all responses include `Access-Control-Allow-Origin: *` so browsers can call directly without a proxy.
+
+### Observability (#1163, #654, #628)
+
+pincher exposes four standard observability surfaces a production router or SRE tool can scrape without any pincher-specific glue:
+
+| Signal | Surface | Default | Capability tag |
+|---|---|---|---|
+| **Metrics** (counters, histograms, gauges) | `GET /v1/metrics` (Prometheus exposition) | Always on | `metrics_prometheus` |
+| **Traces** (per-tool-call spans) | OTLP/HTTP exporter, configured via env | Off — opts in via env | `traces_otlp` |
+| **Events** (index lifecycle, binary drift) | `GET /v1/events` (Server-Sent Events) | Always on | `event_stream_sse` |
+| **Correlation IDs** | `X-Request-ID` header + `_meta.request_id` | Always on | `request_id_correlation` |
+
+Capability tags appear in every tool response's `_meta.capabilities` array so a router can detect what this binary supports without parsing version strings or scraping a config file.
+
+#### Standard metrics (`/v1/metrics`)
+
+| Metric | Type | Labels |
+|---|---|---|
+| `pincher_tool_calls_total` | counter | `tool`, `outcome` |
+| `pincher_tool_latency_seconds` | summary | `tool` |
+| `pincher_tool_tokens_saved_total` | counter | `tool` |
+| `pincher_index_files_total` | counter | `outcome` |
+| `pincher_index_symbols_total` | counter | — |
+| `pincher_index_duration_seconds` | histogram | `kind` |
+| `pincher_db_size_bytes` | gauge | — |
+| `pincher_wal_size_bytes` | gauge | — |
+
+#### Enabling OTLP traces
+
+```bash
+# Default OTLP collector port; supports http:// and https:// schemes.
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# Optional override for plain-HTTP collectors in dev:
+export OTEL_EXPORTER_OTLP_TRACES_INSECURE=1
+```
+
+Per-tool-call spans are exported with the following attributes:
+
+- `rpc.system=mcp`
+- `rpc.method=<tool>`
+- `pincher.complexity_tier=<lite|standard|heavy>` — same dimension the dashboard panels use
+- `pincher.request_id=<#657 correlation ID>` — joins cleanly with `_meta.request_id` and the `X-Request-ID` response header
+- `pincher.response_bytes=<int>`
+
+Resource attributes: `service.name=pincher`, `service.version=<binary version>` so a router groups spans without parsing.
+
+If `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (the default), the tracer is a zero-allocation no-op — observability never breaks the hot path. The `traces_otlp` capability is advertised only when the OTLP exporter successfully initialized so consumers can distinguish "configured + working" from "best-effort no-op."
 
 ---
 
