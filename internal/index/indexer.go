@@ -748,22 +748,36 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// pool, not just this run's in-memory pendingX slices. The DB rows
 	// include hash-skipped files' candidates from prior runs — which
 	// fixes #427's transitive edge-loss on incremental re-indexes.
-	// LoadPendingEdges returns nil/[] on the first index (no prior
-	// rows), at which point the resolve passes are effectively no-ops.
-	allImports := loadOrFallback(idx, projectID, "IMPORTS", pendingImport)
-	if n := idx.resolveImports(projectID, allImports, pythonRoots); n > 0 {
-		totalEdges += n
-	}
+	//
+	// #670 §2: gate the load+resolve block on actual change. On a
+	// watcher no-change tick (totalFiles == 0, not force), the
+	// candidate pool and the symbol table are both unchanged since
+	// the last run, so resolution would produce the same edges —
+	// INSERT OR IGNORE no-ops. Pre-gate measurement: resolveReads
+	// alone consumed 48% of allocations on the watcher hot path
+	// (14× alloc regression vs v0.60 baseline). Safe because pending
+	// edges only enter the table via per-file goroutines that
+	// re-extract — and those increment totalFiles. The GC pass below
+	// runs unconditionally and handles deleted files; resolve doesn't
+	// clean up edges to deleted symbols anyway, so deletions don't
+	// need to trigger a resolve.
+	resolveChanged := force || totalFiles > 0
+	if resolveChanged {
+		allImports := loadOrFallback(idx, projectID, "IMPORTS", pendingImport)
+		if n := idx.resolveImports(projectID, allImports, pythonRoots); n > 0 {
+			totalEdges += n
+		}
 
-	allCalls := loadOrFallback(idx, projectID, "CALLS", pendingCalls)
-	if n := idx.resolveCalls(projectID, allCalls, pythonRoots); n > 0 {
-		totalEdges += n
-	}
+		allCalls := loadOrFallback(idx, projectID, "CALLS", pendingCalls)
+		if n := idx.resolveCalls(projectID, allCalls, pythonRoots); n > 0 {
+			totalEdges += n
+		}
 
-	allReads := loadOrFallback(idx, projectID, "READS", pendingReads)
-	allReads = append(allReads, loadOrFallback(idx, projectID, "WRITES", nil)...)
-	if n := idx.resolveReads(projectID, allReads); n > 0 {
-		totalEdges += n
+		allReads := loadOrFallback(idx, projectID, "READS", pendingReads)
+		allReads = append(allReads, loadOrFallback(idx, projectID, "WRITES", nil)...)
+		if n := idx.resolveReads(projectID, allReads); n > 0 {
+			totalEdges += n
+		}
 	}
 
 	// #326: Tail-pass GC for files removed from disk. The walker yields only
