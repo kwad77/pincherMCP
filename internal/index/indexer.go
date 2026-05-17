@@ -268,7 +268,7 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// Serialise per-project (cross-process). Prevents two pincher processes
 	// (e.g. MCP server + manual CLI, or two Claude Code sessions on the
 	// same project) from running heavy index transactions in parallel.
-	releaseLock, err := acquireProjectLock(filepath.Dir(idx.store.Path), projectID)
+	releaseLock, err := acquireProjectLock(filepath.Dir(idx.store.Path), projectID, idx.binaryVersion)
 	if err != nil {
 		return nil, err
 	}

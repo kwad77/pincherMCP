@@ -31,6 +31,14 @@ type lockInfo struct {
 	PID       int    `json:"pid"`
 	StartTime int64  `json:"start_time_unix"`
 	ProjectID string `json:"project_id"`
+	// BinaryVersion (#1312 v0.71): the holder's `--version` string at
+	// lock-acquisition. Surfaced in contention error messages so the
+	// caller can distinguish "another live concurrent indexer of the
+	// same version" from "an orphan from a prior binary blocking the
+	// fresh child after `make install`". Empty on legacy lockfiles
+	// written by pre-#1312 binaries — the error message degrades to
+	// the pre-fix shape.
+	BinaryVersion string `json:"binary_version,omitempty"`
 }
 
 // lockStaleAge: lockfiles older than this are treated as abandoned. Real
@@ -40,17 +48,20 @@ const lockStaleAge = 24 * time.Hour
 // acquireProjectLock creates an exclusive cross-process lockfile for the
 // given projectID under dataDir/locks/. Returns a release function the
 // caller must defer-call. Returns an error if another live process holds
-// the lock.
-func acquireProjectLock(dataDir, projectID string) (func(), error) {
+// the lock. binaryVersion is the caller's `--version` string; empty
+// string is accepted (callers without SetBinaryVersion plumbed) and
+// just yields a legacy-shaped lockfile.
+func acquireProjectLock(dataDir, projectID, binaryVersion string) (func(), error) {
 	lockPath := projectLockPath(dataDir, projectID)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create lock dir: %w", err)
 	}
 
 	payload, err := json.Marshal(lockInfo{
-		PID:       os.Getpid(),
-		StartTime: time.Now().Unix(),
-		ProjectID: projectID,
+		PID:           os.Getpid(),
+		StartTime:     time.Now().Unix(),
+		ProjectID:     projectID,
+		BinaryVersion: binaryVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal lock info: %w", err)
@@ -77,11 +88,32 @@ func acquireProjectLock(dataDir, projectID string) (func(), error) {
 		}
 		holder, _ := readLockInfo(lockPath)
 		return nil, fmt.Errorf(
-			"project %q already being indexed by pincher PID %d (since %s)",
-			projectID, holder.PID, time.Unix(holder.StartTime, 0).Format(time.RFC3339),
+			"project %q already being indexed: %s",
+			projectID, describeLockHolder(holder, binaryVersion),
 		)
 	}
 	return nil, fmt.Errorf("acquire lock: exhausted retries")
+}
+
+// describeLockHolder formats a human-readable description of who is
+// holding the project lock. When binary_version is available on both
+// sides and they differ, a hint flags the version skew so callers can
+// distinguish an orphan from an earlier session vs a legitimate same-
+// version concurrent indexer. #1312 v0.71.
+func describeLockHolder(holder lockInfo, callerBinaryVersion string) string {
+	base := fmt.Sprintf("pincher PID %d (since %s)",
+		holder.PID, time.Unix(holder.StartTime, 0).Format(time.RFC3339))
+	if holder.BinaryVersion == "" {
+		// Pre-#1312 binary wrote the lockfile, OR caller didn't plumb
+		// SetBinaryVersion. No skew info available.
+		return base
+	}
+	base = fmt.Sprintf("%s, binary_version=%s", base, holder.BinaryVersion)
+	if callerBinaryVersion != "" && holder.BinaryVersion != callerBinaryVersion {
+		base = fmt.Sprintf("%s — version skew vs caller (caller=%s); the holder may be an orphan from a prior binary, consider `kill %d` after confirming",
+			base, callerBinaryVersion, holder.PID)
+	}
+	return base
 }
 
 // projectLockPath maps a projectID to a fixed-length lockfile path.

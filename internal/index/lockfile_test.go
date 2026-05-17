@@ -10,7 +10,7 @@ import (
 
 func TestAcquireProjectLock_FreshSucceeds(t *testing.T) {
 	dir := t.TempDir()
-	release, err := acquireProjectLock(dir, "/Users/nick/some/project")
+	release, err := acquireProjectLock(dir, "/Users/nick/some/project", "")
 	if err != nil {
 		t.Fatalf("acquire on empty dir: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestAcquireProjectLock_FreshSucceeds(t *testing.T) {
 
 func TestAcquireProjectLock_ConflictWithLiveHolder(t *testing.T) {
 	dir := t.TempDir()
-	release1, err := acquireProjectLock(dir, "shared")
+	release1, err := acquireProjectLock(dir, "shared", "")
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestAcquireProjectLock_ConflictWithLiveHolder(t *testing.T) {
 
 	// Second acquire from the same process — the lockfile records the
 	// current PID, which is alive, so the second attempt must reject.
-	if _, err := acquireProjectLock(dir, "shared"); err == nil {
+	if _, err := acquireProjectLock(dir, "shared", ""); err == nil {
 		t.Error("second acquire should have failed; live holder is current pid")
 	} else if !strings.Contains(err.Error(), "already being indexed") {
 		t.Errorf("expected 'already being indexed' in error, got: %v", err)
@@ -49,13 +49,13 @@ func TestAcquireProjectLock_ConflictWithLiveHolder(t *testing.T) {
 
 func TestAcquireProjectLock_ReleaseAllowsReacquire(t *testing.T) {
 	dir := t.TempDir()
-	release1, err := acquireProjectLock(dir, "rotate")
+	release1, err := acquireProjectLock(dir, "rotate", "")
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 	release1()
 
-	release2, err := acquireProjectLock(dir, "rotate")
+	release2, err := acquireProjectLock(dir, "rotate", "")
 	if err != nil {
 		t.Fatalf("reacquire after release: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestAcquireProjectLock_StaleHolderIsReclaimed(t *testing.T) {
 		t.Fatalf("seed stale lockfile: %v", err)
 	}
 
-	release, err := acquireProjectLock(dir, "abandoned")
+	release, err := acquireProjectLock(dir, "abandoned", "")
 	if err != nil {
 		t.Fatalf("acquire over stale lockfile: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestAcquireProjectLock_CorruptLockfileIsReclaimed(t *testing.T) {
 		t.Fatalf("seed corrupt lockfile: %v", err)
 	}
 
-	release, err := acquireProjectLock(dir, "corrupt")
+	release, err := acquireProjectLock(dir, "corrupt", "")
 	if err != nil {
 		t.Fatalf("acquire over corrupt lockfile: %v", err)
 	}
