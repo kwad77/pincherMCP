@@ -46,14 +46,14 @@ func runBenchCLI(args []string) {
 
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "Override data directory")
-	projectID := fs.String("project", "", "Project ID to benchmark (default: largest by symbol count)")
+	projectID := fs.String("project", "", "Project to benchmark — accepts NAME, ID, or substring (default: largest by symbol count). Same tiered match as `pincher project rm` / `pincher verify --project` / `pincher doctor --project` (#1412).")
 	n := fs.Int("n", 20, "Number of sample symbols to time per tool (default 20)")
 	depth := fs.Int("depth", 2, "trace depth (default 2)")
 	asJSON := fs.Bool("json", false, "Emit structured JSON instead of human-readable text")
 	seed := fs.Int64("seed", 0, "Random seed for sampling (default: nondeterministic). Set for reproducible benchmark runs.")
 	persist := fs.Bool("persist", false, "Persist this run's aggregates to the bench_runs / bench_results tables so the dashboard's bench panel + /v1/bench-results endpoint can surface history (#1263 follow-up).")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher bench [--project ID] [--n N] [--depth D] [--json] [--persist] [--data-dir DIR] [--seed S]")
+		fmt.Fprintln(os.Stderr, "usage: pincher bench [--project NAME|ID|SUBSTR] [--n N] [--depth D] [--json] [--persist] [--data-dir DIR] [--seed S]")
 		fmt.Fprintln(os.Stderr, "  Runs search / context / trace against the user's indexed corpus and")
 		fmt.Fprintln(os.Stderr, "  reports per-tool latency + token-savings vs a full-file Read/Grep baseline.")
 		fmt.Fprintln(os.Stderr, "  Use --json for CI pipelines or `pincher bench --project ... | jq ...`.")
@@ -86,6 +86,34 @@ func runBenchCLI(args []string) {
 			os.Exit(1)
 		}
 		pid = largest
+	} else {
+		// #1412: tiered match — accept project NAME / substring, not just
+		// exact ID. Mirrors `pincher project rm`, `pincher verify
+		// --project`, `pincher doctor --project`. Pre-fix bench was the
+		// only project-arg subcommand that required literal ID, breaking
+		// the canonical hygiene-tool family (verify/doctor/bench) for
+		// any agent loop that already had the project NAME from a prior
+		// `list` call. Ambiguous matches refuse to silently pick one —
+		// bench is per-project and must surface the disambiguation.
+		projects, err := store.ListProjects()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pincher bench: list projects: %v\n", err)
+			os.Exit(1)
+		}
+		matches, status := matchProject(projects, pid)
+		switch status {
+		case matchNone:
+			fmt.Fprintf(os.Stderr, "pincher bench: no project matches %q. Run `pincher project list` to see the available IDs/names.\n", pid)
+			os.Exit(1)
+		case matchAmbiguous:
+			fmt.Fprintf(os.Stderr, "pincher bench: %q is ambiguous, matches %d projects:\n", pid, len(matches))
+			for _, p := range matches {
+				fmt.Fprintf(os.Stderr, "  %s  (id=%s)\n", p.Name, p.ID)
+			}
+			fmt.Fprintln(os.Stderr, "Refine the --project arg to disambiguate.")
+			os.Exit(1)
+		}
+		pid = matches[0].ID
 	}
 
 	rng := rand.New(rand.NewPCG(uint64(*seed), uint64(*seed)+1))
