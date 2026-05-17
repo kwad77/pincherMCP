@@ -135,7 +135,7 @@ func TestProcessExists_CurrentProcess(t *testing.T) {
 
 func TestAcquireProjectLock_Basic(t *testing.T) {
 	dir := t.TempDir()
-	release, err := acquireProjectLock(dir, "proj-a")
+	release, err := acquireProjectLock(dir, "proj-a", "")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestAcquireProjectLock_Basic(t *testing.T) {
 
 	// Second concurrent acquire on same project should fail (live PID
 	// holds the lock — we just got it from this same process).
-	_, err = acquireProjectLock(dir, "proj-a")
+	_, err = acquireProjectLock(dir, "proj-a", "")
 	if err == nil {
 		t.Error("second acquire should fail while first is held")
 	}
@@ -167,7 +167,7 @@ func TestAcquireProjectLock_StaleReclaimByCorruptPayload(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	release, err := acquireProjectLock(dir, "stale-proj")
+	release, err := acquireProjectLock(dir, "stale-proj", "")
 	if err != nil {
 		t.Fatalf("acquire after corrupt-payload reclaim: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestAcquireProjectLock_StaleReclaimByDeadPID(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	release, err := acquireProjectLock(dir, "dead-pid")
+	release, err := acquireProjectLock(dir, "dead-pid", "")
 	if err != nil {
 		t.Fatalf("acquire after dead-PID reclaim: %v", err)
 	}
