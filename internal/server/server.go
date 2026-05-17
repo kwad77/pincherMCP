@@ -2760,7 +2760,8 @@ var toolComplexityTiers = map[string]string{
 	"fetch":        "standard",
 
 	// heavy — synthesis-style output requiring frontier parsing
-	"guide": "heavy",
+	"guide":            "heavy",
+	"context_for_task": "heavy", // #1259: composite of search + N×(context + trace) + changes
 }
 
 // toolComplexityTier returns the registered tier for a tool, or the
@@ -2790,11 +2791,12 @@ var toolIdempotent = map[string]bool{
 	"search":       true,
 	"symbol":       true,
 	"symbols":      true,
-	"context":      true,
-	"trace":        true,
-	"query":        true,
-	"guide":        true,
-	"changes":      true,
+	"context":          true,
+	"context_for_task": true, // #1259
+	"trace":            true,
+	"query":            true,
+	"guide":            true,
+	"changes":          true,
 	"fetch":        true,
 	"architecture": true,
 	"dead_code":    true,
@@ -3062,7 +3064,8 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"list":         {Annotations: annotationsReadOnly},
 	"neighborhood": {Title: "Same-file symbols", Annotations: annotationsReadOnly},
 	"dead_code":    {Title: "Unreachable symbols", Annotations: annotationsReadOnly},
-	"guide":        {Annotations: annotationsReadOnly},
+	"guide":            {Annotations: annotationsReadOnly},
+	"context_for_task": {Title: "Composite context for an investigation", Annotations: annotationsReadOnly}, // #1259
 
 	// Diagnostics (read-only, idempotent).
 	"health":  {Annotations: annotationsReadOnly},
@@ -3422,6 +3425,27 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleGuide)
+
+	// 16b. context_for_task (#1259): the composite-context tool. Takes a
+	// task description OR a seed symbol id, composes search → context →
+	// trace (direction=both) → changes(overlap), and returns one envelope.
+	// One round-trip vs N atomic calls — turns the agent's "I'm
+	// investigating X" question into a single tool call that returns the
+	// right cluster of code + recent changes.
+	s.addTool(&mcp.Tool{
+		Name:        "context_for_task",
+		Description: "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"task":{"type":"string","description":"Free-form description of what you're investigating (e.g. 'fix the login timeout bug', 'understand how indexing handles symlinks'). Mutually exclusive with seed_id — pass one or the other."},
+				"seed_id":{"type":"string","description":"Stable symbol ID to anchor the composite on (skips the search step). Mutually exclusive with task — pass one or the other."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"max_seeds":{"type":"integer","description":"Cap on number of search-result seeds expanded (default 3, max 10). Each seed runs a context + trace call, so the response cost is roughly linear in this number."},
+				"trace_depth":{"type":"integer","description":"Max BFS depth for caller/callee traversal per seed (default 2, max 4). Deeper traversals are correct but expand quickly."},
+				"include_changes":{"type":"boolean","description":"If true, include git-changes overlap with resolved seeds in the envelope. Default true."}
+			}
+		}`),
+	}, s.handleContextForTask)
 
 	// 17. neighborhood — graph view around a symbol. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -11180,7 +11204,8 @@ var baselineMethodForTool = map[string]string{
 	// Tools that replace direct file reads.
 	"symbol":       baselineMethodFullFileRead,
 	"symbols":      baselineMethodFullFileRead,
-	"context":      baselineMethodFullFileRead,
+	"context":          baselineMethodFullFileRead,
+	"context_for_task": baselineMethodFullFileRead, // #1259: composite replaces N atomic file reads
 	"search":       baselineMethodFullFileRead,
 	"query":        baselineMethodFullFileRead,
 	"trace":        baselineMethodFullFileRead,
