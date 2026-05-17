@@ -313,6 +313,16 @@ type Server struct {
 	// background ticker. Exposed at /v1/metrics in the standard
 	// exposition format.
 	metrics *metricsRegistry
+
+	// tracer is the OTLP/HTTP trace exporter (#1163, traces half).
+	// Initialized from OTEL_EXPORTER_OTLP_ENDPOINT in New(). When the
+	// env var is unset (the default) tracer.Enabled() is false and
+	// the underlying tracer is a no-op — withTracing still runs but
+	// every Start/End is a zero-allocation call into noop spans.
+	// Driven entirely by env vars to match the standard OTel SDK
+	// contract; routers can scrape pincher with the same OTLP tooling
+	// they use for any other production service.
+	tracer *pincherTracer
 }
 
 // contextDiffEntry is one cached `context` fetch (#655): the backing
@@ -351,6 +361,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
 		events:              newEventBus(),                           // #654
 		metrics:             newMetricsRegistry(),                    // #1163
+		tracer:              newOTLPTracer(version),                  // #1163 traces half
 	}
 	// #654: wire the indexer's lifecycle hook to the SSE bus so
 	// index_started / index_complete reach /v1/events subscribers. The
@@ -3088,6 +3099,14 @@ func computeCapabilities(s *Server) []string {
 		caps = append(caps, "metrics_prometheus")
 	}
 
+	// #1163 traces half: advertised only when an OTLP exporter was
+	// successfully initialized (i.e. OTEL_EXPORTER_OTLP_ENDPOINT was
+	// set AND the endpoint accepted a probe). Distinguishes "configured
+	// + working" from "best-effort no-op fallback."
+	if s.tracer != nil && s.tracer.Enabled() {
+		caps = append(caps, "traces_otlp")
+	}
+
 	return caps
 }
 
@@ -3110,7 +3129,13 @@ func (s *Server) resolveProjectRoot(projectID string) (string, error) {
 func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 	// #657: wrap once at the single registration chokepoint so every
 	// tool — over stdio AND streamable-HTTP — stamps _meta.request_id.
-	wrapped := s.withRequestID(handler)
+	// #1163 traces half: tracing wrap runs INSIDE withRequestID so the
+	// span sees the resolved request_id in ctx before the handler
+	// fires. withRequestID's ctx-mutation is local to its own
+	// function call — if tracing were outer, it would never observe
+	// the rid the inner wrapper set. Order: request-id (outer) →
+	// tracing (mid) → handler (inner).
+	wrapped := s.withRequestID(s.withTracing(handler))
 	// #1078 + #1076 (MCP spec 2025-11-25): inject spec-standard Title +
 	// Annotations from the side table so each tool's literal stays
 	// focused on Name + Description + InputSchema. Only sets when the
