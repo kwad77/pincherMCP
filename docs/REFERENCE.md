@@ -356,9 +356,47 @@ RETURN f.name, f.file_path LIMIT 50
 | Kotlin | Regex | 0.70 | Functions, Classes |
 | Swift | Regex | 0.70 | Functions, Classes |
 
-Files in **Scala, Lua, Zig, Elixir, Haskell, Dart, R** are detected as source files but skipped — no extraction yet. The `Extractor` interface is stable: adding any of them is one file.
-
 YAML/JSON files emit one `Setting` symbol per key with a dotted-path qualified name (e.g. `services.web.image`, `tasks.0.name`). Multi-document YAML uses a `docN` prefix. Each Setting's byte range covers the key plus its full nested value, so retrieving `services.web` returns the entire `web` block.
+
+### Capability matrix (#1253)
+
+The 9-axis honest breakdown. `✅` = supported, `⚠️` = partial / language-tier limitation, `❌` = not yet. Source-of-truth columns (Symbols, Same-file calls, Cross-file calls, Tier) are derived from `internal/ast/registry.go` and the resolver gates in `internal/index/indexer.go`. Anyone shipping a new extractor adds a row here in the same PR.
+
+| Language | Detection | Symbols | Imports | Same-file calls | Cross-file calls | Type / receiver | Docstrings | Test files | Tier |
+|---|---|---|---|---|---|---|---|---|---|
+| Go | `.go` | ✅ Function/Method/Type/Interface/Struct/Const/Var | ✅ | ✅ | ✅ (resolver) | ✅ (v0.57 [#760](https://github.com/kwad77/pincher/issues/760)) | ✅ | ✅ `*_test.go` | AST 1.0 |
+| Python | `.py` | ✅ Function/Class/Method | ✅ | ✅ | ✅ (v0.57 [#856](https://github.com/kwad77/pincher/issues/856)) | ❌ | ⚠️ partial | ✅ `test_*.py` / `*_test.py` | AST 1.0 |
+| YAML / JSON | `.yaml/.yml/.json` | ✅ Setting (dotted-path) | ⚠️ `RENDERS` (Ansible templates) | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
+| Bash | `.sh/.bash` | ✅ Function | ❌ | ❌ | ❌ | n/a | ❌ | ✅ `_test.sh` / `test_*.sh` ([#1213](https://github.com/kwad77/pincher/issues/1213)) | AST 1.0 |
+| HCL / Terraform | `.tf/.tfvars` | ✅ Resource/DataSource/Module/Variable/Output/Local/Provider/Block | ⚠️ `REFERENCES` (`var.X`) | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
+| TOML | `.toml` | ✅ Setting (per section / per key) | n/a | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
+| Markdown | `.md/.markdown/.mdx/.mdc` | ✅ Section (heading hierarchy) | n/a | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
+| Jinja2 | `.j2/.jinja/.jinja2` | ✅ Function (macro) / Block / Setting | ✅ `extends/include/import/from` | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
+| TypeScript / TSX | `.ts/.tsx` | ✅ Function/Class/Interface/Method | ✅ | ✅ ([#1158](https://github.com/kwad77/pincher/pull/1158)) | ❌ (tracked: [#1177](https://github.com/kwad77/pincher/issues/1177)) | ❌ | ❌ | ✅ `*.test.ts/*.spec.ts` | Regex 0.85 |
+| JavaScript / JSX | `.js/.jsx/.mjs/.cjs` | ✅ Function/Class/Method | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ `*.test.js/*.spec.js` | Regex 0.85 |
+| Rust | `.rs` | ✅ Function/Struct/Trait/Impl | ⚠️ partial | ✅ (v0.62 [#1159](https://github.com/kwad77/pincher/pull/1159)) | ❌ (tracked: [#1182](https://github.com/kwad77/pincher/issues/1182)) | ❌ | ❌ | ⚠️ `#[cfg(test)]` blocks | Regex 0.85 |
+| Java | `.java` | ✅ Class/Method/Interface | ⚠️ partial | ✅ (v0.62) | ❌ (tracked: [#1183](https://github.com/kwad77/pincher/issues/1183)) | ❌ | ⚠️ Javadoc partial | ✅ `*Test.java` | Regex 0.85 |
+| Makefile | `Makefile/.mk` | ✅ Function (rule target) / Setting | ❌ | ❌ | ❌ | n/a | ❌ | ❌ | Regex 0.85 |
+| SQL | `.sql/.ddl` | ✅ Function/Class (table/view) | ❌ | ❌ | ❌ | n/a | ❌ | ❌ | Regex 0.85 |
+| Ruby | `.rb` | ✅ Function/Class/Method | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ⚠️ partial | Regex ~0.9 |
+| PHP | `.php` | ✅ Function/Class/Method | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| C / C++ | `.c/.h/.cpp/.hpp/.cc` | ✅ Function/Struct/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| C# | `.cs` | ✅ Class/Method/Interface | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Kotlin | `.kt/.kts` | ✅ Function/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Swift | `.swift` | ✅ Function/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Scala | `.scala/.sc` | ✅ Function/Class (v0.63 [#1187](https://github.com/kwad77/pincher/pull/1187)) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Lua | `.lua` | ✅ Function (v0.63 [#1186](https://github.com/kwad77/pincher/pull/1186)) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Zig | `.zig` | ✅ Function/Struct (v0.63) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Elixir | `.ex/.exs` | ✅ Function/Module (v0.63) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Dart | `.dart` | ✅ Function/Class (v0.63) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| R | `.r/.R` | ✅ Function (v0.63) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Haskell | `.hs/.lhs` | ❌ (no extractor — [#1161](https://github.com/kwad77/pincher/issues/1161)) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Stub 0.0 |
+
+**Reading the matrix:** the gradient runs top-to-bottom — AST-tier languages get full edge graphs and resolver coverage, regex-tier emits symbols + same-file edges only, stub-tier (Haskell only as of v0.63) returns zero symbols.
+
+**Cross-file calls** is where most of the v0.65+ resolver work is concentrated: TypeScript ([#1177](https://github.com/kwad77/pincher/issues/1177)), Rust ([#1182](https://github.com/kwad77/pincher/issues/1182)), Java ([#1183](https://github.com/kwad77/pincher/issues/1183)) are the next AST/resolver work to flip those cells from ❌ to ✅.
+
+**Type / receiver resolution** is the highest-leverage missing axis on regex-tier languages — without it, `X.method()` can't bind to a specific receiver type's method definition, so `trace name=method` returns every same-named method across the project. Tracked alongside the AST roadmap.
 
 ### Skip rules
 
