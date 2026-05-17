@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,4 +215,160 @@ func TestVerify_EmptySlicesInJSONShape(t *testing.T) {
 	// Per-project slices initialized on the buildVerifyReport path —
 	// no projects in this case, so nothing to assert beyond the
 	// top-level Projects shape.
+}
+
+// TestSubstringFoldContains_Cases exercises the case-insensitive
+// substring helper across the shapes the --project flag accepts.
+func TestSubstringFoldContains_Cases(t *testing.T) {
+	cases := []struct {
+		haystack, needle string
+		want             bool
+	}{
+		{"pincher-repo", "PINCHER", true},
+		{"warp_rc", "warp", true},
+		{"PROJ-123", "123", true},
+		{"alpha", "beta", false},
+		{"short", "longer-than-haystack", false},
+		{"anything", "", true},
+	}
+	for _, c := range cases {
+		if got := substringFoldContains(c.haystack, c.needle); got != c.want {
+			t.Errorf("substringFoldContains(%q,%q) = %v, want %v",
+				c.haystack, c.needle, got, c.want)
+		}
+	}
+}
+
+// TestFormatVerifyText_Shapes covers the renderer's three branches:
+// no matched projects, clean sweep, and drift present.
+func TestFormatVerifyText_Shapes(t *testing.T) {
+	empty := formatVerifyText(&VerifyReport{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Projects:    []VerifyProjectReport{},
+	})
+	if !verifyTextContains(empty, "No projects matched.") {
+		t.Errorf("empty report missing expected text; got %q", empty)
+	}
+
+	clean := formatVerifyText(&VerifyReport{
+		Projects: []VerifyProjectReport{{
+			Name: "alpha", Path: "/tmp/alpha",
+			Checked: 3, InSync: 3,
+			Drifted: []string{}, Missing: []string{}, Unreadable: []string{},
+		}},
+		FilesChecked: 3, FilesInSync: 3,
+	})
+	if !verifyTextContains(clean, "All indexed files match their stored hashes.") {
+		t.Errorf("clean-sweep footer missing; got %q", clean)
+	}
+
+	drifted := formatVerifyText(&VerifyReport{
+		Projects: []VerifyProjectReport{{
+			Name: "beta", Path: "/tmp/beta",
+			Checked: 2, InSync: 1,
+			Drifted:    []string{"changed.go"},
+			Missing:    []string{"gone.go"},
+			Unreadable: []string{"locked.go"},
+		}},
+		FilesChecked: 2, FilesInSync: 1,
+		FilesDrifted: 1, FilesMissing: 1, FilesUnreadable: 1,
+	})
+	for _, want := range []string{"drifted   changed.go", "missing   gone.go", "unreadable locked.go", "Re-index any drifted project"} {
+		if !verifyTextContains(drifted, want) {
+			t.Errorf("drift report missing %q; got %q", want, drifted)
+		}
+	}
+}
+
+func verifyTextContains(haystack, needle string) bool {
+	return substringFoldContains(haystack, needle)
+}
+
+// TestVerifyCLI_Binary exercises the runVerifyCLI dispatch wrapper
+// end-to-end (clean DB, --json, --project filter, exit-2 on drift).
+// Mirrors the doctor CLI binary tests — same -cover pattern picks up
+// the dispatch wrapper's coverage when GOCOVERDIR is set.
+func TestVerifyCLI_Binary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+
+	// Clean DB: zero projects, exit 0, JSON shape stable.
+	dataDir := t.TempDir()
+	cmd := exec.Command(bin, "verify", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher verify --json (clean): %v\n%s", err, out)
+	}
+	for _, want := range []string{`"projects":`, `"files_checked": 0`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("clean verify --json missing %q in output:\n%s", want, out)
+		}
+	}
+
+	// Seed a drift, expect exit code 2.
+	dataDir2 := t.TempDir()
+	store, err := db.Open(dataDir2)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	projectRoot := filepath.Join(t.TempDir(), "proj")
+	_ = os.MkdirAll(projectRoot, 0o755)
+	_ = os.WriteFile(filepath.Join(projectRoot, "f.go"), []byte("now"), 0o644)
+	_ = store.UpsertProject(db.Project{ID: "p1", Path: projectRoot, Name: "drift-proj", IndexedAt: time.Now()})
+	_ = store.SetFileHash("p1", "f.go", "stale-hash")
+	store.Close()
+
+	cmd2 := exec.Command(bin, "verify", "--data-dir", dataDir2, "--project", "drift")
+	cmd2.Env = pincherCoverEnv()
+	out2, err2 := cmd2.CombinedOutput()
+	if err2 == nil {
+		t.Fatalf("expected non-zero exit on drift; got success\n%s", out2)
+	}
+	if ee, ok := err2.(*exec.ExitError); !ok || ee.ExitCode() != 2 {
+		t.Fatalf("expected exit code 2 on drift; got %v\n%s", err2, out2)
+	}
+	if !strings.Contains(string(out2), "drifted") {
+		t.Errorf("drift report missing 'drifted' in text output:\n%s", out2)
+	}
+}
+
+
+// TestVerify_UnreadableBranch exercises the unreadable classification
+// — distinct from missing — by stamping a hash for a path that
+// ReadFile rejects for a non-ENOENT reason. We use a directory
+// (Windows + Unix both error reading a directory as a file, but with
+// a non-ENOENT error code) so the test is portable.
+func TestVerify_UnreadableBranch(t *testing.T) {
+	root := t.TempDir()
+	dbDir := filepath.Join(root, "db")
+	_ = os.MkdirAll(dbDir, 0o755)
+	store, err := db.Open(dbDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	projectRoot := filepath.Join(root, "proj")
+	_ = os.MkdirAll(projectRoot, 0o755)
+	// Path "subdir" is a directory, not a file — ReadFile returns a
+	// non-ENOENT error, which lands in the unreadable bucket.
+	_ = os.MkdirAll(filepath.Join(projectRoot, "subdir"), 0o755)
+
+	_ = store.UpsertProject(db.Project{ID: "p1", Path: projectRoot, Name: "p1", IndexedAt: time.Now()})
+	_ = store.SetFileHash("p1", "subdir", "abcdef")
+
+	report, err := buildVerifyReport(store, "")
+	if err != nil {
+		t.Fatalf("buildVerifyReport: %v", err)
+	}
+	if report.FilesUnreadable != 1 {
+		t.Errorf("files_unreadable = %d, want 1", report.FilesUnreadable)
+	}
+	if report.FilesMissing != 0 {
+		t.Errorf("directory should not register as missing; got missing=%d", report.FilesMissing)
+	}
 }
