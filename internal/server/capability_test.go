@@ -234,6 +234,27 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		// #1163 v0.67 OTLP traces. Conditional capability: advertised
+		// only when OTEL_EXPORTER_OTLP_ENDPOINT was set AND the
+		// exporter init succeeded. When advertised, the probe must
+		// confirm the tracer is actually attached AND reports Enabled
+		// (i.e. not the noop fallback). Without this probe a regression
+		// that silently demotes the live tracer back to noop would
+		// keep advertising traces_otlp while emitting zero spans.
+		// #1164 deliverable: every advertised capability has a runtime
+		// probe (same pattern as the v0.59 capability audit).
+		tag: "traces_otlp",
+		probe: func(t *testing.T, srv *Server) {
+			if srv.tracer == nil {
+				t.Errorf("traces_otlp advertised but srv.tracer is nil — capability/tracer wiring out of lockstep")
+				return
+			}
+			if !srv.tracer.Enabled() {
+				t.Errorf("traces_otlp advertised but srv.tracer.Enabled() = false — the capability is gated on a real exporter, not the noop fallback")
+			}
+		},
+	},
+	{
 		tag: "sse",
 		probe: func(t *testing.T, srv *Server) {
 			// GET /v1/events must answer 200 with a text/event-stream
@@ -282,7 +303,7 @@ func TestCapability_EveryAdvertisedTagHasRuntimeProbe(t *testing.T) {
 
 	for tag := range probed {
 		// Skip conditional capabilities not present on this server.
-		if tag == "http_auth" || tag == "streamable_http" || tag == "closure_tables" {
+		if tag == "http_auth" || tag == "streamable_http" || tag == "closure_tables" || tag == "traces_otlp" {
 			continue
 		}
 		if !advertised[tag] {
