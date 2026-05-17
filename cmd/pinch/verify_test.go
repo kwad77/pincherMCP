@@ -217,27 +217,10 @@ func TestVerify_EmptySlicesInJSONShape(t *testing.T) {
 	// top-level Projects shape.
 }
 
-// TestSubstringFoldContains_Cases exercises the case-insensitive
-// substring helper across the shapes the --project flag accepts.
-func TestSubstringFoldContains_Cases(t *testing.T) {
-	cases := []struct {
-		haystack, needle string
-		want             bool
-	}{
-		{"pincher-repo", "PINCHER", true},
-		{"warp_rc", "warp", true},
-		{"PROJ-123", "123", true},
-		{"alpha", "beta", false},
-		{"short", "longer-than-haystack", false},
-		{"anything", "", true},
-	}
-	for _, c := range cases {
-		if got := substringFoldContains(c.haystack, c.needle); got != c.want {
-			t.Errorf("substringFoldContains(%q,%q) = %v, want %v",
-				c.haystack, c.needle, got, c.want)
-		}
-	}
-}
+// (Pre-#1404 this file held TestSubstringFoldContains_Cases for the
+// flat substring helper. That helper moved out — the tiered helper
+// it replaced is exercised by TestMatchedProjectIDsForFilter_Tiered
+// in doctor_test.go.)
 
 // TestFormatVerifyText_Shapes covers the renderer's three branches:
 // no matched projects, clean sweep, and drift present.
@@ -281,7 +264,7 @@ func TestFormatVerifyText_Shapes(t *testing.T) {
 }
 
 func verifyTextContains(haystack, needle string) bool {
-	return substringFoldContains(haystack, needle)
+	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
 }
 
 // TestVerifyCLI_Binary exercises the runVerifyCLI dispatch wrapper

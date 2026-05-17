@@ -632,19 +632,16 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// db_bytes_estimate. Missing entries (e.g. a freshly upserted
 	// project with no symbols yet) default to 0, which is honest.
 	projectBytes, _ := s.store.EstimateProjectBytes()
-	// #1401: pre-build the set of project_ids that pass the substring
-	// filter so the projects loop AND the extraction_failures section
-	// can use the same membership without re-walking plist twice.
-	// matchedProjectIDs is nil when no filter is set (means "all").
-	var matchedProjectIDs map[string]struct{}
-	if projectFilter != "" {
-		matchedProjectIDs = make(map[string]struct{}, len(plist))
-		for _, p := range plist {
-			if doctorProjectMatches(p, projectFilter) {
-				matchedProjectIDs[p.ID] = struct{}{}
-			}
-		}
-	}
+	// #1401 / #1404: pre-build the set of project_ids that pass the
+	// tiered filter so the projects loop AND the extraction_failures
+	// section share one membership predicate. Resolution order matches
+	// `pincher project rm`: exact id (case-sensitive) → exact name
+	// (case-insensitive) → substring on name OR id. Pre-#1404 the
+	// flat substring check over-matched on nested project IDs
+	// containing the parent path. matchedProjectIDs is nil when no
+	// filter is set (means "all"); non-nil empty means "filter
+	// applied, nothing matched".
+	matchedProjectIDs := doctorMatchedProjectIDsForFilter(plist, projectFilter)
 	if err == nil {
 		for _, p := range plist {
 			if matchedProjectIDs != nil {
@@ -889,33 +886,53 @@ func isStaleFailure(failureLastSeen, indexedAt time.Time) bool {
 	return failureLastSeen.Before(indexedAt)
 }
 
-// doctorProjectMatches reports whether project p matches the
-// substring-style filter used by the doctor MCP tool's `project`
-// arg (#1401). Same shape as `pincher project rm` and
-// `pincher verify --project`: case-insensitive substring against
-// the project's name OR its id. Empty filter matches everything.
+// doctorMatchedProjectIDsForFilter implements the MCP doctor tool's
+// `project` arg with the same tiered match `pincher project rm` uses
+// (#1404 fix). Pre-fix the flat substring check over-matched on
+// nested project IDs: filter "pincher-repo" returned every corpus
+// sub-project whose id `d:\claudecode\pincher-repo\testdata\corpus\*`
+// contained the parent path as a substring.
 //
-// Mirrors `cmd/pinch/doctor.go::doctorProjectMatches` per the
-// bounded-duplication convention. The local prefix avoids clashing
-// with `cmd/pinch/verify.go::projectMatches` once verify lands; the
-// behaviors must stay identical.
-func doctorProjectMatches(p db.Project, filter string) bool {
-	return doctorSubstringFoldContains(p.Name, filter) ||
-		doctorSubstringFoldContains(p.ID, filter)
-}
-
-func doctorSubstringFoldContains(haystack, needle string) bool {
-	if needle == "" {
-		return true
+// Resolution order:
+//  1. Exact id match (case-sensitive — IDs are stable).
+//  2. Exact (case-insensitive) name match. >1 hit is legitimate
+//     (name collision); we include all of them.
+//  3. Substring on name OR id — fallback when no exact tier hit.
+//
+// Returns nil when filter == "" (no filter; caller treats nil as
+// "include every project"). Returns a non-nil empty map when filter
+// is set but nothing matched (filter applied, all excluded).
+//
+// Mirrors `cmd/pinch/doctor.go::matchedProjectIDsForFilter` per the
+// bounded-duplication convention. The doctor* prefix exists because
+// admin.go can't import cmd/pinch and we don't yet have a shared
+// pkg/projectmatch util.
+func doctorMatchedProjectIDsForFilter(ps []db.Project, filter string) map[string]struct{} {
+	if filter == "" {
+		return nil
 	}
-	hL := doctorToLowerASCII(haystack)
-	nL := doctorToLowerASCII(needle)
-	for i := 0; i+len(nL) <= len(hL); i++ {
-		if hL[i:i+len(nL)] == nL {
-			return true
+	hits := make(map[string]struct{})
+	for _, p := range ps {
+		if p.ID == filter {
+			hits[p.ID] = struct{}{}
+			return hits
 		}
 	}
-	return false
+	for _, p := range ps {
+		if strings.EqualFold(p.Name, filter) {
+			hits[p.ID] = struct{}{}
+		}
+	}
+	if len(hits) > 0 {
+		return hits
+	}
+	low := doctorToLowerASCII(filter)
+	for _, p := range ps {
+		if strings.Contains(doctorToLowerASCII(p.Name), low) || strings.Contains(doctorToLowerASCII(p.ID), low) {
+			hits[p.ID] = struct{}{}
+		}
+	}
+	return hits
 }
 
 func doctorToLowerASCII(s string) string {

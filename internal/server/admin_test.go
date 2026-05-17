@@ -315,6 +315,60 @@ func TestHandleDoctor_ProjectFilter(t *testing.T) {
 	}
 }
 
+// TestHandleDoctor_ProjectFilter_TieredMatch (#1404) — regression
+// guard for the original bug: substring filter "pincher-repo" used
+// to over-match every nested corpus project whose id contained the
+// parent path. With the tiered fix an exact-name hit short-circuits
+// the substring fallback.
+func TestHandleDoctor_ProjectFilter_TieredMatch(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+
+	// Parent project + two nested corpus projects under the parent's
+	// path. All three IDs contain the substring "pincher-repo".
+	for _, c := range []struct{ id, name string }{
+		{"d:\\claudecode\\pincher-repo", "pincher-repo"},
+		{"d:\\claudecode\\pincher-repo\\testdata\\corpus\\k8s-ops", "k8s-ops"},
+		{"d:\\claudecode\\pincher-repo\\testdata\\corpus\\python-web", "python-web"},
+	} {
+		store.UpsertProject(db.Project{
+			ID: c.id, Path: c.id, Name: c.name,
+			IndexedAt: time.Now(), SymCount: 10,
+		})
+	}
+
+	// Exact name match — pincher-repo wins, k8s-ops + python-web stay
+	// invisible despite their IDs containing the substring.
+	result, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{
+		"top": 50, "project": "pincher-repo",
+	}))
+	if err != nil {
+		t.Fatalf("handleDoctor: %v", err)
+	}
+	body := decode(t, result)
+	projects, _ := body["projects"].([]any)
+	if len(projects) != 1 {
+		t.Fatalf("exact name 'pincher-repo' matched %d projects, want 1 (nested corpora must not be dragged in by substring): %v", len(projects), projects)
+	}
+	if name := projects[0].(map[string]any)["name"]; name != "pincher-repo" {
+		t.Errorf("matched project name = %v, want pincher-repo", name)
+	}
+
+	// Substring fallback — "pincher" doesn't exact-name-match anything,
+	// so it falls through to substring and hits all three.
+	resultSub, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{
+		"top": 50, "project": "pincher",
+	}))
+	if err != nil {
+		t.Fatalf("handleDoctor pincher: %v", err)
+	}
+	bodySub := decode(t, resultSub)
+	projectsSub, _ := bodySub["projects"].([]any)
+	if len(projectsSub) != 3 {
+		t.Errorf("substring 'pincher' should hit all 3 (pincher-repo + 2 corpora), got %d: %v", len(projectsSub), projectsSub)
+	}
+}
+
 func TestHandleRebuildFTS_DryRunByDefault(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)

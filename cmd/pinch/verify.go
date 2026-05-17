@@ -117,9 +117,12 @@ type VerifyProjectReport struct {
 }
 
 // buildVerifyReport drives the per-project / per-file hash compare.
-// projectFilter "" walks every project; non-empty matches against
-// substring of project name or id (case-insensitive) — same semantics
-// as `pincher project rm`.
+// projectFilter "" walks every project; non-empty filters via the
+// tiered match in matchedProjectIDsForFilter — exact id, then exact
+// name, then substring on name OR id. Mirrors `pincher project rm`'s
+// resolution shape so `--project pincher-repo` doesn't drag in nested
+// corpus projects whose IDs happen to contain "pincher-repo" as a
+// substring (#1404).
 func buildVerifyReport(store *db.Store, projectFilter string) (*VerifyReport, error) {
 	r := &VerifyReport{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
@@ -129,9 +132,12 @@ func buildVerifyReport(store *db.Store, projectFilter string) (*VerifyReport, er
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
+	matchedIDs := matchedProjectIDsForFilter(projects, projectFilter)
 	for _, p := range projects {
-		if projectFilter != "" && !projectMatches(p, projectFilter) {
-			continue
+		if matchedIDs != nil {
+			if _, ok := matchedIDs[p.ID]; !ok {
+				continue
+			}
 		}
 		pr := VerifyProjectReport{
 			ID:         p.ID,
@@ -174,36 +180,11 @@ func buildVerifyReport(store *db.Store, projectFilter string) (*VerifyReport, er
 	return r, nil
 }
 
-// projectMatches reproduces the substring-match shape used by
-// `pincher project rm` so the --project flag accepts the same input
-// values the user already knows.
-func projectMatches(p db.Project, filter string) bool {
-	return substringFoldContains(p.Name, filter) || substringFoldContains(p.ID, filter)
-}
-
-func substringFoldContains(haystack, needle string) bool {
-	if needle == "" {
-		return true
-	}
-	hL := toLowerASCII(haystack)
-	nL := toLowerASCII(needle)
-	for i := 0; i+len(nL) <= len(hL); i++ {
-		if hL[i:i+len(nL)] == nL {
-			return true
-		}
-	}
-	return false
-}
-
-func toLowerASCII(s string) string {
-	b := []byte(s)
-	for i := 0; i < len(b); i++ {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 32
-		}
-	}
-	return string(b)
-}
+// (Pre-#1404 this file held the flat substring helpers projectMatches /
+// substringFoldContains / toLowerASCII. They moved into the tiered
+// matchedProjectIDsForFilter helper in doctor.go since both subcommands
+// now share the same tiered match — exact id, then exact name, then
+// substring fallback.)
 
 // formatVerifyText renders the report as a compact plain-text block.
 func formatVerifyText(r *VerifyReport) string {

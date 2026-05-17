@@ -198,19 +198,14 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 
 	// Projects
 	projects, err := store.ListProjects()
-	// #1401: pre-build the matched-id set so the projects loop AND
-	// the extraction_failures section share one membership predicate.
-	// nil means "no filter — include everything" (avoid allocating a
-	// map for the default case).
-	var matchedProjectIDs map[string]struct{}
-	if projectFilter != "" {
-		matchedProjectIDs = make(map[string]struct{}, len(projects))
-		for _, p := range projects {
-			if doctorProjectMatches(p, projectFilter) {
-				matchedProjectIDs[p.ID] = struct{}{}
-			}
-		}
-	}
+	// #1401 / #1404: pre-build the matched-id set so the projects loop
+	// AND the extraction_failures section share one membership predicate.
+	// Tiered resolution (exact id → exact name → substring) mirrors
+	// `pincher project rm` and protects against the over-match #1404
+	// surfaced (substring "pincher-repo" hit every nested corpus project
+	// whose id contains the parent path). nil means "no filter — include
+	// everything"; non-nil empty means "filter applied, nothing matched".
+	matchedProjectIDs := matchedProjectIDsForFilter(projects, projectFilter)
 	if err == nil {
 		current := db.CurrentSchemaVersion()
 		for _, p := range projects {
@@ -685,42 +680,56 @@ func truncEnd(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-// doctorProjectMatches reports whether project p matches the
-// substring-style filter used by the doctor CLI's --project flag
-// (#1401). Same shape as `pincher project rm` and
-// `pincher verify --project`: case-insensitive substring against
-// the project's name OR its id. Empty filter matches everything.
+// matchedProjectIDsForFilter implements the doctor/verify --project
+// substring matching, but TIERED to match `pincher project rm`'s
+// behavior (#1404 fix). Pre-fix the flat "name OR id substring" check
+// over-matched on nested project IDs — e.g. `--project pincher-repo`
+// returned every corpus sub-project under `pincher-repo/testdata/`
+// because their full IDs contain the substring "pincher-repo".
 //
-// Mirrors `internal/server/admin.go::doctorProjectMatches` per the
-// bounded-duplication convention; the two must stay behaviorally
-// identical. The local doctor* prefix avoids colliding with verify's
-// `projectMatches` once both subcommands ship in the same binary
-// (#1399/#1400) — same algorithm, different call sites.
-func doctorProjectMatches(p db.Project, filter string) bool {
-	return doctorSubstringFoldContains(p.Name, filter) ||
-		doctorSubstringFoldContains(p.ID, filter)
-}
-
-func doctorSubstringFoldContains(haystack, needle string) bool {
-	if needle == "" {
-		return true
+// Tiered resolution:
+//  1. Exact id match → that one project (case-sensitive — IDs are stable
+//     paths, scripted callers benefit from determinism).
+//  2. Exact (case-insensitive) name match → all hits (1 expected; >1
+//     would be a legitimate name collision and we surface all of them).
+//  3. Substring on name OR id → fallback when neither exact tier hit.
+//
+// Returns nil when filter == "" (no filter applied; caller treats nil
+// as "no filter — include every project"). Returns a non-nil empty map
+// when filter is set but nothing matched (filter applied, all projects
+// excluded — distinct outcome from no-filter).
+//
+// Mirrors the tiered match in cmd/pinch/project.go::matchProject; the
+// shape differs slightly (this returns a set, that returns slice + status)
+// because the filter callers don't need disambiguation UX.
+func matchedProjectIDsForFilter(ps []db.Project, filter string) map[string]struct{} {
+	if filter == "" {
+		return nil
 	}
-	hL := doctorToLowerASCII(haystack)
-	nL := doctorToLowerASCII(needle)
-	for i := 0; i+len(nL) <= len(hL); i++ {
-		if hL[i:i+len(nL)] == nL {
-			return true
+	hits := make(map[string]struct{})
+	// 1. Exact id match (case-sensitive).
+	for _, p := range ps {
+		if p.ID == filter {
+			hits[p.ID] = struct{}{}
+			return hits
 		}
 	}
-	return false
-}
-
-func doctorToLowerASCII(s string) string {
-	b := []byte(s)
-	for i := 0; i < len(b); i++ {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 32
+	// 2. Exact (case-insensitive) name match.
+	for _, p := range ps {
+		if strings.EqualFold(p.Name, filter) {
+			hits[p.ID] = struct{}{}
 		}
 	}
-	return string(b)
+	if len(hits) > 0 {
+		return hits
+	}
+	// 3. Substring on name OR id.
+	low := strings.ToLower(filter)
+	for _, p := range ps {
+		if strings.Contains(strings.ToLower(p.Name), low) || strings.Contains(strings.ToLower(p.ID), low) {
+			hits[p.ID] = struct{}{}
+		}
+	}
+	return hits
 }
+
