@@ -344,11 +344,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// the rewrite — external imports stay unresolved as before.
 	modulePath := readGoModulePath(absPath)
 
-	// Python source-root prefixes (e.g. "src" for a src-layout repo).
-	// Bridges Python's module-path imports and pincher's file-path-derived
-	// QNs in resolveImports. Empty slice (only "") for non-Python projects
-	// is harmless: resolveImports still tries the identity candidate.
-	pythonRoots := ast.PythonSourceRoots(absPath)
+	// Python source-roots (e.g. "src" for a src-layout repo) are only
+	// consumed inside the resolve block below — gated by #1314 to skip
+	// on no-change ticks. Computing them here would be dead work
+	// (#1317: a full WalkDir per tick for ~13% of post-#1314 watcher
+	// allocations); declare here so the variable is in scope for the
+	// gated block, but defer the actual scan.
+	var pythonRoots []string
 
 	// Walk source files using gocodewalker (respects .gitignore)
 	fileListQueue := make(chan *gocodewalker.File, 256)
@@ -763,6 +765,11 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// need to trigger a resolve.
 	resolveChanged := force || totalFiles > 0
 	if resolveChanged {
+		// #1317: deferred from the top of Index() — only the resolve
+		// block consumes pythonRoots, so on a no-change tick we skip
+		// the WalkDir entirely.
+		pythonRoots = ast.PythonSourceRoots(absPath)
+
 		allImports := loadOrFallback(idx, projectID, "IMPORTS", pendingImport)
 		if n := idx.resolveImports(projectID, allImports, pythonRoots); n > 0 {
 			totalEdges += n
