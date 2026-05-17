@@ -14,9 +14,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            test-flags: -timeout 120s
+            # 240s after v0.67 #1231 schema v28 rebuild — same as macos.
+            # cmd/pinch crosses 120s on the GHA runner once the
+            # symbols-table rebuild migration runs N times across the
+            # subprocess-coverage tests. Local runs are ~75s.
+            test-flags: -timeout 240s
           - os: macos-latest
-            test-flags: -timeout 120s
+            # 240s after v0.67 #1231 schema v28 rebuild — cmd/pinch
+            # crossed the 120s budget on the macos-latest runner once
+            # the symbols-table rebuild migration landed. Local runs
+            # are ~75s; the slower runner needs the headroom.
+            test-flags: -timeout 240s
           - os: windows-latest
             # Windows SQLite I/O is ~10x slower per package. Was -p 1
             # (full serial); trying -p 2 — tests use unique temp dirs

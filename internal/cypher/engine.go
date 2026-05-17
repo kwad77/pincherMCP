@@ -3189,8 +3189,8 @@ func (e *Executor) runJoinQuery(ctx context.Context, q *queryAST, pat pattern) (
 		b.extraction_confidence, b.signature, b.return_type, b.docstring, b.is_test,
 		e.kind, e.confidence
 		FROM edges e
-		JOIN symbols a ON a.id = e.from_id
-		JOIN symbols b ON b.id = e.to_id
+		JOIN symbols a ON a.id = e.from_id AND a.project_id = e.project_id
+		JOIN symbols b ON b.id = e.to_id   AND b.project_id = e.project_id
 		WHERE 1=1` + edgeFilter
 
 	var args []any
@@ -3386,6 +3386,18 @@ type bfsHop struct {
 // and run a CTE per start, fanning out 3 hops each — 10s timeout on
 // real corpora. With inversion the same query walks inbound from the
 // single b match, completing in milliseconds.
+// bfsSymbolProjectFilter returns the optional `WHERE s.project_id=?`
+// clause appended to the outer SELECT of the BFS CTE. #1231: composite
+// PK on symbols means s.id alone no longer pins one row across
+// projects, so the outer join needs project scope when the query is
+// project-scoped. Empty string when unscoped (cross-project queries).
+func bfsSymbolProjectFilter(projectID string) string {
+	if projectID == "" {
+		return ""
+	}
+	return " WHERE s.project_id = ?"
+}
+
 func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Result, error) {
 	inverted := shouldInvertBFS(q, pat)
 	startVar := pat.fromVar
@@ -3591,7 +3603,7 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 		s.start_byte, s.end_byte, s.start_line, s.end_line, s.is_exported, s.is_entry_point, s.complexity,
 		s.extraction_confidence, s.signature, s.return_type, s.docstring, s.is_test, ra.min_depth
 	FROM reachAgg ra
-	CROSS JOIN symbols s ON s.id = ra.id
+	CROSS JOIN symbols s ON s.id = ra.id` + bfsSymbolProjectFilter(projectID) + `
 	ORDER BY ra.min_depth
 	LIMIT ?`
 
@@ -3602,7 +3614,15 @@ func (e *Executor) bfsViaCTE(ctx context.Context, startID string, kinds []string
 	if projectID != "" {
 		args = append(args, projectID)
 	}
-	args = append(args, maxHops, minHops, startID, maxRows)
+	args = append(args, maxHops, minHops, startID)
+	// #1231: when project-scoped, the outer SELECT's `WHERE s.project_id = ?`
+	// (appended by bfsSymbolProjectFilter) needs its own bind. Composite
+	// PK means s.id alone is no longer unique, so the project filter
+	// pins the right project's row even when ids collide cross-project.
+	if projectID != "" {
+		args = append(args, projectID)
+	}
+	args = append(args, maxRows)
 
 	rows, err := e.DB.QueryContext(ctx, cteQ, args...)
 	if err != nil {
