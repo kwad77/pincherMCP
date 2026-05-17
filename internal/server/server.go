@@ -9256,6 +9256,19 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 		if report.Coverage[i].Language == "Python" && ast.PythonAvailable() {
 			report.Coverage[i].Parser = "AST"
 		}
+		// #1328 v0.71: JavaScript has the same dispatcher shape as Python
+		// — registered confidence=0.85 (regex fallback's honest floor),
+		// runtime route to AST when JavaScriptASTEnabled() returns true
+		// (default-on since v0.20.0 #266). Pre-fix the label stayed
+		// "Regex" forever, even though every successful extraction lands
+		// on the AST path. JSX uses the same dispatcher so gets the same
+		// upgrade.
+		switch report.Coverage[i].Language {
+		case "JavaScript", "JSX":
+			if ast.JavaScriptASTEnabled() {
+				report.Coverage[i].Parser = "AST"
+			}
+		}
 	}
 
 	data := map[string]any{
