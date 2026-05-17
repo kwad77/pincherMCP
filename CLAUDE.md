@@ -36,13 +36,14 @@ gh issue edit <PR#> --milestone v0.55.0  # after the fact
 
 ### Release-prep checklist (every release, no skipping)
 
-The release-prep PR (the one before tagging) MUST touch all five below. CHANGELOG-only is the historical mistake — the README is what users hit first via the GitHub repo landing page, and stale roadmap claims erode trust faster than missing CHANGELOG entries.
+The release-prep PR (the one before tagging) MUST touch all six below. CHANGELOG-only is the historical mistake — the README is what users hit first via the GitHub repo landing page, and stale roadmap claims erode trust faster than missing CHANGELOG entries.
 
 1. **`CHANGELOG.md`** — run `bash scripts/changelog-assemble.sh --apply` to fold per-PR `CHANGELOG.d/<num>.<type>.md` stubs into the `[Unreleased]` section, then convert `[Unreleased]` → versioned heading with the release's theme one-liner. Stub-file convention shipped #694; legacy direct-edit still works for in-flight PRs that predate it.
 2. **`README.md` roadmap table** — bump the previous `🚧 in flight` row to `✅ shipped`, add a new row for the version about to ship with its theme one-liner, optionally add the next `🚧 in flight` row.
 3. **`README.md` Known limitations** — rewrite any item whose fix lands in this version into past tense; recommend the upgrade.
 4. **Version-sensitive claims in README leading paragraph** — tool count, schema version, coverage badge if it moved meaningfully (>1%).
 5. **`docs/REFERENCE.md` — leading metadata line** (`**Schema version:** vN · **MCP tools:** N · **Languages detected:** ~N`). Bump every release that moves any of those numbers. Per #688: the leading line is what users see first when they click into the reference doc from README; stale numbers there make every subsequent claim look distrust-by-default. Drift was 12 schema versions before #698 caught it.
+6. **`docs/` (GitHub Pages site)** — audit `docs/index.html`, `docs/release-channels.md`, `docs/streamable-http.md`, `docs/troubleshooting.md`, `docs/deployment/*.md`, `docs/tutorials/*.md` for version-sensitive claims. The grep that catches drift: `grep -rnE "v0\.[0-9]+|pincher-v0\.[0-9]+|[0-9]+ MCP tools|schema.{0,15}v[0-9]+" docs/` against the previous release version. Pages renders polished landing copy from `docs/` — install tarball filenames, savings-stat parentheticals, badge value ranges, forward-looking copy about features that did/didn't ship — all higher-visibility than README to search-engine traffic. v0.67 release-prep missed `docs/index.html` "v0.66" parenthetical + `pincher-v0.66.0-linux-amd64.tar.gz` install snippet; caught next morning in a catch-up PR. Don't repeat.
 
 If a release ships without README touched, the user's first reaction is "the README didn't say anything about it" and follow-up cleanup PRs read as forgetting, not catching up. Do it inline.
 
