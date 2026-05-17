@@ -1627,7 +1627,14 @@ func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, r
 	// residual collisions are legitimate JSX/object-property/re-export
 	// shapes the regex tier can't scope-resolve). When the TS AST
 	// extractor lands (#1177 area), reconsider.
-	suppressCollision := lang == "Markdown" || lang == "TypeScript"
+	//
+	// v0.71 dogfood: TSX (separate language tag from TypeScript) was
+	// falling through to the diagnostic — Codex-corpus TSX files like
+	// `App.tsx`, `GraphExplorerGPU.tsx`, etc. produced 15+ collisions
+	// per file (object-property `data` / `res` / `api` / `graph`
+	// keys, repeated across handlers). Same UX rationale as TypeScript;
+	// extend the carve-out to TSX.
+	suppressCollision := lang == "Markdown" || lang == "TypeScript" || lang == "TSX"
 	if !suppressCollision && len(result.QNCollisions) > 0 {
 		var worst string
 		worstCount := 0
