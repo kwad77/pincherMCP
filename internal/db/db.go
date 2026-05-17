@@ -5056,15 +5056,49 @@ func ProjectIDFromPath(path string) string {
 	return CanonicalProjectPath(abs)
 }
 
-// ApproxTokens returns the BPE token count of s using the cl100k_base
-// tokenizer (same BPE family as Claude). Falls back to the 4-char heuristic
-// if the tokenizer is unavailable.
+// ApproxTokens returns an approximate BPE token count for s.
+//
+// Default (#1320): a char/4 heuristic. cl100k_base BPE averages ~4
+// chars/token for English text and pincher response bodies (JSON +
+// symbol IDs + snippets); the error is bounded and the cost is one
+// integer divide vs ~1000 allocs/call for the BPE encoder. Profile
+// of BenchmarkAuth_TimingProfile/correct: the BPE encoder consumed
+// 60% of per-call allocations to populate _meta.tokens_used. The
+// fast path makes the envelope effectively free.
+//
+// Opt back in to exact BPE counts with PINCHER_TOKEN_ACCOUNTING=exact
+// — useful for operators benchmarking real token consumption or
+// validating savings reporting. The session-flush aggregator writes
+// the same value either way; per-call envelopes shift by ~5-15%.
+//
+// Aligned with the long-standing user-facing feedback that the
+// per-call savings panel is noisy: making it cheap-by-default is
+// what enables it to stay quiet without losing the signal.
 func ApproxTokens(s string) int {
-	if enc := getTokenizer(); enc != nil {
-		ids, _, _ := enc.Encode(s)
-		return len(ids)
+	if tokenAccountingExact() {
+		if enc := getTokenizer(); enc != nil {
+			ids, _, _ := enc.Encode(s)
+			return len(ids)
+		}
 	}
 	return (len(s) + 3) / 4
+}
+
+// tokenAccountingExact reports whether PINCHER_TOKEN_ACCOUNTING=exact
+// was set in the process environment, opting into BPE for every
+// ApproxTokens call. Cached on first read — env doesn't change inside
+// a process lifetime and the read is on the hot path.
+var (
+	tokenAccountingExactOnce sync.Once
+	tokenAccountingExactFlag bool
+)
+
+func tokenAccountingExact() bool {
+	tokenAccountingExactOnce.Do(func() {
+		v := strings.ToLower(strings.TrimSpace(os.Getenv("PINCHER_TOKEN_ACCOUNTING")))
+		tokenAccountingExactFlag = v == "exact" || v == "bpe" || v == "1" || v == "true"
+	})
+	return tokenAccountingExactFlag
 }
 
 // HookInvocation captures one row of the v24 hook_invocations table.

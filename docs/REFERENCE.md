@@ -492,6 +492,7 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 |---|---|---|
 | `PINCHER_META_CAPABILITIES` | `on` | Set to `off` (or `false`/`0`/`none`/`no`) at server start to drop the per-call `_meta.capabilities` stamp. Saves ~50 tokens/call (#1087). Use the `/v1/capabilities` endpoint to query the slice once. Default-on preserves back-compat. |
 | `PINCHER_TOOL_DESCRIPTIONS` | (unset) | Set to `short` at server start to swap the 5 longest tool descriptions (trace / search / neighborhood / query / changes) for one-sentence variants. Trims ~3 KB / ~750 tokens off every session-start `tools/list` handshake. Long-form pedagogical content stays available via `docs/REFERENCE.md` per-tool sections (#1088). |
+| `PINCHER_TOKEN_ACCOUNTING` | `cheap` | Per-call `_meta.tokens_used` / `tokens_saved_pct` are computed with a char/4 heuristic by default (#1320, v0.69 perf hardening). Set to `exact` (or `bpe` / `1`) at server start to restore cl100k_base BPE counts — useful for operators benchmarking real token consumption or validating savings reporting. The cheap default cut 60% of per-call allocations on the authenticated handler path; per-call envelopes shift by ~5-15% under cheap mode, the session-flush aggregator is unaffected. |
 
 CORS: all responses include `Access-Control-Allow-Origin: *` so browsers can call directly without a proxy.
 
