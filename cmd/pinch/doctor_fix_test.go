@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kwad77/pincher/internal/db"
 )
@@ -114,6 +115,62 @@ func TestFormatFixText_EmptyActionsAdvisesNothingNeeded(t *testing.T) {
 	}
 	if !strings.Contains(out, "destructive remediations") {
 		t.Errorf("advisory should mention destructive remediations stay explicit; got:\n%s", out)
+	}
+}
+
+// TestFixPruneStaleFailures_AppliedWhenStaleRowsExist — #1386 safe
+// action. Seeds one stale row + one current row, asserts the action
+// reports "applied" with the correct count, and the stale row is
+// actually gone from the table.
+func TestFixPruneStaleFailures_AppliedWhenStaleRowsExist(t *testing.T) {
+	store, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertProject(db.Project{ID: "p", Path: "/p", Name: "p", IndexedAt: time.Now()}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := store.RecordExtractionFailure("p", "stale.go", "Go", "parse_error", "old"); err != nil {
+		t.Fatalf("seed stale: %v", err)
+	}
+	if _, err := store.DB().Exec(
+		`UPDATE extraction_failures SET last_seen_at = ? WHERE file_path = 'stale.go'`,
+		time.Now().Add(-2*time.Hour).Unix()); err != nil {
+		t.Fatalf("back-date: %v", err)
+	}
+
+	action := fixPruneStaleFailures(store)
+	if action.Name != "prune-stale-failures" {
+		t.Errorf("Name = %q, want prune-stale-failures", action.Name)
+	}
+	if action.Status != "applied" {
+		t.Errorf("Status = %q, want applied; details=%q", action.Status, action.Details)
+	}
+	if !strings.Contains(action.Details, "removed 1") {
+		t.Errorf("Details should report row count; got %q", action.Details)
+	}
+
+	// Verify the row is actually gone.
+	rows, _ := store.ListExtractionFailures("p", 100)
+	if len(rows) != 0 {
+		t.Errorf("table still has %d rows after prune", len(rows))
+	}
+}
+
+// TestFixPruneStaleFailures_NoopWhenNoStaleRows — empty table reports
+// noop, no error.
+func TestFixPruneStaleFailures_NoopWhenNoStaleRows(t *testing.T) {
+	store, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	action := fixPruneStaleFailures(store)
+	if action.Status != "noop" {
+		t.Errorf("Status = %q, want noop on empty table; details=%q", action.Status, action.Details)
 	}
 }
 

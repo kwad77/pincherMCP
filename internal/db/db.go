@@ -3982,6 +3982,33 @@ func (s *Store) ListExtractionFailures(projectID string, limit int) ([]Extractio
 	return out, rows.Err()
 }
 
+// PruneStaleExtractionFailures deletes every extraction_failures row
+// whose last_seen_at predates its project's indexed_at — the
+// "awaiting re-index to clear" subset the doctor surfaces with
+// `is_stale: true` (#1382). One SQL statement so the DB enforces the
+// JOIN; per-row Go-side iteration would be slower and racier on a busy
+// DB. Returns the number of rows deleted.
+//
+// #1386. Called by `pincher doctor --fix` (safe-action allowlist) and
+// available as a writer method for any future MCP / HTTP wrapper.
+//
+// Writes via the writer pool — single-writer SQLite; classified in
+// writerRoutedStoreMethods.
+func (s *Store) PruneStaleExtractionFailures() (int64, error) {
+	res, err := s.db.Exec(`
+		DELETE FROM extraction_failures
+		WHERE EXISTS (
+			SELECT 1 FROM projects p
+			WHERE p.id = extraction_failures.project_id
+			  AND extraction_failures.last_seen_at < p.indexed_at
+		)`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // ClearExtractionFailures removes all failure rows for a project. Used by
 // `pincher index --force` (when the user wants a clean slate after fixing
 // the underlying issues) and by integration tests.

@@ -59,6 +59,7 @@ func runDoctorFix(store *db.Store, dir string, asJSON bool, out io.Writer) {
 	report := FixReport{DataDir: dir, Actions: []FixAction{}}
 
 	report.Actions = append(report.Actions, fixVacuumIfBloated(store))
+	report.Actions = append(report.Actions, fixPruneStaleFailures(store))
 
 	if asJSON {
 		enc := json.NewEncoder(out)
@@ -119,6 +120,38 @@ func fixVacuumIfBloated(store *db.Store) FixAction {
 		Name:    "vacuum-db",
 		Status:  "applied",
 		Details: fmt.Sprintf("reclaimed %s (%s → %s)", db.FormatSize(int(reclaimed)), db.FormatSize(int(before)), db.FormatSize(int(after))),
+	}
+}
+
+// fixPruneStaleFailures deletes every extraction_failures row whose
+// last_seen_at predates its project's indexed_at — the "awaiting re-
+// index to clear" subset surfaced by #1382's is_stale tag. Safe per the
+// allowlist: only ever removes rows the indexer would re-record on the
+// next pass anyway if the underlying failure still reproduced.
+//
+// #1386. Runs unconditionally — even on a clean DB the SQL is one
+// DELETE-WHERE-EXISTS that returns 0 rows fast; we report noop in that
+// case rather than gating on a row-count probe.
+func fixPruneStaleFailures(store *db.Store) FixAction {
+	n, err := store.PruneStaleExtractionFailures()
+	if err != nil {
+		return FixAction{
+			Name:    "prune-stale-failures",
+			Status:  "error",
+			Details: fmt.Sprintf("PruneStaleExtractionFailures: %v", err),
+		}
+	}
+	if n == 0 {
+		return FixAction{
+			Name:    "prune-stale-failures",
+			Status:  "noop",
+			Details: "no extraction_failures rows are stale relative to their project's indexed_at",
+		}
+	}
+	return FixAction{
+		Name:    "prune-stale-failures",
+		Status:  "applied",
+		Details: fmt.Sprintf("removed %d stale extraction_failures row(s)", n),
 	}
 }
 
