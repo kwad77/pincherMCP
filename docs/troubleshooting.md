@@ -83,7 +83,7 @@ pincher vacuum
 
 **Symptom:** `context` on a Go function reports a callee that's actually a struct-field access in the source, not a method invocation.
 
-**Cause:** local-variable type-inference gap. If the receiver's type comes from a same-name struct field on another type, the resolver false-binds. Largely fixed in #1134 (v0.69) for the `for _, x := range receiver.Field` pattern; other shapes may still surface.
+**Cause:** local-variable type-inference gap. If the receiver's type comes from a same-name struct field on another type, the resolver false-binds. Largely fixed in #1134 (v0.67) for the `for _, x := range receiver.Field` pattern; other shapes may still surface.
 
 **Fix:** treat the callee list as informational; double-check by reading the source via `context`'s primary symbol body.
 
