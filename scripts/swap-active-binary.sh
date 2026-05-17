@@ -66,7 +66,15 @@ if [[ -z "$TARGET" ]]; then
             # from there or won't pick up changes without /mcp anyway.
             # The advisory tells the user how to enable the auto-swap
             # path for next time without forcing a one-time setup wall.
-            echo "swap-active-binary: no pincher${EXE_SUFFIX} or pincher found in PATH"
+            # #1325: collapse "pincher${EXE_SUFFIX} or pincher" to a
+            # single token on Unix where EXE_SUFFIX is empty — the
+            # un-collapsed form ("no pincher or pincher found in PATH")
+            # reads like a build-time substitution bug.
+            if [[ -n "$EXE_SUFFIX" ]]; then
+                echo "swap-active-binary: no pincher${EXE_SUFFIX} or pincher found in PATH"
+            else
+                echo "swap-active-binary: no pincher found in PATH"
+            fi
             echo "  ${SOURCE} is the freshly-built binary; the running MCP child"
             echo "  (if any) won't pick it up without /mcp reconnect."
             echo ""
