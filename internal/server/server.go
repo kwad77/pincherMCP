@@ -182,6 +182,17 @@ type Server struct {
 	// its capability tag is added/removed in lockstep.
 	capabilities []string
 
+	// includeCapabilitiesPerCall gates the per-call _meta.capabilities
+	// stamping in jsonResultWithMeta. Default true (back-compat); set
+	// false via PINCHER_META_CAPABILITIES=off|false|0|none at server
+	// start so heavy-traffic aggregators stop paying the ~50-token-per-
+	// call cost. When off, consumers query the slice via GET
+	// /v1/capabilities. The MCP-side opt-out story is shipped via the
+	// HTTP endpoint plus the standard initialize handshake; MCP clients
+	// that read _meta.capabilities today should either keep the default
+	// or switch to GET /v1/capabilities. (#1087)
+	includeCapabilitiesPerCall bool
+
 	// Per-language call counts (#240). Sync.Map keyed by language name
 	// (e.g. "Go", "Markdown") with *int64 values. Incremented per tool
 	// call when the response carries a recognisable language signal;
@@ -396,6 +407,12 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	// is the streamable-HTTP transport available, or stdio-only? etc.)
 	// without scraping version strings or trial-and-error calls.
 	s.capabilities = computeCapabilities(s)
+	// #1087: read PINCHER_META_CAPABILITIES at server start. Default-on
+	// preserves back-compat — any router consuming _meta.capabilities
+	// today keeps working. Opt-out via off|false|0|none for
+	// aggregators that don't need the per-call advertisement and
+	// query GET /v1/capabilities once instead.
+	s.includeCapabilitiesPerCall = parseCapabilitiesEnv(os.Getenv("PINCHER_META_CAPABILITIES"))
 	// #581: stamp the per-tool OpenAPI response schemas after
 	// registration. Done as a post-pass so registerTools stays
 	// readable (~24 addTool calls without an extra arg each) and the
@@ -1667,6 +1684,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"window_seconds": windowSec,
 			"tallies":        rows,
+		})
+		return
+	}
+	// GET /v1/capabilities — one-shot read of the per-server capability
+	// slice (#1087). Drop-in alternative for HTTP clients that don't want
+	// to pay the per-call _meta.capabilities cost — call this once at
+	// session start, cache the result. Especially relevant when the
+	// operator has set PINCHER_META_CAPABILITIES=off to drop the per-call
+	// stamp. Read-only; safe to scrape from automation.
+	if path == "capabilities" && r.Method == http.MethodGet {
+		json.NewEncoder(w).Encode(map[string]any{
+			"capabilities": s.capabilities,
 		})
 		return
 	}
@@ -3006,6 +3035,21 @@ var toolIdempotent = map[string]bool{
 // x-pincher-idempotent on every endpoint.
 func toolIsIdempotent(tool string) bool {
 	return toolIdempotent[tool]
+}
+
+// parseCapabilitiesEnv reads PINCHER_META_CAPABILITIES and returns the
+// per-call inclusion flag (#1087). Default true (back-compat); any
+// recognized "off" string returns false. Unknown values default to
+// true so a typo doesn't silently drop the advertisement (failure-as-
+// pedagogy: typo'd opt-out keeps current behavior, operator notices
+// because their cost-saving measurement shows no change).
+func parseCapabilitiesEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "false", "0", "none", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // computeCapabilities builds the per-server capability advertisement
@@ -11181,9 +11225,18 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// at New() time. Routers consume to make integration decisions
 	// (subscribe to SSE? use streamable-HTTP? expect operator tools
 	// via MCP?) without scraping versions or doing trial-and-error
-	// calls. Sized small (~10 short strings, < 200 bytes); cost
-	// negligible vs the discoverability win.
-	meta["capabilities"] = s.capabilities
+	// calls. Sized small (~12 short strings, < 300 bytes); per-call
+	// cost is ~50 tokens.
+	//
+	// #1087 v0.69: operators running heavy-traffic aggregators that
+	// don't need per-call capabilities can opt out via
+	// PINCHER_META_CAPABILITIES=off (or "false" / "0" / "none"). With
+	// the opt-out, query the slice once via GET /v1/capabilities
+	// instead. Default-on preserves back-compat for every consumer
+	// reading _meta.capabilities today.
+	if s.includeCapabilitiesPerCall {
+		meta["capabilities"] = s.capabilities
+	}
 
 	// #650: per-response complexity_tier — confirms the static
 	// x-pincher-tier classification at call time. Routers reading
