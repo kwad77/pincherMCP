@@ -67,6 +67,27 @@ Start-Service pincher
 Alternative: Task Scheduler with a logon trigger — no admin required, but
 the server only runs while you're signed in.
 
+### First-run OS gate (unsigned binary bypass)
+
+Direct downloads of the binary hit the OS reputation gate on first run. Decision and rationale: [docs/adr/0001-binary-signing-decision.md](../docs/adr/0001-binary-signing-decision.md) (defer code-signing to v1.0+).
+
+**macOS direct download:**
+
+```bash
+# Download, extract, and clear the Gatekeeper quarantine bit in one shot.
+curl -fsSL https://github.com/kwad77/pincher/releases/download/v0.60.0/pincher-v0.60.0-darwin-arm64.tar.gz | tar xz
+xattr -d com.apple.quarantine pincher-v0.60.0-darwin-arm64
+./pincher-v0.60.0-darwin-arm64 --version
+# Then mv to your PATH:
+mv pincher-v0.60.0-darwin-arm64 /usr/local/bin/pincher
+```
+
+The `xattr -d` line removes the `com.apple.quarantine` extended attribute that Gatekeeper attaches to downloaded files. Without it, macOS shows *"pincher cannot be opened because the developer cannot be verified"* — single-click Allow via System Settings → Privacy & Security works too. Homebrew installs (above) clear the attribute automatically — no bypass needed there.
+
+**Windows direct download:**
+
+The downloaded `.exe` trips Windows SmartScreen. The dialog says *"Microsoft Defender SmartScreen prevented an unrecognized app from starting"*. Click **More info** → **Run anyway**. Scoop installs (above) avoid the gate entirely; that's the recommended Windows path.
+
 **Docker (unchanged from repo root):**
 
 ```bash
