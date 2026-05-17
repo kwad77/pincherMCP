@@ -1,0 +1,1 @@
+Runtime probe for the `traces_otlp` capability (#1164 deliverable). Closes the gap left by #1163's OTLP-traces release — every advertised capability now has a probe that fires when the tag is present, catching regressions where the live exporter silently demotes to noop while the capability stays advertised.
