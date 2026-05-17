@@ -28,11 +28,11 @@ type capProbe struct {
 
 var capabilityProbes = []capProbe{
 	{
-		tag: "schema_v27",
+		tag: "schema_v28",
 		probe: func(t *testing.T, srv *Server) {
 			ver := db.CurrentSchemaVersion()
-			if ver != 27 {
-				t.Errorf("schema_v27 advertised but CurrentSchemaVersion()=%d", ver)
+			if ver != 28 {
+				t.Errorf("schema_v28 advertised but CurrentSchemaVersion()=%d", ver)
 			}
 		},
 	},
@@ -208,6 +208,32 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		tag: "metrics_prometheus",
+		probe: func(t *testing.T, srv *Server) {
+			// GET /v1/metrics must answer 200 with text/plain content-type
+			// and an exposition body that contains at least the
+			// schema-and-tool counter family names we declared.
+			req := httptest.NewRequest("GET", "/v1/metrics", nil)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != 200 {
+				t.Errorf("metrics_prometheus advertised but GET /v1/metrics returned %d: %s", rr.Code, rr.Body.String())
+			}
+			ct := rr.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, "text/plain") {
+				t.Errorf("metrics_prometheus advertised but Content-Type = %q, want text/plain prefix", ct)
+			}
+			// Body should at minimum carry the gauges we always
+			// refresh on scrape (db_size_bytes / wal_size_bytes).
+			body := rr.Body.String()
+			for _, want := range []string{"pincher_db_size_bytes", "pincher_wal_size_bytes"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("metrics_prometheus advertised but body missing %q; got:\n%s", want, body)
+				}
+			}
+		},
+	},
+	{
 		tag: "sse",
 		probe: func(t *testing.T, srv *Server) {
 			// GET /v1/events must answer 200 with a text/event-stream
@@ -317,13 +343,13 @@ func TestCapability_PresentInMetaEnvelope(t *testing.T) {
 	}
 	found := false
 	for _, c := range caps {
-		if c == "schema_v27" {
+		if c == "schema_v28" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("_meta.capabilities missing schema_v27; got %v", caps)
+		t.Errorf("_meta.capabilities missing schema_v28; got %v", caps)
 	}
 }
 
