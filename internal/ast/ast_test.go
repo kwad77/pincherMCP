@@ -1512,6 +1512,70 @@ pub fn standalone_fn(x: i32) -> i32 { x + 1 }
 	}
 }
 
+// #1183 v0.67: methods inside Rust impl blocks should carry Parent =
+// the receiver type, not be emitted as freestanding functions. Two
+// shapes: inherent impl (`impl Type {}`) and trait impl
+// (`impl Trait for Type {}`); both must scope inner methods to Type.
+//
+// Pre-fix: every fn inside an impl emitted Parent="", which broke
+// QN resolution AND made dead_code surface every impl method as a
+// candidate (no Parent → not bound to the type's method set).
+func TestExtractRust_ImplBlockScopesMethodsToReceiverType(t *testing.T) {
+	src := []byte(`pub struct Cart;
+pub trait Bag {
+    fn add(&self, x: i32);
+}
+
+impl Cart {
+    pub fn new() -> Cart { Cart }
+    pub fn inherent_method(&self) -> i32 { 42 }
+}
+
+impl Bag for Cart {
+    fn add(&self, x: i32) {}
+}
+
+pub fn standalone() -> i32 { 1 }
+`)
+	result := Extract(src, "Rust", "src/cart.rs")
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	byName := map[string]ExtractedSymbol{}
+	for _, s := range result.Symbols {
+		byName[s.Name] = s
+	}
+	// All three impl methods must carry Parent ending in "Cart" (the
+	// regex extractor prefixes Parent with the module QN, matching the
+	// other extractors — Parent = "src::cart::Cart" here). The asserts
+	// pin three load-bearing facts: extracted at all, Kind upgraded
+	// to Method, Parent QN ends in the receiver-type name.
+	for _, m := range []string{"new", "inherent_method", "add"} {
+		sym, ok := byName[m]
+		if !ok {
+			t.Errorf("expected method %q to be extracted; missing", m)
+			continue
+		}
+		if sym.Kind != "Method" {
+			t.Errorf("method %q: Kind = %q; want %q (impl scoping should upgrade Function→Method)", m, sym.Kind, "Method")
+		}
+		const wantParentSuffix = "::Cart"
+		if !strings.HasSuffix(sym.Parent, wantParentSuffix) {
+			t.Errorf("method %q: Parent = %q; want suffix %q (impl Cart / impl Bag for Cart scoping)", m, sym.Parent, wantParentSuffix)
+		}
+	}
+	// standalone should NOT have a parent — it lives outside any impl.
+	if sym, ok := byName["standalone"]; ok && sym.Parent != "" {
+		t.Errorf("standalone fn: Parent = %q; want empty (file-scope)", sym.Parent)
+	}
+	// Cart struct itself must still be a Class symbol (not lost by the
+	// scope-tracking pass).
+	cart, ok := byName["Cart"]
+	if !ok || cart.Kind != "Class" {
+		t.Errorf("expected Cart kind=Class; got %+v", cart)
+	}
+}
+
 // #816: a Rust function whose `where` clause (or wrapped `-> Type`)
 // sits on a line after the `(params)` close used to get a span of just
 // the signature's first line — findBraceBlock treated the newline at
