@@ -1688,8 +1688,40 @@ func TestProjectNameFromPath(t *testing.T) {
 	}
 }
 
-func TestApproxTokens(t *testing.T) {
-	// Counts verified against cl100k_base BPE (same tokenizer family as Claude).
+// TestApproxTokens_DefaultHeuristic pins the default behavior post-#1320:
+// char/4 heuristic, no BPE encoder allocation. The opt-in exact mode is
+// covered separately in TestApproxTokens_ExactBPE_OptIn.
+func TestApproxTokens_DefaultHeuristic(t *testing.T) {
+	// (len(s) + 3) / 4 — ceiling div.
+	cases := []struct {
+		s    string
+		want int
+	}{
+		{"", 0},
+		{"abcd", 1},
+		{"abcde", 2},
+		{"abcdefgh", 2},
+		{"hello world", 3},
+	}
+	for _, c := range cases {
+		got := ApproxTokens(c.s)
+		if got != c.want {
+			t.Errorf("ApproxTokens(%q) = %d, want %d (char/4 heuristic; PINCHER_TOKEN_ACCOUNTING unset)", c.s, got, c.want)
+		}
+	}
+}
+
+// TestApproxTokens_ExactBPE_OptIn pins the opt-in path: setting
+// PINCHER_TOKEN_ACCOUNTING=exact restores cl100k_base BPE counts for
+// operators who need precise reporting. Mutates the cached flag
+// directly because t.Setenv runs after sync.Once already fired; both
+// behaviors must be testable in the same process.
+func TestApproxTokens_ExactBPE_OptIn(t *testing.T) {
+	tokenAccountingExactOnce.Do(func() {})
+	prev := tokenAccountingExactFlag
+	tokenAccountingExactFlag = true
+	t.Cleanup(func() { tokenAccountingExactFlag = prev })
+
 	cases := []struct {
 		s    string
 		want int
@@ -1703,8 +1735,28 @@ func TestApproxTokens(t *testing.T) {
 	for _, c := range cases {
 		got := ApproxTokens(c.s)
 		if got != c.want {
-			t.Errorf("ApproxTokens(%q) = %d, want %d", c.s, got, c.want)
+			t.Errorf("ApproxTokens(%q) under PINCHER_TOKEN_ACCOUNTING=exact = %d, want %d", c.s, got, c.want)
 		}
+	}
+}
+
+// TestApproxTokens_HeuristicAvoidsBPEAlloc is the regression guard for
+// the #1320 motivating bug: per-call ApproxTokens consumed 60% of post-
+// auth allocations. Default mode must allocate zero on the hot path.
+func TestApproxTokens_HeuristicAvoidsBPEAlloc(t *testing.T) {
+	tokenAccountingExactOnce.Do(func() {})
+	prev := tokenAccountingExactFlag
+	tokenAccountingExactFlag = false
+	t.Cleanup(func() { tokenAccountingExactFlag = prev })
+
+	avg := testing.AllocsPerRun(100, func() {
+		_ = ApproxTokens("the quick brown fox jumps over the lazy dog")
+	})
+	// (len(s)+3)/4 is an integer divide; no allocations. Pre-#1320 the
+	// BPE path was ~10 allocs/call. Ceiling generous; a regression
+	// re-introducing the BPE call in default mode would trip this.
+	if avg > 1 {
+		t.Errorf("ApproxTokens heuristic mode allocs/run = %.2f, want <= 1 (BPE path may have leaked into the default)", avg)
 	}
 }
 
