@@ -218,7 +218,32 @@ func largestProjectID(store *db.Store) (string, error) {
 // candidate pool); 5000-row candidate pool keeps the GROUP BY scan
 // bounded on multi-million-symbol projects.
 func sampleSymbolsWithEdges(store *db.Store, projectID string, n int) ([]string, error) {
-	const minOutboundEdges = 5
+	// #1316: degenerate-root guard. The 5-edge floor avoids near-zero
+	// timings on shallow roots in realistic corpora, but a small test
+	// fixture (3 syms / 2 edges) yields zero candidates and fails the
+	// E2E smoke test. Fall back progressively (5 → 1) so a smoke test
+	// gets useful samples while production benchmarks keep the rigor.
+	for _, minEdges := range []int{5, 3, 1} {
+		ids, err := samplePoolWithMinEdges(store, projectID, minEdges)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) > 0 {
+			// Fisher-Yates shuffle truncated to n.
+			for i := len(ids) - 1; i > 0; i-- {
+				j := rand.IntN(i + 1)
+				ids[i], ids[j] = ids[j], ids[i]
+			}
+			if len(ids) > n {
+				ids = ids[:n]
+			}
+			return ids, nil
+		}
+	}
+	return nil, nil
+}
+
+func samplePoolWithMinEdges(store *db.Store, projectID string, minEdges int) ([]string, error) {
 	rows, err := store.RO().Query(`
 		SELECT s.id
 		  FROM symbols s
@@ -228,7 +253,7 @@ func sampleSymbolsWithEdges(store *db.Store, projectID string, n int) ([]string,
 		 GROUP BY s.id
 		HAVING COUNT(e.id) >= ?
 		 LIMIT 5000`,
-		projectID, minOutboundEdges,
+		projectID, minEdges,
 	)
 	if err != nil {
 		return nil, err
@@ -244,14 +269,6 @@ func sampleSymbolsWithEdges(store *db.Store, projectID string, n int) ([]string,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	// Fisher-Yates shuffle truncated to n.
-	for i := len(all) - 1; i > 0; i-- {
-		j := rand.IntN(i + 1)
-		all[i], all[j] = all[j], all[i]
-	}
-	if len(all) > n {
-		all = all[:n]
 	}
 	return all, nil
 }
