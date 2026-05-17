@@ -585,6 +585,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"RecordExtractionFailure":         true,
 	"ClearExtractionFailures":         true,
 	"PruneExtractionFailuresForFile":  true,
+	"PruneStaleExtractionFailures":    true,
 	"RecordSlowQuery":          true,
 	// v0.36 hook telemetry writers (#626).
 	"LogHookInvocation":               true,
