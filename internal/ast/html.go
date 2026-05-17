@@ -120,6 +120,21 @@ func (h *htmlExtractor) Extract(source []byte, _, relPath string, _ ExtractOptio
 				title := strings.TrimSpace(htmlInnerText(n))
 				if title != "" {
 					off := bytesFindHeadingAfter(source, level, title, searchFrom)
+					if off < 0 {
+						// #(dogfood) v0.72: bytesFindHeadingAfter
+						// returns -1 when the rendered title can't
+						// be located in the raw source (templated /
+						// split headings whose inner text diverges
+						// from raw bytes). Skip rather than emit a
+						// heading with startByte=0 that the
+						// hierarchy loop would turn into a zero-
+						// byte-range Section. Loses the symbol;
+						// preserves the rest of the file's symbols.
+						// Without this guard the doctor advisory
+						// surfaces byte_range_negative on real HTML
+						// docs (e.g., pincher's own docs/index.html).
+						break
+					}
 					if off >= searchFrom {
 						searchFrom = off + 1
 					}
@@ -333,21 +348,27 @@ func canonicalImportPath(href string) string {
 // likely contains `title`, starting at offset `start`. Best-effort byte-
 // offset recovery since x/net/html doesn't preserve them on nodes.
 //
-// We look for "<h{level}" (case-insensitive) followed within ~1KB by
-// the title text. Returns 0 on no match (lands at file start, which is
-// acceptable — Section retrieval still works, just less precise byte
-// ranges for malformed corner cases).
+// We look for "<h{level}" (case-insensitive) followed within ~4KB by
+// the title text. Returns -1 on no match — distinct from a real
+// offset-0 match, which is impossible in practice (no HTML doc starts
+// with a heading tag at byte 0). The sentinel lets the caller skip
+// emitting a zero-byte-range Section when the lookup fails on a
+// templated / split heading whose rendered title doesn't match the
+// raw source bytes (the v0.69 dogfood doctor advisory flagged this
+// against pincher's own docs/index.html — multi-element headings
+// with embedded <br> / nested <span> produce normalised inner text
+// that diverges from the raw bytes, and both fold-matches miss).
 //
-// `start` is what advances the search past previously-located headings
-// so duplicate (level, title) pairs in the document don't all resolve
-// to the same first-occurrence offset (#1004). Callers that don't need
+// `start` advances the search past previously-located headings so
+// duplicate (level, title) pairs in the document don't all resolve to
+// the same first-occurrence offset (#1004). Callers that don't need
 // duplicate-suppression pass start=0.
 func bytesFindHeadingAfter(source []byte, level int, title string, start int) int {
 	if start < 0 {
 		start = 0
 	}
 	if start >= len(source) {
-		return 0
+		return -1
 	}
 	tagPrefix := []byte("<h" + string(rune('0'+level)))
 	titleBytes := []byte(title)
@@ -355,7 +376,7 @@ func bytesFindHeadingAfter(source []byte, level int, title string, start int) in
 	for {
 		idx := bytesIndexFold(source[off:], tagPrefix)
 		if idx < 0 {
-			return 0
+			return -1
 		}
 		tagStart := off + idx
 		// Look for the title within a reasonable window of the tag
@@ -370,7 +391,7 @@ func bytesFindHeadingAfter(source []byte, level int, title string, start int) in
 		}
 		off = tagStart + len(tagPrefix)
 		if off >= len(source) {
-			return 0
+			return -1
 		}
 	}
 }
