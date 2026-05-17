@@ -1329,6 +1329,19 @@ END;`,
 		FOREIGN KEY (run_id) REFERENCES bench_runs(run_id) ON DELETE CASCADE
 	);
 	`,
+
+	// v29 → v30: closure.via_kind for #685 phase 2 — record the last-hop
+	// edge kind on every closure row so the fast-path trace can populate
+	// the Via field that's been empty since v0.54 phase 1. Existing rows
+	// get '' which preserves the phase-1 behaviour for any pre-migration
+	// closure data that hasn't been rebuilt yet. BuildClosure now also
+	// filters source edges to the default trace kind set ({CALLS,
+	// HTTP_CALLS, ASYNC_CALLS}) so the closure data semantically matches
+	// what the CTE returns under the trace tool's default kinds filter —
+	// pre-fix the closure traversed ALL edge kinds + the trace fast-path
+	// returned a superset that disagreed with the CTE path (#1162
+	// measurement caught this).
+	`ALTER TABLE closure ADD COLUMN via_kind TEXT NOT NULL DEFAULT ''`,
 }
 
 // v28RebuildSymbolsCompositePK is the SQL portion of v28 that drops

@@ -49,11 +49,14 @@ func TestTraceByID_ClosureFastPath_FiresAndReturnsHops(t *testing.T) {
 		t.Fatalf("TraceByID: %v", err)
 	}
 	// Outbound from A: B(d=1) and C(d=1). Order may vary; assert set + depths.
+	// #685 phase 2: Via must now be populated from closure.via_kind —
+	// the v0.54 phase-1 empty-Via trade-off is closed. Fixture edges
+	// are all CALLS so every hop's Via must report "CALLS" exactly.
 	gotIDs := make(map[string]int)
 	for _, h := range hops {
 		gotIDs[h.Symbol.ID] = h.Depth
-		if h.Via != "" {
-			t.Errorf("closure-fast-path should leave Via empty (phase-1 trade-off); got Via=%q", h.Via)
+		if h.Via != "CALLS" {
+			t.Errorf("closure-fast-path Via should be populated from via_kind (phase-2/#685); got Via=%q on hop=%s", h.Via, h.Symbol.ID)
 		}
 	}
 	if gotIDs["B"] != 1 {
