@@ -1159,11 +1159,13 @@ var httpGetOnlyRoutes = map[string]bool{
 	"dashboard.css": true,
 	"stats":         true,
 	"sessions":      true,
-	"hook-stats":    true, // v0.37 hook conversion-rate dashboard panel (#628)
-	"openapi.json":  true,
-	"health":        true,
-	"ready":         true, // #660: k8s readiness probe (200 vs 503)
-	"metrics":       true, // #1163: Prometheus exposition endpoint
+	"hook-stats":      true, // v0.37 hook conversion-rate dashboard panel (#628)
+	"tool-call-stats": true, // v0.67 per-tool aggregate panel (#635 substrate)
+	"tool-tier-stats": true, // v0.67 per-tier aggregate panel (#635 panel 2)
+	"openapi.json":    true,
+	"health":          true,
+	"ready":           true, // #660: k8s readiness probe (200 vs 503)
+	"metrics":         true, // #1163: Prometheus exposition endpoint
 }
 
 // ServeHTTP makes Server implement http.Handler.
@@ -1563,6 +1565,65 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"overrides":      overrides,
 			"override_pct":   overridePct,
 			"by_tool":        byTool,
+		})
+		return
+	}
+	// GET /v1/tool-call-stats — per-tool aggregate over the trailing
+	// window (#635 substrate landed in schema v27 as
+	// session_tool_calls). Returns one row per tool with call_count /
+	// avg_tokens_used / sum_tokens_saved / avg_tokens_saved_pct /
+	// avg_response_bytes. Drives the v0.67 dashboard tool-breakdown
+	// panel. Read-only; safe to scrape from automation. Query params:
+	//   window_seconds — trailing window cutoff (default 604800 = 7d)
+	//   limit          — max tool rows returned (default 20, max 100)
+	if path == "tool-call-stats" && r.Method == http.MethodGet {
+		windowSec := int64(7 * 24 * 60 * 60)
+		if v := r.URL.Query().Get("window_seconds"); v != "" {
+			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+				windowSec = n
+			}
+		}
+		limit := 20
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil && n > 0 && n <= 100 {
+				limit = n
+			}
+		}
+		tallies, err := s.store.ToolCallStatsByTool(windowSec, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if tallies == nil {
+			tallies = []db.ToolCallTallyRow{}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"window_seconds": windowSec,
+			"tallies":        tallies,
+		})
+		return
+	}
+	// GET /v1/tool-tier-stats — per-complexity-tier aggregate over
+	// the trailing window. Sibling of /v1/tool-call-stats; lighter
+	// (no limit, only ever 3 rows max: lite/standard/heavy).
+	if path == "tool-tier-stats" && r.Method == http.MethodGet {
+		windowSec := int64(7 * 24 * 60 * 60)
+		if v := r.URL.Query().Get("window_seconds"); v != "" {
+			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+				windowSec = n
+			}
+		}
+		tallies, err := s.store.ToolCallStatsByTier(windowSec)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if tallies == nil {
+			tallies = []db.ToolCallTierTallyRow{}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"window_seconds": windowSec,
+			"tallies":        tallies,
 		})
 		return
 	}

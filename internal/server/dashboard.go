@@ -113,6 +113,21 @@ const dashboardTemplate = `<!DOCTYPE html>
   </div>
   <p class="section-title">PreToolUse Hook (last 7 days)</p>
   <div class="grid grid-3" id="hook-stats-cards"><div class="loading">Loading…</div></div>
+  <!-- #635 v0.67: per-tool breakdown panel — driven by
+       /v1/tool-call-stats over schema v27 session_tool_calls.
+       Visible immediately after onboarding once the first session
+       lands a few tool calls. -->
+  <p class="section-title">Tool Call Breakdown (last 7 days)</p>
+  <div class="tool-breakdown-card">
+    <div id="tool-breakdown-body"><div class="loading">Loading…</div></div>
+  </div>
+  <!-- #635 panel 2: per-complexity-tier breakdown. Same substrate
+       different cut — answers "where is my call budget being spent"
+       across lite / standard / heavy tiers. -->
+  <p class="section-title">Calls by Complexity Tier (last 7 days)</p>
+  <div class="tier-breakdown-card">
+    <div id="tier-breakdown-body"><div class="loading">Loading…</div></div>
+  </div>
 </main>
 </div>
 
@@ -271,6 +286,31 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .sparkline-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .sparkline-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
 .sparkline-legend{font-size:11px;color:var(--muted)}
+
+/* ── Tool-call breakdown table (#635 v0.67) ── */
+.tool-breakdown-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:0;margin-bottom:32px;overflow-x:auto}
+.tool-breakdown-table{width:100%;border-collapse:collapse;font-size:13px}
+.tool-breakdown-table th,.tool-breakdown-table td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)}
+.tool-breakdown-table th{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);background:rgba(255,255,255,.02)}
+.tool-breakdown-table tr:last-child td{border-bottom:none}
+.tool-breakdown-table tbody tr:hover{background:rgba(88,166,255,.03)}
+.tool-breakdown-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.tool-breakdown-table .num.green{color:var(--green)}
+.tool-breakdown-table tfoot td{font-size:12px;color:var(--text);background:rgba(255,255,255,.025);border-top:2px solid var(--border)}
+.tool-breakdown-table code{background:transparent;border:none;padding:0;color:var(--text);font-weight:500}
+
+/* ── Tier breakdown panel (#635 panel 2) ── */
+.tier-breakdown-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:32px}
+.tier-bar{display:flex;height:18px;border-radius:6px;overflow:hidden;background:#0b1018;border:1px solid var(--border);margin-bottom:14px}
+.tier-bar-seg{transition:flex-basis .25s;min-width:2px}
+.tier-bar-seg:not(:first-child){border-left:1px solid rgba(0,0,0,.25)}
+.tier-breakdown-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+.tier-breakdown-table th,.tier-breakdown-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+.tier-breakdown-table th{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+.tier-breakdown-table tr:last-child td{border-bottom:none}
+.tier-breakdown-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.tier-breakdown-table .num.green{color:var(--green)}
+.tier-swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;vertical-align:middle}
 
 /* ── Project cards ── */
 .proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s;position:relative}
@@ -889,6 +929,8 @@ async function load() {
   loadProjects();
   loadSparkline();
   loadHookStats();
+  loadToolBreakdown();
+  loadTierBreakdown();
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
@@ -940,6 +982,138 @@ async function loadHookStats() {
   } catch (e) {
     document.getElementById('hook-stats-cards').innerHTML =
       '<div class="error">Failed to load hook stats: ' + esc(String(e)) + '</div>';
+  }
+}
+
+// #635 v0.67: per-tool aggregate panel. Fetches /v1/tool-call-stats
+// (one row per tool over a trailing 7-day window) and renders a
+// compact table with call count, average tokens used, cumulative
+// tokens saved, and average saved-pct. Tools without a Read/Grep
+// baseline (architecture/list/schema — they record NULL in
+// tokens_saved_pct) show "—" rather than 0% so the user doesn't
+// misread admin shapes as "no savings."
+async function loadToolBreakdown() {
+  try {
+    const data = await fetch('/v1/tool-call-stats?window_seconds=604800&limit=20').then(r => r.json());
+    const tallies = data.tallies || [];
+    const body = document.getElementById('tool-breakdown-body');
+    if (tallies.length === 0) {
+      body.innerHTML = '<div class="empty">No tool calls recorded in the last 7 days. Make a few search/symbol/trace calls via your MCP client and refresh.</div>';
+      return;
+    }
+    // Sum totals across all tools for the footer summary — lets the
+    // user see "I made N calls saving X tokens this week" at a glance.
+    let totalCalls = 0;
+    let totalSaved = 0;
+    for (const t of tallies) {
+      totalCalls += (t.call_count || 0);
+      totalSaved += (t.sum_tokens_saved || 0);
+    }
+    let html = '<table class="tool-breakdown-table"><thead><tr>' +
+      '<th>Tool</th>' +
+      '<th class="num">Calls</th>' +
+      '<th class="num">Avg tokens used</th>' +
+      '<th class="num">Tokens saved</th>' +
+      '<th class="num">Avg saved %</th>' +
+      '</tr></thead><tbody>';
+    for (const t of tallies) {
+      const savedPct = (t.avg_tokens_saved_pct && t.avg_tokens_saved_pct > 0)
+        ? t.avg_tokens_saved_pct.toFixed(1) + '%'
+        : '—';
+      const savedTotal = (t.sum_tokens_saved && t.sum_tokens_saved > 0)
+        ? fmt(t.sum_tokens_saved)
+        : '—';
+      html += '<tr>' +
+        '<td><code>' + esc(t.tool) + '</code></td>' +
+        '<td class="num">' + fmt(t.call_count) + '</td>' +
+        '<td class="num">' + fmt(Math.round(t.avg_tokens_used)) + '</td>' +
+        '<td class="num green">' + savedTotal + '</td>' +
+        '<td class="num">' + savedPct + '</td>' +
+        '</tr>';
+    }
+    html += '</tbody>';
+    html += '<tfoot><tr>' +
+      '<td><strong>Total (7d)</strong></td>' +
+      '<td class="num"><strong>' + fmt(totalCalls) + '</strong></td>' +
+      '<td class="num">—</td>' +
+      '<td class="num green"><strong>' + fmt(totalSaved) + '</strong></td>' +
+      '<td class="num">—</td>' +
+      '</tr></tfoot>';
+    html += '</table>';
+    body.innerHTML = html;
+  } catch (e) {
+    document.getElementById('tool-breakdown-body').innerHTML =
+      '<div class="error">Failed to load tool breakdown: ' + esc(String(e)) + '</div>';
+  }
+}
+
+// #635 panel 2: per-complexity-tier breakdown. Shows a horizontal
+// stacked bar (lite + standard + heavy proportions) plus a small
+// table with per-tier counts and savings. Read at a glance:
+// "am I burning my budget on heavy synthesis tools or lite reads?"
+async function loadTierBreakdown() {
+  try {
+    const data = await fetch('/v1/tool-tier-stats?window_seconds=604800').then(r => r.json());
+    const tallies = data.tallies || [];
+    const body = document.getElementById('tier-breakdown-body');
+    if (tallies.length === 0) {
+      body.innerHTML = '<div class="empty">No tool calls recorded in the last 7 days.</div>';
+      return;
+    }
+    // Tier color map — keeps the bar segments and table swatches
+    // visually consistent. Same accent palette as the rest of the
+    // dashboard: blue for lite, purple for standard, orange for
+    // heavy (matches the "warmer == more expensive" intuition).
+    const tierColors = { lite: 'var(--accent)', standard: 'var(--purple)', heavy: 'var(--orange)' };
+    let totalCalls = 0;
+    for (const t of tallies) totalCalls += (t.call_count || 0);
+
+    // Stacked-bar segments. Render in a fixed lite → standard → heavy
+    // order regardless of result-set ordering so the visual is stable
+    // across sessions. Tiers absent from the data render as 0-width.
+    const tierOrder = ['lite', 'standard', 'heavy'];
+    const byTier = {};
+    for (const t of tallies) byTier[t.tier] = t;
+
+    let barHTML = '<div class="tier-bar">';
+    for (const tier of tierOrder) {
+      const t = byTier[tier];
+      if (!t || t.call_count === 0) continue;
+      const pct = (t.call_count / totalCalls * 100).toFixed(1);
+      const color = tierColors[tier] || 'var(--muted)';
+      barHTML += '<div class="tier-bar-seg" style="flex-basis:' + pct + '%;background:' + color + '" title="' + esc(tier) + ': ' + pct + '%"></div>';
+    }
+    barHTML += '</div>';
+
+    let tableHTML = '<table class="tier-breakdown-table"><thead><tr>' +
+      '<th>Tier</th>' +
+      '<th class="num">Calls</th>' +
+      '<th class="num">Share</th>' +
+      '<th class="num">Avg tokens used</th>' +
+      '<th class="num">Tokens saved</th>' +
+      '</tr></thead><tbody>';
+    for (const tier of tierOrder) {
+      const t = byTier[tier];
+      if (!t) continue;
+      const color = tierColors[tier] || 'var(--muted)';
+      const pct = (t.call_count / totalCalls * 100).toFixed(1);
+      const savedTotal = (t.sum_tokens_saved && t.sum_tokens_saved > 0)
+        ? fmt(t.sum_tokens_saved)
+        : '—';
+      tableHTML += '<tr>' +
+        '<td><span class="tier-swatch" style="background:' + color + '"></span>' + esc(tier) + '</td>' +
+        '<td class="num">' + fmt(t.call_count) + '</td>' +
+        '<td class="num">' + pct + '%</td>' +
+        '<td class="num">' + fmt(Math.round(t.avg_tokens_used)) + '</td>' +
+        '<td class="num green">' + savedTotal + '</td>' +
+        '</tr>';
+    }
+    tableHTML += '</tbody></table>';
+
+    body.innerHTML = barHTML + tableHTML;
+  } catch (e) {
+    document.getElementById('tier-breakdown-body').innerHTML =
+      '<div class="error">Failed to load tier breakdown: ' + esc(String(e)) + '</div>';
   }
 }
 

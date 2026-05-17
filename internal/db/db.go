@@ -4350,6 +4350,130 @@ func (s *Store) RecentToolCallsForSession(sessionID string, limit int) ([]ToolCa
 	return out, rows.Err()
 }
 
+// ToolCallTierTallyRow is one row of the per-complexity-tier
+// aggregation (#635 panel 2). Tiers — lite / standard / heavy — are
+// stamped at request time by toolComplexityTier; this groups the
+// trailing window's calls so dashboards can show "where is my budget
+// being spent": agents heavy on guide / context_for_task show a
+// large `heavy` row, traditional read-heavy sessions show a large
+// `lite` row.
+type ToolCallTierTallyRow struct {
+	Tier              string  `json:"tier"`
+	CallCount         int64   `json:"call_count"`
+	AvgTokensUsed     float64 `json:"avg_tokens_used"`
+	SumTokensSaved    int64   `json:"sum_tokens_saved"`
+	AvgTokensSavedPct float64 `json:"avg_tokens_saved_pct"`
+	AvgResponseBytes  float64 `json:"avg_response_bytes"`
+}
+
+// ToolCallStatsByTier mirrors ToolCallStatsByTool's shape but groups
+// by complexity_tier instead of tool. Same window-cutoff semantics,
+// same NULL-pct exclusion logic. Reader-routed.
+//
+// Empty-tier rows (where complexity_tier was '' at insert time) are
+// filtered — those slipped in pre-#1191 before the tier was always
+// stamped, and surfacing them as "" in a dashboard is just noise.
+func (s *Store) ToolCallStatsByTier(windowSeconds int64) ([]ToolCallTierTallyRow, error) {
+	if windowSeconds <= 0 {
+		windowSeconds = 7 * 24 * 60 * 60
+	}
+	cutoff := time.Now().Add(-time.Duration(windowSeconds) * time.Second).UnixNano()
+	rows, err := s.ro.Query(`
+		SELECT complexity_tier,
+		       COUNT(*)                                       AS call_count,
+		       AVG(CAST(tokens_used AS REAL))                 AS avg_tokens_used,
+		       COALESCE(SUM(tokens_saved), 0)                 AS sum_tokens_saved,
+		       COALESCE(AVG(tokens_saved_pct), 0)             AS avg_tokens_saved_pct,
+		       AVG(CAST(response_bytes AS REAL))              AS avg_response_bytes
+		  FROM session_tool_calls
+		 WHERE ts >= ?
+		   AND complexity_tier != ''
+		 GROUP BY complexity_tier
+		 ORDER BY call_count DESC`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToolCallTierTallyRow{}
+	for rows.Next() {
+		var r ToolCallTierTallyRow
+		if err := rows.Scan(
+			&r.Tier, &r.CallCount, &r.AvgTokensUsed,
+			&r.SumTokensSaved, &r.AvgTokensSavedPct, &r.AvgResponseBytes,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ToolCallTallyRow is one row of the per-tool aggregation surfaced by
+// ToolCallStatsByTool — feeds the v0.67 dashboard "tool-call breakdown"
+// panel (#635 substrate from schema v27 session_tool_calls).
+type ToolCallTallyRow struct {
+	Tool              string  `json:"tool"`
+	CallCount         int64   `json:"call_count"`
+	AvgTokensUsed     float64 `json:"avg_tokens_used"`
+	SumTokensSaved    int64   `json:"sum_tokens_saved"`
+	AvgTokensSavedPct float64 `json:"avg_tokens_saved_pct"`
+	AvgResponseBytes  float64 `json:"avg_response_bytes"`
+}
+
+// ToolCallStatsByTool aggregates session_tool_calls rows over the
+// trailing windowSeconds-second window into per-tool tallies. Excludes
+// rows older than the window cutoff. Sorted by call_count desc so the
+// dashboard panel naturally shows the hot tools first.
+//
+// avg_tokens_saved_pct averages only over rows that actually carry a
+// saved_pct value (admin-shape tools like architecture/list/schema
+// don't have a Read/Grep baseline so they record NULL there). Without
+// the NULL exclusion the average collapses toward zero on read-heavy
+// sessions, making search/symbol look worse than they are.
+//
+// Reader-routed (pure SELECT).
+func (s *Store) ToolCallStatsByTool(windowSeconds int64, limit int) ([]ToolCallTallyRow, error) {
+	if windowSeconds <= 0 {
+		windowSeconds = 7 * 24 * 60 * 60 // 7 days default — matches hook-stats window
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	cutoff := time.Now().Add(-time.Duration(windowSeconds) * time.Second).UnixNano()
+	rows, err := s.ro.Query(`
+		SELECT tool,
+		       COUNT(*)                                       AS call_count,
+		       AVG(CAST(tokens_used AS REAL))                 AS avg_tokens_used,
+		       COALESCE(SUM(tokens_saved), 0)                 AS sum_tokens_saved,
+		       COALESCE(AVG(tokens_saved_pct), 0)             AS avg_tokens_saved_pct,
+		       AVG(CAST(response_bytes AS REAL))              AS avg_response_bytes
+		  FROM session_tool_calls
+		 WHERE ts >= ?
+		 GROUP BY tool
+		 ORDER BY call_count DESC
+		 LIMIT ?`,
+		cutoff, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToolCallTallyRow{}
+	for rows.Next() {
+		var r ToolCallTallyRow
+		if err := rows.Scan(
+			&r.Tool, &r.CallCount, &r.AvgTokensUsed,
+			&r.SumTokensSaved, &r.AvgTokensSavedPct, &r.AvgResponseBytes,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // QueryMetrics carries the v17 query-failure / retry-rate counters
 // flushed onto every sessions row (#241). Pre-v17 rows hold zero on
 // every counter — agents that haven't been instrumented yet stay
