@@ -301,3 +301,52 @@ func TestHTML_HierarchyAcrossLevelGaps(t *testing.T) {
 		t.Errorf("expected `top2` as a sibling top-level; got: %s", joined)
 	}
 }
+
+// TestHTML_UnlocatableHeadingSkipped is the regression test for the
+// byte_range_negative bug surfaced by `pincher doctor` against
+// pincher's own docs/index.html: when bytesFindHeadingAfter can't
+// locate a heading in the raw source (its rendered inner text
+// diverges from the raw bytes — typical of multi-element headings
+// with nested <span> / <br> / templated content), the extractor
+// must skip the heading rather than emit it with startByte=0 that
+// the hierarchy loop turns into a zero-byte-range Section
+// (end_byte == start_byte == 0). Surfaced via the v0.69 dogfood
+// `doctor` advisory and the recordExtractionHeuristics check.
+//
+// The fixture mimics the failing shape: a heading whose rendered
+// title contains text the inner-text normaliser pulls together but
+// the raw source has separated. bytesFindHeadingAfter looks for the
+// concatenated text in raw source and misses.
+func TestHTML_UnlocatableHeadingSkipped(t *testing.T) {
+	// The h2's inner text normalises to "Pinned: v1.0 Migration"
+	// but raw source has it split across nodes with whitespace and a
+	// <br>; the byte-finder's fold-match for the concatenated needle
+	// fails because the raw bytes have intervening whitespace and
+	// the <br> tag. Pre-fix: startByte=0 → section emitted with
+	// end_byte=0 → recordExtractionHeuristics flags it.
+	src := []byte(`<!DOCTYPE html>
+<html><body>
+<h1>Roadmap</h1>
+<p>Notes.</p>
+<h2>Pinned:
+v1.0
+<br>
+Migration</h2>
+<p>Body.</p>
+<h2>Other Item</h2>
+<p>Body.</p>
+</body></html>
+`)
+	got := (&htmlExtractor{}).Extract(src, "HTML", "roadmap.html", ExtractOptions{})
+
+	for _, sym := range got.Symbols {
+		if sym.Kind == "Section" && sym.EndByte <= sym.StartByte {
+			t.Errorf("Section symbol %q has zero/negative byte range: start=%d end=%d — recordExtractionHeuristics would flag this as byte_range_negative",
+				sym.QualifiedName, sym.StartByte, sym.EndByte)
+		}
+	}
+	// Sanity: at least the h1 and one h2 should make it through.
+	if len(got.Symbols) == 0 {
+		t.Errorf("expected at least one Section symbol; the fix shouldn't drop everything, only the unlocatable heading")
+	}
+}
