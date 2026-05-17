@@ -92,6 +92,10 @@ func main() {
 		runHookCheckCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "hook-stats" {
+		runHookStatsCLI(os.Args[2:])
+		return
+	}
 
 	// #796: a first arg that isn't a flag and isn't a recognized
 	// subcommand is a typo (`pincher doctr`, `pincher stat`). Pre-fix it
@@ -325,6 +329,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher self-test              Smoke-test the install end-to-end")
 	fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
 	fmt.Fprintln(out, "  pincher stats                  Persisted savings + per-project counts (--json, --reset)")
+	fmt.Fprintln(out, "  pincher hook-stats --export-7d Shareable JSON snapshot of 7d hook conversion metrics (#662)")
 	fmt.Fprintln(out, "  pincher bench [--project ID]   Falsifiable savings measurement vs full-file Read baseline (#1263)")
 	fmt.Fprintln(out, "  pincher update                 Update pincher in place (git pull + build, or release asset)")
 	fmt.Fprintln(out, "  pincher web                    Print dashboard URL of running HTTP server (auto-starts one if none)")
