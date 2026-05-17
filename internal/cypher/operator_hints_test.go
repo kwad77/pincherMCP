@@ -37,6 +37,25 @@ func TestParse_UnsupportedOperator_StartsWithUnderscore_Hint(t *testing.T) {
 	}
 }
 
+// #1406: the underscore-form ENDS_WITH (what most Cypher tutorials
+// and adapters spell) must get the same redirect hint as its
+// STARTS_WITH sibling. Pre-fix users hit a bare "unsupported operator:
+// ENDS_WITH" with no recovery affordance — the canonical ENDS WITH
+// (two words, #340) was a first-class operator but the hint had been
+// removed thinking the underscore form was dead.
+func TestParse_UnsupportedOperator_EndsWithUnderscore_Hint(t *testing.T) {
+	tokens := tokenize("MATCH (n:Function) WHERE n.name ENDS_WITH 'Advisory' RETURN n.name")
+	p := &parser{tokens: tokens}
+	_, err := p.parseQuery()
+	if err == nil {
+		t.Fatal("expected parse error for ENDS_WITH")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ENDS WITH") {
+		t.Errorf("error %q must suggest ENDS WITH (no underscore)", msg)
+	}
+}
+
 func TestParse_UnsupportedOperator_NotEquals_Hint(t *testing.T) {
 	// `!=` is two punct tokens (`!` then `=`); the parser must still
 	// produce a hint pointing at the supported `<>`.
@@ -87,8 +106,9 @@ func TestParse_SupportedOperators_StillWork(t *testing.T) {
 // operatorHint table coverage — ensure every entry returns a non-empty
 // hint. Mostly a guard against typos in future additions to the map.
 func TestOperatorHint_AllEntriesNonEmpty(t *testing.T) {
-	// ENDS dropped — ENDS WITH is now a first-class operator (#340).
-	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "MATCHES", "IN", "in"} {
+	// ENDS WITH (two words) is first-class (#340); ENDS_WITH (underscore
+	// typo form) still needs the redirect hint per #1406.
+	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "ENDS_WITH", "MATCHES", "IN", "in"} {
 		hint, ok := operatorHint(op)
 		if !ok || hint == "" {
 			t.Errorf("operatorHint(%q) returned empty/false", op)
