@@ -44,6 +44,33 @@ func TestRecordExtractionHeuristics_TSCollisions_NoFailure(t *testing.T) {
 	}
 }
 
+// v0.71 dogfood: TSX files were falling through #1208's TypeScript
+// carve-out because the language tag is "TSX" not "TypeScript". Codex-
+// corpus TSX files produced 15+ collisions per file on object-property
+// keys. Extend the carve-out.
+func TestRecordExtractionHeuristics_TSXCollisions_NoFailure_v071Dogfood(t *testing.T) {
+	store := newDBStore(t)
+	if err := store.UpsertProject(db.Project{ID: "tsx-skip", Path: "/tsx", Name: "tsx", IndexedAt: time.Now()}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	idx := New(store)
+
+	result := &ast.FileResult{
+		QNCollisions: map[string]int{"app.src.renderer.tabs.GraphExplorerGPU.graph": 15},
+	}
+	recordExtractionHeuristics(idx, "tsx-skip", "TSX", "src/renderer/tabs/GraphExplorerGPU.tsx", result)
+
+	fails, err := store.ListExtractionFailures("tsx-skip", 10)
+	if err != nil {
+		t.Fatalf("ListExtractionFailures: %v", err)
+	}
+	for _, f := range fails {
+		if f.Reason == "qualified_name_collision" {
+			t.Errorf("expected no qualified_name_collision row for TSX; got %+v", f)
+		}
+	}
+}
+
 // Control: a Go FileResult with the same collision shape SHOULD still
 // produce a qualified_name_collision row. The TS suppression must be
 // narrow to TypeScript; other-language collisions remain diagnostic
