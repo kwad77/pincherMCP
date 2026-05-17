@@ -3416,7 +3416,8 @@ func (s *Server) registerTools() {
 				"offset":{"type":"integer","description":"Skip this many BM25-ranked results before the page. Default 0, max 5000. Used for paginated 'Load more' UX (#532). Response includes total + has_more so callers can decide whether to page deeper."},
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. corpus='docs' also defaults to 0.0 regardless of query shape — Markdown section symbols are the intentional target on docs searches, not noise to filter out. Rationale for 0.71 on phrase/wildcard code queries: filters bottom-floor doc-section symbols that can BM25-match wide queries when they cross the corpus boundary; an exact-identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned."},
-				"compact":{"type":"boolean","description":"#1226: thin-client envelope. Drops per-hit extraction_confidence + language + snippet plus the top-level confidence_distribution. Default false preserves the current shape for dashboard / dogfood / quality-aware consumers. Compact also skips the per-hit snippet disk read entirely — the real perf win on bulk searches. The thin-client minimum shape is {id, name, qualified_name, kind, file_path, start_line, end_line, signature, score} per hit — enough to drive a follow-up symbol/context/trace call. Mirrors #1225's trace compact naming."}
+				"compact":{"type":"boolean","description":"#1226: thin-client envelope. Drops per-hit extraction_confidence + language + snippet plus the top-level confidence_distribution. Default false preserves the current shape for dashboard / dogfood / quality-aware consumers. Compact also skips the per-hit snippet disk read entirely — the real perf win on bulk searches. The thin-client minimum shape is {id, name, qualified_name, kind, file_path, start_line, end_line, signature, score} per hit — enough to drive a follow-up symbol/context/trace call. Mirrors #1225's trace compact naming."},
+				"snippet_lines":{"type":"integer","description":"#1091: max source lines included in each result's snippet. Default 5. Pass 0 to skip the per-result disk read entirely when the agent already knows what it's looking for (exact-identifier queries where the snippet is dead weight) — saves ~75-100 tokens per result. Pass up to 20 for triage queries that need more context. Clamped to [0, 20] with a warning when out of range. The fields= projection's snippet-suppression still pays the read cost; snippet_lines=0 is the cleaner skip."}
 			}
 		}`),
 	}, s.handleSearch)
@@ -4978,6 +4979,23 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// adjusted instead of silently getting a different page size than
 	// it asked for. Surfaced in _meta.warnings below.
 	var searchClampWarnings []string
+	// #1091 v0.67: snippet_lines knob. Lets callers skip the per-result
+	// disk read entirely (snippet_lines=0) when the agent already knows
+	// what it's looking for, or extend the snippet up to 20 lines for
+	// triage queries. Default 5 preserves the historical behaviour.
+	// Clamped to [0, 20] silently — out-of-range values surface a
+	// warning rather than erroring (same shape as other clamps).
+	snippetLinesReq := intArg(args, "snippet_lines", 5)
+	if snippetLinesReq < 0 {
+		searchClampWarnings = append(searchClampWarnings,
+			fmt.Sprintf("snippet_lines=%d clamped to 0 (must be >= 0)", snippetLinesReq))
+		snippetLinesReq = 0
+	}
+	if snippetLinesReq > 20 {
+		searchClampWarnings = append(searchClampWarnings,
+			fmt.Sprintf("snippet_lines=%d clamped to 20 (max)", snippetLinesReq))
+		snippetLinesReq = 20
+	}
 	// #953: enum-value validation for kind/language. Pre-fix a typo'd
 	// kind ("FunctionTypoKind") returned 0 rows and the diagnosis
 	// recommended "drop the kind filter" — implying the value was
@@ -5346,15 +5364,19 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		searchFieldsWarning = "fields argument contained only empty entries — returning full response. Pass comma-separated names like 'id,signature'."
 	}
 
-	// snippetLines is the max lines of source included per result.
-	// Callers can suppress snippets via fields= projection.
-	const snippetLines = 5
-	// snippetReadCap bounds the disk read used to compute the 5-line snippet.
+	// snippetLines is the max lines of source included per result —
+	// the per-call snippet_lines arg (#1091) overrides; default 5.
+	snippetLines := snippetLinesReq
+	// snippetReadCap bounds the disk read used to compute the snippet.
 	// Without it, a Setting/Section symbol whose byte range spans a whole
 	// YAML mapping or Markdown heading block would cause the indexer to slurp
-	// tens of KB just to slice 5 lines off the top. 2 KB is plenty for 5
-	// lines of even densely-packed source (avg ~200 chars/line).
-	const snippetReadCap = 2048
+	// tens of KB just to slice a few lines off the top. The cap scales with
+	// the requested snippet line count (~200 chars/line typical) so a
+	// 20-line ask doesn't get truncated by the historical 2 KB ceiling.
+	snippetReadCap := 2048
+	if snippetLines > 5 {
+		snippetReadCap = snippetLines * 400
+	}
 
 	allFields := map[string]any{}
 	// #334: zero-len init so search returns "results":[] (not null) when zero hits.
@@ -5411,7 +5433,9 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		// #1226: compact=true skips the snippet wholesale — the per-hit
 		// disk read is the dominant search latency on bulk queries, so
 		// dropping it is the real perf win, not just byte savings.
-		includeSnippet := !compact && (fieldSet == nil || fieldSet["snippet"])
+		// #1091: snippet_lines=0 is the explicit-skip knob — same effect
+		// as compact + fields-projection but without the side effects.
+		includeSnippet := !compact && snippetLines > 0 && (fieldSet == nil || fieldSet["snippet"])
 		snippet := ""
 		if includeSnippet && r.Symbol.Kind != "Variable" && r.Symbol.Kind != "Type" {
 			var src string

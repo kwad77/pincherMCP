@@ -465,6 +465,10 @@
         "query": {
           "description": "FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR.",
           "type": "string"
+        },
+        "snippet_lines": {
+          "description": "#1091: max source lines included in each result's snippet. Default 5. Pass 0 to skip the per-result disk read entirely when the agent already knows what it's looking for (exact-identifier queries where the snippet is dead weight) — saves ~75-100 tokens per result. Pass up to 20 for triage queries that need more context. Clamped to [0, 20] with a warning when out of range. The fields= projection's snippet-suppression still pays the read cost; snippet_lines=0 is the cleaner skip.",
+          "type": "integer"
         }
       },
       "required": [
