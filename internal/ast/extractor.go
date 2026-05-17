@@ -1475,6 +1475,13 @@ type regexExtractor struct {
 	// Optional: extractors that don't supply this skip the variable
 	// emission entirely.
 	varRE *regexp.Regexp
+	// scopeRE matches scope-container syntax that should set Parent for
+	// inner symbols but should NOT itself emit a Class symbol — the
+	// canonical case is Rust's `impl Type { ... }` and `impl Trait for
+	// Type { ... }` blocks (#1183 v0.67 scope-tracking). The named
+	// group `name` is the type that becomes Parent for methods inside.
+	// Optional: extractors that don't supply this skip scope-only tracking.
+	scopeRE *regexp.Regexp
 }
 
 func (rx *regexExtractor) extract(source []byte, relPath, language string, opts extractOpts) *FileResult {
@@ -1526,6 +1533,23 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 		// Reset class context when past its end
 		if lineNum > currentClassEnd {
 			currentClass = ""
+		}
+
+		// #1183 v0.67: scope-only container (Rust impl blocks). Sets
+		// currentClass to the receiver type so inner methods get the
+		// right Parent + qualified name, but emits NO Class symbol —
+		// impl is a syntactic grouping, not a type definition. Runs
+		// AFTER classRE so a true struct/class on the same line wins.
+		if rx.scopeRE != nil && currentClass == "" {
+			if m := rx.scopeRE.FindStringSubmatch(line); m != nil {
+				name := namedGroup(rx.scopeRE, m, "name")
+				if name != "" {
+					endByte := blockEnd(source, lineStart, opts)
+					endLine := offsetToLine(lineOffsets, endByte)
+					currentClass = name
+					currentClassEnd = endLine
+				}
+			}
 		}
 
 		// Interface
@@ -2184,11 +2208,23 @@ func dropTSKeywordFalsePositives(syms []ExtractedSymbol) []ExtractedSymbol {
 }
 
 var rustRE = &regexExtractor{
-	funcRE:      regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?(?:async\s+)?fn\s+(?P<name>[a-z_][a-z0-9_]*)`),
+	// #1183 v0.67: leading `\s*` so indented impl-block methods match.
+	// Pre-fix, `^(?:pub...)fn name` required the declaration at column 0,
+	// dropping every fn inside `impl Type { ... }` blocks. Same shape as
+	// the PHP regex which already allows indentation.
+	funcRE:      regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?(?:async\s+)?fn\s+(?P<name>[a-z_][a-z0-9_]*)`),
 	classRE:     regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?struct\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 	interfaceRE: regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?trait\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 	enumRE:      regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 	importRE:    regexp.MustCompile(`(?m)^use\s+(?P<path>[a-zA-Z0-9_:]+)`),
+	// #1183 v0.67: impl blocks. Both forms — `impl Type { ... }` and
+	// `impl Trait for Type { ... }` — set the receiver type (`Type`,
+	// in the second form the second capture) as the scope so inner
+	// methods get Parent=Type and the correct QN. Generic parameters
+	// on the type are tolerated (`impl<T> Vec<T>` extracts `Vec`).
+	// The two alternations: the "for-form" first so its match wins
+	// when both could fire on `impl Trait for Type<X>`.
+	scopeRE: regexp.MustCompile(`(?m)^impl(?:<[^>]*>)?\s+(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
 }
 
 // extractRust: 'pub' keyword marks exports; approximated here as always-exported.
