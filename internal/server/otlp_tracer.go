@@ -197,10 +197,21 @@ func (s *Server) withTracing(handler mcp.ToolHandler) mcp.ToolHandler {
 				span.SetAttributes(attribute.Int("pincher.response_bytes", len(tc.Text)))
 			}
 		}
-		if err != nil {
+		// Status: Go-level err is the obvious failure signal; res.IsError
+		// is the protocol-level signal pincher uses for tool-shaped errors
+		// (errResult / errResultRich wrap an error envelope into the
+		// response rather than returning a Go err). Treat both as Error
+		// so a router's OTLP latency dashboard isn't optimistic by 80%.
+		// Stamp pincher.is_error too so a filter can split the two.
+		switch {
+		case err != nil:
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
-		} else {
+			span.SetAttributes(attribute.Bool("pincher.is_error", true))
+		case res != nil && res.IsError:
+			span.SetStatus(codes.Error, "tool returned error envelope")
+			span.SetAttributes(attribute.Bool("pincher.is_error", true))
+		default:
 			span.SetStatus(codes.Ok, "")
 		}
 		return res, err
