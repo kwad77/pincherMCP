@@ -103,6 +103,39 @@
     }
   },
   {
+    "name": "context_for_task",
+    "description": "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve.",
+    "input_schema": {
+      "properties": {
+        "include_changes": {
+          "description": "If true, include git-changes overlap with resolved seeds in the envelope. Default true.",
+          "type": "boolean"
+        },
+        "max_seeds": {
+          "description": "Cap on number of search-result seeds expanded (default 3, max 10). Each seed runs a context + trace call, so the response cost is roughly linear in this number.",
+          "type": "integer"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        },
+        "seed_id": {
+          "description": "Stable symbol ID to anchor the composite on (skips the search step). Mutually exclusive with task — pass one or the other.",
+          "type": "string"
+        },
+        "task": {
+          "description": "Free-form description of what you're investigating (e.g. 'fix the login timeout bug', 'understand how indexing handles symlinks'). Mutually exclusive with seed_id — pass one or the other.",
+          "type": "string"
+        },
+        "trace_depth": {
+          "description": "Max BFS depth for caller/callee traversal per seed (default 2, max 4). Deeper traversals are correct but expand quickly.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
     "name": "dead_code",
     "description": "**Find unreachable internal functions/methods** — symbols with zero inbound edges (CALLS/READS/WRITES/REFERENCES/IMPORTS) that aren't exported, aren't entry points, and aren't tests. The inverse of `architecture` hotspots. Defaults bias toward precision via `min_confidence=0.95`, which floors to AST-tier extractors (Go and Python at 1.0; JSON/YAML/HCL/TOML parser-backed at 1.0). `language` defaults to empty (all languages above the confidence floor). `kinds` defaults to `Function,Method`. Lower `min_confidence` to include regex-tier languages (TS/JS/Rust/Java/Ruby/PHP/C#/Kotlin/Swift/Lua/Zig/Elixir/Scala/Dart/R at 0.70-0.85) at known false-positive cost — they under-resolve cross-file CALLS. Test fixtures under `testdata/` and `__fixtures__/` are post-filtered out — they have no test runners but aren't real code either.",
     "input_schema": {

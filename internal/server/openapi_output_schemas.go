@@ -350,6 +350,76 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 16b. context_for_task — #1259 composite of search + context + trace + changes.
+	"context_for_task": `{
+		"type":"object",
+		"required":["seeds","neighbors","callers","callees","recent_changes","_meta"],
+		"properties":{
+			"task":{"type":"string"},
+			"seed_id":{"type":"string"},
+			"seeds":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"qualified_name":{"type":"string"},
+					"kind":{"type":"string"},
+					"file_path":{"type":"string"},
+					"start_line":{"type":"integer"},
+					"end_line":{"type":"integer"},
+					"signature":{"type":"string"},
+					"score":{"type":"number"}
+				}
+			}},
+			"neighbors":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"via_seed":{"type":"string"},
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"qualified_name":{"type":"string"},
+					"kind":{"type":"string"},
+					"file_path":{"type":"string"},
+					"start_line":{"type":"integer"}
+				}
+			}},
+			"callers":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"via_seed":{"type":"string"},
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"qualified_name":{"type":"string"},
+					"kind":{"type":"string"},
+					"file_path":{"type":"string"},
+					"depth":{"type":"integer"},
+					"via_kind":{"type":"string"}
+				}
+			}},
+			"callees":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"via_seed":{"type":"string"},
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"qualified_name":{"type":"string"},
+					"kind":{"type":"string"},
+					"file_path":{"type":"string"},
+					"depth":{"type":"integer"},
+					"via_kind":{"type":"string"}
+				}
+			}},
+			"recent_changes":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"file_path":{"type":"string"},
+					"hunks":{"type":"integer"}
+				}
+			}},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 19. init — inject pincher policy into editor rules.
 	"init": `{
 		"type":"object",

@@ -21,11 +21,12 @@ import (
 // Tools that were operator-only between v0.35 and v0.51.1 are noted.
 var expectedMCPTools = map[string]bool{
 	// Working set since v0.35 (always MCP-visible)
-	"search":  true,
-	"symbol":  true,
-	"symbols": true,
-	"context": true,
-	"trace":   true,
+	"search":           true,
+	"symbol":           true,
+	"symbols":          true,
+	"context":          true,
+	"context_for_task": true, // #1259 v0.67 composite-context tool
+	"trace":            true,
 	"query":   true,
 	"guide":   true,
 	"changes": true,
