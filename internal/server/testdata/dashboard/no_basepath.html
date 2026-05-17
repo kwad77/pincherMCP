@@ -73,6 +73,13 @@
       <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Loading…</text>
     </svg>
   </div>
+  <!-- #1163 v0.67 follow-up: backend-status widget. Renders the
+       observability surface state pulled from /v1/health so users
+       can see at a glance whether traces are flowing and metrics
+       are exposed — without dropping to the CLI. Compact strip at
+       the top of the Overview tab; no card chrome to keep it from
+       competing visually with the headline stat tiles. -->
+  <div id="backend-status-strip" class="backend-status"></div>
   <p class="section-title">PreToolUse Hook (last 7 days)</p>
   <div class="grid grid-3" id="hook-stats-cards"><div class="loading">Loading…</div></div>
   <!-- #635 v0.67: per-tool breakdown panel — driven by

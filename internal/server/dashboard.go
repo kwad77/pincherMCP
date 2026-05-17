@@ -111,6 +111,13 @@ const dashboardTemplate = `<!DOCTYPE html>
       <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Loading…</text>
     </svg>
   </div>
+  <!-- #1163 v0.67 follow-up: backend-status widget. Renders the
+       observability surface state pulled from /v1/health so users
+       can see at a glance whether traces are flowing and metrics
+       are exposed — without dropping to the CLI. Compact strip at
+       the top of the Overview tab; no card chrome to keep it from
+       competing visually with the headline stat tiles. -->
+  <div id="backend-status-strip" class="backend-status"></div>
   <p class="section-title">PreToolUse Hook (last 7 days)</p>
   <div class="grid grid-3" id="hook-stats-cards"><div class="loading">Loading…</div></div>
   <!-- #635 v0.67: per-tool breakdown panel — driven by
@@ -357,6 +364,14 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .entropy-top{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-top:14px;margin-bottom:6px}
 .entropy-rank{list-style:decimal;padding-left:24px;margin:0;font-size:13px;line-height:1.7}
 .entropy-rank code{background:#0b1018;padding:1px 6px;border-radius:4px;font-size:12px}
+.backend-status{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.backend-chip{display:inline-flex;align-items:baseline;gap:6px;font-size:11px;padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--surface);font-variant:tabular-nums}
+.backend-chip-label{font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+.backend-chip-value{font-weight:500}
+.backend-chip-on{border-color:rgba(57,211,83,.4)}
+.backend-chip-on .backend-chip-value{color:var(--green)}
+.backend-chip-off .backend-chip-value{color:var(--muted)}
+.backend-chip-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
 
 /* ── Project cards ── */
 .proj-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;transition:border-color .2s;position:relative}
@@ -989,6 +1004,7 @@ async function load() {
   loadTierBreakdown();
   loadPayloadSize();
   loadEntropyPanel();
+  loadBackendStatus();
   document.getElementById('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
@@ -1293,6 +1309,50 @@ async function loadEntropyPanel() {
   } catch (e) {
     document.getElementById('entropy-body').innerHTML =
       '<div class="error">Failed to load tool-mix health panel: ' + esc(String(e)) + '</div>';
+  }
+}
+
+// #1163 v0.67 follow-up: backend status strip. Renders the
+// observability surface state from /v1/health so users see at a
+// glance whether traces are flowing and metrics are exposed.
+// Compact horizontal layout — three colored chips plus the schema
+// version. POSTs to /v1/health (a tool endpoint) with an empty body.
+async function loadBackendStatus() {
+  try {
+    const res = await fetch('/v1/health', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}',
+    });
+    const data = await res.json();
+    const strip = document.getElementById('backend-status-strip');
+    if (!data || typeof data !== 'object') {
+      strip.innerHTML = '';
+      return;
+    }
+    const obs = data.observability || {};
+    function chip(label, value) {
+      const isOn = String(value || '').startsWith('on');
+      const cls = isOn ? 'backend-chip backend-chip-on' : 'backend-chip backend-chip-off';
+      // Strip the "(GET ...)" parens for compactness — full string in tooltip.
+      const short = String(value || '').replace(/\s*\(.*\)$/, '');
+      return '<span class="' + cls + '" title="' + esc(String(value || '')) + '">' +
+        '<span class="backend-chip-label">' + esc(label) + '</span>' +
+        '<span class="backend-chip-value">' + esc(short) + '</span>' +
+        '</span>';
+    }
+    const schemaTag = data.schema_version ? 'schema_v' + data.schema_version : '';
+    const parts = [];
+    if (schemaTag) parts.push('<span class="backend-chip backend-chip-meta">' + esc(schemaTag) + '</span>');
+    parts.push(chip('metrics', obs.metrics_prometheus));
+    parts.push(chip('events', obs.event_stream_sse));
+    parts.push(chip('traces', obs.traces_otlp));
+    strip.innerHTML = parts.join('');
+  } catch (e) {
+    // Silent on error — backend-status is decorative; not breaking the
+    // dashboard if /v1/health is unreachable.
+    const strip = document.getElementById('backend-status-strip');
+    if (strip) strip.innerHTML = '';
   }
 }
 
