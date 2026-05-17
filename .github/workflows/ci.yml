@@ -14,7 +14,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            test-flags: -timeout 120s
+            # 240s after v0.67 #1231 schema v28 rebuild — same as macos.
+            # cmd/pinch crosses 120s on the GHA runner once the
+            # symbols-table rebuild migration runs N times across the
+            # subprocess-coverage tests. Local runs are ~75s.
+            test-flags: -timeout 240s
           - os: macos-latest
             # 240s after v0.67 #1231 schema v28 rebuild — cmd/pinch
             # crossed the 120s budget on the macos-latest runner once
