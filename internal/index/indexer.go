@@ -497,6 +497,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 
 			lang := ast.DetectLanguageFromContent(path, content)
 			if lang == "" {
+				// #1313: even unrecognised-language files were walked +
+				// hashed; stamp the hash so the next pass's content-
+				// hash check fires and skips. Without this, every
+				// unknown-extension file (e.g. .lock, .min.js once we
+				// blocklist-skip them, etc.) costs a full walk every
+				// Watch tick forever.
+				_ = idx.store.SetFileHash(projectID, relPath, hash)
 				return
 			}
 
@@ -521,6 +528,19 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			// Without this, one malformed file kills the entire index run.
 			result := safeExtractWithModule(idx, projectID, lang, relPath, content, modulePath)
 			if result == nil || len(result.Symbols) == 0 {
+				// #1313: zero-symbol extraction is a legitimate
+				// outcome — empty test fixtures (`package X` only),
+				// Markdown with no headings and no preamble, YAML
+				// with no extractable settings, etc. Pre-fix, these
+				// files never got a `files` row written (the row is
+				// stamped inside flushBuffers, which only iterates
+				// the symbols slice), so every subsequent watcher
+				// tick re-walked + re-extracted them forever. User-
+				// reported repro: 16 ghost files re-extracted every
+				// pass on pincherMCP-on-Mac. Stamp the hash here so
+				// the next pass's hash-check at line ~486 fires and
+				// skips.
+				_ = idx.store.SetFileHash(projectID, relPath, hash)
 				return
 			}
 
@@ -701,6 +721,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			if err := idx.store.ReplaceInterfaceMethodsForFile(projectID, relPath, fileMethods); err != nil {
 				slog.Warn("pincher.interface_methods.replace.err", "file", relPath, "err", err)
 			}
+
+			// #1313: stamp the file hash NOW, before the symbols join
+			// the batched flush. Pre-fix the hash write was inside
+			// flushBuffers' post-flushBatch loop, so a flushBatch
+			// failure on the batch containing this file (e.g., one bad
+			// symbol triggering a constraint violation) silently
+			// dropped every file in that batch's hash row — those
+			// files then re-extracted every watcher tick forever.
+			// Stamping here decouples the hash row from batch-flush
+			// success: as long as extraction completed, the next
+			// pass's hash-check skips this file.
+			_ = idx.store.SetFileHash(projectID, relPath, hash)
 
 			refreshCounts := false
 			bufMu.Lock()
@@ -1027,17 +1059,15 @@ func (idx *Indexer) runParityCheck(projectID, projectName string, expectedPerFil
 }
 
 // flushBuffers writes accumulated symbols and edges to the DB then resets the slices.
+//
+// File-hash rows are stamped by the per-file goroutine BEFORE symbols join
+// the batch (see #1313). flushBuffers no longer re-stamps them — that path
+// only covered files whose extraction yielded ≥1 symbol AND whose batch
+// flushed successfully, silently dropping the hash for zero-symbol files
+// and for any file caught in a batch that failed.
 func (idx *Indexer) flushBuffers(projectID string, syms *[]db.Symbol, edges *[]db.Edge) error {
 	if err := idx.flushBatch(projectID, *syms, *edges); err != nil {
 		return err
-	}
-	// Update file hashes for all flushed symbols
-	seen := make(map[string]bool)
-	for _, s := range *syms {
-		if !seen[s.FilePath] {
-			_ = idx.store.SetFileHash(projectID, s.FilePath, s.FileHash)
-			seen[s.FilePath] = true
-		}
 	}
 	*syms = (*syms)[:0]
 	*edges = (*edges)[:0]
