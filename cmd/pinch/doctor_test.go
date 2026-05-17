@@ -616,27 +616,58 @@ func TestDoctorReport_ProjectFilter(t *testing.T) {
 	}
 }
 
-// TestDoctorProjectMatches pins the substring-match helper used by the
-// --project flag. Same shape as `pincher project rm` /
-// `pincher verify --project`.
-func TestDoctorProjectMatches(t *testing.T) {
-	p := db.Project{ID: "d:\\ClaudeCode\\pincher-repo", Name: "pincher-repo"}
-	cases := []struct {
-		filter string
-		want   bool
-	}{
-		{"pincher", true},     // substring of name
-		{"PINCHER", true},     // case-insensitive
-		{"REPO", true},        // tail substring
-		{"claudecode", true},  // matches id
-		{"ClaudeCode", true},  // case-insensitive id match
-		{"warp_rc", false},    // unrelated
-		{"", true},            // empty matches everything
+// TestMatchedProjectIDsForFilter_Tiered pins the tiered match used
+// by --project (CLI doctor + verify, MCP doctor). #1404 regression
+// guard: previously the flat substring check matched every nested
+// corpus project whose id contained the parent path as a substring.
+func TestMatchedProjectIDsForFilter_Tiered(t *testing.T) {
+	projects := []db.Project{
+		{ID: "d:\\claudecode\\pincher-repo", Name: "pincher-repo"},
+		{ID: "d:\\claudecode\\pincher-repo\\testdata\\corpus\\k8s-ops", Name: "k8s-ops"},
+		{ID: "d:\\claudecode\\pincher-repo\\testdata\\corpus\\python-web", Name: "python-web"},
+		{ID: "d:\\some\\other\\warp_rc", Name: "warp_rc"},
 	}
-	for _, c := range cases {
-		if got := doctorProjectMatches(p, c.filter); got != c.want {
-			t.Errorf("doctorProjectMatches(%q) = %v, want %v", c.filter, got, c.want)
-		}
+
+	// #1404 regression — exact name match SHORT-CIRCUITS the substring
+	// fallback so nested corpora aren't dragged in.
+	hits := matchedProjectIDsForFilter(projects, "pincher-repo")
+	if len(hits) != 1 {
+		t.Fatalf("exact-name-match should be 1 hit, got %d: %v", len(hits), hits)
+	}
+	if _, ok := hits["d:\\claudecode\\pincher-repo"]; !ok {
+		t.Errorf("exact-name 'pincher-repo' did not match pincher-repo project: %v", hits)
+	}
+
+	// Case-insensitive exact name.
+	hitsUpper := matchedProjectIDsForFilter(projects, "PINCHER-REPO")
+	if len(hitsUpper) != 1 || hitsUpper["d:\\claudecode\\pincher-repo"] != struct{}{} {
+		t.Errorf("case-insensitive exact name should hit 1 pincher-repo project, got %v", hitsUpper)
+	}
+
+	// No exact name match → falls through to substring on name OR id.
+	// "pincher" matches the pincher-repo NAME and every project whose
+	// id contains "pincher" — that's pincher-repo + every testdata
+	// corpus under it.
+	hitsSub := matchedProjectIDsForFilter(projects, "pincher")
+	if len(hitsSub) < 3 {
+		t.Errorf("substring 'pincher' should hit at least 3 projects (pincher-repo + nested), got %d: %v", len(hitsSub), hitsSub)
+	}
+
+	// Exact id match.
+	hitsID := matchedProjectIDsForFilter(projects, "d:\\some\\other\\warp_rc")
+	if len(hitsID) != 1 || hitsID["d:\\some\\other\\warp_rc"] != struct{}{} {
+		t.Errorf("exact id should be 1 hit, got %v", hitsID)
+	}
+
+	// Empty filter → nil (caller treats as "include all").
+	if got := matchedProjectIDsForFilter(projects, ""); got != nil {
+		t.Errorf("empty filter should return nil, got %v", got)
+	}
+
+	// No match → non-nil empty (filter applied, nothing matched).
+	hitsMiss := matchedProjectIDsForFilter(projects, "nonexistent-xyz")
+	if hitsMiss == nil || len(hitsMiss) != 0 {
+		t.Errorf("no-match filter should return empty map, got %v", hitsMiss)
 	}
 }
 
