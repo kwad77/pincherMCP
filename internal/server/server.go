@@ -9153,6 +9153,24 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 
+	// #1163 v0.67 follow-up: surface the observability surface state so
+	// a caller can see at a glance whether traces are flowing and
+	// metrics are exposed. Matches the capability advertisement in
+	// _meta.capabilities but with one extra signal — the OTLP endpoint
+	// when configured — that's load-bearing for diagnosing routing
+	// problems. Discoverability fix: routers shouldn't have to parse
+	// _meta.capabilities to find out what observability surfaces exist.
+	observability := map[string]any{
+		"metrics_prometheus": "on (GET /v1/metrics)",
+		"event_stream_sse":   "on (GET /v1/events)",
+	}
+	if s.tracer != nil && s.tracer.Enabled() {
+		observability["traces_otlp"] = fmt.Sprintf("on (OTLP/HTTP → %s)", os.Getenv(otlpTraceEnvEndpoint))
+	} else {
+		observability["traces_otlp"] = "off (unset OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
+	}
+	data["observability"] = observability
+
 	// #276: surface next-step hints from health so an agent has the
 	// obvious follow-up call spelled out instead of having to choose.
 	// Only emitted when the report carries an actionable signal:
