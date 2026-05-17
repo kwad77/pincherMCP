@@ -306,6 +306,13 @@ type Server struct {
 	// the hook wired in New(); /v1/events subscribers drain it. Always
 	// non-nil after New().
 	events *eventBus
+
+	// metrics is the in-process Prometheus registry (#1163). Tool-call
+	// counters / latency / token-savings sums are bumped from
+	// recordToolCallEvent; gauges (db/wal size) refreshed via a
+	// background ticker. Exposed at /v1/metrics in the standard
+	// exposition format.
+	metrics *metricsRegistry
 }
 
 // contextDiffEntry is one cached `context` fetch (#655): the backing
@@ -343,6 +350,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		autoRestartDelay:    autoRestartExitDelay,
 		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
 		events:              newEventBus(),                           // #654
+		metrics:             newMetricsRegistry(),                    // #1163
 	}
 	// #654: wire the indexer's lifecycle hook to the SSE bus so
 	// index_started / index_complete reach /v1/events subscribers. The
@@ -552,6 +560,22 @@ const toolCallEventCap = 2048
 func (s *Server) recordToolCallEvent(tool, baselineMethod string, tokensUsed, tokensSaved, responseBytes int, meta map[string]any) {
 	tier := toolComplexityTier(tool)
 	requestID, _ := meta["request_id"].(string)
+
+	// #1163: Prometheus instrumentation. Counter per (tool, outcome)
+	// — outcome is "ok" today; error paths take a different code path
+	// and don't reach this function. Latency summary in seconds keyed
+	// by tool. Tokens-saved counter accumulates the cumulative win.
+	if s.metrics != nil {
+		s.metrics.IncCounter(metricToolCallsTotal, 1, "tool", tool, "outcome", "ok")
+		if latency, ok := meta["latency_ms"].(int); ok && latency > 0 {
+			s.metrics.ObserveSummary(metricToolLatencySeconds, float64(latency)/1000.0, "tool", tool)
+		} else if latency, ok := meta["latency_ms"].(int64); ok && latency > 0 {
+			s.metrics.ObserveSummary(metricToolLatencySeconds, float64(latency)/1000.0, "tool", tool)
+		}
+		if tokensSaved > 0 {
+			s.metrics.IncCounter(metricToolTokensSaved, uint64(tokensSaved), "tool", tool)
+		}
+	}
 
 	var savedPtr *int64
 	var pctPtr *float64
@@ -1139,6 +1163,7 @@ var httpGetOnlyRoutes = map[string]bool{
 	"openapi.json":  true,
 	"health":        true,
 	"ready":         true, // #660: k8s readiness probe (200 vs 503)
+	"metrics":       true, // #1163: Prometheus exposition endpoint
 }
 
 // ServeHTTP makes Server implement http.Handler.
@@ -1482,6 +1507,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp["session_project"] = s.sessionID
 		}
 		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	// GET /v1/metrics — Prometheus exposition (#1163). Renders the
+	// in-process counter / summary / gauge registry in the 0.0.4
+	// text format. Local-only data (same as everything else): no
+	// outbound calls, scrapes pull from RAM. Auth is the same as
+	// other /v1/* routes — bearer token via --http-key when set.
+	if path == "metrics" && r.Method == http.MethodGet {
+		// Refresh size gauges synchronously on each scrape. Cheap:
+		// two os.Stat calls. Avoids a background ticker + the
+		// associated goroutine lifecycle for what is intrinsically
+		// scrape-time information.
+		s.refreshDBGauges()
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(s.metrics.Exposition()))
 		return
 	}
 	// GET /v1/hook-stats — PreToolUse hook conversion-rate metrics
@@ -2760,7 +2801,8 @@ var toolComplexityTiers = map[string]string{
 	"fetch":        "standard",
 
 	// heavy — synthesis-style output requiring frontier parsing
-	"guide": "heavy",
+	"guide":            "heavy",
+	"context_for_task": "heavy", // #1259: composite of search + N×(context + trace) + changes
 }
 
 // toolComplexityTier returns the registered tier for a tool, or the
@@ -2790,11 +2832,12 @@ var toolIdempotent = map[string]bool{
 	"search":       true,
 	"symbol":       true,
 	"symbols":      true,
-	"context":      true,
-	"trace":        true,
-	"query":        true,
-	"guide":        true,
-	"changes":      true,
+	"context":          true,
+	"context_for_task": true, // #1259
+	"trace":            true,
+	"query":            true,
+	"guide":            true,
+	"changes":          true,
 	"fetch":        true,
 	"architecture": true,
 	"dead_code":    true,
@@ -2944,6 +2987,14 @@ func computeCapabilities(s *Server) []string {
 		}
 	}
 
+	// #1163 v0.67: Prometheus exposition endpoint at /v1/metrics. Always
+	// advertised when the binary has the registry wired (every server
+	// post-#1163 does). Routers can scrape pincher with the same tooling
+	// they use for any other production service.
+	if s.metrics != nil {
+		caps = append(caps, "metrics_prometheus")
+	}
+
 	return caps
 }
 
@@ -3062,7 +3113,8 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"list":         {Annotations: annotationsReadOnly},
 	"neighborhood": {Title: "Same-file symbols", Annotations: annotationsReadOnly},
 	"dead_code":    {Title: "Unreachable symbols", Annotations: annotationsReadOnly},
-	"guide":        {Annotations: annotationsReadOnly},
+	"guide":            {Annotations: annotationsReadOnly},
+	"context_for_task": {Title: "Composite context for an investigation", Annotations: annotationsReadOnly}, // #1259
 
 	// Diagnostics (read-only, idempotent).
 	"health":  {Annotations: annotationsReadOnly},
@@ -3422,6 +3474,27 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleGuide)
+
+	// 16b. context_for_task (#1259): the composite-context tool. Takes a
+	// task description OR a seed symbol id, composes search → context →
+	// trace (direction=both) → changes(overlap), and returns one envelope.
+	// One round-trip vs N atomic calls — turns the agent's "I'm
+	// investigating X" question into a single tool call that returns the
+	// right cluster of code + recent changes.
+	s.addTool(&mcp.Tool{
+		Name:        "context_for_task",
+		Description: "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"task":{"type":"string","description":"Free-form description of what you're investigating (e.g. 'fix the login timeout bug', 'understand how indexing handles symlinks'). Mutually exclusive with seed_id — pass one or the other."},
+				"seed_id":{"type":"string","description":"Stable symbol ID to anchor the composite on (skips the search step). Mutually exclusive with task — pass one or the other."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"max_seeds":{"type":"integer","description":"Cap on number of search-result seeds expanded (default 3, max 10). Each seed runs a context + trace call, so the response cost is roughly linear in this number."},
+				"trace_depth":{"type":"integer","description":"Max BFS depth for caller/callee traversal per seed (default 2, max 4). Deeper traversals are correct but expand quickly."},
+				"include_changes":{"type":"boolean","description":"If true, include git-changes overlap with resolved seeds in the envelope. Default true."}
+			}
+		}`),
+	}, s.handleContextForTask)
 
 	// 17. neighborhood — graph view around a symbol. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -11180,7 +11253,8 @@ var baselineMethodForTool = map[string]string{
 	// Tools that replace direct file reads.
 	"symbol":       baselineMethodFullFileRead,
 	"symbols":      baselineMethodFullFileRead,
-	"context":      baselineMethodFullFileRead,
+	"context":          baselineMethodFullFileRead,
+	"context_for_task": baselineMethodFullFileRead, // #1259: composite replaces N atomic file reads
 	"search":       baselineMethodFullFileRead,
 	"query":        baselineMethodFullFileRead,
 	"trace":        baselineMethodFullFileRead,

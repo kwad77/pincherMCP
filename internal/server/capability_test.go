@@ -208,6 +208,32 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		tag: "metrics_prometheus",
+		probe: func(t *testing.T, srv *Server) {
+			// GET /v1/metrics must answer 200 with text/plain content-type
+			// and an exposition body that contains at least the
+			// schema-and-tool counter family names we declared.
+			req := httptest.NewRequest("GET", "/v1/metrics", nil)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != 200 {
+				t.Errorf("metrics_prometheus advertised but GET /v1/metrics returned %d: %s", rr.Code, rr.Body.String())
+			}
+			ct := rr.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, "text/plain") {
+				t.Errorf("metrics_prometheus advertised but Content-Type = %q, want text/plain prefix", ct)
+			}
+			// Body should at minimum carry the gauges we always
+			// refresh on scrape (db_size_bytes / wal_size_bytes).
+			body := rr.Body.String()
+			for _, want := range []string{"pincher_db_size_bytes", "pincher_wal_size_bytes"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("metrics_prometheus advertised but body missing %q; got:\n%s", want, body)
+				}
+			}
+		},
+	},
+	{
 		tag: "sse",
 		probe: func(t *testing.T, srv *Server) {
 			// GET /v1/events must answer 200 with a text/event-stream
