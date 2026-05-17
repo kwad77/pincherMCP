@@ -9,7 +9,7 @@
   },
   "edge_count_by_kind": {
     "CALLS": 6,
-    "IMPORTS": 5
+    "IMPORTS": 6
   },
   "extraction_failures_by_reason": {},
   "files_blocked": 0,
@@ -40,7 +40,7 @@
     "Class": 3,
     "Function": 7,
     "Method": 5,
-    "Module": 4,
+    "Module": 5,
     "Section": 3,
     "Setting": 5
   }

@@ -1662,15 +1662,22 @@ func main() { fmt.Println("hi") }
 		t.Fatalf("expected Module for main pkg, got %d (err=%v)", len(mods), err)
 	}
 
-	// fmt is stdlib → not indexed as a Module → IMPORTS edge must not persist.
+	// #1340 v0.71: post-fix, fmt gets a synthetic external Module symbol
+	// at @external/fmt and the IMPORTS edge persists pointing at it.
+	// Pre-fix the edge silently dropped — option (a) trades that drop
+	// for a queryable placeholder.
 	edges, err := store.EdgesFrom(mods[0].ID, nil)
 	if err != nil {
 		t.Fatalf("EdgesFrom: %v", err)
 	}
+	var sawSyntheticFmt bool
 	for _, e := range edges {
-		if e.Kind == "IMPORTS" {
-			t.Errorf("unexpected persisted IMPORTS edge to external pkg: %+v", e)
+		if e.Kind == "IMPORTS" && strings.HasPrefix(e.ToID, "@external/") {
+			sawSyntheticFmt = true
 		}
+	}
+	if !sawSyntheticFmt {
+		t.Errorf("expected synthetic IMPORTS edge from main → @external/fmt::fmt#Module after #1340; got %d edges", len(edges))
 	}
 }
 
