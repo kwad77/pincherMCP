@@ -9463,17 +9463,36 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 	if report.Project != nil {
-		data["project"] = map[string]any{
-			"name":              report.Project.Name,
-			"path":              report.Project.Path,
-			"files":             report.Project.FileCount,
-			"symbols":           report.Project.SymCount,
-			"edges":             report.Project.EdgeCount,
-			"indexed_at":        report.Project.IndexedAt.Format(time.RFC3339),
-			"staleness_human":   report.StalenessHuman,
-			"staleness_seconds": report.StalenessSecs,
-			"binary_version":    report.Project.BinaryVersion, // #304
+		// #1410: health.project was hand-rolled as a map literal so any
+		// new field added to db.Project (most recently #1388's
+		// last_indexed_branch rename, before that #1303's id /
+		// schema_version_at_index) silently failed to surface on the
+		// most-likely-first integrator-facing call. Now hydrated from
+		// the same Project struct architecture passes through, plus
+		// the freshness fields (staleness_*) that are health-specific
+		// and don't live on the struct. Project's JSON tags (#1388) are
+		// the source of truth for field naming on the wire.
+		project := map[string]any{
+			"id":                      report.Project.ID,
+			"name":                    report.Project.Name,
+			"path":                    report.Project.Path,
+			"files":                   report.Project.FileCount,
+			"symbols":                 report.Project.SymCount,
+			"edges":                   report.Project.EdgeCount,
+			"indexed_at":              report.Project.IndexedAt.Format(time.RFC3339),
+			"staleness_human":         report.StalenessHuman,
+			"staleness_seconds":       report.StalenessSecs,
+			"binary_version":          report.Project.BinaryVersion, // #304
+			"schema_version_at_index": report.Project.SchemaVersionAtIndex,
 		}
+		// #1388 / #1410: render last_indexed_branch only when populated
+		// — pre-v32 projects have empty CurrentBranch; matches the Project
+		// struct's omitempty JSON tag so consumers can iterate without
+		// nil-checking the field's value.
+		if report.Project.CurrentBranch != "" {
+			project["last_indexed_branch"] = report.Project.CurrentBranch
+		}
+		data["project"] = project
 		data["extraction_coverage"] = report.Coverage
 
 		// #304: index-vs-binary version drift. The CALLS edges and

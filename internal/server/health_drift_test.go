@@ -124,3 +124,82 @@ func TestHandleHealth_BinaryVersionInProject(t *testing.T) {
 		t.Errorf("project.binary_version = %q, want 0.9.0", got)
 	}
 }
+
+// TestHandleHealth_ProjectShape_AlignedWithArchitecture (#1410) — the
+// health.project field has the same field names as architecture.project
+// for everything they both surface. id, schema_version_at_index, and
+// last_indexed_branch were silently missing pre-fix because health
+// hand-rolled the map literal and #1388's rename never reached this
+// surface.
+func TestHandleHealth_ProjectShape_AlignedWithArchitecture(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	schemaV := 32
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "demo",
+		IndexedAt:            time.Now(),
+		BinaryVersion:        "0.71.0",
+		SchemaVersionAtIndex: &schemaV,
+		CurrentBranch:        "master",
+		FileCount:            10, SymCount: 100, EdgeCount: 50,
+	})
+
+	result, err := srv.handleHealth(context.Background(), makeReq(map[string]any{"project": "p1"}))
+	if err != nil {
+		t.Fatalf("handleHealth: %v", err)
+	}
+	body := decode(t, result)
+	proj, _ := body["project"].(map[string]any)
+	if proj == nil {
+		t.Fatalf("health.project missing: %v", body)
+	}
+
+	for _, want := range []string{"id", "name", "path", "files", "symbols", "edges",
+		"indexed_at", "staleness_human", "staleness_seconds",
+		"binary_version", "schema_version_at_index", "last_indexed_branch"} {
+		if _, ok := proj[want]; !ok {
+			t.Errorf("health.project missing %q (post-#1410); got fields: %v", want, projFieldNames(proj))
+		}
+	}
+
+	if got, _ := proj["id"].(string); got != "p1" {
+		t.Errorf("project.id = %q, want p1", got)
+	}
+	if got, _ := proj["last_indexed_branch"].(string); got != "master" {
+		t.Errorf("project.last_indexed_branch = %q, want master (#1388 rename must reach health too)", got)
+	}
+}
+
+// TestHandleHealth_ProjectShape_EmptyBranchOmits — last_indexed_branch
+// is omitempty per the Project struct's JSON tag; pre-v32 projects
+// with empty CurrentBranch should not surface the field at all.
+func TestHandleHealth_ProjectShape_EmptyBranchOmits(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "demo",
+		IndexedAt:     time.Now(),
+		BinaryVersion: "0.71.0",
+		// CurrentBranch deliberately empty — pre-v32 project shape.
+	})
+
+	result, err := srv.handleHealth(context.Background(), makeReq(map[string]any{"project": "p1"}))
+	if err != nil {
+		t.Fatalf("handleHealth: %v", err)
+	}
+	body := decode(t, result)
+	proj, _ := body["project"].(map[string]any)
+	if _, present := proj["last_indexed_branch"]; present {
+		t.Errorf("empty CurrentBranch must omit last_indexed_branch (omitempty); got %v", proj["last_indexed_branch"])
+	}
+}
+
+func projFieldNames(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
