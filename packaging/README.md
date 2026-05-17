@@ -13,6 +13,7 @@ at a shell.
 | `systemd/pincher.service` | Systemd user unit for Linux. Installs to `~/.config/systemd/user/`. |
 | `launchd/com.pinchermcp.pincher.plist` | LaunchAgent for macOS. Installs to `~/Library/LaunchAgents/`. |
 | `windows/install-service.ps1` | PowerShell installer that wraps the binary with `sc.exe` as a Windows service. |
+| `scoop/pincher.json` | Scoop manifest. Install via `scoop install https://raw.githubusercontent.com/kwad77/pincher/master/packaging/scoop/pincher.json` until a dedicated `scoop-pincher` bucket is published (#1260 §1). |
 
 ## Per-platform quick start
 
@@ -43,6 +44,16 @@ journalctl --user -u pincher -f      # tail logs
 
 For a system-wide install, move the file to `/etc/systemd/system/` and drop
 the `--user` flags.
+
+**Windows (Scoop, #1260 §1):**
+
+```powershell
+# Install from the raw URL until a dedicated scoop-pincher bucket is published.
+scoop install https://raw.githubusercontent.com/kwad77/pincher/master/packaging/scoop/pincher.json
+pincher --version
+```
+
+Scoop persists the user's `.pincher/` data dir across upgrades. `scoop update pincher` picks up new releases via the manifest's checkver hook.
 
 **Windows (service via sc.exe):**
 

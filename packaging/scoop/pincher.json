@@ -1,0 +1,61 @@
+{
+    "version": "0.60.0",
+    "description": "Codebase intelligence server for LLM agents (MCP stdio + HTTP REST). Local SQLite + tree-sitter / regex extractors across 20+ languages. Closes #1260 §1.",
+    "homepage": "https://github.com/kwad77/pincher",
+    "license": "MIT",
+    "notes": [
+        "pincher is the binary; pincherMCP refers to the MCP-server mode it exposes by default.",
+        "First-run setup:",
+        "  pincher init                   # inject usage policy into your CLAUDE.md",
+        "  pincher index <repo-path>      # build the index (one-shot CLI mode)",
+        "  pincher --http :8080           # or run as a long-lived HTTP server",
+        "Set PINCHER_AUTO_RESTART_ON_DRIFT=1 in your MCP launch env if running supervised — see docs/deployment for the full guide."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/kwad77/pincher/releases/download/v0.60.0/pincher-v0.60.0-windows-amd64.zip",
+            "hash": "e9657b0e00ed028d93593bcffcb2e7ede2dec957c4ffe60ca3ad1016c6f3ecba",
+            "bin": [
+                ["pincher-v0.60.0-windows-amd64.exe", "pincher"]
+            ]
+        },
+        "arm64": {
+            "url": "https://github.com/kwad77/pincher/releases/download/v0.60.0/pincher-v0.60.0-windows-arm64.zip",
+            "hash": "d1ec90f5a4f86270e57a34798a7eb9f44d976a4f0a57529bbeef156d035a73fc",
+            "bin": [
+                ["pincher-v0.60.0-windows-arm64.exe", "pincher"]
+            ]
+        }
+    },
+    "persist": [
+        ".pincher"
+    ],
+    "checkver": {
+        "github": "https://github.com/kwad77/pincher",
+        "regex": "/releases/tag/v([\\d.]+)\""
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/kwad77/pincher/releases/download/v$version/pincher-v$version-windows-amd64.zip",
+                "hash": {
+                    "url": "https://github.com/kwad77/pincher/releases/download/v$version/SHA256SUMS",
+                    "regex": "([a-f0-9]{64})\\s+pincher-v$version-windows-amd64\\.zip"
+                },
+                "bin": [
+                    ["pincher-v$version-windows-amd64.exe", "pincher"]
+                ]
+            },
+            "arm64": {
+                "url": "https://github.com/kwad77/pincher/releases/download/v$version/pincher-v$version-windows-arm64.zip",
+                "hash": {
+                    "url": "https://github.com/kwad77/pincher/releases/download/v$version/SHA256SUMS",
+                    "regex": "([a-f0-9]{64})\\s+pincher-v$version-windows-arm64\\.zip"
+                },
+                "bin": [
+                    ["pincher-v$version-windows-arm64.exe", "pincher"]
+                ]
+            }
+        }
+    }
+}
