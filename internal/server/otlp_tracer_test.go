@@ -143,6 +143,46 @@ func TestWithTracing_HTTPInheritsRequestID(t *testing.T) {
 	}
 }
 
+// #1163 polish: a tool that returns res.IsError=true with a nil Go err
+// (the standard pincher protocol-level error shape — errResult /
+// errResultRich) must surface as Error on the span, not Ok. Pre-fix,
+// the span only honored Go-level err, so OTLP latency dashboards
+// over-counted successes.
+func TestWithTracing_RecordsProtocolErrorStatus(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rec := installRecorder(t, srv)
+
+	// neighborhood with no id is a known errResultRich path — handler
+	// returns res.IsError=true with nil Go err.
+	handler := srv.handlers["neighborhood"]
+	if handler == nil {
+		t.Fatal("neighborhood handler not registered")
+	}
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+		Name: "neighborhood", Arguments: []byte(`{}`),
+	}}
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned go err; protocol-error path needs nil: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("expected res.IsError=true on neighborhood({})")
+	}
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span; got %d", len(spans))
+	}
+	sp := spans[0]
+	if sp.Status().Code.String() != "Error" {
+		t.Errorf("span status = %s; want Error (res.IsError should map to span error)", sp.Status().Code.String())
+	}
+	attrs := attrMap(sp.Attributes())
+	if attrs["pincher.is_error"] != true {
+		t.Errorf("pincher.is_error = %v; want true", attrs["pincher.is_error"])
+	}
+}
+
 // ShutdownTracer must be safe on the default (no-op) tracer + on the
 // nil-Server path. Both cover the early-return branches.
 func TestShutdownTracer_NoOpAndNilPaths(t *testing.T) {
