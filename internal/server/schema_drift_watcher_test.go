@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // #1374: detectSchemaDrift is the testable kernel of
@@ -79,5 +82,71 @@ func TestDetectSchemaDrift_ReadFailureNotDrift(t *testing.T) {
 	// return true.
 	if srv.detectSchemaDrift(999) {
 		t.Error("read failure incorrectly reported as drift — would trigger respawn loop")
+	}
+}
+
+// Positive — goroutine integration: when the DB schema is bumped
+// past the binary's CurrentSchemaVersion underneath a running
+// watcher, the onDrift callback fires. Uses startSchemaDriftWatcher
+// directly with an injectable callback so we exercise the goroutine
+// loop without invoking os.Exit.
+func TestStartSchemaDriftWatcher_FiresOnDrift(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	defer store.Close()
+
+	// Bump the DB schema_version past what the binary understands.
+	// CurrentSchemaVersion() returns len(schemaMigrations)+1; +5 is
+	// safely "newer than this binary."
+	var current int
+	if err := store.DB().QueryRow(`SELECT version FROM schema_version`).Scan(&current); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if _, err := store.DB().Exec(`UPDATE schema_version SET version = ?`, current+5); err != nil {
+		t.Fatalf("advance schema_version: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var fired atomic.Int32
+	srv.startSchemaDriftWatcher(ctx, 10*time.Millisecond, func() {
+		fired.Add(1)
+	})
+
+	// Watcher uses a 10ms ticker; wait up to 1s for the first tick
+	// to fire the callback. Generous margin so a slow CI runner
+	// doesn't spuriously fail.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if fired.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fired.Load() == 0 {
+		t.Error("onDrift callback never fired despite DB schema drift")
+	}
+}
+
+// Negative — ctx cancellation cleanly stops the goroutine without
+// firing onDrift. Pins the lifecycle so a server shutdown doesn't
+// trigger a spurious supervised respawn at the last second.
+func TestStartSchemaDriftWatcher_CancelStopsGoroutine(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	defer store.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Int32
+	srv.startSchemaDriftWatcher(ctx, 10*time.Millisecond, func() {
+		fired.Add(1)
+	})
+
+	// No drift exists; cancel before the first tick.
+	cancel()
+	// Give the goroutine a tick or two to notice cancellation.
+	time.Sleep(50 * time.Millisecond)
+
+	if fired.Load() != 0 {
+		t.Errorf("onDrift fired after ctx cancel: %d times", fired.Load())
 	}
 }

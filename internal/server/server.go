@@ -546,8 +546,24 @@ func (s *Server) StartSessionFlusher(ctx context.Context) {
 // treats that as a crash and respawns; bare CLI runs surface the
 // error to the operator.
 func (s *Server) StartSchemaDriftWatcher(ctx context.Context) {
+	s.startSchemaDriftWatcher(ctx, 60*time.Second, func() {
+		// Exit cleanly so the supervisor's auto-respawn picks us up.
+		// The next process opens the DB, hits the migrate guard, and
+		// either succeeds (new binary understands the new schema) or
+		// surfaces the "newer than this binary understands — upgrade
+		// pincher" error.
+		os.Exit(1)
+	})
+}
+
+// startSchemaDriftWatcher is the testable inner form: exposes the poll
+// interval and the drift-action callback so tests can drive the
+// goroutine without triggering os.Exit. Live callers go through
+// StartSchemaDriftWatcher which hard-codes the 60s interval and the
+// os.Exit(1) action.
+func (s *Server) startSchemaDriftWatcher(ctx context.Context, interval time.Duration, onDrift func()) {
 	go func() {
-		t := time.NewTicker(60 * time.Second)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		expected := db.CurrentSchemaVersion()
 		for {
@@ -556,13 +572,8 @@ func (s *Server) StartSchemaDriftWatcher(ctx context.Context) {
 				return
 			case <-t.C:
 				if s.detectSchemaDrift(expected) {
-					// Exit cleanly so the supervisor's auto-respawn
-					// picks us up. The next process opens the DB,
-					// hits the migrate guard, and either succeeds
-					// (new binary understands the new schema) or
-					// surfaces the "newer than this binary
-					// understands — upgrade pincher" error.
-					os.Exit(1)
+					onDrift()
+					return // caller decides whether to exit; either way, stop polling
 				}
 			}
 		}
