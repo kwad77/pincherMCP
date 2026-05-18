@@ -1162,7 +1162,7 @@ func TestParseProps_InlineNodeFilter(t *testing.T) {
 	// (tokenizer doesn't quote-strip, so value must match as stored)
 	r := exec(t, db, "MATCH (n:Function {name: Alpha}) RETURN n.name")
 	if r.Total == 0 {
-		t.Skip("parseProps filter returned no results — may need exact token match")
+		t.Fatal("inline from-node props filter returned zero rows — the feature regressed silently; pre-#672 ws4 this was a t.Skip masking a real failure")
 	}
 	for _, row := range r.Rows {
 		if row["n.name"] != "Alpha" {
@@ -1179,7 +1179,7 @@ func TestParseProps_EmptyBraces(t *testing.T) {
 	// Empty braces should parse cleanly and return all matches
 	r := exec(t, db, "MATCH (n:Method {}) RETURN n.name")
 	if r.Total == 0 {
-		t.Skip("empty braces filter may not be supported")
+		t.Fatal("empty-braces inline-props filter returned zero rows on a corpus that has one matching Method symbol — pre-#672 ws4 this was a t.Skip masking a real failure")
 	}
 }
 
@@ -1193,7 +1193,7 @@ func TestParseProps_InlineToNodeFilter(t *testing.T) {
 	// Inline props on to-node
 	r := exec(t, db, "MATCH (a:Function)-[:CALLS]->(b:Function {name: Callee}) RETURN b.name")
 	if r.Total == 0 {
-		t.Skip("to-node inline props filter returned no results")
+		t.Fatal("inline to-node props filter returned zero rows — the feature regressed silently; pre-#672 ws4 this was a t.Skip masking a real failure")
 	}
 	for _, row := range r.Rows {
 		if row["b.name"] != "Callee" {
@@ -1516,7 +1516,7 @@ func TestRunBFS_WhereFilter(t *testing.T) {
 	// BFS with WHERE to filter result nodes
 	r := exec(t, db, "MATCH (a)-[:CALLS*1..2]->(b) WHERE a.name='Root' AND b.name='TargetA' RETURN b.name")
 	if r.Total == 0 {
-		t.Skip("BFS WHERE filter returned no results")
+		t.Fatal("BFS WHERE filter returned zero rows on a corpus with one matching path — the feature regressed silently; pre-#672 ws4 this was a t.Skip masking a real failure")
 	}
 	for _, row := range r.Rows {
 		if row["b.name"] != "TargetA" {
