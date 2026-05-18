@@ -70,6 +70,34 @@ type Store struct {
 	db   *sql.DB // writer pool: MaxOpenConns=1
 	ro   *sql.DB // reader pool: MaxOpenConns=4 (default), mode=ro
 	Path string
+
+	// lastStartupMigrationInvalidates records the union of invalidates
+	// across migrations actually applied during this process's Open()
+	// call (#1497). Doctor surfaces this so users can see "the bump
+	// from v30→v33 was schema-only — your symbol/edge data is still
+	// fresh." A future binaryDriftForce gate (#1497 follow-up) will
+	// suppress the force=true cascade when this is invalidatesNothing.
+	//
+	// Empty (`{}`) on Open() against an up-to-date DB (no migrations
+	// applied this startup). Populated only by migrate().
+	lastStartupMigrationInvalidates  MigrationInvalidates
+	lastStartupMigrationsAppliedFrom int // schema version at Open()
+	lastStartupMigrationsAppliedTo   int // schema version after migrate()
+}
+
+// LastStartupMigrationInvalidates returns the union of invalidates
+// scopes across schema migrations applied during this process's
+// Open() call (#1497). Returns {} when no migrations ran (DB already
+// at current schema). Plus the version range that was bumped — `from`
+// is the schema version found at startup, `to` is the schema version
+// after migrate() completed.
+//
+// Used by doctor and stats to surface "this binary upgrade was a
+// schema-only DDL slice with no impact on extraction data" vs "this
+// upgrade requires re-extraction" — guides users on whether the next
+// `make install` would benefit from a manual `pincher index --force`.
+func (s *Store) LastStartupMigrationInvalidates() (inv MigrationInvalidates, from, to int) {
+	return s.lastStartupMigrationInvalidates, s.lastStartupMigrationsAppliedFrom, s.lastStartupMigrationsAppliedTo
 }
 
 // DataDir returns the platform data directory for pincherMCP, honouring
@@ -528,10 +556,51 @@ func (s *Store) RebuildFTS() (rows int64, err error) {
 	return rows, nil
 }
 
+// MigrationInvalidates declares what previously-extracted data a
+// migration makes stale (#1497). Used by upstream consumers (doctor,
+// the future binaryDriftForce gate) to distinguish "schema bumped but
+// no extraction-output table touched" migrations (sessions metrics,
+// diagnostic surfaces) from migrations that materially affect what
+// queries return against pre-migration data (new columns on symbols
+// or edges, new tables populated only on re-extraction).
+//
+// Defaults to All (full reindex required) when unsure — under-
+// invalidating is a silent correctness bug; over-invalidating is just
+// a perf miss.
+type MigrationInvalidates struct {
+	// All is true when the migration changes data that any query is
+	// likely to consult. Default-conservative for any column added to
+	// symbols/edges/pending_edges, or any new table populated only
+	// via the per-file extraction goroutine.
+	All bool
+
+	// Languages, when non-empty, narrows the invalidation to files of
+	// the listed languages (matches `ast.SupportedLanguages()` keys).
+	// Reserved for a future per-language hash invalidation pass; not
+	// currently consumed by the indexer but recorded for completeness
+	// so the future gate can compute the precise file set.
+	Languages []string
+}
+
+// invalidatesNothing: sentinel for migrations that touch no
+// extraction-output table — sessions metrics, diagnostic surfaces,
+// metadata-only columns. A user upgrading across only-Nothing
+// migrations could skip the binaryDriftForce reindex entirely once
+// that gate is wired through (#1497 follow-up).
+var invalidatesNothing = MigrationInvalidates{}
+
+// invalidatesAll: sentinel for migrations that affect extraction-
+// output data — new symbols/edges columns, new tables populated by
+// the per-file extractor, trigger changes that re-route corpus
+// assignment, etc. Default for any migration whose data shape
+// couldn't be classified as session-only.
+var invalidatesAll = MigrationInvalidates{All: true}
+
 // schemaMigrations is an ordered list of incremental SQL migrations applied
 // after the baseline schema. migrations[i] upgrades version (i+1) → (i+2).
-// To add a schema change: append a SQL string here and bump nothing else —
-// the version number is derived from the slice length automatically.
+// To add a schema change: append a SQL string here AND append a matching
+// MigrationInvalidates entry to schemaMigrationInvalidates below — the
+// version number is derived from the slice length automatically.
 //
 // Rules:
 //   - Never edit an existing entry (deployed databases have already run it).
@@ -1426,6 +1495,94 @@ END;`,
 	`ALTER TABLE extraction_failures ADD COLUMN binary_version_at_failure TEXT NOT NULL DEFAULT '';`,
 }
 
+// schemaMigrationInvalidates classifies each migration in schemaMigrations
+// by what previously-extracted data the migration makes stale (#1497).
+// Index i refers to the (i+1) → (i+2) migration — the same indexing as
+// schemaMigrations. Slices must stay the same length; init() guards.
+//
+// Classification rationale (audit 2026-05-18):
+//
+//   - **Nothing** (22 entries): migrations that touch only sessions,
+//     diagnostics, metadata, or pure DDL operations whose effects are
+//     evident on existing data without re-extraction. New tables with
+//     trigger-driven backfill, virtual generated columns, dropped
+//     legacy indexes / vtabs, ALTER TABLE on sessions / projects
+//     metadata, corpus-routing trigger updates for languages that
+//     had no rows pre-migration.
+//
+//   - **All** (5 entries): migrations whose data shape requires
+//     re-extraction:
+//       v18→v19 (pending_edges table) — cross-file edge resolution
+//         model switched from in-memory to persisted. Pre-v19 projects
+//         have empty pending_edges; resolveCalls/Imports/Reads operate
+//         on the empty pool until a re-extract repopulates.
+//       v19→v20 (edges.source) — migration comment explicitly says
+//         "recommended migration is one final `pincher index --force`
+//         after upgrading to v0.18."
+//       v21→v22 (pending_edges.receiver_type + struct_fields) — the
+//         #423/#493 receiver-type resolver depends on these being
+//         populated by re-extraction of Go files.
+//       v25→v26 (pending_edges.base_type) — the #565 binding pass
+//         (resolveReads) consults it to tell a struct-field read
+//         from a function-value reference.
+//       v30→v31 (branch column on symbols/edges/files/pending_edges)
+//         — queries that filter by branch miss pre-migration rows
+//         whose branch field is the empty-sentinel default.
+//
+// The classification feeds doctor visibility today; future work
+// (#1497 follow-up) gates binaryDriftForce on the union of
+// invalidates across applied migrations.
+var schemaMigrationInvalidates = []MigrationInvalidates{
+	// NOTE on indexing: a few of the "v→v" headers in the schemaMigrations
+	// comment blocks span MULTIPLE slice entries (e.g. v2→v3's CREATE TABLE
+	// + CREATE INDEX are two separate strings). The migrate() loop bumps
+	// the schema_version by 1 per slice element, so the actual v→v step
+	// each entry effects is `index+1 → index+2`. The labels here use the
+	// actual step, not the comment-block grouping.
+	invalidatesNothing, // [ 0] v1→v2:  symbols.extraction_confidence column DEFAULT 1.0 (over-counts old rows under min_confidence filter; acceptable until natural reindex)
+	invalidatesNothing, // [ 1] v2→v3:  CREATE TABLE symbol_moves (new table; populated only by future move events)
+	invalidatesNothing, // [ 2] v3→v4:  CREATE INDEX idx_sym_qnkind (pure index; SQLite builds from existing rows)
+	invalidatesNothing, // [ 3] v4→v5:  CREATE TABLE sessions (per-session ROI metrics)
+	invalidatesNothing, // [ 4] v5→v6:  symbols.symbol_id VIRTUAL GENERATED column (computed at read, zero storage)
+	invalidatesNothing, // [ 5] v6→v7:  CREATE TABLE extraction_failures (diagnostic surface only)
+	invalidatesNothing, // [ 6] v7→v8:  CREATE TABLE slow_queries (diagnostic surface only)
+	invalidatesNothing, // [ 7] v8→v9:  per-corpus FTS5 split with backfill (backfill copies existing rows into new vtabs)
+	invalidatesNothing, // [ 8] v9→v10: TOML in config-corpus triggers (no TOML extractor pre-v10, no rows to re-route)
+	invalidatesNothing, // [ 9] v10→v11: sessions.http_url + sessions.http_pid (HTTP discovery metadata)
+	invalidatesNothing, // [10] v11→v12: DROP legacy symbols_fts (removes unused vtab; per-corpus vtabs unaffected)
+	invalidatesNothing, // [11] v12→v13: HTML to docs-corpus triggers (no HTML symbols pre-#100)
+	invalidatesNothing, // [12] v13→v14: XML to config-corpus triggers (no XML symbols pre-#101)
+	invalidatesNothing, // [13] v14→v15: projects.schema_version_at_index (metadata only)
+	invalidatesNothing, // [14] v15→v16: sessions.calls_by_language (per-session bypass-detection metric)
+	invalidatesNothing, // [15] v16→v17: sessions retry-rate counters (per-session metrics)
+	invalidatesNothing, // [16] v17→v18: projects.binary_version (metadata, stamped on next index)
+	invalidatesAll,     // [17] v18→v19: pending_edges table (NEW cross-file resolver model; pre-v19 data flows through old path but new resolutions need this table populated per file)
+	invalidatesAll,     // [18] v19→v20: edges.source DEFAULT 'per_file' (migration comment explicitly recommends `pincher index --force` after upgrade)
+	invalidatesNothing, // [19] v20→v21: celebrations table (one-shot milestone tracker, global)
+	invalidatesAll,     // [20] v21→v22: pending_edges.receiver_type + struct_fields table (Go method-call resolver needs these populated by re-extraction; #423/#493 root cause)
+	invalidatesNothing, // [21] v22→v23: interface_methods table (NEW table, empty until next reindex; dead_code's behaviour without the table populated is identical to pre-v22, so no regression on old projects — methods just stay un-excluded as they were before)
+	invalidatesNothing, // [22] v23→v24: hook_invocations table (telemetry only)
+	invalidatesNothing, // [23] v24→v25: closure table (opt-in via PINCHER_CLOSURE_TABLES env, empty by default)
+	invalidatesAll,     // [24] v25→v26: pending_edges.base_type (Go READS resolver consults this — #565 binding pass)
+	invalidatesNothing, // [25] v26→v27: session_tool_calls table (per-call event log for dashboard)
+	invalidatesNothing, // [26] v27→v28: composite PRIMARY KEY (project_id, id) on symbols (table rebuild preserves rows in-place; no data shape change for queries)
+	invalidatesNothing, // [27] v28→v29: bench_runs + bench_results tables (bench history, unrelated to extraction)
+	invalidatesNothing, // [28] v29→v30: closure.via_kind (closure is opt-in via env, defaults to '')
+	invalidatesAll,     // [29] v30→v31: branch column on symbols/edges/files/pending_edges (queries that filter by branch miss pre-migration rows)
+	invalidatesNothing, // [30] v31→v32: projects.current_branch (metadata, stamped on next index)
+	invalidatesNothing, // [31] v32→v33: extraction_failures.binary_version_at_failure (metadata on diagnostic table)
+}
+
+func init() {
+	if len(schemaMigrations) != len(schemaMigrationInvalidates) {
+		panic(fmt.Sprintf(
+			"schemaMigrations and schemaMigrationInvalidates length mismatch: %d vs %d — "+
+				"adding a new migration requires updating both slices",
+			len(schemaMigrations), len(schemaMigrationInvalidates),
+		))
+	}
+}
+
 // v28RebuildSymbolsCompositePK is the SQL portion of v28 that drops
 // FTS5 triggers + vtabs, rebuilds the symbols table with a composite
 // PRIMARY KEY (project_id, id), recreates indexes, then leaves the
@@ -1550,6 +1707,13 @@ func (s *Store) migrate() error {
 	}
 
 	// Step 4: apply any migrations the database hasn't seen yet.
+	// Also record the union of invalidates across applied migrations
+	// (#1497) so doctor / the future binaryDriftForce gate can decide
+	// whether the bump genuinely requires re-extraction or is a pure
+	// schema-shape DDL with no impact on previously-extracted data.
+	s.lastStartupMigrationInvalidates = invalidatesNothing
+	s.lastStartupMigrationsAppliedFrom = version
+	s.lastStartupMigrationsAppliedTo = version
 	for i := version - 1; i < len(schemaMigrations); i++ {
 		if _, err := s.db.Exec(schemaMigrations[i]); err != nil {
 			return fmt.Errorf("schema migration v%d→v%d: %w", i+1, i+2, err)
@@ -1558,6 +1722,14 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(`UPDATE schema_version SET version = ?`, next); err != nil {
 			return fmt.Errorf("bump schema version to %d: %w", next, err)
 		}
+		inv := schemaMigrationInvalidates[i]
+		if inv.All {
+			s.lastStartupMigrationInvalidates.All = true
+		}
+		s.lastStartupMigrationInvalidates.Languages = append(
+			s.lastStartupMigrationInvalidates.Languages, inv.Languages...,
+		)
+		s.lastStartupMigrationsAppliedTo = next
 	}
 
 	// Step 4.5: idempotent schema-parity repairs. These run on every Open()

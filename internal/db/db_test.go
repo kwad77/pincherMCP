@@ -557,6 +557,11 @@ var readerRoutedStoreMethods = map[string]bool{
 	// #1263 v0.68 bench persistence: list runs + per-run results.
 	"ListBenchRuns":   true,
 	"GetBenchResults": true,
+	// #1497: pure in-memory accessor for the union of invalidates
+	// scopes recorded during migrate(). No DB I/O — but classified
+	// as reader-routed for the gate's purpose since callers never
+	// mutate state through it.
+	"LastStartupMigrationInvalidates": true,
 }
 
 var writerRoutedStoreMethods = map[string]bool{
