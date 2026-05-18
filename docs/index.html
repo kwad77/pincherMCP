@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>pincherMCP · Codebase intelligence for LLM agents</title>
-<meta name="description" content="Single Go binary that indexes any codebase into a byte-offset symbol store, knowledge graph, and BM25 search — exposed as 23 MCP tools or an HTTP REST API. Token savings is the front door; the _meta envelope is the routing layer for your agent loop. Pure Go, no CGO, no cloud."/>
+<meta name="description" content="Single Go binary that indexes any codebase into a byte-offset symbol store, knowledge graph, and BM25 search — exposed as 23 MCP tools or an HTTP REST API. Token savings is the front door; the _meta envelope is the planning-loop input your agent branches on. Pure Go, no CGO, no cloud."/>
 <meta name="theme-color" content="#0d1117"/>
 
 <meta property="og:type" content="website"/>
@@ -277,16 +277,16 @@ pincher --version</code></pre>
       <p>Every tool stamps real cl100k token counts vs the file-read baseline. The ~95% reduction headline isn't synthetic — it's what users see on their own corpus. That's the initial-grab story; it works because the math is honest.</p>
     </div>
     <div class="card">
-      <h3>Routing-enablement is the retention story <span class="badge">building</span></h3>
-      <p>The <code>_meta</code> envelope on every response is the agent loop's planning input — drift warnings, stale-index signals, the <code>empty_reason</code> taxonomy, idempotency declarations, request-ID correlation. Once your loop branches on <code>_meta</code>, pincher becomes infrastructure, not just a tool. v0.67's <code>context_for_task</code> composite tool is the concrete shape: one call replaces the typical 5-10 atomic calls an agent fires when picking up an investigation.</p>
+      <h3>The <code>_meta</code> envelope is the retention story <span class="badge">today</span></h3>
+      <p>Pincher is the foundation; <code>_meta</code> is the enabler; the LLM in your host's loop is the router. Every response carries drift warnings, stale-index signals, the <code>empty_reason</code> taxonomy, idempotency declarations, request-ID correlation, and <code>next_steps</code> the agent's NEXT call should branch on. Once your loop branches on <code>_meta</code>, pincher becomes infrastructure, not just a tool. v0.67's <code>context_for_task</code> composite tool is the concrete shape: one call replaces the typical 5-10 atomic calls an agent fires when picking up an investigation. The full per-field contract: <a href="integrations/meta-envelope-contract.md">_meta envelope contract</a>.</p>
     </div>
     <div class="card">
-      <h3>Cross-file resolution roadmap <span class="badge">v0.67 → v0.69</span></h3>
-      <p>Go and Python are full-resolution today (IMPORTS + CALLS + receiver-type binding). TypeScript, Rust, and Java are next — each gets a dedicated AST extractor + cross-file resolver pass so <code>trace</code>/<code>dead_code</code>/<code>neighborhood</code>/<code>context</code> work as well on a TypeScript monorepo as they do on a Go service. The 9-axis per-language matrix in the <a href="REFERENCE.md#language-support">reference</a> shows exactly where each language sits today.</p>
+      <h3>Cross-file resolution <span class="badge">today: Go + Python</span></h3>
+      <p>Go and Python are full-resolution (IMPORTS + CALLS + receiver-type binding). TypeScript receiver-type binding shipped in v0.72 (#1177) — two classes with the same method name now bind precisely instead of falling back to name-only Method lookup. Swift moved to the stable-regex tier in v0.73 (#1450) — struct / enum / actor / init / @attribute coverage. Rust and Java AST extractors are the remaining axes; the v0.79 cross-language false-positive sweep (#1389) decides whether the regex tier passes the v1.0 bar before those AST upgrades become critical-path. The 9-axis per-language matrix in the <a href="REFERENCE.md#language-support">reference</a> shows exactly where each language sits today.</p>
     </div>
     <div class="card">
-      <h3>Observability standardization <span class="badge">v0.67</span></h3>
-      <p>OTLP traces per tool call, Prometheus metrics for cumulative counters, <code>X-Request-ID</code> correlation already shipping. The goal: pincher fits the same operational shape as any other production service you run, so the SRE story for "pincher in our agent platform" is solved on the same day the feature lands.</p>
+      <h3>Observability is standard infrastructure <span class="badge">today</span></h3>
+      <p>OTLP traces per tool call (v0.67 #1163), Prometheus metrics at <code>/v1/metrics</code> (v0.67), <code>X-Request-ID</code> correlation across stdio / HTTP / streamable-HTTP (v0.56 #835). Pincher fits the same operational shape as any other production service you run, so the SRE story for "pincher in our agent platform" is solved on the same day the feature lands. The <code>_meta.request_id</code> is the join key between host logs, pincher logs, and traces.</p>
     </div>
     <div class="card">
       <h3>v1.0: schema freeze + migration guide <span class="badge">planned</span></h3>

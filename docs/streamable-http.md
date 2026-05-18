@@ -37,7 +37,7 @@ When mounted, every tool response includes `streamable_http` in `_meta.capabilit
 ```json
 {
   "_meta": {
-    "capabilities": ["schema_v32", "operator_tools_on_mcp", "streamable_http", ...]
+    "capabilities": ["schema_v33", "operator_tools_on_mcp", "streamable_http", ...]
   }
 }
 ```
@@ -75,7 +75,7 @@ curl -sD - -X POST http://127.0.0.1:8081/v1/health \
 }
 ```
 
-Full distributed tracing (OTLP spans) lands in v0.67's observability standardization; `X-Request-ID` is the minimal "trace through me" contract until then.
+Full distributed tracing (OTLP spans) shipped in v0.67 (#1163) — per-tool-call spans, per-index-pass spans, error status surfacing, graceful shutdown — when the server is configured with an OTLP endpoint. `X-Request-ID` remains the minimal "trace through me" contract; it's emitted unconditionally and is the join key between host logs, pincher logs, and OTLP spans when present.
 
 ## Capability composition
 
