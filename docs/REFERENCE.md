@@ -739,6 +739,78 @@ Baseline model: search baseline = sum of unique file sizes across every result f
 
 Per #1263 §2 (canonical workflow corpus + comparator implementations vs Sourcegraph CLI etc.) rolls forward to v0.69+; this v0.68 cut is the runs-on-your-own-project minimum.
 
+### `pincher supervised`
+
+Recommended runtime for agent CLIs (Claude Code, Cursor, Codex). Runs the same MCP stdio server as the bare `pincher` invocation, but wraps it in a parent supervisor that auto-restarts the inner process on (a) schema drift detected against a freshly-built binary on disk, or (b) crashes. The supervisor replays the MCP initialize handshake to the host so the agent never sees the underlying respawn.
+
+```bash
+pincher supervised                                # the canonical agent-CLI entry point
+PINCHER_AUTO_RESTART_ON_DRIFT=1 pincher           # equivalent for non-supervised hosts
+```
+
+Auto-restart-on-drift is load-bearing for the dogfood loop: when you `make install` a freshly-built `pincher` over the on-PATH binary, the next MCP call detects the mtime bump, the supervisor exits the inner process, and re-spawns against the new binary — no manual `/mcp` reconnect required. The Windows binary-swap path uses an explicit rename-out trick (per #705) so an in-use `pincher.exe` can be replaced without the "Device or resource busy" error.
+
+Without supervised mode (or the equivalent env var on a non-supervised stdio host), a binary swap lands on disk but the running MCP process keeps serving the old binary until the host is restarted. `pincher health` reports `binary_stale: true` when the swap landed but the running process hasn't picked it up.
+
+### `pincher health-check`
+
+Out-of-process liveness probe for cron/launchd/k8s/systemd — spawns a short-lived MCP client, performs the handshake + `tools/list`, exits 0 on success and non-zero on any failure within the timeout. Distinct from `pincher doctor` (which inspects the stored database; this exercises the live RPC surface).
+
+```bash
+pincher health-check                              # probe the running binary (os.Executable)
+pincher health-check --binary /path/to/pincher    # probe a specific binary
+pincher health-check --supervised                 # probe via `pincher supervised` (matches production launch shape)
+pincher health-check --timeout 30s                # raise the default 10s ceiling
+pincher health-check --verbose                    # dump JSON-RPC traffic for debugging
+```
+
+Output: `OK <stamped-version>` on stderr for success; a failure summary otherwise. Stdout is reserved for future structured output. Exit codes: `0` healthy, `1` probe failed (timeout / handshake error), `2` argument parse error.
+
+Pairs with `pincher supervised`: a typical k8s liveness probe is `pincher health-check --supervised --timeout 30s` so the probe matches the production launch shape rather than a bare `pincher` invocation that would never run in practice.
+
+### `pincher verify` (#1399)
+
+Re-hashes every indexed file's on-disk content and reports drift against the stored `files.hash` column. Surfaces three failure modes: (a) out-of-band file modification since the last index, (b) on-disk deletion of an indexed file, and (c) persistence bugs that left the stored hash diverged from extraction. Doesn't auto-fix anything — mirrors `pincher doctor`'s posture: surface drift, the operator re-indexes.
+
+```bash
+pincher verify                                    # all projects, text output
+pincher verify --json                             # structured per-project drift report
+pincher verify --project NAME                     # restrict to a project (name or id substring)
+pincher verify --data-dir /x                      # override data directory
+```
+
+Stoa-family precedent: `stoa verify` hashes manifests as the integrity-check leg of the verify/doctor/probe trinity. Pincher's `doctor` is the doctor leg already; `verify` adds the integrity leg. Exit codes: `0` no drift, `1` drift detected (caller re-indexes), `2` couldn't open the database.
+
+### `pincher stats`
+
+Prints persisted session savings (cumulative `tokens_saved`, MCP call count, baseline-method breakdown) plus per-project file/symbol/edge counts. The CLI surface for what the dashboard renders interactively. CLI-only by deliberate choice — wiping stats is destructive admin, not an agent action.
+
+```bash
+pincher stats                                     # human-readable savings + per-project counts
+pincher stats --json                              # structured output for CI / paste
+pincher stats --reset                             # wipe sessions table (symbol data unaffected)
+pincher stats --reset --json                      # JSON confirmation receipt
+pincher stats --data-dir /x                       # override data directory
+```
+
+`--reset` clears the `sessions` table only — symbol / edge / project rows are untouched, so a `pincher stats --reset` followed by an index rebuilds the savings counters from zero without losing the indexed corpus. Back up first with `pincher stats --json > snapshot.json` if you want to keep the prior numbers.
+
+Cross-references the `mcp__pincher__stats` MCP tool (read-only equivalent of the non-reset path, agent-accessible).
+
+### `pincher hook-stats` (#662)
+
+Emits a shareable JSON snapshot of trailing 7-day Claude Code PreToolUse hook conversion-rate metrics — what the dashboard's hook panel shows, in a form that pastes cleanly into GitHub issues or DMs. Anonymised by default: no file paths, no hostnames, no project names.
+
+```bash
+pincher hook-stats --export-7d                    # required flag — no default action
+pincher hook-stats --export-7d --include-host     # add pincher version + GOOS/GOARCH for outlier triage
+pincher hook-stats --export-7d --data-dir /x      # override data directory
+```
+
+CLI-only by deliberate choice — the data is human-shareable (paste it on a GitHub thread, send it to #640), not LLM-consumable. Adding an MCP surface would invite an agent to "report telemetry" which is exactly the phone-home shape pincher refuses. Telemetry stays local; this subcommand reads what the dashboard already shows and emits a copy-pasteable snapshot.
+
+Cross-references the `/v1/hook-stats` HTTP endpoint (same payload, served by the running HTTP gateway when `--http` is enabled).
+
 ---
 
 ## CLI flags
