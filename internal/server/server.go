@@ -155,6 +155,16 @@ type Server struct {
 	sessionProject string // derived from sessionRoot
 	sessionID      string // db.ProjectIDFromPath(sessionRoot)
 
+	// #1081 v0.78 Phase 2: tracks roots beyond the session pick that
+	// the client advertised AND passed IsBloatTrap(hookMode=true). Each
+	// gets a background `Index()` pass on init so the agent can `search
+	// project=<name>` against any advertised workspace without an
+	// explicit `index` call first. autoIndexedRoots is the audit trail
+	// for that background work; Phase 3 (v0.81+) surfaces it via
+	// `_meta.auto_indexed` on the first tool call after init.
+	autoIndexedMu    sync.Mutex
+	autoIndexedRoots []autoIndexedRoot
+
 	// #620: dedupe binary_version_warning. Once a given (project, indexed-by
 	// version) pair has surfaced its drift warning to this server process,
 	// suppress subsequent emissions of the same warning. Each unique pair
@@ -1173,29 +1183,49 @@ func (s *Server) onRoots(ctx context.Context, req *mcp.RootsListChangedRequest) 
 	})
 }
 
+// autoIndexedRoot records one root that the roots/list handshake
+// auto-indexed in the background (beyond the session pick). Surfaced
+// via Server.autoIndexedRoots so future versions can expose the audit
+// trail through _meta.auto_indexed (#1081 Phase 3, v0.81+).
+type autoIndexedRoot struct {
+	Root      string `json:"root"`
+	ProjectID string `json:"project_id"`
+	Status    string `json:"status"` // "indexed", "indexing", or "error: ..."
+}
+
 // detectRoot picks the session root from the client's roots/list response
 // (when the client supports the MCP roots capability) or falls back to
-// CWD. Multi-root iteration with IsBloatTrap clearance lands in #1081
-// Phase 1 (v0.76): every advertised root is examined; the first one that
-// (a) parses as a file:// URI and (b) passes the project-marker bloat-trap
-// check in hookMode=true wins. Roots advertised as "/", "$HOME", or
-// directories without a project marker (.git / go.mod / package.json /
-// etc.) are silently skipped — they're typically catch-all UI defaults
-// the host sends regardless of where the user is working, not directories
-// meant to be indexed.
+// CWD. Phase 1 (#1081 v0.76) added multi-root iteration with IsBloatTrap
+// clearance — every advertised root is examined; the first one that
+// (a) parses as a file:// URI and (b) passes the project-marker
+// bloat-trap check in hookMode=true wins the session-root slot.
 //
-// Phase 2 (#1081 v0.77) will background-auto-index the additional cleared
-// roots beyond the session pick and surface them via
-// _meta.auto_indexed. This Phase 1 commit only improves the SELECTION
-// logic — single-root behavior is unchanged for hosts that advertise one
-// root, and multi-root hosts no longer pick a bloat-trap root just
-// because it happens to be at index 0.
+// Phase 2 (#1081 v0.78) extends that: after picking the session root,
+// remaining cleared roots get a background Index() pass so the agent
+// can `search project=<name>` against any advertised workspace without
+// an explicit `index path=...` call first. The audit trail lives in
+// s.autoIndexedRoots; Phase 3 (v0.81+) surfaces it via
+// _meta.auto_indexed on the first tool call after init.
+//
+// Roots advertised as "/", "$HOME", or directories without a project
+// marker (.git / go.mod / package.json / etc.) are silently skipped —
+// they're typically catch-all UI defaults the host sends regardless of
+// where the user is working, not directories meant to be indexed.
 func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) {
 	if session != nil {
 		if result, err := session.ListRoots(ctx, nil); err == nil && len(result.Roots) > 0 {
-			if path, ok := pickSessionRoot(result.Roots); ok {
-				s.setRoot(path)
+			cleared := clearedSessionRoots(result.Roots)
+			if len(cleared) > 0 {
+				s.setRoot(cleared[0])
 				s.maybeReindexOnDrift()
+				// #1081 Phase 2: kick off background indexing for
+				// every remaining cleared root. context.Background()
+				// because the indexer must outlive the initialize
+				// request; the goroutine writes its outcome into
+				// s.autoIndexedRoots under s.autoIndexedMu.
+				if len(cleared) > 1 {
+					s.startAutoIndex(cleared[1:])
+				}
 				return
 			}
 		}
@@ -1206,6 +1236,50 @@ func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) {
 	}
 }
 
+// startAutoIndex fires a background Index() per cleared root, recording
+// the outcome in s.autoIndexedRoots. Errors don't propagate up — the
+// session root is already set; auto-indexing extra roots is a
+// best-effort convenience. Each root gets its own goroutine so
+// indexer's per-project mutex serializes them, but the call site
+// doesn't block on any of them. The "indexing" → "indexed"/"error"
+// status transition is observable via s.AutoIndexedRoots().
+func (s *Server) startAutoIndex(roots []string) {
+	for _, root := range roots {
+		pid := db.ProjectIDFromPath(root)
+		s.autoIndexedMu.Lock()
+		s.autoIndexedRoots = append(s.autoIndexedRoots, autoIndexedRoot{
+			Root: root, ProjectID: pid, Status: "indexing",
+		})
+		idx := len(s.autoIndexedRoots) - 1
+		s.autoIndexedMu.Unlock()
+
+		go func(root string, idx int) {
+			_, err := s.indexer.Index(context.Background(), root, false)
+			s.autoIndexedMu.Lock()
+			defer s.autoIndexedMu.Unlock()
+			if err != nil {
+				s.autoIndexedRoots[idx].Status = "error: " + err.Error()
+				slog.Warn("pincher.auto_index.err", "root", root, "err", err)
+			} else {
+				s.autoIndexedRoots[idx].Status = "indexed"
+				slog.Info("pincher.auto_index.done", "root", root)
+			}
+		}(root, idx)
+	}
+}
+
+// AutoIndexedRoots returns a snapshot of the auto-indexed-roots audit
+// trail captured during the roots/list handshake. Exported so tests
+// can verify Phase 2 behavior; the eventual _meta.auto_indexed
+// surfacing (v0.81+) reads from the same source.
+func (s *Server) AutoIndexedRoots() []autoIndexedRoot {
+	s.autoIndexedMu.Lock()
+	defer s.autoIndexedMu.Unlock()
+	out := make([]autoIndexedRoot, len(s.autoIndexedRoots))
+	copy(out, s.autoIndexedRoots)
+	return out
+}
+
 // pickSessionRoot is detectRoot's filter — broken out as a pure helper
 // so unit tests can drive it without spinning up an in-memory MCP
 // session. Returns the first root that parses as file:// AND passes
@@ -1214,7 +1288,26 @@ func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) {
 // user opt-in for any specific path, so the project-marker requirement
 // catches catch-all defaults (/, $HOME, ~/Documents) that the user
 // didn't mean for pincher to index.
+//
+// Pre-#1081 Phase 2 this returned a single root; detectRoot now uses
+// clearedSessionRoots to consume the FULL list. pickSessionRoot stays
+// as a thin convenience so callers that only need the head can ignore
+// the multi-root surface.
 func pickSessionRoot(roots []*mcp.Root) (string, bool) {
+	cleared := clearedSessionRoots(roots)
+	if len(cleared) == 0 {
+		return "", false
+	}
+	return cleared[0], true
+}
+
+// clearedSessionRoots returns every advertised root that parses as a
+// file:// URI AND passes IsBloatTrap(hookMode=true), in advertised
+// order. Used by detectRoot to pick the session-root head (Phase 1
+// behavior) AND queue background auto-indexes for the tail (Phase 2,
+// #1081 v0.78).
+func clearedSessionRoots(roots []*mcp.Root) []string {
+	out := make([]string, 0, len(roots))
 	for _, r := range roots {
 		path, ok := parseFileURI(r.URI)
 		if !ok {
@@ -1223,9 +1316,9 @@ func pickSessionRoot(roots []*mcp.Root) (string, bool) {
 		if trap, _ := index.IsBloatTrap(path, true); trap {
 			continue
 		}
-		return path, true
+		out = append(out, path)
 	}
-	return "", false
+	return out
 }
 
 func (s *Server) setRoot(path string) {
