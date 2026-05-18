@@ -1,13 +1,13 @@
 goos: linux
 goarch: amd64
-pkg: github.com/pincherMCP/pincher/internal/index
+pkg: github.com/kwad77/pincher/internal/index
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkIndex_Cold_GoProject-4                      	     236	  10227739 ns/op	  155791 B/op	    2603 allocs/op
-BenchmarkIndex_Cold_K8sOps-4                         	     123	  17608517 ns/op	  299121 B/op	    3674 allocs/op
-BenchmarkIndex_Cold_NodeMonorepo-4                   	     218	  11014347 ns/op	  190231 B/op	    2151 allocs/op
-BenchmarkIndex_Incremental_NoChange_GoProject-4      	    1435	   2830353 ns/op	   19092 B/op	     331 allocs/op
-BenchmarkIndex_Incremental_NoChange_K8sOps-4         	    1350	   1768680 ns/op	   18594 B/op	     307 allocs/op
-BenchmarkIndex_Incremental_NoChange_NodeMonorepo-4   	    1386	   1662281 ns/op	   21066 B/op	     327 allocs/op
-BenchmarkIndex_Force_GoProject-4                     	     292	   8195073 ns/op	  154504 B/op	    2661 allocs/op
+BenchmarkIndex_Cold_GoProject-4                      	     700	  17167317 ns/op	  391099 B/op	    6857 allocs/op
+BenchmarkIndex_Cold_K8sOps-4                         	     609	  19778960 ns/op	  391451 B/op	    4607 allocs/op
+BenchmarkIndex_Cold_NodeMonorepo-4                   	     651	  18647861 ns/op	  465345 B/op	    5098 allocs/op
+BenchmarkIndex_Incremental_NoChange_GoProject-4      	   14769	    811341 ns/op	   30147 B/op	     583 allocs/op
+BenchmarkIndex_Incremental_NoChange_K8sOps-4         	   14407	    832165 ns/op	   29420 B/op	     551 allocs/op
+BenchmarkIndex_Incremental_NoChange_NodeMonorepo-4   	   13846	    868444 ns/op	   35262 B/op	     637 allocs/op
+BenchmarkIndex_Force_GoProject-4                     	     903	  13220053 ns/op	  386432 B/op	    6826 allocs/op
 PASS
-ok  	github.com/pincherMCP/pincher/internal/index	34.654s
+ok  	github.com/kwad77/pincher/internal/index	207.330s
