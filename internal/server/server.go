@@ -7202,9 +7202,34 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// caller had no signal whether "no hops" was a real result or a
 	// scope mismatch. Warn whenever the seed came from a different
 	// project than the traversal target.
+	// #1431: scope-to-session-first when the seed ID is ambiguous (same
+	// shape as #1409 handleSymbol / #1425 handleNeighborhood). Pre-fix
+	// the unscoped GetSymbol returned whichever project SQLite happened
+	// to ORDER first — typically a fork (sniffer mirror) when the
+	// session project had the same ID. The cross-project warning then
+	// fired AND the BFS in the session project still found 16 hops,
+	// producing a misleading "hops will silently be 0" warning right
+	// next to 16 actual hops. Scope to session first; only fall through
+	// to unscoped GetSymbol when the seed genuinely isn't in session.
 	var traceCrossProjectWarning string
 	if id != "" {
-		seed, lookupErr := s.store.GetSymbol(id)
+		traceProjectArg := str(args, "project")
+		var seed *db.Symbol
+		var lookupErr error
+		switch {
+		case traceProjectArg != "" && traceProjectArg != "*" && projectID != "":
+			seed, lookupErr = s.store.GetSymbolScoped(projectID, id)
+		case traceProjectArg == "" && s.sessionID != "":
+			seed, lookupErr = s.store.GetSymbolScoped(s.sessionID, id)
+			if lookupErr == nil && seed == nil {
+				// Not in session — fall back to unscoped so the
+				// cross-project warning below can name the project
+				// where the seed actually lives.
+				seed, lookupErr = s.store.GetSymbol(id)
+			}
+		default:
+			seed, lookupErr = s.store.GetSymbol(id)
+		}
 		if lookupErr != nil || seed == nil {
 			// #704: not-found errors carry remediation hints. Without
 			// them the caller is stuck — the obvious next move is search
