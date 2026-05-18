@@ -614,6 +614,31 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	data["schema_version"] = schemaVersion
 
+	// #1497: surface what the most recent schema migration did, so users
+	// can see whether their last `make install` + `/mcp` reconnect bumped
+	// only "Nothing"-class migrations (no re-extraction needed) or
+	// included an "All"-class one (the binary's extractor changes
+	// require a full reindex to surface correctly). Empty when no
+	// migrations ran this startup (DB already at current schema).
+	inv, migFrom, migTo := s.store.LastStartupMigrationInvalidates()
+	if migFrom != migTo {
+		migInfo := map[string]any{
+			"from_version":         migFrom,
+			"to_version":           migTo,
+			"requires_full_reindex": inv.All,
+		}
+		if len(inv.Languages) > 0 {
+			migInfo["affected_languages"] = inv.Languages
+		}
+		data["startup_migrations"] = migInfo
+		if inv.All {
+			attachWarning(data, fmt.Sprintf(
+				"doctor: this binary's schema bump (v%d → v%d) included migrations that invalidate previously-extracted data — run `pincher index --force <path>` on each project to refresh; otherwise some graph queries may surface stale results until the watcher's next pass.",
+				migFrom, migTo,
+			))
+		}
+	}
+
 	dbPath := s.store.Path
 	var dbSizeBytes, walSizeBytes int64
 	if info, err := os.Stat(dbPath); err == nil {
