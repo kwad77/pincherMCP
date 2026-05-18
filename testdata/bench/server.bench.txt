@@ -1,20 +1,20 @@
 goos: linux
 goarch: amd64
-pkg: github.com/pincherMCP/pincher/internal/server
+pkg: github.com/kwad77/pincher/internal/server
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkHandleSymbols_Batch20_GoProject-4       	    6159	    381780 ns/op	   97804 B/op	    1502 allocs/op
-BenchmarkHandleSymbol_GoProject-4                	    6895	    330582 ns/op	   83807 B/op	    1230 allocs/op
-BenchmarkHandleSearch_BM25_GoProject-4           	    2588	    895437 ns/op	  250728 B/op	    3595 allocs/op
-BenchmarkHandleSearch_BM25_K8sOps-4              	    1428	   1669376 ns/op	  503541 B/op	    7204 allocs/op
-BenchmarkHandleQuery_NodeScan_GoProject-4        	    6764	    334515 ns/op	   63119 B/op	    1104 allocs/op
-BenchmarkHandleQuery_SingleHopJoin_GoProject-4   	    5246	    422884 ns/op	   86993 B/op	    1437 allocs/op
-BenchmarkHandleSearch_Parallel_GoProject-4       	    5041	    459325 ns/op	  250556 B/op	    3594 allocs/op
-BenchmarkHandleArchitecture_GoProject-4          	    2206	   1064166 ns/op	  281221 B/op	    4005 allocs/op
-BenchmarkAuth_TimingProfile/correct-4            	   48812	     48768 ns/op	   14178 B/op	     150 allocs/op
-BenchmarkAuth_TimingProfile/wrong_same_length-4  	  535011	      4295 ns/op	    7066 B/op	      30 allocs/op
-BenchmarkAuth_TimingProfile/wrong_first_byte-4   	  531322	      4286 ns/op	    7066 B/op	      30 allocs/op
-BenchmarkAuth_TimingProfile/wrong_last_byte-4    	  528872	      4264 ns/op	    7066 B/op	      30 allocs/op
-BenchmarkAuth_TimingProfile/wrong_short-4        	  528741	      4266 ns/op	    7042 B/op	      30 allocs/op
-BenchmarkAuth_TimingProfile/wrong_long_prefix_match-4         	  418839	      5359 ns/op	    9210 B/op	      31 allocs/op
+BenchmarkHandleSymbols_Batch20_GoProject-4       	   61370	    182064 ns/op	   21758 B/op	     377 allocs/op
+BenchmarkHandleSymbol_GoProject-4                	   71679	    167897 ns/op	   16220 B/op	     308 allocs/op
+BenchmarkHandleSearch_BM25_GoProject-4           	   39090	    310046 ns/op	   33059 B/op	     605 allocs/op
+BenchmarkHandleSearch_BM25_K8sOps-4              	   24256	    490435 ns/op	   66535 B/op	    1202 allocs/op
+BenchmarkHandleQuery_NodeScan_GoProject-4        	   29484	    406541 ns/op	   29073 B/op	     683 allocs/op
+BenchmarkHandleQuery_SingleHopJoin_GoProject-4   	   19666	    609582 ns/op	   65849 B/op	    1156 allocs/op
+BenchmarkHandleSearch_Parallel_GoProject-4       	   81801	    146749 ns/op	   32481 B/op	     605 allocs/op
+BenchmarkHandleArchitecture_GoProject-4          	   23179	    517575 ns/op	   45265 B/op	     918 allocs/op
+BenchmarkAuth_TimingProfile/correct-4            	  119059	    100380 ns/op	   30292 B/op	     371 allocs/op
+BenchmarkAuth_TimingProfile/wrong_same_length-4  	 1908780	      6270 ns/op	    7293 B/op	      36 allocs/op
+BenchmarkAuth_TimingProfile/wrong_first_byte-4   	 1909798	      6278 ns/op	    7293 B/op	      36 allocs/op
+BenchmarkAuth_TimingProfile/wrong_last_byte-4    	 1907734	      6284 ns/op	    7293 B/op	      36 allocs/op
+BenchmarkAuth_TimingProfile/wrong_short-4        	 1909881	      6277 ns/op	    7269 B/op	      36 allocs/op
+BenchmarkAuth_TimingProfile/wrong_long_prefix_match-4         	 1573004	      7597 ns/op	    9438 B/op	      37 allocs/op
 PASS
-ok  	github.com/pincherMCP/pincher/internal/server	34.184s
+ok  	github.com/kwad77/pincher/internal/server	231.928s
