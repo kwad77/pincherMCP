@@ -12538,14 +12538,18 @@ func firstFTS5IncompatibleRegexChar(q string) string {
 	return ""
 }
 
-// validateGitRefName rejects branch names that could confuse `git`
-// or look like flag injection. Permissive enough to allow real refs
+// validateGitRefName rejects revspecs that could confuse `git` or
+// look like flag injection. Permissive enough to allow real refs
 // (alphanumerics, `/`, `-`, `_`, `.`, `@`, `{`, `}` for reflog refs
-// like `HEAD@{1}`); strict enough to reject empty strings, leading
-// `-` (flag injection), and `..` (range syntax that bypasses the
-// rev-parse single-ref check). The downstream `git rev-parse
-// --verify --quiet` is the real gate; this is a fast pre-check
-// that fails clearly before the subprocess runs.
+// like `HEAD@{1}`) AND standard revspec operators (`~`, `^`, `:`)
+// so callers can pass `HEAD~5`, `HEAD^`, `master~3` directly (#1433).
+// Strict enough to reject empty strings, leading `-` (flag
+// injection), and `..` (range syntax that bypasses the rev-parse
+// single-ref check). The downstream `git rev-parse --verify
+// --quiet` is the real gate; this is a fast pre-check that fails
+// clearly before the subprocess runs. exec.Command does not go
+// through a shell, so the characters allowed here are passed
+// literally to git — never interpreted by a shell.
 func validateGitRefName(name string) error {
 	if name == "" {
 		return fmt.Errorf("empty branch name")
@@ -12562,7 +12566,8 @@ func validateGitRefName(name string) error {
 			r >= 'A' && r <= 'Z',
 			r >= '0' && r <= '9',
 			r == '/', r == '-', r == '_', r == '.',
-			r == '@', r == '{', r == '}':
+			r == '@', r == '{', r == '}',
+			r == '~', r == '^', r == ':':
 			continue
 		default:
 			return fmt.Errorf("branch name contains disallowed character %q", r)

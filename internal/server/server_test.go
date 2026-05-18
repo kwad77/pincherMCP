@@ -2270,6 +2270,16 @@ func TestValidateGitRefName(t *testing.T) {
 		{"HEAD", false},
 		{"HEAD@{1}", false}, // reflog ref
 		{"refs/heads/main", false},
+		// Revspec operators (#1433) — `~`, `^`, `:` are standard
+		// git revspec syntax; exec.Command bypasses the shell so
+		// they're passed literally to git, which has its own
+		// rev-parse validator as the real gate.
+		{"HEAD~5", false},
+		{"master~5", false},
+		{"HEAD^", false},
+		{"HEAD^2", false},
+		{"main^^", false},
+		{"refs/heads/main:src/file.go", false},
 		// Rejected.
 		{"", true},
 		{"-flag", true},                   // looks like a flag
@@ -2278,6 +2288,15 @@ func TestValidateGitRefName(t *testing.T) {
 		{"name with spaces", true},        // space disallowed
 		{"main;rm -rf /", true},           // shell metachar
 		{"branch$(whoami)", true},         // command substitution shape
+		{"main`whoami`", true},            // backtick subst shape
+		{"main|cat", true},                // pipe
+		{"main&background", true},         // background
+		{"main>out", true},                // redirect
+		{"main<in", true},                 // redirect
+		{"main*glob", true},               // glob
+		{"main?glob", true},               // glob
+		{"main(paren)", true},             // paren
+		{"main\\backslash", true},         // backslash
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
