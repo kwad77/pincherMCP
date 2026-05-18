@@ -376,7 +376,12 @@ func init() {
 	Register(&langAdapter{
 		primary: "C#",
 		exts:    map[string]string{".cs": "C#"},
-		confidence: 0.70,
+		// #1459 v0.73: promoted 0.70 → 0.85 (stable-regex tier).
+		// classRE covers class/record/record class/record struct/
+		// struct; dedicated enumRE for `enum`; [Attribute] prefix
+		// tolerance; file-scoped access modifier + partial +
+		// readonly + required modifiers.
+		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
 			return extractCSharp(s, p)
 		},
@@ -1742,6 +1747,15 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 			funcStack = funcStack[:len(funcStack)-1]
 		}
 
+		// classMatchedThisLine suppresses funcRE for the SAME line
+		// when classRE already claimed it (#1459). C# 9+ records
+		// declare a primary constructor inline (`public record
+		// Person(string Name, int Age)`), which funcRE would
+		// otherwise mis-extract as a Function named Person.
+		// Symmetric concern for inline-paren class declarations in
+		// other languages with parens at declaration site.
+		classMatchedThisLine := false
+
 		// Track class scope for method qualified names
 		if rx.classRE != nil {
 			if m := rx.classRE.FindStringSubmatch(line); m != nil {
@@ -1757,6 +1771,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					parent := strings.TrimSpace(namedGroup(rx.classRE, m, "parent"))
 					currentClass = name
 					currentClassEnd = endLine
+					classMatchedThisLine = true
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
 						Name:          name,
@@ -1854,7 +1869,15 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 			funcPattern = rx.methodRE
 		}
 		funcMatched := false
-		if funcPattern != nil {
+		// #1459: skip funcRE when classRE / enumRE / interfaceRE
+		// already claimed the line. Otherwise a C# 9+ record like
+		// `public record Person(string Name, int Age)` would emit
+		// BOTH a Class Person (from classRE) AND a Method/Function
+		// Person (because funcRE sees `record` as the return type
+		// and `Person(...)` as the function signature). The class-
+		// kind keyword wins; the primary constructor is part of the
+		// type declaration, not a separate method symbol.
+		if funcPattern != nil && !classMatchedThisLine {
 			if m := funcPattern.FindStringSubmatch(line); m != nil {
 				name := namedGroup(funcPattern, m, "name")
 				if name != "" {
@@ -3043,10 +3066,26 @@ func offsetToLineNumber(source []byte, off int) int {
 	return line
 }
 
+// C# regex-tier extractor. #1459 v0.73 promotes from 0.70 → 0.85
+// (stable-regex tier, joining TS/TSX/Rust/Java/Swift/Kotlin).
+// classRE alternates over class / struct / record / record class /
+// record struct (C# 9+ records); dedicated enumRE for `enum`;
+// [Attribute] prefix tolerance on funcRE / classRE / interfaceRE /
+// enumRE (essential for `[Serializable]`, `[ApiController]`,
+// `[HttpGet("/x")]`, etc.); file-scoped access modifier (C# 11+);
+// partial class / partial interface; readonly / required modifiers;
+// generic type-parameter clauses with one level of nesting.
 var csRE = &regexExtractor{
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:public|private|protected|internal)?\s*(?:static\s+)?(?:async\s+)?(?:\w+\s+)+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*\(`),
-	classRE:     regexp.MustCompile(`(?m)^(?:\s*)(?:public|private|internal)?\s*(?:abstract|sealed)?\s*class\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_, ]*))?`),
-	interfaceRE: regexp.MustCompile(`(?m)^(?:\s*)(?:public)?\s*interface\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	// Return-type token allows generics (`Task<string>`), nullables
+	// (`int?`), arrays (`byte[]`), tuples (`(int, string)` partially —
+	// the leading `(` would break; not commonly used as return type),
+	// and qualified names (`System.IO.Stream`) via the [\w<>?,\.\[\]]+
+	// char class. Required for ASP.NET / Blazor / EF-style async
+	// method signatures that always carry a generic return.
+	funcRE:      regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:(?:static|partial|abstract|sealed|virtual|override|async|extern|unsafe|new|readonly|required)\s+)*(?:[\w<>?,\.\[\]]+\s+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\(`),
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:(?:abstract|sealed|static|partial|unsafe|new|readonly)\s+)*(?:record\s+class|record\s+struct|class|struct|record)\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_<>, ]*))?`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:partial\s+)?interface\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 }
 
 func extractCSharp(source []byte, relPath string) *FileResult {
