@@ -1776,6 +1776,22 @@ var skippedDirs = map[string]bool{
 	".next":        true,
 	".nuxt":        true,
 	"coverage":     true,
+	// #1475 v0.78: Claude Code's ephemeral git-worktree convention
+	// puts active feature branches at `.claude/worktrees/<branch>/`.
+	// Each worktree is a full sibling working tree on a different
+	// branch — typically also registered as its own pincher project.
+	// Without this entry, gocodewalker (which only honors
+	// .gitignore + the ExcludeDirectory list, NOT the "skip dotted
+	// dirs" rule isSkippedDir applies elsewhere) descends into the
+	// worktree and counts those files under the parent project,
+	// producing duplicate file_path rows across project IDs +
+	// inflated symbol/edge counts. The principled fix (detect any
+	// nested `.git` entry as a project boundary) needs gocodewalker
+	// per-dir callback support; this name-based skip is the
+	// pragmatic fix for the most common offender. `.claude/` also
+	// holds agent settings/logs that don't belong in the code-intel
+	// graph anyway.
+	".claude": true,
 }
 
 func isSkippedDir(name string) bool {
