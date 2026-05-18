@@ -9139,6 +9139,32 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			pruned = []string{} // empty array, not null, when nothing pruned
 		}
 		data["pruned"] = pruned
+
+		// #1473 v0.78: when prune_dead actually deleted something AND the
+		// response also carries surviving projects' file/symbol/edge
+		// counts, those counts can be transiently collapsed mid-cascade.
+		// The pattern: prune CASCADE deletes files/symbols/edges rows
+		// whose paths live under pruned project paths; where files
+		// belong to multiple projects (parent project + worktree
+		// sub-project sharing physical paths), the cascade temporarily
+		// reduces the JOIN counts the SELECT then reports. The watcher's
+		// next reindex pass repopulates them, usually within ~60s.
+		// Surface a typed transient-state flag + warning so the caller
+		// doesn't read the response as data loss — option (c) from the
+		// issue (the two simpler alternatives needed deeper changes).
+		// Only fires when there was actual cascade work; an empty prune
+		// list means no transient state could exist.
+		if len(pruned) > 0 {
+			meta, _ := data["_meta"].(map[string]any)
+			if meta == nil {
+				meta = map[string]any{}
+			}
+			meta["counts_may_be_transient"] = true
+			existing, _ := meta["warnings"].([]string)
+			meta["warnings"] = append(existing,
+				"prune_dead deleted "+fmt.Sprintf("%d", len(pruned))+" project(s); surviving projects' files/symbols/edges counts in this response may be transiently collapsed (CASCADE intersects shared paths). Re-call `list` after ~60s for steady-state counts; the watcher reindex pass repopulates them.")
+			data["_meta"] = meta
+		}
 	}
 	// Surface next page when the response is partial. #1020: merge
 	// into existing _meta — overwriting clobbers clamp warnings the
