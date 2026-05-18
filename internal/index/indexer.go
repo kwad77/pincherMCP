@@ -1266,37 +1266,85 @@ func (idx *Indexer) flushBatch(projectID string, syms []db.Symbol, edges []db.Ed
 
 // branchCacheEntry is the per-project cache value for the git-branch
 // lookup used by detectGitBranchCached. #1303 Phase 2a.
+//
+// headContent (#1474 perf follow-up) is the verbatim contents of
+// `<project>/.git/HEAD` at cache time. `git checkout` rewrites this
+// file atomically — for a symbolic ref it holds e.g. `ref: refs/heads/main`,
+// for a detached HEAD it holds the full SHA — so an unchanged HEAD file
+// is a sufficient (and very cheap) proof that the branch hasn't moved
+// since we last asked git. When the cached headContent matches the
+// fresh file read, force=true callers can safely skip the
+// `git rev-parse` subprocess. Empty string when the read failed (file
+// missing, non-git directory, permission error) — in that case the
+// content check is treated as a miss and the subprocess runs.
 type branchCacheEntry struct {
-	branch    string
-	cachedAt  time.Time
+	branch      string
+	cachedAt    time.Time
+	headContent string
 }
 
 const branchCacheTTL = 30 * time.Second
 
-// detectGitBranchCached wraps detectGitBranch with a 30-second
-// per-project TTL so the Watch() poll cycle doesn't allocate a
-// subprocess per tick. The TTL is short enough that a user who
-// switches branches and runs any pincher tool within 30s sees the
-// branch-drift advisory fire promptly. #1303 Phase 2a regression
-// fix for TestIndex_NoChange_SkipsResolvePass.
+// detectGitBranchCached wraps detectGitBranch with two cache layers:
 //
-// bypass=true skips the cache and forces a fresh git rev-parse —
-// used by `--force` index calls so a user who just ran
-// `git checkout` followed by `pincher index --force <path>` sees
-// the new branch stamped immediately rather than waiting out the
-// 30s TTL. Watcher ticks and incremental re-index runs pass
-// bypass=false to keep the alloc budget.
+//   - The 30-second `branchCacheTTL` (time-based) covers the Watch()
+//     poll cycle so a watcher tick doesn't allocate a subprocess per
+//     tick (#1303 Phase 2a regression fix for
+//     TestIndex_NoChange_SkipsResolvePass).
+//   - A content-based check against `<project>/.git/HEAD` (#1474 perf
+//     follow-up) covers the rapid-fire `force=true` case — e.g. the
+//     schema-migration auto-restart that fires parallel reindex calls
+//     across every project. Pre-fix, every force call unconditionally
+//     re-ran `git rev-parse`; CPU profiling showed 42% of cumulative
+//     time on the Force bench was in `os/exec.Cmd.Start` / subprocess
+//     stdout reads. Skipping the subprocess when HEAD content is
+//     unchanged eliminates the storm without weakening the
+//     "deliberate `git checkout` + `pincher index --force` reflects
+//     the new branch immediately" promise: a real checkout rewrites
+//     `.git/HEAD`, the content check fails, and we re-detect.
+//
+// Both checks fail open: a stat/read error on `.git/HEAD` is treated as
+// a content miss, so worktrees / packed refs / unusual setups fall back
+// to the pre-fix subprocess path with no behaviour change.
 func (idx *Indexer) detectGitBranchCached(projectID, absPath string, bypass bool) string {
-	if !bypass {
-		if v, ok := idx.branchCacheByProject.Load(projectID); ok {
-			if e, ok := v.(branchCacheEntry); ok && time.Since(e.cachedAt) < branchCacheTTL {
+	headContent := readGitHEAD(absPath)
+	if v, ok := idx.branchCacheByProject.Load(projectID); ok {
+		if e, ok := v.(branchCacheEntry); ok {
+			age := time.Since(e.cachedAt)
+			// Normal (non-force) callers use the 30s TTL alone.
+			if !bypass && age < branchCacheTTL {
+				return e.branch
+			}
+			// Force callers skip the subprocess when HEAD content is
+			// proven unchanged. Empty headContent counts as a miss so
+			// the subprocess path stays in effect for non-git dirs
+			// and read failures.
+			if bypass && headContent != "" && e.headContent == headContent {
 				return e.branch
 			}
 		}
 	}
 	branch := detectGitBranch(absPath)
-	idx.branchCacheByProject.Store(projectID, branchCacheEntry{branch: branch, cachedAt: time.Now()})
+	idx.branchCacheByProject.Store(projectID, branchCacheEntry{
+		branch:      branch,
+		cachedAt:    time.Now(),
+		headContent: headContent,
+	})
 	return branch
+}
+
+// readGitHEAD returns the trimmed contents of `<absPath>/.git/HEAD`, or
+// "" on any read error. The trim makes the content stable across the
+// trailing newline / CRLF / no-newline variants different git versions
+// emit. Used by detectGitBranchCached as a cheap "did anything change
+// since last call" probe in place of a subprocess spawn.
+func readGitHEAD(absPath string) string {
+	headPath := filepath.Join(absPath, ".git", "HEAD")
+	data, err := os.ReadFile(headPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // currentBranchFor returns the git branch cached for projectID by the

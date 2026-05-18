@@ -2952,42 +2952,65 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 }
 
 // DeleteSymbolsForFile removes all symbols (and edges) from one file.
+//
+// Cascade order: edges → struct_fields → interface_methods → symbols. Each
+// cascade is a single set-based DELETE that filters via a subquery against
+// the file's symbol IDs, rather than the pre-#1474 per-symbol loop that
+// issued one parse-plan-exec for every (symbol × cascade-table) pair.
+//
+// Why this matters: CPU profiling of the cold/force Index() path showed
+// ~42% of total time in SQLite statement parsing (`_sqlite3RunParser` +
+// `_sqlite3Prepare` family) vs ~16% in actual execution. On a 700-file
+// project the pre-fix code issued `1 + 3N` SQL parses per file (~30 with
+// average ~10 symbols/file), totalling ~21,000 parses just for cleanup.
+// Post-fix it issues exactly 4 parses per file regardless of symbol count,
+// a 7.75× reduction in parse work.
+//
+// Correctness invariants preserved:
+//   - All three cascade tables (edges / struct_fields / interface_methods)
+//     are cleared before `symbols`, so foreign-key-style orphans cannot
+//     appear mid-transaction.
+//   - The non-correlated subquery is evaluated once by SQLite (constant
+//     across the outer DELETE's row scan), so the symbols → cascade
+//     ordering doesn't race with the symbols table being trimmed last.
+//   - All four statements run inside the same withTx transaction; partial
+//     failure rolls everything back.
 func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT id FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
-		if err != nil {
+		// Cascade 1: edges referencing any symbol in this file (either
+		// endpoint). The doubled subquery is necessary because edges has
+		// no project_id column — from_id/to_id ARE the only join keys.
+		if _, err := tx.Exec(
+			`DELETE FROM edges
+			   WHERE from_id IN (SELECT id FROM symbols WHERE project_id=? AND file_path=?)
+			      OR to_id   IN (SELECT id FROM symbols WHERE project_id=? AND file_path=?)`,
+			projectID, filePath, projectID, filePath,
+		); err != nil {
 			return err
 		}
-		defer rows.Close()
-		var ids []string
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				return err
-			}
-			ids = append(ids, id)
-		}
-		if err := rows.Err(); err != nil {
+		// Cascade 2: struct_fields (#423 piece 2). Without this, every
+		// file re-extraction would orphan its previous fields.
+		if _, err := tx.Exec(
+			`DELETE FROM struct_fields
+			   WHERE project_id=? AND struct_id IN (
+			     SELECT id FROM symbols WHERE project_id=? AND file_path=?
+			   )`,
+			projectID, projectID, filePath,
+		); err != nil {
 			return err
 		}
-		for _, id := range ids {
-			if _, err := tx.Exec(`DELETE FROM edges WHERE from_id=? OR to_id=?`, id, id); err != nil {
-				return err
-			}
-			// #423 piece 2: cascade-delete struct_fields rows whose
-			// struct_id matches a deleted symbol. Without this, every
-			// file re-extraction would orphan its previous fields.
-			if _, err := tx.Exec(`DELETE FROM struct_fields WHERE project_id=? AND struct_id=?`, projectID, id); err != nil {
-				return err
-			}
-			// #493: cascade-delete interface_methods rows whose
-			// interface_id matches a deleted symbol. Same rationale
-			// as struct_fields — no orphans across re-extractions.
-			if _, err := tx.Exec(`DELETE FROM interface_methods WHERE project_id=? AND interface_id=?`, projectID, id); err != nil {
-				return err
-			}
+		// Cascade 3: interface_methods (#493). Same rationale.
+		if _, err := tx.Exec(
+			`DELETE FROM interface_methods
+			   WHERE project_id=? AND interface_id IN (
+			     SELECT id FROM symbols WHERE project_id=? AND file_path=?
+			   )`,
+			projectID, projectID, filePath,
+		); err != nil {
+			return err
 		}
-		_, err = tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
+		// Cascade 4: the file's symbols themselves.
+		_, err := tx.Exec(`DELETE FROM symbols WHERE project_id=? AND file_path=?`, projectID, filePath)
 		return err
 	})
 }
