@@ -83,3 +83,50 @@ func TestFirstMarkdownH1_SkipsFrontMatter(t *testing.T) {
 		}
 	}
 }
+
+// #1427: bash comments like `# 1. Install` inside ```bash fenced
+// blocks were being matched as Markdown H1s when the real document
+// had none — pincher's own README has zero H1s but `fetch` titled
+// the stored Document "1. Install" because the Quick Start code
+// block's `# 1. Install` comment was picked up. Track fence state
+// so anything inside ```...``` (or ~~~...~~~) is skipped.
+func TestFirstMarkdownH1_SkipsFencedCodeBlocks(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "h1-inside-bash-fence-ignored",
+			in:   "Body text.\n\n```bash\n# 1. Install\ngo install x\n```\n\n# Real Title",
+			want: "Real Title",
+		},
+		{
+			name: "no-real-h1-only-fenced-comment",
+			in:   "Body text.\n\n```bash\n# 1. Install\ngo install x\n```\n\nmore body",
+			want: "",
+		},
+		{
+			name: "no-real-h1-only-tilde-fence-comment",
+			in:   "Body.\n\n~~~bash\n# Hidden\n~~~\n\n",
+			want: "",
+		},
+		{
+			name: "h1-before-fence-still-wins",
+			in:   "# Top Title\n\n```bash\n# decoy\n```\n",
+			want: "Top Title",
+		},
+		{
+			name: "multiple-fences-state-tracks-correctly",
+			in:   "```\n# decoy1\n```\nbody\n```\n# decoy2\n```\n# Real",
+			want: "Real",
+		},
+	}
+	for _, c := range cases {
+		got := firstMarkdownH1(c.in)
+		if got != c.want {
+			t.Errorf("firstMarkdownH1(%q): got %q, want %q (#1427)", c.name, got, c.want)
+		}
+	}
+}

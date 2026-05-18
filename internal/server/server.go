@@ -11274,11 +11274,15 @@ func extractMarkdownText(raw string) string {
 // document, or "" if no H1 is found in the leading 200 lines. Used
 // as the title when content-type is markdown — the URL fallback in
 // the fetch handler is ugly when a real title is one line away
-// (#579). Skips empty lines and YAML/TOML front-matter delimiters
-// (`---`, `+++`).
+// (#579). Skips empty lines, YAML/TOML front-matter delimiters
+// (`---`, `+++`), and lines inside fenced code blocks (#1427 — bash
+// comments like `# 1. Install` inside ```bash were being matched as
+// H1s when the real document had none, surfacing wrong titles like
+// "1. Install" for pincher's own README which has zero H1s).
 func firstMarkdownH1(raw string) string {
 	scanner := strings.SplitN(raw, "\n", 200)
 	inFrontMatter := false
+	inFence := false
 	for i, line := range scanner {
 		t := strings.TrimSpace(line)
 		if i == 0 && (t == "---" || t == "+++") {
@@ -11289,6 +11293,19 @@ func firstMarkdownH1(raw string) string {
 			if t == "---" || t == "+++" {
 				inFrontMatter = false
 			}
+			continue
+		}
+		// #1427: track fenced-code-block state so a bash comment
+		// like `# 1. Install` inside ```bash isn't promoted to H1.
+		// CommonMark fences are 3+ backticks (```) or 3+ tildes (~~~)
+		// optionally followed by an info string. Toggle on every fence
+		// line — nested code blocks aren't legal Markdown so a single
+		// boolean is sufficient.
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
 			continue
 		}
 		if strings.HasPrefix(t, "# ") {
