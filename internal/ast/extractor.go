@@ -1733,9 +1733,21 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// #858: per-file CALLS pass. Scan this function's body
 					// for C-family call sites so non-Go corpora get an
 					// edge graph instead of zero edges.
+					//
+					// #1177: TS/TSX use the receiver-type-aware scanner
+					// so `this.X()` and `varname.X()` shapes get their
+					// receiver type stamped — the resolver then binds
+					// precisely to Class.method instead of falling back
+					// to a polymorphism-prone name-only Method lookup.
 					if opts.extractCalls {
-						result.Edges = append(result.Edges,
-							regexCallScan(source[lineStart:min(endByte, len(source))], qn)...)
+						bodySrc := source[lineStart:min(endByte, len(source))]
+						if opts.receiverTypeAware {
+							result.Edges = append(result.Edges,
+								tsCallScanReceiverAware(bodySrc, qn, currentClass)...)
+						} else {
+							result.Edges = append(result.Edges,
+								regexCallScan(bodySrc, qn)...)
+						}
 					}
 				}
 			}
@@ -1951,6 +1963,13 @@ type extractOpts struct {
 	// regex-tier languages produce a zero-edge graph (trace / dead_code
 	// silently empty).
 	extractCalls bool
+	// receiverTypeAware (#1177): swap regexCallScan for the TS-style
+	// receiver-aware scanner that captures `this.X()` / `varname.X()`
+	// shapes with `ReceiverType` stamped from typed-variable bindings.
+	// Has no effect unless extractCalls is also true. Currently only
+	// TS/TSX set this; other regex-tier languages keep the bare-name
+	// scan path until their own receiver-resolver work lands.
+	receiverTypeAware bool
 }
 
 // Language-specific extractors
@@ -2092,6 +2111,14 @@ func extractTypeScript(source []byte, relPath string) *FileResult {
 		// receiver-type resolver lands. Same shape as C #858 — gives
 		// TS users a real edge graph instead of zero edges.
 		extractCalls: true,
+		// #1177 v0.72: receiver-type-aware call scan. Captures
+		// `this.X()` and `varname.X()` shapes with ReceiverType
+		// stamped from typed-variable bindings (`const x: T`,
+		// `function f(x: T)`). The resolver then binds Class.method
+		// precisely instead of falling back to name-only Method
+		// lookup that picks the wrong target when two classes share
+		// a method name.
+		receiverTypeAware: true,
 	}
 	result := tsRE.extract(source, relPath, "TypeScript", opts)
 	// #1158 v0.61: the new methodRE matches `name(` at line start, which

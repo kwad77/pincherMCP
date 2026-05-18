@@ -163,14 +163,14 @@ func TestExtractTypeScript_PerFileCalls_MethodBodiesEmitCalls(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	// Validate at least one CALLS edge from `process` to its
-	// in-method calls. The `this.validate(...)` shape captures
-	// `validate` as the call target via regexCallRE; same for
-	// `persist`. We don't bind through `this` here — that's the
-	// receiver-type resolver's job in a later PR.
+	// #1177 v0.72: receiver-type-aware scan emits `this.X()` calls
+	// as ToName="this.X" with ReceiverType=<enclosing class>. The
+	// resolver consumes both to bind precisely to `Class.method`
+	// instead of falling back to a polymorphism-prone name-only
+	// Method lookup.
 	processCalls := map[string]bool{
-		"validate": false,
-		"persist":  false,
+		"this.validate": false,
+		"this.persist":  false,
 	}
 	for _, e := range r.Edges {
 		if e.Kind != "CALLS" || !strings.HasSuffix(e.FromQN, ".process") {
@@ -178,6 +178,10 @@ func TestExtractTypeScript_PerFileCalls_MethodBodiesEmitCalls(t *testing.T) {
 		}
 		if _, expected := processCalls[e.ToName]; expected {
 			processCalls[e.ToName] = true
+			if e.ReceiverType != "Service" {
+				t.Errorf("edge %q→%q ReceiverType = %q, want Service (#1177)",
+					e.FromQN, e.ToName, e.ReceiverType)
+			}
 		}
 	}
 	for target, found := range processCalls {

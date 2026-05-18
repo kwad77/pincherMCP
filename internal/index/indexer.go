@@ -694,7 +694,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 					// emit any), so they're as trustworthy as Go's for cross-
 					// file resolution. Other regex extractors still get the
 					// drop-on-per-file-miss policy to keep noise out.
+					//
+					// #1177 v0.72: TS/JS CALLS with a non-empty ReceiverType
+					// also defer — the receiver-type hint bounds the
+					// noise that would otherwise come from broad-deferral
+					// of regex-tier CALLS, and the resolver's class-name
+					// lookup needs the project-wide symbol pool to find
+					// the Class.method target. Edges with empty
+					// ReceiverType (bare free-function calls) still drop
+					// on per-file miss to preserve the noise floor.
 					if e.Kind == "CALLS" && (lang == "Go" || lang == "Python") {
+						deferredCalls = append(deferredCalls, e)
+					} else if e.Kind == "CALLS" && e.ReceiverType != "" {
 						deferredCalls = append(deferredCalls, e)
 					}
 					continue
@@ -1777,6 +1788,21 @@ func isSkippedDir(name string) bool {
 // works for Go/Rust/Java/etc.
 func isPythonFile(path string) bool {
 	return strings.HasSuffix(path, ".py") || strings.HasSuffix(path, ".pyw")
+}
+
+// isJSorTSFile reports whether path is a JavaScript or TypeScript
+// source file. Used by the #1177 receiver-type resolver to decide
+// whether to fall through to the class-name-lookup path (TS/JS have
+// multi-segment module paths derived from file paths, so the Go-
+// flavoured pkg-prefix construction in resolveByReceiverType can't
+// reach the real Class.method QN).
+func isJSorTSFile(path string) bool {
+	return strings.HasSuffix(path, ".ts") ||
+		strings.HasSuffix(path, ".tsx") ||
+		strings.HasSuffix(path, ".js") ||
+		strings.HasSuffix(path, ".jsx") ||
+		strings.HasSuffix(path, ".mjs") ||
+		strings.HasSuffix(path, ".cjs")
 }
 
 // safeExtractWithModule wraps ast.ExtractWithModule in a recover() that
@@ -3144,6 +3170,62 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		return ""
 	}
 
+	// #1177 v0.72: TS/JS receiver-type binding via class-name lookup.
+	// Go's resolveByReceiverType assumes single-segment package paths
+	// (`pkg.Type.method` QN shape) — TS/JS have multi-segment module
+	// paths derived from file paths, so the pkg-prefix construction
+	// can't reach the real Class.method QN. Instead, look up the
+	// receiver Class by name to get its full QN, then append the
+	// method name. Cached per receiverType because GetSymbolsByName
+	// is a DB round-trip and a hot trace will hit the same type many
+	// times.
+	classQNCache := map[string]string{}
+	classQNByName := func(name string) string {
+		if name == "" {
+			return ""
+		}
+		if qn, ok := classQNCache[name]; ok {
+			return qn
+		}
+		syms, err := idx.store.GetSymbolsByName(projectID, name, 50)
+		if err != nil || len(syms) == 0 {
+			classQNCache[name] = ""
+			return ""
+		}
+		for _, s := range syms {
+			if s.Kind == "Class" || s.Kind == "Interface" {
+				classQNCache[name] = s.QualifiedName
+				return s.QualifiedName
+			}
+		}
+		classQNCache[name] = ""
+		return ""
+	}
+	// resolveByReceiverTypeNonGo handles the JS/TS shape:
+	//   ToName="this.X" or "recv.X" + ReceiverType="<ClassName>"
+	// Looks up the Class symbol by name, then constructs
+	// <ClassQN>.<methodName> and tries lookupQN. Single-segment
+	// chains only — multi-segment (`a.b.X`) needs class-field
+	// tracking which isn't in this PR's scope.
+	resolveByReceiverTypeNonGo := func(toName, receiverType string) string {
+		if receiverType == "" || toName == "" {
+			return ""
+		}
+		segments := strings.Split(toName, ".")
+		if len(segments) != 2 {
+			return ""
+		}
+		methodName := segments[1]
+		if methodName == "" {
+			return ""
+		}
+		classQN := classQNByName(receiverType)
+		if classQN == "" {
+			return ""
+		}
+		return lookupQN(classQN + "." + methodName)
+	}
+
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
 	for _, e := range pending {
@@ -3170,6 +3252,13 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// looser project-wide receiver-method fallback.
 		if toID == "" {
 			toID = resolveByReceiverType(e.ToName, e.ReceiverType, e.FromQN)
+		}
+		// #1177 v0.72: TS/JS receiver-type fallback for files where
+		// the Go pkg-prefix path can't reach the real Class.method
+		// QN. Runs after the Go path so Go calls still get the
+		// struct-field-aware behaviour first.
+		if toID == "" && e.ReceiverType != "" && isJSorTSFile(e.FromFile) {
+			toID = resolveByReceiverTypeNonGo(e.ToName, e.ReceiverType)
 		}
 		// #285: receiver-method calls (e.g. `idx.Index(...)`) produce
 		// ToName="idx.Index" which never matches a real qualified name
