@@ -29,6 +29,7 @@ var expectedMCPTools = map[string]bool{
 	"investigate_failure": true, // #1391 v0.81 Phase 4 composite — bug-hunt from stack trace
 	"plan_change":         true, // #1391 v0.82 Phase 4 composite — pre-edit blast radius
 	"audit_unused":        true, // #1391 v0.83 Phase 4 composite — dead-code + deep-trace confirmation
+	"onboard_module":      true, // #1391 v0.84 Phase 4 composite — new-contributor orientation
 	"trace":            true,
 	"query":   true,
 	"guide":   true,

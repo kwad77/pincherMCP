@@ -2,7 +2,7 @@
 
 The long-form reference. The [README](../README.md) is the pitch + quickstart; this file is the manual. For 10-minute end-to-end walkthroughs, see [`tutorials/`](tutorials/) — [Claude Code](tutorials/claude-code.md), [Cursor](tutorials/cursor.md), [HTTP dashboard](tutorials/http-dashboard.md).
 
-**Schema version:** v33 · **MCP tools:** 26 · **Languages detected:** ~25 (10 AST/parser-tier, 21 regex-tier, plus 1 stub-tier (Haskell) — see [Language support](#language-support))
+**Schema version:** v33 · **MCP tools:** 27 · **Languages detected:** ~25 (10 AST/parser-tier, 21 regex-tier, plus 1 stub-tier (Haskell) — see [Language support](#language-support))
 
 ## Contents
 
@@ -11,7 +11,7 @@ The long-form reference. The [README](../README.md) is the pitch + quickstart; t
   - [Three-layer storage](#three-layer-storage)
   - [pinchQL query routing](#pinchql-query-routing)
   - [Data flow: index to query](#data-flow-index-to-query)
-- [The 26 MCP tools](#the-26-mcp-tools)
+- [The 27 MCP tools](#the-27-mcp-tools)
   - [Stable symbol IDs](#stable-symbol-ids)
   - [Field projection](#field-projection)
   - [Extraction confidence](#extraction-confidence)
@@ -60,7 +60,7 @@ The long-form reference. The [README](../README.md) is the pitch + quickstart; t
 ┌───────────────────────┐          ┌───────────────────────────┐
 │  pincher (MCP process)│          │  pincher --http :8080     │
 │                       │          │  (dashboard / REST)       │
-│  • 26 MCP tools       │          │                           │
+│  • 27 MCP tools       │          │                           │
 │  • idx.Watch()        │          │  • POST /v1/{tool}        │
 │  • SessionFlusher     │          │  • GET /v1/dashboard      │
 │    (flush every 10 s) │          │  • GET /v1/openapi.json   │
@@ -177,7 +177,7 @@ Project-scoped paths — `search`, `symbol`/`symbols` when `project=` is passed,
 
 ---
 
-## The 26 MCP tools
+## The 27 MCP tools
 
 All latencies measured on this codebase. Token counts use cl100k_base BPE — the same tokenizer family as Claude.
 
@@ -233,6 +233,7 @@ The remaining six tools — restored to MCP in v0.52 (reversal of the v0.42 #624
 |---|---|---|
 | `dead_code` | Symbols with zero inbound CALLS / READS / WRITES / REFERENCES / IMPORTS edges. Defaults bias toward precision: `language=Go`, `kinds=Function,Method`, `min_confidence=0.95`. Test fixtures filtered. | The inverse of `architecture` hotspots. |
 | `audit_unused` | **Composite #3 of Phase 4 (#1391 v0.83).** Dead-code composite with deep-trace confirmation. Runs the existing `dead_code` SQL path then, per candidate, fires a scoped inbound CALLS trace at `confirm_depth` (default 2) and classifies the result: `high` (zero callers — safe to delete), `medium` (deeper callers — likely dynamic path the static graph missed, read before deleting), `low` (depth-1 caller — almost always a resolver bug, file an issue rather than delete). Returns `{candidates, summary}` with classification counts. Replaces the N+1 round trips of `dead_code` + per-candidate `trace direction=in`. | Read-only. ~50-300 ms (dead_code + trace × candidates). |
+| `onboard_module` | **Composite #4 of Phase 4 (#1391 v0.84).** New-contributor orientation. Takes `directory` (relative path inside the project, e.g. `internal/auth/`). Enumerates every symbol in scope, identifies entry points + the exported surface, computes language breakdown + test-to-code ratio, partitions CALLS edges into `external_dependencies` (outbound boundary — what the module depends on) and `external_consumers` (inbound boundary — what depends on it). Returns `{scope, entry_points_local_to_scope, external_dependencies, external_consumers, module_summary}`. Replaces the typical 5-10 call orientation sequence (`architecture` + `search file_pattern=path/**` + `trace direction=out` × N + `context` × N). | Read-only. ~30-150 ms (scope scan + edges scan, both indexed). |
 | `neighborhood` | Same-file siblings of a seed symbol, paginated. **NOT graph adjacency** — name is preserved for compat (#498); use `trace direction=both` for graph adjacency. | Useful for in-file refactor planning. |
 | `init` | Write CLAUDE.md / `.claude/config.json` / Cursor rules / Codex AGENTS.md / etc. — preflight (diff_preview) or `apply=true`. Supports multiple targets via `target=<name>` or `target=all`. Codex AGENTS.md always lives in `~/.codex/AGENTS.md` and emits a `skipped_always_global` entry when `target=all` is used in a project context. | Per-target `{target, path, action, diff_preview, bytes_in, bytes_out}`. Codex emits `{target, action: "skipped_always_global", reason}`. |
 | `doctor` | Schema version, DB + WAL sizes, per-project staleness, recent extraction failures, recent slow queries, advisories (ghost-extraction, DB bloat). | Same data as `pincher doctor --json`. |
@@ -1038,7 +1039,7 @@ pincherMCP/
 │   │   ├── bloat_trap.go         # IsBloatTrap: refuse filesystem root + $HOME;
 │   │   │                         # hook mode also requires a project marker
 │   │   └── lockfile.go           # Cross-process project lockfile w/ stale reclaim
-│   └── server/server.go          # 26 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
+│   └── server/server.go          # 27 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
 │                                 # basepath / reverse-proxy support, sessions persistence
 └── go.mod
 ```

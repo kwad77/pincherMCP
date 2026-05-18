@@ -428,6 +428,30 @@
     }
   },
   {
+    "name": "onboard_module",
+    "description": "**Use to orient on an unfamiliar sub-package or module before reading code.** Takes `directory` (relative path inside the indexed project, e.g. 'internal/auth/'). Enumerates every symbol in scope, identifies entry points + the exported surface, computes language breakdown + test-to-code ratio, and partitions CALLS edges into `external_dependencies` (the module's outbound boundary — what it depends on) and `external_consumers` (its inbound boundary — what depends on it). Returns `{scope, entry_points_local_to_scope, external_dependencies, external_consumers, module_summary}`. Replaces the typical 5-10 call orientation sequence (`architecture` + `search file_pattern=path/**` + `trace direction=out` × N + `context` × N). Read-only; safe to call repeatedly.",
+    "input_schema": {
+      "properties": {
+        "depth": {
+          "description": "Reserved for future deep-edge traversal (default 3, max 4). Currently informational — the composite scans CALLS edges once across the project's edge set; deeper traversal would require iterating per boundary edge.",
+          "type": "integer"
+        },
+        "directory": {
+          "description": "Relative directory path inside the indexed project (e.g. 'internal/auth/', 'cmd/pinch/'). Trailing slash optional. Use 'list' first if you're not sure which paths are indexed.",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "plan_change",
     "description": "**Use before editing a function or file to preview the blast radius.** Takes `target` (file path, symbol id, or free-form name). Composes `changes` + `trace direction=in` + `adr action=list` into one envelope `{target, blast_radius, related_adrs}` with depth-1 (CRITICAL) and depth-2 (HIGH) caller lists, cross-package boundary crossings, intersecting test files, and any ADRs whose key/value mentions the target's package or symbol name. Emits `_meta.warnings_v2.blast_radius_high` when depth-1 callers exceed 14 (suggests staged refactor). Replaces the typical 4-call pre-edit sequence.",
     "input_schema": {
