@@ -87,11 +87,15 @@ func f() {
 	}
 }
 
-// Negative — a REAL call to a function with the same name as a
-// parameter still emits a CALLS edge. The call subject is owned by
-// extractGoCalls (not the READS pass), so the param-shadow filter on
-// READS doesn't suppress it.
-func TestExtractGoReads_ParamShadow_RealCallStillEmitsCALLS(t *testing.T) {
+// Negative — when a parameter shadows a Function name, the extractor
+// suppresses BOTH the READS edge for the param reference AND any
+// CALLS edge whose callee matches the shadowed name. The latter is
+// required for #1429: pre-fix the body's `helper()` call site emitted
+// a CALLS edge that resolved to the project Function `helper` even
+// though Go's scope rules would error (can't call an int). Suppressing
+// both is the correct behaviour — fold sequence #1423 (READS) then
+// #1429 (CALLS).
+func TestExtractGoReads_ParamShadow_NoCALLSOrREADSToShadowedName(t *testing.T) {
 	src := `package svc
 func helper() {}
 func f(helper int) {
@@ -103,29 +107,16 @@ func f(helper int) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	// Note: `helper()` here calls a different scope than the local
-	// `helper int`; in Go this would actually be a compile error
-	// (can't call an int). For the extractor's purposes the body's
-	// call-site emits a CALLS edge regardless — the test asserts
-	// the CALLS edge survives even when the READS for the param is
-	// suppressed by #1423.
-	var sawCall, sawRead bool
 	for _, e := range r.Edges {
 		if e.FromQN != "svc.f" {
 			continue
 		}
 		if e.Kind == "CALLS" && e.ToName == "helper" {
-			sawCall = true
+			t.Error("CALLS edge to helper surfaced — shadowed param should suppress (#1429)")
 		}
 		if e.Kind == "READS" && e.ToName == "helper" {
-			sawRead = true
+			t.Error("READS edge to helper present — shadowed param should suppress (#1423)")
 		}
-	}
-	if !sawCall {
-		t.Error("CALLS edge to helper missing — real call must still emit even when param shadows the name")
-	}
-	if sawRead {
-		t.Error("READS edge to helper present — shadowed param should be skipped (#1423)")
 	}
 }
 

@@ -642,7 +642,17 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 				if d.Recv != nil && len(d.Recv.List) > 0 {
 					receiverType = goTypeToString(d.Recv.List[0].Type)
 				}
-				calls := extractGoCalls(d.Body, sym.QualifiedName, receiverType)
+				// #1429: pre-compute the set of bare-name callables
+				// shadowed in d's scope (params + receiver + body
+				// `name := func(){}` / `var name FuncT = ...`). The
+				// extractor passes this to extractGoCalls so calls
+				// through local closures don't false-bind to project
+				// Functions with the same name (e.g. a body-local
+				// `contains := func(...) bool {...}` shouldn't make
+				// every `contains(...)` call edge to the unrelated
+				// project Function `contains`).
+				localCallables := goLocalCallableNames(d)
+				calls := extractGoCalls(d.Body, sym.QualifiedName, receiverType, localCallables)
 				result.Edges = append(result.Edges, calls...)
 				// #247 #3: identifier references for READS edges. Walks
 				// the same body — costs an extra ast.Inspect pass per
@@ -812,7 +822,7 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 	return syms
 }
 
-func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string) []ExtractedEdge {
+func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNames map[string]bool) []ExtractedEdge {
 	var edges []ExtractedEdge
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -820,18 +830,105 @@ func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string) []Extrac
 			return true
 		}
 		callee := goCalleeToString(call.Fun)
-		if callee != "" {
-			edges = append(edges, ExtractedEdge{
-				FromQN:       callerQN,
-				ToName:       callee,
-				Kind:         "CALLS",
-				Confidence:   0.7, // unresolved, lower confidence
-				ReceiverType: receiverType,
-			})
+		if callee == "" {
+			return true
 		}
+		// #1429: skip bare-name callees that match a locally-shadowed
+		// name (parameter, receiver, or a `name := func(...){...}` /
+		// `var name FuncT = ...` body local). Without this filter,
+		// `contains := func(...) bool {...}; contains("x")` emits a
+		// CALLS edge with ToName="contains" that the resolver binds to
+		// any project Function literally named `contains` — sibling
+		// shape to #1423 but for the CALLS path rather than READS.
+		// Only fires on bare-name callees; selector calls (`pkg.Fn`,
+		// `obj.Method`) still emit because the resolver's receiver-
+		// type / receiver-method paths can disambiguate them.
+		if !strings.Contains(callee, ".") && localNames[callee] {
+			return true
+		}
+		edges = append(edges, ExtractedEdge{
+			FromQN:       callerQN,
+			ToName:       callee,
+			Kind:         "CALLS",
+			Confidence:   0.7, // unresolved, lower confidence
+			ReceiverType: receiverType,
+		})
 		return true
 	})
 	return edges
+}
+
+// goLocalCallableNames returns the set of identifier names in d's
+// scope that resolve to local callable values — parameters, the
+// receiver, and body-local function-typed bindings (`name := func(){}`,
+// `var name FuncT = ...`, `var name = func(){}`). Used by extractGoCalls
+// to filter bare-name call sites that would otherwise false-bind to
+// project Functions with the same name (#1429).
+//
+// Conservative by design: only catches the unambiguous shapes. A name
+// shadowing a project Function via a non-callable assignment
+// (`contains := someBool`) won't appear here, but it also can't be a
+// call site, so the filter is unnecessary for those.
+func goLocalCallableNames(d *ast.FuncDecl) map[string]bool {
+	out := map[string]bool{}
+	if d == nil {
+		return out
+	}
+	note := func(name string) {
+		if name == "" || name == "_" {
+			return
+		}
+		out[name] = true
+	}
+	if d.Recv != nil {
+		for _, f := range d.Recv.List {
+			for _, n := range f.Names {
+				note(n.Name)
+			}
+		}
+	}
+	if d.Type != nil && d.Type.Params != nil {
+		for _, f := range d.Type.Params.List {
+			for _, n := range f.Names {
+				note(n.Name)
+			}
+		}
+	}
+	if d.Body == nil {
+		return out
+	}
+	// Body locals: AssignStmt with token.DEFINE whose RHS is a FuncLit,
+	// plus ValueSpec entries whose value is a FuncLit. Anything more
+	// exotic (slice of functions, struct field with method value) we
+	// leave out — the conservative read is correct, and the resolver
+	// has other filters for the harder cases.
+	ast.Inspect(d.Body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			if s.Tok != token.DEFINE || len(s.Lhs) != len(s.Rhs) {
+				return true
+			}
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if _, isFuncLit := s.Rhs[i].(*ast.FuncLit); isFuncLit {
+					note(id.Name)
+				}
+			}
+		case *ast.ValueSpec:
+			for i, name := range s.Names {
+				if i < len(s.Values) {
+					if _, isFuncLit := s.Values[i].(*ast.FuncLit); isFuncLit {
+						note(name.Name)
+					}
+				}
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // extractGoReads emits READS and WRITES edges for identifiers
