@@ -1512,7 +1512,23 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				// persisted-deferred-edges (Option 3 from the issue
 				// analysis) rather than recursive hash invalidation.
 				idx.invalidateReferencers(p, changed)
-				go func(p db.Project) {
+				// #1496: synchronous, not goroutine. Pre-fix Watch
+				// fanned out one goroutine per project per tick — on a
+				// multi-project setup the post-schema-migration storm
+				// grabbed every project's cross-process lockfile
+				// simultaneously, blocking user `force=true` calls
+				// against any project until the slowest reindex
+				// finished. Running serially holds at most one
+				// project's lockfile at a time, so a user
+				// `force=true` against an idle project wins the race
+				// immediately. The total wall-clock cost is unchanged
+				// (SQLite is single-writer at the WAL anyway, so the
+				// goroutines were not actually running in parallel —
+				// they were queueing on the single writer connection;
+				// the only thing parallelism bought was simultaneous
+				// lockfile holding, which is the very thing the
+				// #1474 repro flagged as user-hostile).
+				func(p db.Project) {
 					if _, err := idx.Index(ctx, p.Path, false); err != nil {
 						slog.Warn("pincher.watcher.reindex.err", "project", p.Name, "err", err)
 					}
