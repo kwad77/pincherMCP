@@ -1692,6 +1692,7 @@ type returnVar struct {
 	property string // "" = return whole node
 	alias    string
 	fn       string // COUNT | ""
+	distinct bool  // COUNT(DISTINCT x) — only meaningful when fn == "COUNT" (#1437)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2577,6 +2578,22 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 			p.next()
 			p.skip("(")
 			rv.fn = fn
+			// #1437: COUNT(DISTINCT x) — count unique non-null values
+			// of x. The DISTINCT modifier is only meaningful for COUNT
+			// (SUM/AVG/MIN/MAX over duplicates produce the same result
+			// as over unique values in SQL semantics, but with subtle
+			// edge cases; Cypher restricts DISTINCT to COUNT). Reject
+			// DISTINCT in non-COUNT aggregates with a clear error
+			// rather than silently dropping it.
+			if p.peek().kind == "KEYWORD" && p.peek().value == "DISTINCT" {
+				if fn != "COUNT" {
+					return nil, fmt.Errorf(
+						"pinchQL: DISTINCT inside %s(...) is not supported — only COUNT accepts the DISTINCT modifier. Drop DISTINCT, or aggregate over a different column.",
+						fn)
+				}
+				p.next()
+				rv.distinct = true
+			}
 			// #946: COUNT(*) — the tokenizer reads `*` as an empty HOPS
 			// token (see #794 above for the same shape). Pre-fix the
 			// argument became rv.variable="", so aggColName rendered the
@@ -2591,6 +2608,26 @@ func (p *parser) parseReturn() ([]returnVar, error) {
 					p.next()
 					rv.property = p.next().value
 				}
+			}
+			// #1437: COUNT(DISTINCT *) is meaningless — `*` already
+			// counts every row, deduping rows by themselves is a
+			// no-op (or worse: the SQL COUNT(DISTINCT *) form is
+			// not portable). Reject with the spelling the user
+			// probably meant.
+			if rv.distinct && rv.variable == "*" {
+				return nil, fmt.Errorf(
+					"pinchQL: COUNT(DISTINCT *) is not supported — `*` counts every row, deduping rows by themselves has no meaning. Use COUNT(DISTINCT n.property) to dedup by a property, or plain COUNT(*) for total rows.")
+			}
+			// #1437: COUNT(DISTINCT n) (whole-variable) needs node-
+			// identity semantics pinchQL doesn't currently expose
+			// — the row representation is a flat map[col]any, not
+			// a structured node, so we can't dedup by node
+			// identity. Reject with the property-shape redirect
+			// rather than silently returning row count.
+			if rv.distinct && rv.property == "" {
+				return nil, fmt.Errorf(
+					"pinchQL: COUNT(DISTINCT %s) without a property is not supported — pinchQL doesn't track node identity in rows. Dedup by a specific property instead, e.g. COUNT(DISTINCT %s.name) or COUNT(DISTINCT %s.id).",
+					rv.variable, rv.variable, rv.variable)
 			}
 			if err := p.expect(")"); err != nil {
 				return nil, err
@@ -3087,6 +3124,12 @@ func aggColName(rv returnVar) string {
 	if rv.property != "" {
 		col = rv.variable + "." + rv.property
 	}
+	// #1437: COUNT(DISTINCT col) — render the DISTINCT modifier in
+	// the default column header so it round-trips to ORDER BY and
+	// matches what the user typed.
+	if rv.distinct {
+		col = "DISTINCT " + col
+	}
 	return rv.fn + "(" + col + ")"
 }
 
@@ -3106,10 +3149,25 @@ func computeAgg(rows []map[string]any, rv returnVar) any {
 		// total function count instead of the documented-function count.
 		// Silently confidently wrong on the canonical "how many functions
 		// are documented" query.
+		// #1437: when rv.distinct is set, count unique non-null values
+		// (`COUNT(DISTINCT n.prop)` shape). The property=="" form is
+		// rejected at parse time, so distinct without a property can't
+		// reach this branch.
 		if rv.property == "" {
 			return len(rows)
 		}
 		key := rv.variable + "." + rv.property
+		if rv.distinct {
+			seen := make(map[string]struct{})
+			for _, row := range rows {
+				raw, ok := row[key]
+				if !ok || raw == nil {
+					continue
+				}
+				seen[fmt.Sprint(raw)] = struct{}{}
+			}
+			return len(seen)
+		}
 		n := 0
 		for _, row := range rows {
 			raw, ok := row[key]
