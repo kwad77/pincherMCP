@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -401,15 +402,22 @@ func looksLikeFilePath(s string) bool {
 // `package` declaration; the path-based heuristic is cheap and
 // correct for the typical Go/Python/Java layout where one
 // directory = one package/module.
+//
+// Backslashes are normalised to forward slashes BEFORE any path
+// operation so the function returns the same value on Linux,
+// macOS, and Windows. filepath.Dir is OS-specific and returns "."
+// for backslash-only paths on non-Windows, which would silently
+// drop the cross_package signal for paths that arrived from a
+// Windows client through the indexer.
 func packageOfFile(fp string) string {
 	if fp == "" {
 		return ""
 	}
-	dir := filepath.ToSlash(filepath.Dir(fp))
+	normalised := strings.ReplaceAll(fp, `\`, "/")
+	dir := path.Dir(normalised)
 	if dir == "." || dir == "/" {
 		return ""
 	}
-	// Use last segment as the package name.
 	parts := strings.Split(dir, "/")
 	return parts[len(parts)-1]
 }
