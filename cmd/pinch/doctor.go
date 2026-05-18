@@ -314,6 +314,23 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 		}
 	}
 
+	// #1507 v0.83: three advisories that landed first on the MCP doctor
+	// side (#815/#1009 ghost-project, #1206 wal-bloat, #1209 nested-project)
+	// are now mirrored to the CLI. Pre-fix `pincher doctor --json`
+	// silently omitted them — a user running the CLI saw a different
+	// advisory set than an agent calling the same logic via MCP. Each
+	// advisory is a byte-for-byte port of internal/server/admin.go's
+	// copy per the bounded-duplication convention.
+	if a := ghostProjectAdvisory(r.Projects); a != "" {
+		r.Advisories = append(r.Advisories, a)
+	}
+	if a := walBloatAdvisory(r.DBSizeBytes, r.WALSizeBytes); a != "" {
+		r.Advisories = append(r.Advisories, a)
+	}
+	if a := nestedProjectAdvisory(r.Projects); a != "" {
+		r.Advisories = append(r.Advisories, a)
+	}
+
 	return r, nil
 }
 
@@ -510,6 +527,177 @@ func largeDBAdvisory(dbSizeBytes int64, projects []DoctorProjectSummary) string 
 		"30+ days. SQLite does not shrink the file on row deletion, so run `pincher vacuum` " +
 		"afterward to actually reclaim the space."
 	return msg
+}
+
+// ghostProjectAdvisory mirrors internal/server/admin.go's copy (#815/#1009).
+// Surfaces projects with substantial symbols but vanishingly few edges —
+// extraction ran but the resolver phase produced no graph, so `trace` /
+// `query` over these projects silently return zero rows.
+//
+// Thresholds (kept identical to the MCP copy): symThreshold = 1000 symbols
+// (small projects with no edges aren't usually ghosts — they're just small),
+// minHealthyRatio = 0.001 edges/symbol (two orders of magnitude below the
+// worst-case healthy project's ratio, ~0.04 on the dogfood box).
+//
+// Deliberately duplicated per CLAUDE.md bounded-duplication convention.
+func ghostProjectAdvisory(projects []DoctorProjectSummary) string {
+	const symThreshold = 1000
+	const minHealthyRatio = 0.001
+	var ghosts []DoctorProjectSummary
+	for _, p := range projects {
+		if p.Symbols < symThreshold {
+			continue
+		}
+		if p.Edges == 0 {
+			ghosts = append(ghosts, p)
+			continue
+		}
+		if float64(p.Edges)/float64(p.Symbols) < minHealthyRatio {
+			ghosts = append(ghosts, p)
+		}
+	}
+	if len(ghosts) == 0 {
+		return ""
+	}
+	if len(ghosts) > 3 {
+		ghosts = ghosts[:3]
+	}
+	var names []string
+	for _, g := range ghosts {
+		if g.Edges == 0 {
+			names = append(names, fmt.Sprintf("%q (%d symbols, %d files, 0 edges)",
+				g.Name, g.Symbols, g.Files))
+		} else {
+			names = append(names, fmt.Sprintf("%q (%d symbols, %d files, %d edges — ratio %.6f)",
+				g.Name, g.Symbols, g.Files, g.Edges,
+				float64(g.Edges)/float64(g.Symbols)))
+		}
+	}
+	msg := fmt.Sprintf("project%s with substantial symbols but vanishingly few edges (ghost-extraction signature, #815): %s. ",
+		pluralS(len(ghosts)), strings.Join(names, "; "))
+	msg += "Symbols were extracted but the resolver phase produced no real graph — `trace` / `query` over these projects will silently return zero rows. " +
+		"Remediation: re-index from a fresh CWD (`pincher index <path>`) and check `doctor`'s extraction_failures list for the underlying cause."
+	return msg
+}
+
+// walBloatAdvisory mirrors internal/server/admin.go's copy (#1206).
+// Fires when the WAL file is past the 256 MB journal_size_limit soft
+// cap (absolute >= 512 MiB) OR when the WAL is more than 10% of a
+// DB-of-at-least-100-MiB. Below 100 MiB DB size, WAL ratios aren't
+// meaningful (test DBs and fresh installs land at a few KB).
+//
+// Deliberately duplicated per CLAUDE.md bounded-duplication convention.
+func walBloatAdvisory(dbSizeBytes, walSizeBytes int64) string {
+	const absThreshold = 512 << 20 // 512 MiB
+	const minDBForPercent = 100 << 20 // 100 MiB
+	percentBloat := dbSizeBytes >= minDBForPercent && walSizeBytes*10 > dbSizeBytes
+	if walSizeBytes < absThreshold && !percentBloat {
+		return ""
+	}
+	walMB := float64(walSizeBytes) / (1 << 20)
+	msg := fmt.Sprintf("WAL file is %.0f MB — past the 256 MB journal_size_limit soft cap.", walMB)
+	if dbSizeBytes > 0 {
+		msg += fmt.Sprintf(" That's %.0f%% of the DB (%.1f GB).",
+			float64(walSizeBytes)/float64(dbSizeBytes)*100,
+			float64(dbSizeBytes)/(1<<30))
+	}
+	msg += " Under sustained indexing pressure, checkpoints can't always truncate the WAL " +
+		"(busy readers pin pages across the cycle). Every tool call touches the WAL first, " +
+		"so a large WAL inflates latency on otherwise-cheap reads. Remediation: run `pincher vacuum` " +
+		"to force a checkpoint + truncate + reclaim cycle. See #1206."
+	return msg
+}
+
+// nestedProjectAdvisory mirrors internal/server/admin.go's copy (#1209).
+// Detects inner projects indexed under an outer project's path — both
+// indexed separately, same source files double-counted, surfacing
+// duplicates in cross-project queries. Names the inner (redundant) one.
+//
+// Path-separator-after-parent guard avoids `warp_rc` matching
+// `warp_rc_fork`. Caps at worst 3 pairs by inner-project symbol count.
+//
+// Deliberately duplicated per CLAUDE.md bounded-duplication convention.
+func nestedProjectAdvisory(projects []DoctorProjectSummary) string {
+	type nestedPair struct {
+		inner DoctorProjectSummary
+		outer DoctorProjectSummary
+	}
+	var pairs []nestedPair
+	normalized := make([]string, len(projects))
+	for i, p := range projects {
+		normalized[i] = normalizePathForNesting(p.Path)
+	}
+	for i, inner := range projects {
+		ni := normalized[i]
+		if ni == "" {
+			continue
+		}
+		var bestOuter *DoctorProjectSummary
+		var bestOuterLen int
+		for j, outer := range projects {
+			if i == j {
+				continue
+			}
+			no := normalized[j]
+			if no == "" {
+				continue
+			}
+			if len(ni) > len(no)+1 &&
+				strings.HasPrefix(ni, no+"/") &&
+				len(no) > bestOuterLen {
+				outerCopy := outer
+				bestOuter = &outerCopy
+				bestOuterLen = len(no)
+			}
+		}
+		if bestOuter != nil {
+			pairs = append(pairs, nestedPair{inner: inner, outer: *bestOuter})
+		}
+	}
+	if len(pairs) == 0 {
+		return ""
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].inner.Symbols > pairs[j].inner.Symbols
+	})
+	if len(pairs) > 3 {
+		pairs = pairs[:3]
+	}
+	var names []string
+	for _, p := range pairs {
+		names = append(names, fmt.Sprintf("%q (%d symbols) is indexed inside %q",
+			p.inner.Name, p.inner.Symbols, p.outer.Name))
+	}
+	msg := fmt.Sprintf("nested project registration%s: %s. ",
+		pluralS(len(pairs)), strings.Join(names, "; "))
+	msg += "Same source files are indexed under both project IDs, " +
+		"doubling DB load and surfacing duplicates in cross-project queries. " +
+		"Remediation: choose one root (usually the outer), `list prune_dead=true` " +
+		"after deleting the redundant project from disk, or use `pincher project rm` " +
+		"on the inner project if it remains on disk. See #1209."
+	return msg
+}
+
+// normalizePathForNesting mirrors internal/server/admin.go's copy.
+// Lowercases, normalises path separators to forward slashes, and trims
+// a trailing slash so the prefix check is unambiguous.
+func normalizePathForNesting(path string) string {
+	if path == "" {
+		return ""
+	}
+	low := strings.ToLower(path)
+	low = strings.ReplaceAll(low, `\`, "/")
+	return strings.TrimRight(low, "/")
+}
+
+// pluralS mirrors internal/server/admin.go's copy. Returns "s" for any
+// count other than 1 so messages can say "project" / "projects" via
+// `project` + pluralS(n).
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // formatDoctorMarkdown renders the report as a human-readable terminal
