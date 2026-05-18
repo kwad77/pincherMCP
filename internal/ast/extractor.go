@@ -24,7 +24,8 @@
 //   - Rust:       regex patterns (fn/struct/enum/trait/impl)
 //   - Java:       regex patterns (class/interface/method)
 //   - Swift:      regex patterns (func/init/subscript with @attr prefix, class/struct/actor, enum, protocol, extension)
-//   - Ruby, PHP, C, C++, C#, Kotlin: regex fallback
+//   - Kotlin:     regex patterns (fun + extension-function with @attr prefix, class/data class/sealed class/object/companion object, interface/fun interface, enum class)
+//   - Ruby, PHP, C, C++, C#: regex fallback
 //
 // Regex extractors cover ~80% of real-world symbols accurately. The plan for
 // lifting them to confidence 1.0 favours per-language pure-Go AST libraries
@@ -65,8 +66,8 @@ type ExtractedSymbol struct {
 	IsEntryPoint  bool
 	Complexity    int
 	// ExtractionConfidence is set by Extract() based on the parser used.
-	// 1.0 = AST-exact (Go). 0.85 = stable regex (Python, TS, Rust, Java, Swift).
-	// 0.70 = approximate regex (Ruby, PHP, C, C++, C#, Kotlin).
+	// 1.0 = AST-exact (Go). 0.85 = stable regex (Python, TS, Rust, Java, Swift, Kotlin).
+	// 0.70 = approximate regex (Ruby, PHP, C, C++, C#).
 	ExtractionConfidence float64
 	// Fields is populated for struct (Class) symbols: map of
 	// field name → field type expression as a Go-syntax string
@@ -378,7 +379,18 @@ func init() {
 	Register(&langAdapter{
 		primary: "Kotlin",
 		exts:    map[string]string{".kt": "Kotlin", ".kts": "Kotlin"},
-		confidence: 0.70,
+		// #1457 v0.73: promoted 0.70 → 0.85 (stable-regex tier,
+		// joining TS/TSX/Rust/Java/Swift). classRE covers
+		// class/data class/sealed class/inline class/value class/
+		// annotation class/companion object/object; dedicated
+		// enumRE for `enum class`; dedicated interfaceRE for
+		// interface/fun interface/sealed interface; funcRE covers
+		// fun + extension-function syntax with @Annotation prefix
+		// tolerance, generic type parameters between `fun` and
+		// the name, and modifier coverage for suspend/inline/
+		// tailrec/infix/operator/override/abstract/open/external/
+		// expect/actual.
+		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
 			return extractKotlin(s, p)
 		},
@@ -1811,11 +1823,21 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 				name := namedGroup(rx.enumRE, m, "name")
 				if name != "" {
 					endByte := blockEnd(source, lineStart, opts)
+					endLine := offsetToLine(lineOffsets, endByte)
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
+					// #1457: scope inner methods to the enum like a
+					// class. Kotlin enum classes carry methods (`fun
+					// opposite()`); Swift enums too. Pre-fix those
+					// emitted as bare Functions with no Parent, so
+					// dead_code / trace couldn't bind them to the
+					// enum's method set. Mirrors the #819 interfaceRE
+					// fix for the same shape.
+					currentClass = name
+					currentClassEnd = endLine
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
 						Name: name, QualifiedName: qn, Kind: "Enum",
 						StartByte: lineStart, EndByte: endByte,
-						StartLine: lineNum, EndLine: offsetToLine(lineOffsets, endByte),
+						StartLine: lineNum, EndLine: endLine,
 					})
 				}
 			}
@@ -3006,18 +3028,52 @@ func extractCSharp(source []byte, relPath string) *FileResult {
 	return csRE.extract(source, relPath, "C#", opts)
 }
 
+// Kotlin regex-tier extractor. #1457 v0.73 promotes from 0.70 →
+// 0.85 (stable-regex tier, joining TS/TSX/Rust/Java/Swift) by adding
+// the major declaration kinds Kotlin codebases use:
+//   - `object` (singleton) and `companion object` — first-class
+//     declarations, missing entirely pre-fix
+//   - `interface` and `fun interface` (Kotlin 1.4+ SAM) — also
+//     missing entirely; Kotlin protocols are a thing
+//   - dedicated `enum class` (two-word keyword, distinct from
+//     standalone `enum` in other languages) — full type kind
+//     carrying methods + properties + companion objects
+//   - `sealed class` / `sealed interface` (sum-type pattern)
+//   - `abstract class` / `inline class` / `value class` /
+//     `annotation class` / `inner class`
+//   - `expect` / `actual` (Kotlin Multiplatform)
+//   - `@Annotation` and `@Annotation(args)` prefixes on funcRE +
+//     classRE + interfaceRE + enumRE
+//   - `inline` / `tailrec` / `infix` / `operator` / `override`
+//     function modifiers
+//   - Generic function type parameters between `fun` and the name
+//     (`fun <T> List<T>.firstOrNull(): T?`)
+//
+// #1183 v0.67's extension-function `fun Type.method()` shape stays
+// covered. Pre-fix that captured `Type` as the function name and
+// emitted fake "String" / "List" / "Map" / etc symbols; the
+// optional `(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\.)?` receiver-prefix
+// segment is retained.
+
 var kotlinRE = &regexExtractor{
-	// #1183 v0.67 (Kotlin parallel to Rust impl): `fun Type.method()`
-	// is Kotlin's extension-function syntax. Pre-fix the regex captured
-	// `Type` as the function name (since `Type` is the first identifier
-	// after `fun`), emitting fake "String" / "List" / "Map" / etc
-	// symbols and silently dropping the real method name. The optional
-	// `(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\.)?` segment skips the
-	// receiver-type prefix (lowercase first char excluded to avoid
-	// false-eating valid lowercase method names that happen to be
-	// preceded by `fun `). Generics on the receiver tolerated.
-	funcRE: regexp.MustCompile(`(?m)^\s*(?:public|private|internal|protected)?\s*(?:suspend\s+)?fun\s+(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\.)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)`),
-	classRE: regexp.MustCompile(`(?m)^(?:open\s+)?(?:data\s+)?class\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:\(|:|\s)`),
+	// Generic type-parameter clauses tolerate ONE level of nesting
+	// (e.g. `<T : Comparable<T>>`) via the `<[^<>]*(?:<[^<>]*>[^<>]*)*>`
+	// shape. Two-level nesting (`Map<K, List<Set<V>>>`) is rare in
+	// signatures and not worth the regex complexity; uncommon shapes
+	// fall through to the regex's name-only capture.
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|internal|protected)?\s*(?:(?:override|open|abstract|final|external|expect|actual)\s+)*(?:(?:suspend|inline|tailrec|infix|operator)\s+)*fun\s+(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>\s+)?(?:[A-Z][A-Za-z0-9_]*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\.)?(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)`),
+	// classRE covers `class`, `data class`, `sealed class`, `inline
+	// class`, `value class`, `annotation class`, `inner class`,
+	// `companion object`, and standalone `object`. Modifier order
+	// follows Kotlin's grammar: access → inheritance modifiers
+	// (open/abstract/final/external/expect/actual/inner) → kind-
+	// modifier (data/sealed/inline/value/annotation/companion) → the
+	// `class`/`object` keyword → name. `enum class` is intentionally
+	// handled by enumRE only — neither `enum` nor an `enum`-modifier
+	// is in classRE so double-emission can't happen.
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|internal|protected)?\s*(?:(?:open|abstract|final|external|expect|actual|inner)\s+)*(?:data\s+|sealed\s+|inline\s+|value\s+|annotation\s+|companion\s+)?(?:class|object)\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|internal|protected)?\s*(?:sealed\s+)?(?:fun\s+)?interface\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|internal|protected)?\s*enum\s+class\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 }
 
 func extractKotlin(source []byte, relPath string) *FileResult {
