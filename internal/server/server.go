@@ -7172,6 +7172,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	knownEdgeKinds := map[string]bool{
 		"CALLS": true, "HTTP_CALLS": true, "ASYNC_CALLS": true,
 		"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
+		"USES_VAR": true, // #1480: added v0.76 to match #1380's extractor + resolver
 	}
 	var traceKindWarnings []string
 	// #1096: track whether EVERY caller-supplied edge kind was unknown
@@ -7189,7 +7190,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				rawTraceKindCount++
 				if !knownEdgeKinds[k] {
 					traceKindWarnings = append(traceKindWarnings,
-						fmt.Sprintf("unknown edge kind %q ignored — valid kinds: CALLS, HTTP_CALLS, ASYNC_CALLS, READS, WRITES, IMPORTS, REFERENCES", k))
+						fmt.Sprintf("unknown edge kind %q ignored — valid kinds: CALLS, HTTP_CALLS, ASYNC_CALLS, READS, WRITES, IMPORTS, REFERENCES, USES_VAR", k))
 					continue
 				}
 				edgeKinds = append(edgeKinds, k)

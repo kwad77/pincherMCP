@@ -494,6 +494,7 @@ func collectCrossColumnWarnings(q *queryAST) []string {
 var knownEdgeKinds = map[string]bool{
 	"CALLS": true, "HTTP_CALLS": true, "ASYNC_CALLS": true,
 	"READS": true, "WRITES": true, "IMPORTS": true, "REFERENCES": true,
+	"USES_VAR": true, // #1480: added v0.76 to match #1380's extractor + resolver
 }
 
 // escapeLikePattern escapes SQL LIKE special characters (`%`, `_`,
@@ -1057,7 +1058,7 @@ func collectUnknownEdgeKindWarnings(q *queryAST) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		out = append(out, fmt.Sprintf(
-			"edge kind %q not recognized — the MATCH matched nothing because no edge has that type. Valid edge kinds: ASYNC_CALLS, CALLS, HTTP_CALLS, IMPORTS, READS, REFERENCES, WRITES.",
+			"edge kind %q not recognized — the MATCH matched nothing because no edge has that type. Valid edge kinds: ASYNC_CALLS, CALLS, HTTP_CALLS, IMPORTS, READS, REFERENCES, USES_VAR, WRITES.",
 			n))
 	}
 	return out
