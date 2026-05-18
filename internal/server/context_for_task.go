@@ -125,7 +125,31 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 		// composite's purposes. Bias toward callable kinds since the
 		// investigation target is almost always a Function/Method/
 		// Class — Settings or Sections rarely anchor a bug-fix loop.
+		//
+		// #1440: prose tasks routinely contain too many tokens for
+		// FTS5's default AND semantics — `classify a corpus file as
+		// code or config` reads as "find symbols whose text contains
+		// every word," which matches no single symbol. handleSearch
+		// has an AND→OR fallback (server.go:5469); apply the same
+		// recovery here so the composite doesn't fail to seed for
+		// queries that plain `search` handles fine. Without this,
+		// the composite's whole promise (one call replaces
+		// search→context×N→trace×N) breaks for the natural prose
+		// shape the tool was designed for.
 		results, err := s.store.SearchSymbolsByCorpus(projectID, task, "", "", "code", maxSeeds*3)
+		if err == nil && len(results) == 0 && !strings.Contains(task, `"`) {
+			tokens := strings.Fields(task)
+			if len(tokens) > 1 && !containsBareFTS5Operator(tokens) {
+				sanitised := make([]string, len(tokens))
+				for i, t := range tokens {
+					sanitised[i] = wrapTokenIfNeeded(t)
+				}
+				orQuery := strings.Join(sanitised, " OR ")
+				if orResults, orErr := s.store.SearchSymbolsByCorpus(projectID, orQuery, "", "", "code", maxSeeds*3); orErr == nil {
+					results = orResults
+				}
+			}
+		}
 		if err == nil {
 			for _, r := range results {
 				if len(seeds) >= maxSeeds {
