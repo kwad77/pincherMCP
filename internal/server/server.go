@@ -1173,10 +1173,27 @@ func (s *Server) onRoots(ctx context.Context, req *mcp.RootsListChangedRequest) 
 	})
 }
 
+// detectRoot picks the session root from the client's roots/list response
+// (when the client supports the MCP roots capability) or falls back to
+// CWD. Multi-root iteration with IsBloatTrap clearance lands in #1081
+// Phase 1 (v0.76): every advertised root is examined; the first one that
+// (a) parses as a file:// URI and (b) passes the project-marker bloat-trap
+// check in hookMode=true wins. Roots advertised as "/", "$HOME", or
+// directories without a project marker (.git / go.mod / package.json /
+// etc.) are silently skipped — they're typically catch-all UI defaults
+// the host sends regardless of where the user is working, not directories
+// meant to be indexed.
+//
+// Phase 2 (#1081 v0.77) will background-auto-index the additional cleared
+// roots beyond the session pick and surface them via
+// _meta.auto_indexed. This Phase 1 commit only improves the SELECTION
+// logic — single-root behavior is unchanged for hosts that advertise one
+// root, and multi-root hosts no longer pick a bloat-trap root just
+// because it happens to be at index 0.
 func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) {
 	if session != nil {
 		if result, err := session.ListRoots(ctx, nil); err == nil && len(result.Roots) > 0 {
-			if path, ok := parseFileURI(result.Roots[0].URI); ok {
+			if path, ok := pickSessionRoot(result.Roots); ok {
 				s.setRoot(path)
 				s.maybeReindexOnDrift()
 				return
@@ -1187,6 +1204,28 @@ func (s *Server) detectRoot(ctx context.Context, session *mcp.ServerSession) {
 		s.setRoot(cwd)
 		s.maybeReindexOnDrift()
 	}
+}
+
+// pickSessionRoot is detectRoot's filter — broken out as a pure helper
+// so unit tests can drive it without spinning up an in-memory MCP
+// session. Returns the first root that parses as file:// AND passes
+// IsBloatTrap(hookMode=true). hookMode=true is the right strictness for
+// roots auto-discovery: the host fires roots/list without an explicit
+// user opt-in for any specific path, so the project-marker requirement
+// catches catch-all defaults (/, $HOME, ~/Documents) that the user
+// didn't mean for pincher to index.
+func pickSessionRoot(roots []*mcp.Root) (string, bool) {
+	for _, r := range roots {
+		path, ok := parseFileURI(r.URI)
+		if !ok {
+			continue
+		}
+		if trap, _ := index.IsBloatTrap(path, true); trap {
+			continue
+		}
+		return path, true
+	}
+	return "", false
 }
 
 func (s *Server) setRoot(path string) {
