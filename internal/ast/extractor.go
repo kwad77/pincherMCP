@@ -23,7 +23,8 @@
 //   - TypeScript: regex patterns (extends JavaScript, adds interface/type)
 //   - Rust:       regex patterns (fn/struct/enum/trait/impl)
 //   - Java:       regex patterns (class/interface/method)
-//   - Ruby, PHP, C, C++, C#, Kotlin, Swift: regex fallback
+//   - Swift:      regex patterns (func/init/subscript with @attr prefix, class/struct/actor, enum, protocol, extension)
+//   - Ruby, PHP, C, C++, C#, Kotlin: regex fallback
 //
 // Regex extractors cover ~80% of real-world symbols accurately. The plan for
 // lifting them to confidence 1.0 favours per-language pure-Go AST libraries
@@ -64,8 +65,8 @@ type ExtractedSymbol struct {
 	IsEntryPoint  bool
 	Complexity    int
 	// ExtractionConfidence is set by Extract() based on the parser used.
-	// 1.0 = AST-exact (Go). 0.85 = stable regex (Python, TS, Rust, Java).
-	// 0.70 = approximate regex (Ruby, PHP, C, C++, C#, Kotlin, Swift).
+	// 1.0 = AST-exact (Go). 0.85 = stable regex (Python, TS, Rust, Java, Swift).
+	// 0.70 = approximate regex (Ruby, PHP, C, C++, C#, Kotlin).
 	ExtractionConfidence float64
 	// Fields is populated for struct (Class) symbols: map of
 	// field name → field type expression as a Go-syntax string
@@ -385,7 +386,15 @@ func init() {
 	Register(&langAdapter{
 		primary: "Swift",
 		exts:    map[string]string{".swift": "Swift"},
-		confidence: 0.70,
+		// #1450 v0.73: promoted 0.70 → 0.85 (stable-regex tier).
+		// classRE covers class/struct/actor; dedicated enumRE; funcRE
+		// covers func/init/subscript with @attribute prefix tolerance,
+		// `class func` static methods, mutating/nonmutating/consuming/
+		// borrowing modifiers, override/required/convenience/final/
+		// lazy modifiers. Joins TS/TSX/Rust/Java at the stable-regex
+		// tier. AST-tier extractor (subprocess to swift-syntax
+		// mirroring Python's #856 pattern) tracked separately.
+		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
 			return extractSwift(s, p)
 		},
@@ -3018,16 +3027,52 @@ func extractKotlin(source []byte, relPath string) *FileResult {
 	return kotlinRE.extract(source, relPath, "Kotlin", opts)
 }
 
+// Swift regex-tier extractor. #1450 v0.73 promotes from 0.70 →
+// 0.85 (stable-regex tier, joining TS/TSX/Rust/Java) by extending
+// classRE to cover `struct` and `actor` (Swift's two other named-
+// type kinds besides class), adding a dedicated enumRE, tolerating
+// `@AttributeName` / `@AttributeName(args)` prefixes on funcRE +
+// classRE + interfaceRE + scopeRE, recognising `class func` static
+// methods (in addition to `static func`), and capturing `init` /
+// `subscript` declarations (which aren't preceded by `func` in
+// Swift's grammar — pre-fix every type's constructor was invisible).
+// `fileprivate` access level added to the modifier set. Generic
+// signatures (`func foo<T>(...)`, `func foo<T: Comparable>(...)`)
+// don't need pattern changes — the `name` capture stops before
+// the `<`.
+//
+// Mutability + lifecycle modifiers covered (`mutating`,
+// `nonmutating`, `consuming`, `borrowing`); call-site / lifecycle
+// modifiers covered (`override`, `required`, `convenience`,
+// `final`, `lazy`).
+
 var swiftRE = &regexExtractor{
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open)?\s*(?:static\s+)?func\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)`),
-	classRE:     regexp.MustCompile(`(?m)^(?:public\s+)?(?:final\s+)?class\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_, ]*))?`),
-	interfaceRE: regexp.MustCompile(`(?m)^(?:public\s+)?protocol\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	// funcRE captures three callable shapes: regular `func name`,
+	// `init` constructors, and `subscript` declarations. Each branch
+	// of the alternation captures into a `name` group — Go regexp
+	// supports duplicate named groups inside alternation.
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*(?:(?:override|required|convenience|final|lazy)\s+)*(?:(?:class|static)\s+)?(?:(?:mutating|nonmutating|consuming|borrowing)\s+)?(?:func\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)|(?P<name>init)\b|(?P<name>subscript)\b)`),
+	// classRE covers `class`, `struct`, and `actor` — all of which
+	// declare a named nominal type. The parent capture catches
+	// inheritance and protocol-conformance lists; for structs/actors
+	// it captures conformed protocols (Swift structs can't inherit
+	// from other structs but DO conform to protocols).
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*(?:final\s+)?(?:class|struct|actor)\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_, ]*))?`),
+	// enumRE matches Swift enum declarations. Swift enums carry
+	// methods + associated values + computed properties — they ARE
+	// types, not C-style integer constants. Modeled as Enum kind so
+	// downstream tooling treats them as a distinct symbol class
+	// (matching the framework's enumRE handling).
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*(?:indirect\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*protocol\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 	// #1183 v0.67 (Swift parallel to Rust impl): `extension Type {}` and
 	// `extension Type: Protocol {}` add methods to an existing type.
 	// Pre-fix those methods emitted as Function with no Parent —
 	// dead_code / trace couldn't bind them to the extended type's
 	// method set. Generic parameters tolerated (`extension Array<T>`).
-	scopeRE: regexp.MustCompile(`(?m)^(?:public\s+)?extension\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\s*:\s*[A-Z][A-Za-z0-9_, ]*)?\s*\{?`),
+	// #1450 v0.73: tolerate `@attr` prefixes and `where` clauses on
+	// constrained extensions (`extension Array where Element: Hashable`).
+	scopeRE: regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*extension\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\s*:\s*[A-Z][A-Za-z0-9_, ]*)?(?:\s+where\s+[^{]*)?\s*\{?`),
 }
 
 func extractSwift(source []byte, relPath string) *FileResult {
