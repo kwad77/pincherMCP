@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -283,7 +284,7 @@ func main() {
 		}
 		go func() {
 			if err := srv.ListenAndServeHTTP(ctx, *httpAddr); err != nil {
-				log.Printf("pincherMCP: http server error: %v", err)
+				slog.Error("pincher.http_server.error", "err", err)
 			}
 		}()
 	}
