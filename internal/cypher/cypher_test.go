@@ -1895,10 +1895,13 @@ func TestRunBFS_GotoDoneEarlyExit(t *testing.T) {
 func TestExecute_ParseError_ReturnsError(t *testing.T) {
 	db := newTestDB(t)
 	e := &Executor{DB: db, ProjectID: "proj1"}
-	// IN is not a supported operator — should return an error via parseConditions
-	_, err := e.Execute(context.Background(), `MATCH (n:Function) WHERE n.name IN ["Foo"] RETURN n.name`)
+	// #1439: IN is now supported; pick a still-unsupported operator
+	// to exercise the parseConditions error path. BETWEEN remains
+	// unsupported and surfaces a clear remediation pointing at
+	// two ANDed comparisons.
+	_, err := e.Execute(context.Background(), `MATCH (n:Function) WHERE n.start_line BETWEEN 1 AND 10 RETURN n.name`)
 	if err == nil {
-		t.Fatal("expected parse error for unsupported IN operator, got nil")
+		t.Fatal("expected parse error for unsupported BETWEEN operator, got nil")
 	}
 }
 
