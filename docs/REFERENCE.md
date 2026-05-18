@@ -210,6 +210,7 @@ All latencies measured on this codebase. Token counts use cl100k_base BPE — th
 | `search` | FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. | 1 ms |
 | `query` | pinchQL graph queries — Cypher-shaped subset. Three SQL paths: node scan, single-hop JOIN, variable-length BFS. `max_rows` (default 200, max 10000). Parameter: `pinchql` (legacy alias `cypher` accepted for one release). | 2 ms (single-hop) |
 | `trace` | BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). | <5 ms (depth 3) |
+| `context_for_task` | Composite: one call replaces 5-10 atomic calls during investigation. Takes either `task` (free-form) or `seed_id`. Composes `search` → `context` → `trace direction=both` → `changes` overlap into one envelope `{seeds, neighbors, callers, callees, recent_changes}`. `max_seeds` defaults to 3 (cap 10); `trace_depth` defaults to 2 (cap 4); `include_changes` defaults true. Use when starting an investigation; use the atomic tools for follow-up. (#1259 v0.71) | ~20-80 ms (≈ Σ atomic-call latencies) |
 
 ### Architecture & knowledge
 
