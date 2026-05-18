@@ -3264,6 +3264,7 @@ var toolComplexityTiers = map[string]string{
 	"plan_change":          "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
 	"audit_unused":         "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
 	"onboard_module":       "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
+	"why_empty":            "light", // #1391 v0.85: stateless catalog lookup — no DB query
 }
 
 // toolComplexityTier returns the registered tier for a tool, or the
@@ -3299,6 +3300,7 @@ var toolIdempotent = map[string]bool{
 	"plan_change":         true, // #1391 v0.82 — read-only composite
 	"audit_unused":        true, // #1391 v0.83 — read-only composite (dead_code + deep-trace confirmation)
 	"onboard_module":      true, // #1391 v0.84 — read-only composite (scope scan + boundary edges)
+	"why_empty":           true, // #1391 v0.85 — stateless catalog lookup
 	"trace":               true,
 	"query":            true,
 	"guide":            true,
@@ -3622,6 +3624,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"plan_change":         {Title: "Pre-edit blast-radius composite", Annotations: annotationsReadOnly},       // #1391 v0.82
 	"audit_unused":        {Title: "Dead-code composite with deep-trace confirmation", Annotations: annotationsReadOnly}, // #1391 v0.83
 	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},           // #1391 v0.84
+	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                 // #1391 v0.85
 
 	// Diagnostics (read-only, idempotent).
 	"health":  {Annotations: annotationsReadOnly},
@@ -4102,6 +4105,22 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleOnboardModule)
+
+	// 16g. why_empty (#1391 Phase 4 composite #5, v0.85). Empty-result
+	// recovery composite. Takes prior_empty_reason (the value the agent
+	// just received in _meta.empty_reason). Returns a structured
+	// {title, when_it_fires, recovery_action, recovery_steps} entry
+	// from the catalog in docs/empty-reasons.md. Stateless — no DB
+	// query, no project scope needed.
+	s.addTool(&mcp.Tool{
+		Name:        "why_empty",
+		Description: "**Use when a previous tool call returned empty.** Pass `prior_empty_reason` (the `_meta.empty_reason` value from the empty response). Returns the matching catalog entry: `{title, when_it_fires, recovery_action, recovery_steps[]}`. Stateless catalog lookup — no DB query, no project scope needed. Replaces 'read the catalog doc + try recovery probes one at a time' with one round-trip. Source: `docs/empty-reasons.md`.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["prior_empty_reason"],"properties":{
+				"prior_empty_reason":{"type":"string","description":"The _meta.empty_reason value from a previous empty result. One of: no_project_indexed, stale_index, unsupported_language, low_confidence_extractor, same_file_only, cross_file_unavailable, query_too_narrow, no_results_in_corpus, cap_dropped_all, incremental_no_change, all_files_blocked, extractor_emitted_nothing."}
+			}
+		}`),
+	}, s.handleWhyEmpty)
 
 	// 17. neighborhood — graph view around a symbol. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -12153,6 +12172,7 @@ var baselineMethodForTool = map[string]string{
 	"plan_change":         baselineMethodFullFileRead, // #1391 v0.82: composite replaces N atomic resolve/trace/adr reads
 	"audit_unused":        baselineMethodFullFileRead, // #1391 v0.83: composite replaces dead_code + N atomic trace confirmations
 	"onboard_module":      baselineMethodFullFileRead, // #1391 v0.84: composite replaces architecture + N×context + N×trace
+	"why_empty":           baselineMethodFullFileRead, // #1391 v0.85: stateless catalog lookup replaces docs read + N atomic recovery probes
 	"search":       baselineMethodFullFileRead,
 	"query":        baselineMethodFullFileRead,
 	"trace":        baselineMethodFullFileRead,

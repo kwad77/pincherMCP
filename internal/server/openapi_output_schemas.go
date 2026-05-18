@@ -536,6 +536,26 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 16g. why_empty — #1391 Phase 4 composite #5 (v0.85).
+	// Stateless catalog lookup for empty-result recovery.
+	"why_empty": `{
+		"type":"object",
+		"required":["empty_reason","title","when_it_fires","recovery_action","recovery_steps","catalog_anchor","_meta"],
+		"properties":{
+			"empty_reason":{"type":"string"},
+			"title":{"type":"string"},
+			"when_it_fires":{"type":"string"},
+			"recovery_action":{"type":"string"},
+			"recovery_steps":{"type":"array","items":{"type":"object","properties":{
+				"tool":{"type":"string"},
+				"args":{"type":"string"},
+				"why":{"type":"string"}
+			}}},
+			"catalog_anchor":{"type":"string"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 16c. investigate_failure — #1391 Phase 4 composite #1 (v0.81).
 	// Bug-hunt composite: parses stack trace, ranks suspects, unions
 	// callers, intersects recent changes.
