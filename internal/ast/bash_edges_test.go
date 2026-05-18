@@ -116,7 +116,15 @@ source ./lib/common.sh
 // Cross-check: top-level (non-function-scoped) call to an in-file
 // function emits a CALLS edge with FromQN="" — the indexer attaches
 // it to the file scope, matching the jinja/yaml IMPORTS convention.
-func TestExtractBash_TopLevelCALLS_FromQNEmpty_1341(t *testing.T) {
+func TestExtractBash_TopLevelCALLS_FromQNIsModule_1341_1482(t *testing.T) {
+	// Pre-#1482 this test expected FromQN="" for top-level invocations
+	// — that turned out to be the bug. The indexer's per-file
+	// nameToID couldn't resolve empty FromQN, and the
+	// Bash-doesn't-defer fallback dropped every top-level CALLS
+	// edge silently. Now top-level FromQN is the module name (the
+	// per-file Module symbol emitted by the extractor); the indexer
+	// resolves FromQN against nameToID["run"] which hits the
+	// Module symbol's name+QN keys.
 	src := []byte(`#!/usr/bin/env bash
 worker() {
   :
@@ -129,12 +137,12 @@ worker  # top-level invocation
 	}
 	var found bool
 	for _, e := range result.Edges {
-		if e.Kind == "CALLS" && e.ToName == "run.worker" && e.FromQN == "" {
+		if e.Kind == "CALLS" && e.ToName == "run.worker" && e.FromQN == "run" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected top-level CALLS edge to run.worker with FromQN=\"\"; edges: %+v", result.Edges)
+		t.Errorf("expected top-level CALLS edge to run.worker with FromQN=\"run\" (the module symbol); edges: %+v", result.Edges)
 	}
 }
 
