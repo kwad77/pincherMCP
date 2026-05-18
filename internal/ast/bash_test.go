@@ -98,18 +98,23 @@ func TestExtractBash_UnderscorePrefixIsInternal(t *testing.T) {
 func TestExtractBash_OnlyFunctionsExtracted(t *testing.T) {
 	// Top-level commands like `echo "starting"` and `set -euo pipefail`
 	// should not produce symbols — only function declarations do.
+	// #1482 v0.77: the per-file Module symbol is also emitted (file-
+	// scope anchor for top-level edges). Count Functions explicitly
+	// rather than asserting total symbol count.
 	result := Extract([]byte(bashSrc), "Bash", "scripts/deploy.sh")
-	if len(result.Symbols) != 4 {
-		names := make([]string, 0, len(result.Symbols))
-		for _, s := range result.Symbols {
-			names = append(names, s.Name)
+	var fnNames []string
+	for _, s := range result.Symbols {
+		if s.Kind == "Function" {
+			fnNames = append(fnNames, s.Name)
 		}
-		t.Errorf("expected 4 functions (deploy_node, rollback, build_image, _internal_helper), got %d: %v",
-			len(result.Symbols), names)
+	}
+	if len(fnNames) != 4 {
+		t.Errorf("expected 4 Function symbols (deploy_node, rollback, build_image, _internal_helper), got %d: %v",
+			len(fnNames), fnNames)
 	}
 	for _, s := range result.Symbols {
-		if s.Kind != "Function" {
-			t.Errorf("symbol %q kind = %q, want Function", s.Name, s.Kind)
+		if s.Kind != "Function" && s.Kind != "Module" {
+			t.Errorf("symbol %q unexpected kind = %q (want Function or Module)", s.Name, s.Kind)
 		}
 	}
 }
@@ -177,8 +182,25 @@ echo hello
 ls -la
 `
 	result := Extract([]byte(src), "Bash", "x.sh")
-	if len(result.Symbols) != 0 {
-		t.Errorf("expected 0 symbols (no function defs), got %d", len(result.Symbols))
+	// #1482 v0.77: per-file Module symbol is always emitted as the
+	// file-scope anchor for top-level edges (matches Go extractor's
+	// per-file Module convention). A script with no function defs
+	// still gets the Module symbol — zero Functions, exactly one
+	// Module.
+	var fnCount, modCount int
+	for _, s := range result.Symbols {
+		switch s.Kind {
+		case "Function":
+			fnCount++
+		case "Module":
+			modCount++
+		}
+	}
+	if fnCount != 0 {
+		t.Errorf("expected 0 Function symbols (no function defs), got %d", fnCount)
+	}
+	if modCount != 1 {
+		t.Errorf("expected exactly 1 Module symbol per #1482, got %d", modCount)
 	}
 }
 

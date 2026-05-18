@@ -51,6 +51,30 @@ func (b *bashExtractor) Extract(source []byte, _, relPath string, _ ExtractOptio
 
 	sourceLen := len(source)
 
+	// #1482: emit a Module symbol per bash file. Top-level CALLS edges
+	// need a stable Symbol to point at as their source — without one,
+	// the indexer's per-file nameToID lookup of an empty FromQN fails
+	// and the edge gets dropped at the Bash-doesn't-defer fallback.
+	// Matches the Go extractor's per-file Module symbol pattern
+	// (internal/ast/extractor.go:565). The Module spans the shebang
+	// line if present, the first byte otherwise — same convention
+	// jinja/yaml use for file-scope anchors.
+	moduleEnd := sourceLen
+	if nl := bytes.IndexByte(source, '\n'); nl > 0 {
+		moduleEnd = nl
+	}
+	result.Symbols = append(result.Symbols, ExtractedSymbol{
+		Name:          result.Module,
+		QualifiedName: result.Module,
+		Kind:          "Module",
+		StartByte:     0,
+		EndByte:       moduleEnd,
+		StartLine:     1,
+		EndLine:       1,
+		Signature:     "module " + result.Module,
+		IsExported:    true,
+	})
+
 	// First pass: emit Function symbols. We need the set of in-file
 	// function names before the second pass so CALLS edges only fire
 	// when the callee is locally defined (cross-file calls drop until
@@ -233,12 +257,15 @@ func bashFirstLiteral(w *syntax.Word) string {
 }
 
 // bashEdgeFromName returns the qualified name to use as edge FromName.
-// Top-level invocations (scope == "") return "" — the indexer treats
-// that as the file-scope edge attachment point (matches the convention
-// jinja / yaml extractors use for IMPORTS).
+// Top-level invocations (scope == "") return the module name — the
+// per-file Module symbol emitted at the top of Extract is the
+// resolution target for file-scope edges. Pre-#1482 this returned "",
+// which the indexer's per-file nameToID lookup couldn't resolve; the
+// Bash-doesn't-defer fallback then dropped every top-level CALLS
+// edge silently. Now matches Go's per-file Module convention.
 func bashEdgeFromName(scope, module string) string {
 	if scope == "" {
-		return ""
+		return module
 	}
 	return module + "." + scope
 }
