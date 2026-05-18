@@ -1668,9 +1668,14 @@ type pattern struct {
 type condition struct {
 	variable  string
 	property  string
-	op        string // = <> > < >= <= =~ CONTAINS STARTS_WITH ENDS_WITH IS_NULL IS_NOT_NULL
+	op        string // = <> > < >= <= =~ CONTAINS STARTS_WITH ENDS_WITH IS_NULL IS_NOT_NULL IN
 	value     string
-	negated   bool   // #354: WHERE NOT n.x = ... — invert the comparison result
+	// #1439: IN [literal, literal, ...] populates inValues with each
+	// element's string form. op == "IN"; value stays empty. NOT IN
+	// is handled by the existing `negated` flag (`WHERE NOT col IN [...]`)
+	// since `NOT` is a parser-level wrapper, not a separate operator.
+	inValues []string
+	negated  bool   // #354: WHERE NOT n.x = ... — invert the comparison result
 	connector string // #358: "AND" or "OR" — connects this condition to the running result. First condition is "" (start).
 	// #593: when the user writes `WHERE a.col <op> b.col`, parseOneCondition
 	// captures the RHS variable + property here so collectCrossColumnWarnings
@@ -2514,6 +2519,55 @@ func (p *parser) parseOneCondition() (condition, error) {
 			c.op = "IS NULL"
 		}
 		c.value = ""
+	case "IN":
+		// #1439: WHERE col IN [a, b, c] — list membership. The
+		// canonical "any of these values" shape, used heavily by
+		// audit-shape queries ("find every Method whose name is one
+		// of these 20 CRUD handlers"). Pre-fix the parser returned
+		// "unsupported operator: IN" with an OR-chain workaround
+		// hint (open issue since v0.8.0).
+		//
+		// Bracket grammar: IN [ literal (, literal)* ]
+		//   - literals: STRING, NUMBER, or KEYWORD (TRUE/FALSE/NULL)
+		//   - empty list (IN []) is always false; reject explicitly
+		//     so the user notices instead of silent zero-rows
+		//   - parens (IN (a,b)) are Cypher-invalid; redirect to
+		//     brackets to match the documented shape
+		//   - NOT IN works via the existing `negated` flag (NOT
+		//     wraps the predicate at the expression level, not the
+		//     operator level)
+		p.next() // consume IN
+		if p.peek().value == "(" {
+			return c, fmt.Errorf("pinchQL: IN requires bracket-list, not parens — write `IN [\"a\", \"b\"]` (Cypher uses brackets for list literals; parens are reserved for grouping)")
+		}
+		if err := p.expect("["); err != nil {
+			return c, fmt.Errorf("pinchQL: IN expects a bracket-list — %w", err)
+		}
+		c.op = "IN"
+		if p.peek().value == "]" {
+			p.next()
+			return c, fmt.Errorf("pinchQL: IN [] (empty list) is always false — drop the predicate, or list the values you mean to match")
+		}
+		for {
+			tok := p.next()
+			if tok.kind != "STRING" && tok.kind != "NUMBER" && tok.kind != "KEYWORD" && tok.kind != "IDENT" {
+				return c, fmt.Errorf("pinchQL: IN list expects literal values (strings, numbers, TRUE/FALSE/NULL); got %q (kind %s)", tok.value, tok.kind)
+			}
+			c.inValues = append(c.inValues, normalizeConditionValue(tok))
+			if c.valueKind == "" {
+				c.valueKind = tok.kind
+			}
+			next := p.peek().value
+			if next == "," {
+				p.next()
+				continue
+			}
+			if next == "]" {
+				p.next()
+				break
+			}
+			return c, fmt.Errorf("pinchQL: IN list expects `, value` or `]`; got %q", next)
+		}
 	case "!":
 		// Detect `!=` (two-char op the tokenizer doesn't fuse) so the hint
 		// catches the SQL-muscle-memory case before the generic fallback.
@@ -2739,10 +2793,13 @@ func operatorHint(op string) (string, bool) {
 		return "use ENDS WITH (two words, no underscore)", true
 	case "MATCHES":
 		return "use =~ for regex match", true
-	case "IN":
-		// #321: IN multi-value membership isn't implemented yet —
-		// the OR-of-equalities pattern is the documented workaround.
-		return "IN is not supported; combine equality conditions with OR: 'n.kind = \"Function\" OR n.kind = \"Method\"'", true
+	// #1439: IN multi-value membership is now first-class (see
+	// parseOneCondition's case "IN" branch). Pre-fix this hint
+	// fired before the parser reached the operator surface; the
+	// case is removed so an accidental fallthrough surfaces the
+	// generic "unsupported operator" instead of an outdated
+	// remediation pointing the user away from a feature that now
+	// works.
 	case "+", "-", "*", "/":
 		// #928: arithmetic operators aren't yet supported in WHERE/RETURN.
 		// Pre-fix the generic "unsupported operator: -" stopped at the
@@ -4354,6 +4411,28 @@ func condLeafToSQL(prefix, col string, c condition) (string, []any, bool) {
 		inner = "(" + prefix + col + " IS NULL OR " + prefix + col + " = '')"
 	case "IS NOT NULL":
 		inner = "(" + prefix + col + " IS NOT NULL AND " + prefix + col + " <> '')"
+	case "IN":
+		// #1439: SQLite supports `col IN (?, ?, ...)` natively.
+		// Affinity coerces each bind arg to the column's declared
+		// type, so `n.start_line IN ["100", "200"]` against an
+		// INTEGER column compares numerically (same mechanism as
+		// the `>`, `<` comparison-operator pushdown).
+		if len(c.inValues) == 0 {
+			// Defensive — parser rejects this, but be explicit so
+			// the SQL emitter can't generate `col IN ()` which is
+			// a SQLite parse error.
+			return "", nil, false
+		}
+		placeholders := make([]string, len(c.inValues))
+		for i, v := range c.inValues {
+			placeholders[i] = "?"
+			lit := v
+			if isBoolCol(col) {
+				lit = coerceBoolLiteral(lit)
+			}
+			args = append(args, lit)
+		}
+		inner = prefix + col + " IN (" + strings.Join(placeholders, ",") + ")"
 	default:
 		return "", nil, false
 	}
@@ -4626,6 +4705,26 @@ func evalCondition(row map[string]any, c condition, reCache map[string]*regexp.R
 	case "IS NOT NULL":
 		raw, present := row[key]
 		return present && raw != nil && actual != "" && actual != "<nil>"
+	case "IN":
+		// #1439: list membership. NULL rows never match (matches SQL
+		// semantics: NULL IN [...] is UNKNOWN, treated as false). The
+		// parser rejects empty lists at parse time, so len(inValues)>0
+		// here.
+		raw, present := row[key]
+		if !present || raw == nil {
+			return false
+		}
+		for _, v := range c.inValues {
+			if actual == v {
+				return true
+			}
+			// Mirror the boolCoerceEqual treatment used by `=` so an
+			// IN list of booleans matches Go-formatted row values.
+			if boolCoerceEqual(actual, v) {
+				return true
+			}
+		}
+		return false
 	case ">", "<", ">=", "<=":
 		an, aerr := strconv.ParseFloat(actual, 64)
 		bn, berr := strconv.ParseFloat(c.value, 64)

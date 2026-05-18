@@ -107,8 +107,10 @@ func TestParse_SupportedOperators_StillWork(t *testing.T) {
 // hint. Mostly a guard against typos in future additions to the map.
 func TestOperatorHint_AllEntriesNonEmpty(t *testing.T) {
 	// ENDS WITH (two words) is first-class (#340); ENDS_WITH (underscore
-	// typo form) still needs the redirect hint per #1406.
-	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "ENDS_WITH", "MATCHES", "IN", "in"} {
+	// typo form) still needs the redirect hint per #1406. IN moved
+	// off the hint table when it became first-class (#1439) — it's
+	// handled by parseOneCondition directly now.
+	for _, op := range []string{"LIKE", "like", "REGEXP", "RLIKE", "STARTS_WITH", "ENDS_WITH", "MATCHES"} {
 		hint, ok := operatorHint(op)
 		if !ok || hint == "" {
 			t.Errorf("operatorHint(%q) returned empty/false", op)
@@ -117,22 +119,38 @@ func TestOperatorHint_AllEntriesNonEmpty(t *testing.T) {
 	if _, ok := operatorHint("BOGUS"); ok {
 		t.Error("operatorHint(BOGUS) should return false")
 	}
+	// IN is no longer in the operatorHint table per #1439 — the
+	// parser handles it as a first-class case. Confirm it doesn't
+	// surface a stale hint that points at the old OR workaround.
+	if hint, ok := operatorHint("IN"); ok {
+		t.Errorf("operatorHint(\"IN\") should not return a hint after #1439 — got %q", hint)
+	}
 }
 
-// #321: IN gets a clear OR-fallback suggestion since the multi-
-// value membership operator isn't implemented yet.
-func TestParse_UnsupportedOperator_IN_Hint(t *testing.T) {
-	tokens := tokenize("MATCH (n) WHERE n.kind IN ['Function','Method'] RETURN n.name")
+// #1439: IN is now first-class. The old "unsupported, use OR" hint
+// was removed; this test pins the new shape — `WHERE n.kind IN
+// ['Function','Method']` parses cleanly and the condition has the
+// expected op and inValues.
+func TestParse_INClause_FirstClass(t *testing.T) {
+	tokens := tokenize(`MATCH (n) WHERE n.kind IN ["Function","Method"] RETURN n.name`)
 	p := &parser{tokens: tokens}
-	_, err := p.parseQuery()
-	if err == nil {
-		t.Fatal("expected parse error for IN")
+	q, err := p.parseQuery()
+	if err != nil {
+		t.Fatalf("IN should parse cleanly post-#1439; got: %v", err)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "IN") {
-		t.Errorf("error %q must mention IN", msg)
+	// Walk the WHERE tree to find the IN leaf. The query has one
+	// condition; parseWhereExpr wraps it as a leaf condExpr.
+	leaf, ok := q.where.(condExpr)
+	if !ok {
+		t.Fatalf("expected condition leaf at top of WHERE; got %T", q.where)
 	}
-	if !strings.Contains(msg, "OR") {
-		t.Errorf("error %q must suggest the OR-of-equality fallback", msg)
+	if leaf.c.op != "IN" {
+		t.Errorf("op = %q; want IN", leaf.c.op)
+	}
+	if len(leaf.c.inValues) != 2 {
+		t.Fatalf("inValues = %v; want 2 entries", leaf.c.inValues)
+	}
+	if leaf.c.inValues[0] != "Function" || leaf.c.inValues[1] != "Method" {
+		t.Errorf("inValues = %v; want [Function Method]", leaf.c.inValues)
 	}
 }
