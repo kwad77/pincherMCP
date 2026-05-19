@@ -157,10 +157,13 @@ type hookDecision struct {
 const envelopeEstimate = 400
 
 // minExpectedSavings is the threshold below which the hook passes
-// through. ~800 tokens = ~3200 bytes — anything smaller isn't worth
-// the redirect tax (the agent has to re-issue a tool call, look at
-// the response shape, etc.). Tuned alongside #623 lite mode.
-const minExpectedSavingsBytes = 3200
+// through silently. Raised from 3200 → 16384 in #1656 v0.86: the
+// 4 KB floor fired too often in live use, and any file under 16 KB
+// is small enough that the agent reading it directly costs less
+// than the hook chrome + re-issue overhead even in the redirect
+// case. Tuned against the v0.86 dogfood session where Read on
+// every non-trivial file generated a hint with no user benefit.
+const minExpectedSavingsBytes = 16384
 
 // identifierPattern matches single CamelCase / camelCase / dotted /
 // :: -qualified identifiers. Used for Grep redirect detection (#630):
@@ -205,6 +208,16 @@ func decideReadHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 	// often small enough that the agent reads them whole.
 	if isTestFile(path) {
 		return debugPass(debug, "test file exempted",
+			hookDecision{FilePathParsed: path})
+	}
+
+	// #1656 v0.86: prose / planning files pass through. `context
+	// lite=true` on Markdown, plain text, or RST returns no useful
+	// symbols — the redirect would be active misinformation. Same
+	// for explicitly-marked planning / scratch directories which
+	// often contain Markdown but live outside `docs/`.
+	if isProseFile(path) {
+		return debugPass(debug, "prose / planning file exempted",
 			hookDecision{FilePathParsed: path})
 	}
 
@@ -288,15 +301,19 @@ func decideGrepHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 	}
 
 	args := fmt.Sprintf(`{"query":"%s"}`, pattern)
+	// #1656 v0.86: Grep redirect is advisory, matching the Read path
+	// (#1654). Blocking Grep broke the same Edit-prep loop (agent
+	// runs Grep to confirm a string exists before editing; block
+	// forces a search detour that may not surface the literal
+	// match). Hint via systemMessage, pass through.
 	msg := fmt.Sprintf(
-		"`%s` looks like a single identifier — use `search query=\"%s\"` to get BM25-ranked hits with snippets instead of unranked grep matches.",
+		"Pincher hint: `%s` looks like an identifier — `search query=\"%s\"` gives BM25-ranked hits with snippets, often more useful than unranked grep matches. (Hook is advisory since v0.86 — Grep passes through.)",
 		pattern, pattern,
 	)
 	return hookDecision{
-		Continue:      false,
-		StopReason:    "pincher hook: identifier-shape Grep",
+		Continue:      true,
 		SystemMessage: msg,
-		Decision:      "redirect",
+		Decision:      "redirect_advisory",
 		SuggestedTool: "search",
 		SuggestedArgs: args,
 	}
@@ -369,6 +386,69 @@ func isTestFile(path string) bool {
 	// Prefix patterns (`test_*.py`).
 	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
 		return true
+	}
+	return false
+}
+
+// isProseFile reports whether a path looks like prose / planning /
+// docs content where `context lite=true` returns no useful symbols.
+// The redirect would be active misinformation on these files —
+// pincher indexes Markdown sections by heading, but lite-mode
+// context strips the body, leaving the agent with just heading
+// strings. Recognized:
+//
+//   - Markdown:  *.md / *.markdown / *.mdx
+//   - RST:       *.rst
+//   - Plain:     *.txt
+//   - AsciiDoc:  *.adoc / *.asciidoc
+//
+// Plus path-segment match on directories that conventionally hold
+// prose / planning artifacts: `.planning/`, `docs/`, `doc/`,
+// `notes/`. Inside those directories every file passes through
+// regardless of extension (the agent is reading documentation,
+// not code).
+//
+// Errs toward MORE pass-through. A code file falsely flagged here
+// is a tiny correctness loss; a prose file blocked is the v0.86
+// dogfood-found friction we're shipping #1656 to eliminate.
+func isProseFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.ToSlash(path)
+	lower := strings.ToLower(clean)
+
+	// Directory-segment match — try both embedded (`/docs/`) and
+	// leading (`docs/`) variants so we catch paths regardless of
+	// whether they're absolute or relative to a repo root.
+	for _, seg := range []string{
+		".planning/", ".planning-",
+		"docs/", "doc/",
+		"notes/", "note/",
+	} {
+		if strings.HasPrefix(lower, seg) {
+			return true
+		}
+		if strings.Contains(lower, "/"+seg) {
+			return true
+		}
+	}
+	// .planning-foo.md at repo root: catches the basename variant
+	// when the planning prefix appears mid-path or at root.
+	if strings.HasPrefix(filepath.Base(lower), ".planning-") {
+		return true
+	}
+
+	base := filepath.Base(lower)
+	for _, suffix := range []string{
+		".md", ".markdown", ".mdx",
+		".rst",
+		".txt",
+		".adoc", ".asciidoc",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
 	}
 	return false
 }
