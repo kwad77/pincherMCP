@@ -6193,7 +6193,18 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		if cause, steps, ok := verifyEmptySearchCause(query, kind, language, corpus, minConfidence, rawPreConfidenceCount, relax); ok {
 			// Verifier proved a single filter relaxation surfaces results
 			// — so the query is too narrow, not absent from the corpus.
-			stampEmpty(meta, EmptyReasonQueryTooNarrow, cause)
+			// #1603 v0.84: differentiate the min_confidence-only case
+			// (rawPreConfidenceCount > 0 = candidates existed but every
+			// one fell below the threshold). That's the documented
+			// EmptyReasonLowConfidenceExtractor case — closing one of
+			// the four orphan-stamp gaps. The verifier's step 1 covers
+			// this branch first; downstream relaxations always stamp
+			// EmptyReasonQueryTooNarrow as before.
+			if minConfidence > 0 && rawPreConfidenceCount > 0 {
+				stampEmpty(meta, EmptyReasonLowConfidenceExtractor, cause)
+			} else {
+				stampEmpty(meta, EmptyReasonQueryTooNarrow, cause)
+			}
 			meta["next_steps"] = steps
 		} else {
 			// No relaxation rescues the query — the symbol genuinely isn't

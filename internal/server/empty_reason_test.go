@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/kwad77/pincher/internal/db"
 )
 
 // #1252: stable _meta.empty_reason enum gate tests.
@@ -168,6 +171,7 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 		EmptyReasonAllFilesBlocked:         true, // server.go handleIndex
 		EmptyReasonExtractorEmittedNothing: true, // server.go handleIndex
 		EmptyReasonTargetNotResolved:       true, // plan_change, investigate_failure, context_for_task (v0.82 #1578 + v0.83 #1591)
+		EmptyReasonLowConfidenceExtractor:  true, // search min_confidence filter exclude-all (v0.84 #1603 follow-up)
 	}
 
 	// knownOrphan — constant exists in empty_reason.go + has a catalog
@@ -180,10 +184,9 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 	// the row to knownStamped and a future PR will see the orphan
 	// count shrink.
 	knownOrphan := map[string]bool{
-		EmptyReasonStaleIndex:             true, // condition fires via _meta.warnings (binary_stale)
-		EmptyReasonUnsupportedLanguage:    true, // condition surfaces in doctor advisory, not stamped on search empty
-		EmptyReasonLowConfidenceExtractor: true, // no handler tells caller "your min_confidence excluded everything"
-		EmptyReasonSameFileOnly:           true, // collapsed into EmptyReasonCrossFileUnavailable in current trace path
+		EmptyReasonStaleIndex:          true, // condition fires via _meta.warnings (binary_stale)
+		EmptyReasonUnsupportedLanguage: true, // condition surfaces in doctor advisory, not stamped on search empty
+		EmptyReasonSameFileOnly:        true, // collapsed into EmptyReasonCrossFileUnavailable in current trace path
 	}
 
 	// Every constant must appear in exactly one of the two sets.
@@ -215,6 +218,49 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 	// Surface the orphan count so the gap is visible at PR review.
 	t.Logf("empty_reason orphan-stamp audit: %d stamped, %d orphan (tracked in #1603)",
 		len(knownStamped), len(knownOrphan))
+}
+
+// #1603 v0.84: integration test pinning EmptyReasonLowConfidenceExtractor.
+// When handleSearch's min_confidence filter excludes every FTS5
+// candidate (rawPreConfidenceCount > 0 but post-filter result is
+// empty), the response stamps LowConfidenceExtractor — distinct from
+// QueryTooNarrow (filter-fix recovery) and NoResultsInCorpus (symbol
+// missing). Closes one of the four orphans from the audit above.
+func TestEmptyReason_SearchHighMinConfidenceStampsLowConfidenceExtractor(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+
+	// Project + a regex-tier symbol (extraction_confidence=0.85).
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "p1",
+		IndexedAt: time.Now(),
+	})
+	sym := db.Symbol{
+		ID: "p1::Foo#Function", ProjectID: "p1", FilePath: "main.go",
+		Name: "Foo", QualifiedName: "Foo", Kind: "Function",
+		Language: "Go", ExtractionConfidence: 0.85,
+	}
+	store.BulkUpsertSymbols([]db.Symbol{sym})
+
+	// Search with min_confidence=0.99 — every candidate excluded.
+	res, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":          "Foo",
+		"min_confidence": 0.99,
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatalf("expected _meta on empty response; got: %#v", body)
+	}
+	reason, _ := meta["empty_reason"].(string)
+	if reason != EmptyReasonLowConfidenceExtractor {
+		t.Errorf("min_confidence=0.99 exclude-all should stamp %q; got %q",
+			EmptyReasonLowConfidenceExtractor, reason)
+	}
 }
 
 // Positive: list on a freshly-initialised test server (no projects
