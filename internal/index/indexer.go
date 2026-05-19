@@ -2250,6 +2250,15 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
 	externals := make(map[string]db.Symbol)
+	// #1613 v0.85 follow-up: per-reason drop counters. Mirrors the
+	// resolveUsesVar pattern (#1500 for #1479) and gives the
+	// per-resolver `pincher.imports.resolve.summary` slog line a
+	// richer breakdown than the aggregate `dropped` the wrapper
+	// reports. Without this split, "10k pending → 9k edges" looks
+	// the same whether the 1k dropped because of FromQN misses, ToName
+	// misses, or dedupe — but the recovery is different per shape
+	// (extractor bug vs missing external vs noise floor).
+	var droppedFromMissing, droppedToMissing, dedupedDuplicate, externalSynthesized int
 	for _, e := range pending {
 		fromID := lookup(e.FromQN)
 		var toID string
@@ -2263,18 +2272,22 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 			// source file produced no symbol the edge can hang on
 			// (preamble-scoped Jinja IMPORTS / HCL module / Markdown
 			// preamble-link). Drop, same as pre-#1340.
+			droppedFromMissing++
 			continue
 		}
 		if toID == "" && e.ToName != "" {
 			ext := externalModuleSymbol(projectID, e.ToName)
 			toID = ext.ID
 			externals[toID] = ext
+			externalSynthesized++
 		}
 		if toID == "" {
+			droppedToMissing++
 			continue
 		}
 		key := fromID + "\x00" + toID
 		if seen[key] {
+			dedupedDuplicate++
 			continue
 		}
 		seen[key] = true
@@ -2286,6 +2299,21 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 			Confidence: e.Confidence,
 			Source:     "resolve_pass",
 		})
+	}
+
+	// #1613 v0.85 follow-up: per-stage summary at slog.Info when
+	// anything dropped — quiet on the all-resolved happy path so
+	// healthy projects stay quiet. Mirrors `pincher.uses_var.resolve.summary`.
+	if droppedFromMissing+droppedToMissing+dedupedDuplicate > 0 {
+		slog.Info("pincher.imports.resolve.summary",
+			"project_id", projectID,
+			"pending_in", len(pending),
+			"resolved_out", len(edges),
+			"dropped_from_missing", droppedFromMissing,
+			"dropped_to_missing", droppedToMissing,
+			"deduped_duplicate", dedupedDuplicate,
+			"external_synthesized", externalSynthesized,
+		)
 	}
 
 	// #1340: persist the synthetic external Module symbols BEFORE the
@@ -3432,12 +3460,21 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
+	// #1613 v0.85 follow-up: per-reason drop counters. Mirror the
+	// resolveUsesVar pattern (#1500). Splits the aggregate
+	// `dropped = pending_in - resolved_out` the wrapper reports into
+	// the actual signal — from_missing (extractor produced an unbindable
+	// FromQN), to_missing (no in-project target found after every
+	// fallback path), self_edge (fromID == toID, e.g., recursive call
+	// pre-dedupe), dedupe (same (from,to) pair already counted).
+	var droppedFromMissing, droppedToMissing, droppedSelfEdge, dedupedDuplicate int
 	for _, e := range pending {
 		fromID := lookupFromQN(e.FromQN, e.FromFile)
 		if fromID == "" && !strings.Contains(e.FromQN, ".") {
 			fromID = lookupName(e.FromQN)
 		}
 		if fromID == "" {
+			droppedFromMissing++
 			continue
 		}
 		var toID string
@@ -3507,11 +3544,17 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 				}
 			}
 		}
-		if toID == "" || fromID == toID {
+		if toID == "" {
+			droppedToMissing++
+			continue
+		}
+		if fromID == toID {
+			droppedSelfEdge++
 			continue
 		}
 		key := fromID + "\x00" + toID
 		if seen[key] {
+			dedupedDuplicate++
 			continue
 		}
 		seen[key] = true
@@ -3550,6 +3593,21 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 				Source:     "resolve_pass",
 			})
 		}
+	}
+
+	// #1613 v0.85 follow-up: per-stage summary mirrors the
+	// pincher.uses_var.resolve.summary shape. Only emits when
+	// something dropped — quiet on the all-resolved happy path.
+	if droppedFromMissing+droppedToMissing+droppedSelfEdge+dedupedDuplicate > 0 {
+		slog.Info("pincher.calls.resolve.summary",
+			"project_id", projectID,
+			"pending_in", len(pending),
+			"resolved_out", len(edges),
+			"dropped_from_missing", droppedFromMissing,
+			"dropped_to_missing", droppedToMissing,
+			"dropped_self_edge", droppedSelfEdge,
+			"deduped_duplicate", dedupedDuplicate,
+		)
 	}
 
 	// #475: atomic replace of the prior resolve pass's CALLS edges so
@@ -3837,6 +3895,22 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 
 	seen := make(map[string]bool)
 	edges := make([]db.Edge, 0, len(pending))
+	// #1613 v0.85 follow-up: per-reason drop counters. The READS pass
+	// has more distinct drop reasons than IMPORTS/CALLS — language
+	// mismatch, polymorphic-method blocklist, struct-field reads, and
+	// the "target wasn't a Variable" filter all matter for triaging
+	// "10k pending → 3k edges, where did the other 7k go?". Track each
+	// separately so the summary log can split them.
+	var (
+		droppedFromMissing    int
+		droppedToMissing      int
+		droppedSelfEdge       int
+		droppedLangMismatch   int
+		droppedPolymorphic    int
+		droppedStructField    int
+		droppedNotVariable    int
+		dedupedDuplicate      int
+	)
 	for _, e := range pending {
 		from := lookupFromQN(e.FromQN, e.FromFile)
 		fromID := from.id
@@ -3848,6 +3922,7 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 			fromID = from.id
 		}
 		if fromID == "" {
+			droppedFromMissing++
 			continue
 		}
 		// #764: the reader's package, approximated by source-file
@@ -3880,10 +3955,16 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 		// QN matches across languages can happen for short namespace
 		// segments (`util`, `index`) that look identical when lifted
 		// to the qualified-name table.
-		if to.id == "" || fromID == to.id {
+		if to.id == "" {
+			droppedToMissing++
+			continue
+		}
+		if fromID == to.id {
+			droppedSelfEdge++
 			continue
 		}
 		if from.lang != "" && to.lang != "" && from.lang != to.lang {
+			droppedLangMismatch++
 			continue
 		}
 		// #565: when the READS-pass target resolves to a Function or
@@ -3919,6 +4000,7 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 				candName = candName[i+1:]
 			}
 			if isPolymorphicInterfaceMethodName(candName) {
+				droppedPolymorphic++
 				continue
 			}
 			// #760: the read resolved to a project Method, but if the
@@ -3929,10 +4011,12 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 			// a binding CALLS edge here false-binds `e.Confidence` to
 			// `*hclExtractor.Confidence`.
 			if isStructFieldRead(e.BaseType, e.FromQN, candName) {
+				droppedStructField++
 				continue
 			}
 			key := fromID + "\x00" + to.id + "\x00CALLS"
 			if seen[key] {
+				dedupedDuplicate++
 				continue
 			}
 			seen[key] = true
@@ -3954,6 +4038,7 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 		// Interface, Type, etc.) was a stray identifier reference —
 		// drop.
 		if !to.isVar {
+			droppedNotVariable++
 			continue
 		}
 		// Dedupe key includes the edge kind so a function that BOTH
@@ -3961,6 +4046,7 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 		// WRITES) — they answer different refactor questions.
 		key := fromID + "\x00" + to.id + "\x00" + e.Kind
 		if seen[key] {
+			dedupedDuplicate++
 			continue
 		}
 		seen[key] = true
@@ -3978,6 +4064,30 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 			Confidence: e.Confidence,
 			Source:     "resolve_pass",
 		})
+	}
+
+	// #1613 v0.85 follow-up: per-stage summary. READS has the richest
+	// drop-reason taxonomy of the four resolvers — language mismatch,
+	// polymorphic-method blocklist, struct-field reads, and the
+	// not-Variable filter each map to a distinct extractor or
+	// resolver behavior. Quiet on no-drops happy path.
+	totalDropped := droppedFromMissing + droppedToMissing + droppedSelfEdge +
+		droppedLangMismatch + droppedPolymorphic + droppedStructField +
+		droppedNotVariable + dedupedDuplicate
+	if totalDropped > 0 {
+		slog.Info("pincher.reads.resolve.summary",
+			"project_id", projectID,
+			"pending_in", len(pending),
+			"resolved_out", len(edges),
+			"dropped_from_missing", droppedFromMissing,
+			"dropped_to_missing", droppedToMissing,
+			"dropped_self_edge", droppedSelfEdge,
+			"dropped_lang_mismatch", droppedLangMismatch,
+			"dropped_polymorphic_method", droppedPolymorphic,
+			"dropped_struct_field_read", droppedStructField,
+			"dropped_not_variable", droppedNotVariable,
+			"deduped_duplicate", dedupedDuplicate,
+		)
 	}
 
 	// #475: atomic replace of the prior resolve pass's READS + WRITES.
