@@ -171,6 +171,76 @@ func TestHandleHealth_ProjectShape_AlignedWithArchitecture(t *testing.T) {
 	}
 }
 
+// #1476 v0.84: handleHealth must scope extraction_coverage to the
+// queried project. Mirrors the Store-layer test in
+// internal/db/db_test.go but goes through the full handler path —
+// catches drift between projectID resolution and what's passed to
+// HealthCheck. The user-reported bug shape: query health(project=X)
+// and get extraction_coverage rows for languages indexed in OTHER
+// projects, framed as belonging to X.
+func TestHandleHealth_ExtractionCoverageScopedToQueriedProject(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+
+	// Project A: Go only.
+	store.UpsertProject(db.Project{
+		ID: "pA", Path: "/tmp/pA", Name: "projA",
+		IndexedAt: time.Now(),
+	})
+	syA := db.Symbol{
+		ID: "pA::Foo#Function", ProjectID: "pA", FilePath: "main.go",
+		Name: "Foo", QualifiedName: "Foo", Kind: "Function",
+		Language: "Go", ExtractionConfidence: 1.0,
+	}
+	store.BulkUpsertSymbols([]db.Symbol{syA})
+
+	// Project B: Python + JavaScript. Must NOT leak into pA's coverage.
+	store.UpsertProject(db.Project{
+		ID: "pB", Path: "/tmp/pB", Name: "projB",
+		IndexedAt: time.Now(),
+	})
+	syB1 := db.Symbol{
+		ID: "pB::bar#Function", ProjectID: "pB", FilePath: "app.py",
+		Name: "bar", QualifiedName: "bar", Kind: "Function",
+		Language: "Python", ExtractionConfidence: 1.0,
+	}
+	syB2 := db.Symbol{
+		ID: "pB::baz#Variable", ProjectID: "pB", FilePath: "index.js",
+		Name: "baz", QualifiedName: "baz", Kind: "Variable",
+		Language: "JavaScript", ExtractionConfidence: 0.95,
+	}
+	store.BulkUpsertSymbols([]db.Symbol{syB1, syB2})
+
+	result, err := srv.handleHealth(context.Background(), makeReq(map[string]any{
+		"project": "pA",
+	}))
+	if err != nil {
+		t.Fatalf("handleHealth(pA): %v", err)
+	}
+	body := decode(t, result)
+
+	cov, ok := body["extraction_coverage"].([]any)
+	if !ok || cov == nil {
+		t.Fatalf("extraction_coverage missing or wrong shape; got: %T %v", body["extraction_coverage"], body["extraction_coverage"])
+	}
+	gotLangs := map[string]bool{}
+	for _, c := range cov {
+		row, _ := c.(map[string]any)
+		lang, _ := row["language"].(string)
+		if lang != "" {
+			gotLangs[lang] = true
+		}
+	}
+	for _, leak := range []string{"Python", "JavaScript"} {
+		if gotLangs[leak] {
+			t.Errorf("handleHealth(pA) extraction_coverage leaked language %q from project pB (#1476)", leak)
+		}
+	}
+	if !gotLangs["Go"] {
+		t.Errorf("handleHealth(pA) extraction_coverage missing expected Go row; got langs: %v", gotLangs)
+	}
+}
+
 // TestHandleHealth_ProjectShape_EmptyBranchOmits — last_indexed_branch
 // is omitempty per the Project struct's JSON tag; pre-v32 projects
 // with empty CurrentBranch should not surface the field at all.
