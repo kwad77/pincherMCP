@@ -10415,15 +10415,53 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// #1630 v0.85: BY TOOL — top-5 tools by total time spent this
 	// process lifetime. Empty when there's been no tool activity yet
 	// (e.g. fresh server, stats called immediately).
+	//
+	// #1645 v0.86: render as a compact column-aligned table so rows fit
+	// inside the box border. The v0.85 "1×, 4500ms tot, 4500ms avg,
+	// 4500ms max" format produced 38+-char values that overflowed the
+	// 44-char inner width. New format: header row + 4 numeric columns
+	// (count, total, avg, max) padded to fixed widths; values >9999ms
+	// collapse to `Ns` / `Nm` so columns stay narrow without
+	// information loss.
 	if rows := s.topToolsByTotalTime(5); len(rows) > 0 {
 		b.WriteString(sep)
 		b.WriteString(header("BY TOOL (top-5 by total ms)"))
+		// compactMs collapses millisecond values >9999 to "Ns" (10s+)
+		// or "Nm" (60s+) so the column width stays bounded at 6 chars.
+		// Sub-10s values render as raw ms with thousand separators
+		// (e.g. "9,999" → 5 chars; "999" → 3 chars).
+		compactMs := func(ms int64) string {
+			if ms >= 60_000 {
+				return fmt.Sprintf("%dm", (ms+30_000)/60_000)
+			}
+			if ms >= 10_000 {
+				return fmt.Sprintf("%ds", (ms+500)/1000)
+			}
+			return commify(ms)
+		}
+		// byToolRow renders one row with the fixed column layout.
+		// Tool names >12 chars are truncated with "…" so the column
+		// stays predictable; no current tool name exceeds 12 chars
+		// (`architecture` is the longest at 12), but defending the
+		// width prevents future drift from breaking alignment.
+		byToolRow := func(tool, n, tot, avg, max string) string {
+			if len(tool) > 12 {
+				tool = tool[:11] + "…"
+			}
+			content := fmt.Sprintf("  %-12s %5s %6s %6s %6s", tool, n, tot, avg, max)
+			if len(content) < w {
+				content += strings.Repeat(" ", w-len(content))
+			}
+			return "│" + content + "│\n"
+		}
+		b.WriteString(byToolRow("tool", "n", "total", "avg", "max"))
 		for _, r := range rows {
 			avg := int64(0)
 			if r.Count > 0 {
 				avg = r.TotalMs / r.Count
 			}
-			b.WriteString(line(r.Tool+":", fmt.Sprintf("%d×, %dms tot, %dms avg, %dms max", r.Count, r.TotalMs, avg, r.MaxMs)))
+			b.WriteString(byToolRow(r.Tool, commify(r.Count),
+				compactMs(r.TotalMs), compactMs(avg), compactMs(r.MaxMs)))
 		}
 	}
 
