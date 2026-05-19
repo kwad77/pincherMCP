@@ -959,24 +959,56 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			}
 		}
 
-		if n := idx.resolveImports(projectID, allImports, pythonRoots, qnMap); n > 0 {
-			totalEdges += n
+		// #1613 v0.85: per-stage observability so the next perf bottleneck
+		// (resolveImports vs resolveCalls vs resolveReads vs resolveUsesVar)
+		// has data to argue from. Mirrors the existing
+		// `pincher.uses_var.resolve.summary` shape (#1500). Emitted at
+		// slog.Info only when pending_in > 0 — quiet on no-op ticks.
+		// `dropped` is pending_in minus resolved_out (conflates real drops
+		// with dedupe; internal counter PR can split). Unlocks #1611
+		// (parallelize resolve passes) which needs per-stage numbers.
+		runResolve := func(kind string, pendingIn int, run func() int) {
+			if pendingIn == 0 {
+				return
+			}
+			startStage := time.Now()
+			n := run()
+			if n > 0 {
+				totalEdges += n
+			}
+			slog.Info("pincher.resolve.summary",
+				"kind", kind,
+				"project_id", projectID,
+				"pending_in", pendingIn,
+				"resolved_out", n,
+				"dropped", pendingIn-n,
+				"duration_ms", time.Since(startStage).Milliseconds(),
+			)
 		}
-		if n := idx.resolveCalls(projectID, allCalls, pythonRoots, qnMap); n > 0 {
-			totalEdges += n
-		}
-		if n := idx.resolveReads(projectID, allReads, qnMap); n > 0 {
-			totalEdges += n
-		}
+
+		runResolve("IMPORTS", len(allImports), func() int {
+			return idx.resolveImports(projectID, allImports, pythonRoots, qnMap)
+		})
+		runResolve("CALLS", len(allCalls), func() int {
+			return idx.resolveCalls(projectID, allCalls, pythonRoots, qnMap)
+		})
+		runResolve("READS", len(allReads), func() int {
+			return idx.resolveReads(projectID, allReads, qnMap)
+		})
 
 		// #1165 Phase 2: bind Ansible USES_VAR refs to Setting symbols in
 		// canonical var-declaration paths. Loads its own pool (no
 		// pre-load reuse with QN-keyed allImports/allCalls/allReads —
 		// USES_VAR resolution is name-keyed, not QN-keyed).
 		allUsesVar := loadOrFallback(idx, projectID, "USES_VAR", pendingUsesVar)
-		if n := idx.resolveUsesVar(projectID, allUsesVar); n > 0 {
-			totalEdges += n
-		}
+		// resolveUsesVar has its own `pincher.uses_var.resolve.summary`
+		// emission with richer drop counters (#1500 for #1479) — keep its
+		// internal log canonical and just match the same shape here for
+		// the wrapper's `pincher.resolve.summary`. Both lines safely
+		// coexist; agents grepping for either prefix get a hit.
+		runResolve("USES_VAR", len(allUsesVar), func() int {
+			return idx.resolveUsesVar(projectID, allUsesVar)
+		})
 	}
 
 	// #326: Tail-pass GC for files removed from disk. The walker yields only
