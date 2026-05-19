@@ -85,6 +85,36 @@ func TestWhyEmpty_UnknownReasonRichError(t *testing.T) {
 	}
 }
 
+// TestWhyEmpty_UnknownReasonListIsDeterministic — regression for #1580.
+// Go map iteration is randomised, so a naive `for k := range catalog`
+// produces a different "Known values:" ordering per call. This test
+// invokes the unknown-reason path five times and asserts the error
+// message is byte-identical across calls — pinning the sort.Strings
+// fix.
+func TestWhyEmpty_UnknownReasonListIsDeterministic(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	var first string
+	for i := 0; i < 5; i++ {
+		res, err := srv.handleWhyEmpty(context.Background(), makeReq(map[string]any{
+			"prior_empty_reason": "totally_made_up_code",
+		}))
+		if err != nil {
+			t.Fatalf("call %d: handler error: %v", i, err)
+		}
+		text := textOf(t, res)
+		if i == 0 {
+			first = text
+			continue
+		}
+		if text != first {
+			t.Errorf("call %d: error text differs from call 0 — map iteration order is leaking (#1580 regression). Call 0 had %q; call %d had %q",
+				i, first, i, text)
+		}
+	}
+}
+
 // TestWhyEmpty_CatalogCoversEveryConstant — cross-check: every
 // EmptyReason* constant declared in empty_reason.go has a matching
 // catalog entry. Pairing gate — adding a constant without bumping
