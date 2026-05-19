@@ -70,6 +70,10 @@ type targetSummary struct {
 
 func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
+	// #1579 v0.82: composite cancellation contract. Entry-point check.
+	if err := ctx.Err(); err != nil {
+		return s.errResultRich("plan_change: ctx canceled before resolution", nil), nil
+	}
 
 	target := str(args, "target")
 	if strings.TrimSpace(target) == "" {
@@ -205,6 +209,10 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	targetPackage := packageOfFile(resolved.File)
 
 	for _, sym := range resolved.SymbolsAffected {
+		// #1579: per-iteration cancellation check.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		hops, err := s.store.TraceViaCTEScoped(projectID, sym.ID, "inbound", []string{"CALLS"}, depth)
 		if err != nil {
 			continue

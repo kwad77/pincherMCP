@@ -75,7 +75,10 @@ type onboardModuleSummary struct {
 
 func (s *Server) handleOnboardModule(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
-	_ = ctx
+	// #1579 v0.82: composite cancellation contract. Entry-point check.
+	if err := ctx.Err(); err != nil {
+		return s.errResultRich("onboard_module: ctx canceled before scope query", nil), nil
+	}
 
 	directory := str(args, "directory")
 	if strings.TrimSpace(directory) == "" {

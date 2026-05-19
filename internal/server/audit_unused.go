@@ -69,7 +69,10 @@ type auditUnusedSummary struct {
 
 func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
-	_ = ctx
+	// #1579 v0.82: composite cancellation contract. Entry-point check.
+	if err := ctx.Err(); err != nil {
+		return s.errResultRich("audit_unused: ctx canceled before candidate query", nil), nil
+	}
 
 	projectID, errRes := s.mustProject(args)
 	if errRes != nil {
@@ -148,6 +151,12 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	for _, sym := range raw {
+		// #1579: per-iteration cancellation check. Each trace is depth-
+		// bounded but a 100-candidate × depth-4 loop is real CPU work
+		// the agent might cancel mid-flight.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		hops, err := s.store.TraceViaCTEScoped(projectID, sym.ID, "inbound", []string{"CALLS"}, confirmDepth)
 		if err != nil {
 			// Degrade gracefully — skip the deep-trace step but still

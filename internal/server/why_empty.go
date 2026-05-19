@@ -190,7 +190,12 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 
 func (s *Server) handleWhyEmpty(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
-	_ = ctx
+	// #1579 v0.82: composite cancellation contract. why_empty has no
+	// SQL loop so the entry-point check is the only check needed; the
+	// catalog lookup is in-memory and bounded by the catalog size.
+	if err := ctx.Err(); err != nil {
+		return s.errResultRich("why_empty: ctx canceled before catalog lookup", nil), nil
+	}
 
 	priorReason := str(args, "prior_empty_reason")
 	if strings.TrimSpace(priorReason) == "" {
