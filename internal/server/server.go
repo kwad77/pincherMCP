@@ -6225,6 +6225,25 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 				stampEmpty(meta, EmptyReasonQueryTooNarrow, cause)
 			}
 			meta["next_steps"] = steps
+		} else if stale, msg := s.isIndexStale(projectID); stale {
+			// #1603 v0.84: no relaxation rescued the query, but the
+			// project's binary_version is OLDER than the running server.
+			// CALLS/resolution edges may reflect older extraction rules,
+			// so an empty result here might be a false negative the user
+			// can fix by re-indexing — distinct from
+			// EmptyReasonNoResultsInCorpus ("genuinely missing").
+			// Closes the last tractable orphan-stamp gap from #1603's
+			// audit (audit moves stale_index from knownOrphan to
+			// knownStamped; same_file_only is the final remaining orphan,
+			// deferred because it requires same-file caller detection
+			// inside trace).
+			stampEmpty(meta, EmptyReasonStaleIndex, msg)
+			meta["next_steps"] = []map[string]string{
+				{"tool": "index", "args": nextStepArgs(map[string]any{"path": projectArg, "force": true}),
+					"why": "re-index with the current binary to refresh CALLS / resolution edges and confirm the empty result"},
+				{"tool": "search", "args": nextStepArgs(map[string]any{"query": query, "kind": kind, "language": language, "corpus": corpus}),
+					"why": "after re-indexing, retry the same query — if still empty, the symbol is genuinely missing (NoResultsInCorpus, not StaleIndex)"},
+			}
 		} else {
 			// No relaxation rescues the query — the symbol genuinely isn't
 			// in this corpus (or the spelling is wrong, which the

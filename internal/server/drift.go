@@ -106,6 +106,49 @@ func (s *Server) driftFor(projectID string) (string, driftAction) {
 	return msg, driftActionWarn
 }
 
+// isIndexStale reports whether the project was indexed by an OLDER
+// binary than the running server (the index_drift direction surfaced
+// in handleHealth). #1603 v0.84: used by empty-result branches to
+// stamp `EmptyReasonStaleIndex` ahead of `EmptyReasonNoResultsInCorpus`
+// when the verifier can't rescue the query — because an empty result
+// against a stale index might be a false negative the user can fix by
+// re-indexing, while NoResultsInCorpus implies "genuinely missing"
+// (which the user can't fix by re-indexing).
+//
+// Returns (false, "") when projectID resolves to no project, when
+// versions are unstamped/dev, or when self <= project (i.e.,
+// driftFor's bidirectional drift but in the opposite direction).
+//
+// Note: this is the COMPLEMENT direction of driftFor — driftFor warns
+// when self < project (you're behind the indexer); isIndexStale fires
+// when self > project (you're ahead and the index needs refreshing
+// against current rules). Both are forms of drift; the empty-result
+// stamping cares about the self>project direction.
+func (s *Server) isIndexStale(projectID string) (bool, string) {
+	if projectID == "" {
+		return false, ""
+	}
+	p, err := s.store.GetProject(projectID)
+	if err != nil || p == nil {
+		return false, ""
+	}
+	self := normalizeVersion(s.version)
+	proj := normalizeVersion(p.BinaryVersion)
+	if self == "" || proj == "" {
+		// Dev / unstamped — comparison is meaningless either way.
+		return false, ""
+	}
+	if semver.Compare(self, proj) <= 0 {
+		// Self is older or equal; not stale in this direction.
+		// driftFor handles the other direction.
+		return false, ""
+	}
+	return true, fmt.Sprintf(
+		"project %q was indexed by pincher %s; running server is %s. CALLS/resolution edges may reflect older extraction rules — empty results here might be false negatives. Re-index to refresh.",
+		p.Name, p.BinaryVersion, s.version,
+	)
+}
+
 // attachDriftWarning is a convenience for read-class handlers: if the
 // project is drifted (older self on newer-indexed project), populate
 // data["_meta"]["binary_version_warning"] with the diagnostic. No-op
