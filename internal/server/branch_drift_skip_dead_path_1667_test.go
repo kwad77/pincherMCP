@@ -47,6 +47,32 @@ func TestBranchDriftAdvisory_SkipsDeadPath_1667(t *testing.T) {
 	}
 }
 
+// #1671 v0.87: branch-drift advisory must skip nested projects. A
+// project whose path lives under ANOTHER indexed project's path has
+// its git -C call resolve via the OUTER repo's .git, which produces
+// a false-positive drift signal whenever the outer's branch differs
+// from the nested project's indexed branch. The nested-project
+// advisory (#1209) is the right surface for these — surfacing them
+// here as "drift" would steer users toward the wrong remediation.
+func TestBranchDriftAdvisory_SkipsNestedProject_1671(t *testing.T) {
+	t.Parallel()
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "internal", "supervisor", "cmd", "nested-probe")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	projects := []db.Project{
+		{ID: "p-outer", Path: outer, Name: "outer-repo", CurrentBranch: "main"},
+		{ID: "p-inner", Path: inner, Name: "nested-probe", CurrentBranch: "old-branch"},
+	}
+	got := branchDriftAdvisory(projects)
+	// The nested project must not appear in the advisory.
+	if strings.Contains(got, "nested-probe") {
+		t.Errorf("nested project must not appear in drift advisory; got: %s", got)
+	}
+}
+
 // #1669 v0.87: branch-drift advisory must skip projects whose path
 // points to a file, not a directory. Found on the dogfood machine
 // where a `probe` project's directory had been replaced by a
