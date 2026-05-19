@@ -261,6 +261,60 @@ func TestInvestigateFailure_NoMatchingSymbols(t *testing.T) {
 	}
 }
 
+// TestInvestigateFailure_NoFramesParsed_FilesOnly_NextStepsValid —
+// regression for #1570. When the trace parser captures file paths but
+// no frame identifier names (e.g. a Python traceback with file paths
+// the name regex doesn't catch), the empty-suspects branch previously
+// emitted a next-step `{"tool":"search","args":{"query":""}}` — an
+// invalid call that breaks the failure-as-pedagogy chain. Now the
+// search hint uses the file basename (extension stripped) when no
+// frame names are available, or is omitted entirely if neither.
+func TestInvestigateFailure_NoFramesParsed_FilesOnly_NextStepsValid(t *testing.T) {
+	t.Parallel()
+	srv, _, projectID := setupInvestigateTestServer(t)
+
+	// Python traceback shape — quoted file path, no identifier-shape
+	// tokens the parser will keep. Use a not-actually-indexed file
+	// path so we go through the empty-suspects branch deterministically.
+	traceback := `Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/external_dep_xyz.py", line 42, in ?
+  File "/usr/local/lib/python3.11/site-packages/external_dep_xyz.py", line 17, in ?
+`
+
+	res, err := srv.handleInvestigateFailure(context.Background(), makeReq(map[string]any{
+		"error_text": traceback,
+		"project":    projectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, res)
+
+	meta, ok := body["_meta"].(map[string]any)
+	if !ok {
+		t.Fatal("missing _meta")
+	}
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) == 0 {
+		t.Fatal("expected at least one next_step (doctor at minimum)")
+	}
+	// Walk every next_step; if any is a `search` tool, its `args` JSON
+	// must NOT contain an empty query.
+	for i, raw := range steps {
+		step, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if step["tool"] != "search" {
+			continue
+		}
+		argsStr, _ := step["args"].(string)
+		if strings.Contains(argsStr, `"query":""`) || strings.Contains(argsStr, `"query": ""`) {
+			t.Errorf("#1570 regression: next_steps[%d] suggests `search` with empty query: %s", i, argsStr)
+		}
+	}
+}
+
 // TestInvestigateFailure_RankByFrameMatch — positive happy path:
 // trace mentioning an indexed Function name yields a ranked suspect
 // with the stack_frame_match evidence flag.

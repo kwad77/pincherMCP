@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -548,12 +549,39 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 	if len(suspects) == 0 {
 		stampEmpty(meta, EmptyReasonNoResultsInCorpus,
 			fmt.Sprintf("parsed %d frame name(s) and %d file path(s) from error_text, but none resolved to a callable symbol in project %q — either the failure is in code that wasn't indexed, or the symbol names in the trace are mangled (compiled binary vs source)", len(frameNames), len(frameFiles), projectID))
-		meta["next_steps"] = []map[string]string{
-			{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, firstNonEmpty(frameNames, "")),
-				"why": "drop kind=callable; widen the search to confirm extraction coverage"},
-			{"tool": "doctor", "args": `{}`,
-				"why": "check for extraction failures in the implicated language"},
+		// #1570: build the next_steps array conditional on what we
+		// actually parsed. The original always emitted a `search` step
+		// with firstNonEmpty(frameNames, "") — when only frameFiles
+		// were parsed (e.g. a Python trace whose path regex captured a
+		// path but no identifier name), the hint became
+		// `{"query":""}` which handleSearch then rejects, breaking the
+		// failure-as-pedagogy chain.
+		nextSteps := []map[string]string{}
+		if len(frameNames) > 0 {
+			nextSteps = append(nextSteps, map[string]string{
+				"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, frameNames[0]),
+				"why":  "drop kind=callable; widen the search to confirm extraction coverage",
+			})
+		} else if len(frameFiles) > 0 {
+			// Only file paths parsed — search by file basename minus
+			// extension. Better than nothing; lets the agent confirm
+			// whether the file is indexed at all.
+			base := path.Base(frameFiles[0])
+			if dot := strings.LastIndex(base, "."); dot > 0 {
+				base = base[:dot]
+			}
+			if base != "" {
+				nextSteps = append(nextSteps, map[string]string{
+					"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, base),
+					"why":  "trace had file paths but no identifier names; searching by file basename surfaces nearby symbols",
+				})
+			}
 		}
+		nextSteps = append(nextSteps, map[string]string{
+			"tool": "doctor", "args": `{}`,
+			"why": "check for extraction failures in the implicated language",
+		})
+		meta["next_steps"] = nextSteps
 	} else {
 		// Steering: top suspect → context call; second-ranked suspect →
 		// trace outbound (to verify the call graph the composite saw is
