@@ -8451,7 +8451,12 @@ func (s *Server) edgeGraphEmptyForLanguage(projectID string) (string, bool) {
 
 func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
-	_ = ctx
+	// #1579 v0.82: cancellation contract. dead_code is single SQL via
+	// GetDeadCode — entry-point check is the only meaningful place to
+	// honor ctx since the store call isn't ctx-aware yet.
+	if err := ctx.Err(); err != nil {
+		return s.errResultRich("dead_code: ctx canceled", nil), nil
+	}
 
 	projectID, errRes := s.mustProject(args)
 	if errRes != nil {

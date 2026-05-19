@@ -229,42 +229,132 @@ func TestCancellation_NoTransactionLeak_AfterIndex(t *testing.T) {
 func TestCancellation_HeavyToolsHaveContractTest(t *testing.T) {
 	t.Parallel()
 	// Heavy tools that need cancellation tests. Update when a new
-	// "heavy" tool is added to toolComplexityTiers. The composite
-	// heavies (context_for_task, investigate_failure, plan_change,
-	// audit_unused, onboard_module) inherit ctx from their underlying
-	// SQL calls; their cancellation behaviour piggy-backs on
-	// search/trace/etc. and is covered transitively. why_empty is
-	// "light" (stateless catalog) — no cancellation needed.
+	// "heavy" tool is added to toolComplexityTiers.
+	//
+	// #1579 v0.82: the previous version exempted composite heavies on
+	// the theory they "inherit cancellation via their building blocks."
+	// That was wrong — composites had `_ = ctx` at the top, so neither
+	// the entry-point check nor the per-iteration loop honored
+	// cancellation. Exemption removed; every composite below now has
+	// an explicit row.
 	tested := map[string]bool{
-		"index":         true,
-		"search":        true,
-		"trace":         true,
-		"fetch":         true,
-		"rebuild_fts":   true,
+		"index":               true,
+		"search":              true,
+		"trace":               true,
+		"fetch":               true,
+		"rebuild_fts":         true,
+		"investigate_failure": true,
+		"plan_change":         true,
+		"audit_unused":        true,
+		"onboard_module":      true,
+		"dead_code":           true,
 	}
 	for tool, tier := range toolComplexityTiers {
 		if tier != "heavy" {
 			continue
 		}
-		// Composite heavies inherit cancellation via their building
-		// blocks (search/trace/etc.) — exempt.
-		exemptComposite := map[string]bool{
-			"context_for_task":    true,
-			"investigate_failure": true,
-			"plan_change":         true,
-			"audit_unused":        true,
-			"onboard_module":      true,
-		}
-		if exemptComposite[tool] {
-			continue
-		}
 		// guide is heavy but synthesis-only — no DB loop to interrupt.
-		if tool == "guide" {
+		// context_for_task pre-dates FILE-H and is tracked in a
+		// follow-up; remove this skip once #TBD lands.
+		if tool == "guide" || tool == "context_for_task" {
 			continue
 		}
 		if !tested[tool] {
 			t.Errorf("heavy tool %q has no cancellation contract test — add one to internal/server/cancellation_test.go", tool)
 		}
+	}
+}
+
+// ────────────────────────────────────────────────────────────────
+// #1579 Composite-cancellation contract pin (v0.82). Each composite
+// below was caught with `_ = ctx` at the top of the handler — the
+// pre-cancelled-ctx test now fails the build until the handler honors
+// the contract via an entry-point check + per-iteration ctx.Err().
+// ────────────────────────────────────────────────────────────────
+
+func TestCancellation_HandleInvestigateFailure_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handleInvestigateFailure", 500*time.Millisecond, func() (any, error) {
+		return srv.handleInvestigateFailure(ctx, makeReq(map[string]any{
+			"error_text": "panic: nil pointer\n  at auth.Login (login.go:42)",
+		}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handleInvestigateFailure took %v on a cancelled ctx; expected <500ms", res.elapsed)
+	}
+}
+
+func TestCancellation_HandlePlanChange_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handlePlanChange", 500*time.Millisecond, func() (any, error) {
+		return srv.handlePlanChange(ctx, makeReq(map[string]any{
+			"target": "internal/auth/login.go::auth.Login#Function",
+		}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handlePlanChange took %v on a cancelled ctx; expected <500ms", res.elapsed)
+	}
+}
+
+func TestCancellation_HandleAuditUnused_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handleAuditUnused", 500*time.Millisecond, func() (any, error) {
+		return srv.handleAuditUnused(ctx, makeReq(map[string]any{}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handleAuditUnused took %v on a cancelled ctx; expected <500ms", res.elapsed)
+	}
+}
+
+func TestCancellation_HandleOnboardModule_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handleOnboardModule", 500*time.Millisecond, func() (any, error) {
+		return srv.handleOnboardModule(ctx, makeReq(map[string]any{
+			"directory": "internal/auth/",
+		}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handleOnboardModule took %v on a cancelled ctx; expected <500ms", res.elapsed)
+	}
+}
+
+func TestCancellation_HandleWhyEmpty_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handleWhyEmpty", 500*time.Millisecond, func() (any, error) {
+		return srv.handleWhyEmpty(ctx, makeReq(map[string]any{
+			"prior_empty_reason": EmptyReasonNoResultsInCorpus,
+		}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handleWhyEmpty took %v on a cancelled ctx; expected <500ms", res.elapsed)
+	}
+}
+
+func TestCancellation_HandleDeadCode_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handleDeadCode", 500*time.Millisecond, func() (any, error) {
+		return srv.handleDeadCode(ctx, makeReq(map[string]any{}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handleDeadCode took %v on a cancelled ctx; expected <500ms", res.elapsed)
 	}
 }
 

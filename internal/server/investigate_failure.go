@@ -203,6 +203,10 @@ type suspectRow struct {
 
 func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
+	// #1579 v0.82: composite cancellation contract. Entry-point check.
+	if err := ctx.Err(); err != nil {
+		return s.errResultRich("investigate_failure: ctx canceled before parsing", nil), nil
+	}
 
 	errorText := str(args, "error_text")
 	if strings.TrimSpace(errorText) == "" {
@@ -379,6 +383,10 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 			byBM25 = byBM25[:traceCap]
 		}
 		for _, c := range byBM25 {
+			// #1579: per-iteration cancellation check.
+			if err := ctx.Err(); err != nil {
+				break
+			}
 			fan := 0
 			if hops, err := s.store.TraceViaCTEScoped(projectID, c.ID, "inbound", []string{"CALLS"}, traceDepth); err == nil {
 				for _, h := range hops {
