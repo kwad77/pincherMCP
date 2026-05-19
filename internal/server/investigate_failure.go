@@ -246,7 +246,12 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		// Nothing extractable. Stamp empty + diagnosis pointing to
 		// the parser's heuristic so the caller knows what shape works.
 		meta := map[string]any{}
-		stampEmpty(meta, EmptyReasonNoResultsInCorpus,
+		// #1578: target_not_resolved is the correct code — the parser
+		// couldn't extract anything from this input shape, so the
+		// "input was wrong" recovery shape applies (try context_for_task
+		// for prose). NoResultsInCorpus would imply the data is missing,
+		// which is the wrong diagnosis here.
+		stampEmpty(meta, EmptyReasonTargetNotResolved,
 			"error_text contained no identifier-shaped tokens or file:line patterns — the parser looks for `\\b[A-Za-z_]\\w+\\b` names and `file.ext:NN` paths. Either the input is plain prose (try `context_for_task` with a task description) or the language's trace format is unusual (paste a raw trace, not pre-processed output).")
 		meta["next_steps"] = []map[string]string{
 			{"tool": "context_for_task", "args": fmt.Sprintf(`{"task":%q}`, truncateForArgs(errorText, 80)),

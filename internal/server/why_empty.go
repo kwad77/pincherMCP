@@ -186,6 +186,17 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		},
 		CatalogAnchor: "docs/empty-reasons.md#extractor_emitted_nothing",
 	},
+	EmptyReasonTargetNotResolved: {
+		Reason:      EmptyReasonTargetNotResolved,
+		Title:       "Composite target didn't resolve to a symbol",
+		WhenItFires: "A composite (plan_change / investigate_failure / etc.) accepted input that LOOKED valid for its resolution heuristic — file extension, name, or symbol-id shape — but couldn't find a matching symbol in the index. The data isn't missing; the input was the wrong shape for THIS project's index.",
+		RecoveryAction: "Re-issue with a more specific target, or run `search` first to confirm what shape resolves. `list` confirms the project scope.",
+		RecoverySteps: []map[string]string{
+			{"tool": "search", "args": `{"query":"<your-target>"}`, "why": "confirm what BM25 surfaces — if 0 hits, the symbol isn't indexed; if hits, copy the id"},
+			{"tool": "list", "args": "{}", "why": "verify the right project is scoped"},
+		},
+		CatalogAnchor: "docs/empty-reasons.md#target_not_resolved",
+	},
 }
 
 func (s *Server) handleWhyEmpty(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

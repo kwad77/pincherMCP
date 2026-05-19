@@ -74,6 +74,16 @@ const (
 	// the extractor returned zero symbols. Usually a language-detection
 	// gap (extension not mapped) or a malformed source file.
 	EmptyReasonExtractorEmittedNothing = "extractor_emitted_nothing"
+
+	// target_not_resolved: a composite handler accepted user input that
+	// LOOKED valid for its resolution heuristic (file extension, name,
+	// symbol-id shape) but couldn't find a matching symbol in the index.
+	// Distinct from no_results_in_corpus (data isn't there) — the input
+	// was wrong, here's how to fix it. #1578 v0.82.
+	//
+	// Recovery: re-issue with a more specific target, or `search` first
+	// to confirm what shape resolves.
+	EmptyReasonTargetNotResolved = "target_not_resolved"
 )
 
 // stampEmpty sets the machine-readable empty_reason code and the

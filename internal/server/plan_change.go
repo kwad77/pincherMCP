@@ -219,7 +219,12 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 
 	if len(resolved.SymbolsAffected) == 0 {
 		meta := map[string]any{}
-		stampEmpty(meta, EmptyReasonNoResultsInCorpus,
+		// #1578 v0.82: target_not_resolved is the correct code here —
+		// the input shape passed our resolution heuristic but didn't
+		// match any indexed symbol. Distinct from no_results_in_corpus
+		// (data isn't there); this is "your input was wrong, here's how
+		// to fix it" — different recovery shape.
+		stampEmpty(meta, EmptyReasonTargetNotResolved,
 			fmt.Sprintf("target %q did not resolve in project %q — either the file/symbol is not indexed, or the resolution heuristic picked the wrong shape (id needs `::`, file needs extension, name falls through to BM25 search). Try a more specific target.", target, projectID))
 		meta["next_steps"] = []map[string]string{
 			{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, target),
