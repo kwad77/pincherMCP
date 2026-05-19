@@ -118,10 +118,13 @@ func TestDecideReadHook_TestFile_PassesThrough_1646(t *testing.T) {
 	}
 }
 
-// Control: a production .go file at the same size DOES still redirect.
-// The exemption must be specific to test files, not a blanket
-// pass-through. Without this cross-check, a regression that always
-// passed through would silently disable the hook.
+// Control: a production .go file at the same size DOES still produce
+// the redirect signal — Decision must be "redirect_advisory" (per
+// #1654), and the systemMessage is the user-visible hint. The
+// exemption gate (#1646) must be specific to test files, not a blanket
+// pass-through with a hint attached. Without this cross-check, a
+// regression where test files generated a hint would silently leak
+// noise on every test-file edit.
 func TestDecideReadHook_ProductionFile_StillRedirects_1646(t *testing.T) {
 	t.Parallel()
 	store := newHookTestStore(t)
@@ -136,10 +139,10 @@ func TestDecideReadHook_ProductionFile_StillRedirects_1646(t *testing.T) {
 		},
 	}
 	d := decideReadHook(store, in, false)
-	if d.Continue {
-		t.Fatalf("production file must still redirect; got Continue=true (regression — exemption is too broad)")
+	if !d.Continue {
+		t.Fatalf("advisory mode must always pass through; got Continue=false (regression — blocking shouldn't be possible)")
 	}
-	if d.Decision != "redirect" {
-		t.Errorf("expected Decision=\"redirect\"; got %q", d.Decision)
+	if d.Decision != "redirect_advisory" {
+		t.Errorf("expected Decision=\"redirect_advisory\"; got %q", d.Decision)
 	}
 }
