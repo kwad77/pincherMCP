@@ -348,10 +348,33 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		priorBinaryVersion = prev.BinaryVersion
 		if prev.BinaryVersion != "" && idx.binaryVersion != "" && prev.BinaryVersion != idx.binaryVersion {
 			binaryDriftForce = true
-			slog.Info("pincher.index.binary_drift_force_reindex",
-				"project_id", projectID,
-				"indexed_with", prev.BinaryVersion,
-				"running", idx.binaryVersion)
+			// #1497 v0.83: suppress the force-reindex cascade when the
+			// schema migrations applied during this Open() are all
+			// invalidatesNothing — DDL-only entries that don't touch
+			// extractor surface. Pre-gate, every `make install` + `/mcp`
+			// reconnect triggered full re-extraction of every project
+			// regardless of whether the binary's extractor side actually
+			// changed. For a typical schema-only bump on the pincher-repo
+			// (~700 files × 30-40 ms = 25-30s) ÷ 6 parallel projects ≈
+			// 150s cumulative cost paid by every user on every `/mcp`
+			// reconnect that happened to coincide with a migration. See
+			// internal/index/binary_drift_gate.go for the truth table.
+			inv, migFrom, migTo := idx.store.LastStartupMigrationInvalidates()
+			if shouldSuppressBinaryDriftForce(inv, migFrom, migTo) {
+				binaryDriftForce = false
+				slog.Info("pincher.index.binary_drift_force_suppressed",
+					"reason", "schema_migrations_invalidatesNothing",
+					"migrations_applied_from", migFrom,
+					"migrations_applied_to", migTo,
+					"project_id", projectID,
+					"indexed_with", prev.BinaryVersion,
+					"running", idx.binaryVersion)
+			} else {
+				slog.Info("pincher.index.binary_drift_force_reindex",
+					"project_id", projectID,
+					"indexed_with", prev.BinaryVersion,
+					"running", idx.binaryVersion)
+			}
 		}
 	}
 	idx.emitEvent("index_started", map[string]any{
