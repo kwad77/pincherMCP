@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -496,6 +497,14 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		// server.go has 73 source methods but only 8 in the index after
 		// a force-reindex.
 		expectedPerFile = map[string]int{}
+		// #1613 v0.85 follow-up: per-language extraction timing. The
+		// per-file goroutine accumulates duration into this map keyed
+		// by language; protected by bufMu. Emitted at end-of-extraction
+		// via pincher.index.extraction.by_language so dogfooders can
+		// see which extractor dominates the 82%-of-total extraction
+		// cost (per first-dogfood data on pincher-repo).
+		extractByLang      = map[string]time.Duration{}
+		extractCountByLang = map[string]int{}
 	)
 
 	// Process files
@@ -626,7 +635,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			// pathological input, we catch it, persist the failure, and skip
 			// the file rather than crashing the whole indexer goroutine.
 			// Without this, one malformed file kills the entire index run.
+			extractStart := time.Now()
 			result := safeExtractWithModule(idx, projectID, lang, relPath, content, modulePath)
+			extractDur := time.Since(extractStart)
+			bufMu.Lock()
+			extractByLang[lang] += extractDur
+			extractCountByLang[lang]++
+			bufMu.Unlock()
 			if result == nil || (len(result.Symbols) == 0 && len(result.Edges) == 0) {
 				// #1313: zero-symbol extraction is a legitimate
 				// outcome — empty test fixtures (`package X` only),
@@ -930,6 +945,60 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		"files_blocked", totalBlocked,
 		"duration_ms", time.Since(extractionStart).Milliseconds(),
 	)
+
+	// #1613 v0.85 follow-up: per-language extraction breakdown — only
+	// emit when at least one file was extracted. Tells dogfooders which
+	// extractor dominates the extraction cost (per pincher-repo data:
+	// extraction is 82% of force-reindex wall-clock; per-language
+	// numbers are needed to know whether Go's AST extractor, Markdown,
+	// YAML, or something else is the actual bottleneck).
+	if totalFiles > 0 {
+		// Build per-language attrs sorted by total duration desc so
+		// the slog line reads with the dominant cost first.
+		type langStat struct {
+			name  string
+			dur   time.Duration
+			count int
+		}
+		langs := make([]langStat, 0, len(extractByLang))
+		for lang, d := range extractByLang {
+			langs = append(langs, langStat{name: lang, dur: d, count: extractCountByLang[lang]})
+		}
+		sort.Slice(langs, func(i, j int) bool {
+			return langs[i].dur > langs[j].dur
+		})
+		attrs := []any{
+			"project_id", projectID,
+			"total_languages", len(langs),
+		}
+		// Emit the top 10 languages by duration as flat key/value
+		// pairs so structured-log consumers can grep `lang_N=`.
+		// Anything beyond the top 10 is rolled into _other_ms /
+		// _other_files so the line stays bounded.
+		const topN = 10
+		otherDur := time.Duration(0)
+		otherCount := 0
+		for i, l := range langs {
+			if i < topN {
+				attrs = append(attrs,
+					fmt.Sprintf("lang_%d_name", i+1), l.name,
+					fmt.Sprintf("lang_%d_ms", i+1), l.dur.Milliseconds(),
+					fmt.Sprintf("lang_%d_files", i+1), l.count,
+				)
+				continue
+			}
+			otherDur += l.dur
+			otherCount += l.count
+		}
+		if otherCount > 0 {
+			attrs = append(attrs,
+				"other_ms", otherDur.Milliseconds(),
+				"other_files", otherCount,
+				"other_languages", len(langs)-topN,
+			)
+		}
+		slog.Info("pincher.index.extraction.by_language", attrs...)
+	}
 
 	// #457: resolve deferred edges against the FULL persisted candidate
 	// pool, not just this run's in-memory pendingX slices. The DB rows
