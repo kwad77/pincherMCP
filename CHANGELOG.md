@@ -9,6 +9,16 @@ minors.
 
 (Empty — collecting stubs in `CHANGELOG.d/` for the next release.)
 
+## [0.81.0] — 2026-05-18 — Phase 4 composite #1: `investigate_failure` (bug-hunt from stack trace in one call)
+
+First Phase 4 composite per [`docs/integrations/composite-tool-roadmap.md`](docs/integrations/composite-tool-roadmap.md). The bug-hunt loop in one round-trip: takes a raw stack trace, ranks suspects by stack-frame match × file-in-trace × recent-change × caller fan-in, unions inbound callers, and intersects the working-tree diff with implicated files. Replaces the canonical 5-call bug-hunt sequence (`search × N frames → trace × N suspects → changes overlap → context`). Read-only, no internal MCP round-trips per the composite contract.
+
+### Added
+- **`investigate_failure` MCP tool — Phase 4 composite #1 ([#1391](https://github.com/kwad77/pincher/issues/1391) v0.81):** new bug-hunt composite. Takes `error_text` (raw stack trace / panic / exception), parses identifier-shaped frame tokens via a stopword-aware heuristic, BM25-searches each across the code corpus, and ranks suspects by a weighted sum of evidence: stack-frame match (+0.45), multi-frame match (+0.10), file-appears-in-trace (+0.20), modified-in-working-tree (+0.20), caller fan-in (log-scaled +0.05). Returns `{implicated_symbols, callers, recent_changes, rank, frames_parsed}` with per-suspect `evidence` enumerating which signals fired so the agent can trust the rank or pivot without re-running individual traces. Replaces the typical 5-call bug-hunt sequence (search × N frames → trace × N suspects → changes overlap → context). Two parser regexes handle the canonical stack-trace shapes: Go-style `path:line` plus Python's quoted-file form (`File "..."`). 24 stopwords filter the noise tokens (`panic`, `runtime`, `goroutine`, `Error`, `Traceback`, etc.). Read-only; no internal MCP round-trips per the composite contract. 9-test audit suite (positive + negative + control + cross-check) covers Go panics, Python tracebacks, dotted-name decomposition, stopword filtering, missing input, no-frame parsing, no-symbol resolution, rank determinism, and `max_suspects` capping. Sequencing: this is composite #1 of 5 in the Phase 4 roadmap; `plan_change` rolls forward to v0.82.
+
+### Changed
+- **REFERENCE.md metadata bumped:** MCP tools 23 → 24 (heading + leading metadata + Project layout comment + tutorial anchor links all updated in lockstep via the v0.79 parity gates).
+
 ## [0.79.0] — 2026-05-18 — Hardening: capability-advertisement audit (9 doc + invariant gates) + bench-baseline refresh workflow + slog convention
 
 Phase 3 pre-stable-promotion hardening release. Per the [v0.79 hardening-only policy](https://github.com/kwad77/pincher/issues/672#issuecomment-4480258511), this cycle is *invariant tightening only* — no feature work, no schema bumps, no behavior changes. Nine PRs land doc-parity and test-invariant gates so the same drifts can't recur on the v0.80 stable branch. Workstream-2 perf-baseline refresh ships as a manual-dispatch workflow ([#1504](https://github.com/kwad77/pincher/pull/1504)) with a separate baseline-commit PR to follow. Workstream-4 capability-advertisement audit closes 9 doc-parity gaps with structural gates pinning each one going forward.
