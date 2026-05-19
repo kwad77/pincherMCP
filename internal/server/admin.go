@@ -179,6 +179,15 @@ func branchDriftAdvisory(projects []db.Project) string {
 		if p.CurrentBranch == "" {
 			continue // pre-#1303-Phase-2a row; skip
 		}
+		// #1665 v0.87: testdata corpora and worktree-staging projects
+		// don't have meaningful branch drift — their content is
+		// static testdata, not real working trees. The advisory's
+		// remediation (`pincher index <path>`) would just churn the
+		// index without fixing anything. Same suppression list as
+		// the nested-project advisory (#1644).
+		if branchDriftSuppressedPath(p.Path) {
+			continue
+		}
 		probed++
 		ctx, cancel := context.WithTimeout(context.Background(), perProjectTimeout)
 		out, err := exec.CommandContext(ctx, "git", "-C", p.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
@@ -571,6 +580,27 @@ func nestedProjectAdvisory(projects []doctorProjectSummary) string {
 		"after deleting the redundant project from disk, or use `pincher project rm` " +
 		"on the inner project if it remains on disk. See #1209."
 	return msg
+}
+
+// branchDriftSuppressedPath returns true when a project's path
+// matches a convention where the "branch drift" advisory should
+// stay silent — testdata corpora (#1644) and worktree-staging
+// dirs. Same suppression segments as isIntentionallyNested, but
+// keyed on a SINGLE path (no inner/outer relationship): a project
+// whose own path lives under `testdata/corpus/` etc. doesn't have
+// meaningful branch drift independent of any outer project. #1665.
+func branchDriftSuppressedPath(path string) bool {
+	norm := normalizePathForNesting(path)
+	for _, seg := range []string{
+		"/testdata/corpus/", "testdata/corpus/",
+		"/testdata/__fixtures__/", "testdata/__fixtures__/",
+		"/.atrium/work/", ".atrium/work/",
+	} {
+		if strings.Contains(norm, seg) {
+			return true
+		}
+	}
+	return false
 }
 
 // isIntentionallyNested returns true when the inner project's path,
