@@ -11595,6 +11595,16 @@ func taskHintFromString(task string) string {
 		// for the literal phrase "have no" — never the subject of any task.
 		"have": true, "has": true, "had": true, "having": true,
 		"no":   true, "not": true, "without": true,
+		// #1682: comparison / filler words. A task like "add X backoff
+		// to the resolve pass LIKE the watcher has" used to extract
+		// "...pass like" as the longest non-stopword run — the templated
+		// `search query="...pass like"` carried the noise token "like"
+		// into FTS5, where it only matched via the AND→OR fallthrough.
+		// These words point at a reference example ("like X", "such as
+		// Y"), never name a symbol — drop them so the actual subject
+		// run wins the longest-run tiebreak.
+		"like": true, "similar": true, "such": true, "than": true,
+		"too": true, "also": true, "just": true, "same": true,
 	}
 	// #942: strip apostrophes before tokenizing so contractions don't
 	// leave stray single-letter tokens. Pre-fix "indexer's" split into
