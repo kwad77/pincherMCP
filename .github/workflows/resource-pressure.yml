@@ -1,0 +1,61 @@
+name: Resource pressure
+
+# FILE-I #1528 v0.85 — weekly bench measuring peak RSS at four indexer
+# file-count tiers. Output anchors the "minimum recommended RAM per
+# indexed-file tier" budget published in REFERENCE.md.
+#
+# Phase 1 (v0.85-v0.89): advisory. Numbers feed the published budget;
+# regressions surface as ::warning:: log lines.
+# Phase 2 (v0.90+): hard budget per FILE-I acceptance criterion —
+# regressions block release if peak RSS exceeds the published max
+# for any tier.
+
+on:
+  schedule:
+    # Tuesday 13:00 UTC — staggered with the other weekly benches
+    # (govulncheck Mon 09, time-to-first-success Mon 10, migration-
+    # rehearsal Wed 11, per-tool-latency Thu 12) so a runner-pool
+    # outage doesn't take down all signals at once.
+    - cron: '0 13 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resource-pressure:
+    name: peak-RSS by file count (advisory)
+    runs-on: ubuntu-latest
+    # Phase-1 advisory; flip at v0.90 per FILE-I.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install jq + GNU time
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq time
+
+      - name: Build pincher
+        run: go build -trimpath -ldflags="-s -w" -o ./pincher ./cmd/pinch/
+
+      - name: Run resource-pressure bench
+        env:
+          PINCHER_BIN: ${{ github.workspace }}/pincher
+          # CI tiers: 1k + 10k. 50k/100k available via dispatch with
+          # TIERS=1000,10000,50000,100000 but the runner-time and disk
+          # cost makes them not-on-cron — trigger explicitly when
+          # validating the published budget for the larger tiers.
+        run: bash scripts/resource-pressure-bench.sh 1000,10000 out/resource-pressure.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resource-pressure-${{ github.run_id }}
+          path: out/
+          retention-days: 90
