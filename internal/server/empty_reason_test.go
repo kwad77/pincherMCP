@@ -173,6 +173,7 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 		EmptyReasonTargetNotResolved:       true, // plan_change, investigate_failure, context_for_task (v0.82 #1578 + v0.83 #1591)
 		EmptyReasonLowConfidenceExtractor:  true, // search min_confidence filter exclude-all (v0.84 #1603 follow-up)
 		EmptyReasonUnsupportedLanguage:     true, // search stub-tier language filter (Haskell — v0.84 #1603 follow-up)
+		EmptyReasonStaleIndex:              true, // search empty + project.binary_version < running server (v0.84 #1603 follow-up)
 	}
 
 	// knownOrphan — constant exists in empty_reason.go + has a catalog
@@ -185,7 +186,6 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 	// the row to knownStamped and a future PR will see the orphan
 	// count shrink.
 	knownOrphan := map[string]bool{
-		EmptyReasonStaleIndex:   true, // condition fires via _meta.warnings (binary_stale)
 		EmptyReasonSameFileOnly: true, // collapsed into EmptyReasonCrossFileUnavailable in current trace path
 	}
 
@@ -341,6 +341,94 @@ func TestEmptyReason_SearchLowercaseHaskellStillStampsUnsupportedLanguage(t *tes
 	if reason != EmptyReasonUnsupportedLanguage {
 		t.Errorf("language=haskell (lowercase) should still stamp %q; got %q",
 			EmptyReasonUnsupportedLanguage, reason)
+	}
+}
+
+// #1603 v0.84: integration test pinning EmptyReasonStaleIndex.
+// When handleSearch returns empty AND the project's binary_version is
+// older than the running server (the index_drift direction surfaced
+// in handleHealth), the response stamps StaleIndex instead of
+// NoResultsInCorpus. Distinct from QueryTooNarrow (verifier rescued)
+// and NoResultsInCorpus (no drift detected — symbol genuinely
+// missing).
+//
+// Recovery next_step is `index force=true` so the agent can refresh
+// the index and re-run; if still empty after re-index, then it's
+// genuinely a NoResultsInCorpus case.
+func TestEmptyReason_SearchStaleIndexStampsStaleIndex(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.version = "0.84.0"
+	srv.sessionID = "p1"
+
+	// Project indexed by older binary (0.70.0) → running server (0.84.0)
+	// is newer → isIndexStale returns true.
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "p1",
+		IndexedAt: time.Now(), BinaryVersion: "0.70.0",
+	})
+
+	// Search a name that doesn't exist — no relaxation can rescue it,
+	// so the path falls through to the StaleIndex stamp branch.
+	res, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":   "DefinitelyNotASymbol_xyzzy_42",
+		"project": "p1",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatalf("expected _meta on empty response; got: %#v", body)
+	}
+	reason, _ := meta["empty_reason"].(string)
+	if reason != EmptyReasonStaleIndex {
+		t.Errorf("stale-index empty search should stamp %q; got %q (diagnosis=%q)",
+			EmptyReasonStaleIndex, reason, meta["diagnosis"])
+	}
+	// Recovery step must be `index force=true` so the agent has an
+	// actionable fix. JSON-decoded shape is []any of map[string]any.
+	steps, _ := meta["next_steps"].([]any)
+	if len(steps) == 0 {
+		t.Errorf("expected next_steps with index force=true; got %v", meta["next_steps"])
+	} else {
+		first, _ := steps[0].(map[string]any)
+		if first["tool"] != "index" {
+			t.Errorf("expected first next_step tool=index; got %v", first)
+		}
+	}
+}
+
+// Negative control: when versions match, the StaleIndex stamp must
+// NOT fire — the path falls through to NoResultsInCorpus. Pins the
+// directionality of isIndexStale (self > project, not "any drift").
+func TestEmptyReason_SearchNoDriftFallsThroughToNoResults(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.version = "0.84.0"
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "p1",
+		IndexedAt: time.Now(), BinaryVersion: "0.84.0", // matches running
+	})
+
+	res, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":   "DefinitelyNotASymbol_xyzzy_42",
+		"project": "p1",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	reason, _ := meta["empty_reason"].(string)
+	if reason == EmptyReasonStaleIndex {
+		t.Errorf("matching versions must NOT stamp StaleIndex; got %q", reason)
+	}
+	if reason != EmptyReasonNoResultsInCorpus {
+		t.Errorf("no-drift empty search should stamp %q; got %q",
+			EmptyReasonNoResultsInCorpus, reason)
 	}
 }
 
