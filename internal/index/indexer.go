@@ -1025,6 +1025,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// SetFileHash — stayed orphaned forever, invisible to the GC. The
 	// per-file deletes are all idempotent, so reconsidering a path that has
 	// symbols but no file_hash row (or vice versa) is safe.
+	// #1613 v0.85 follow-up: tail GC observability. Pre-fix the GC pass
+	// ran with no timing or per-file count signal — on a corpus where
+	// the user deletes 1000 files between index runs it could become
+	// the dominant cost without us knowing. Track gc_paths_considered
+	// (size of the union scan), totalDeleted (files actually reaped),
+	// and duration_ms. Only emit when non-trivial (paths considered >
+	// 50 or any deletions happened) so the healthy-corpus happy path
+	// stays quiet.
+	gcStart := time.Now()
 	var totalDeleted int
 	gcPaths := map[string]bool{}
 	if storedFiles, listErr := idx.store.ListFilesForProject(projectID); listErr == nil {
@@ -1069,6 +1078,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			slog.Warn("pincher.index.gc.delete_pending_edges.err", "err", err, "file", stored)
 		}
 		totalDeleted++
+	}
+	// #1613 v0.85 follow-up: emit the GC summary when the pass did
+	// non-trivial work — small thresholds (>50 paths considered OR
+	// any deletions) keep the noise floor low while ensuring an
+	// unexpected GC blowup is visible.
+	if len(gcPaths) > 50 || totalDeleted > 0 {
+		slog.Info("pincher.index.gc.summary",
+			"project_id", projectID,
+			"paths_considered", len(gcPaths),
+			"files_reaped", totalDeleted,
+			"duration_ms", time.Since(gcStart).Milliseconds(),
+		)
 	}
 
 	// #1231 v0.66 DOGFOOD: post-pass parity check guard.
