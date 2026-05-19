@@ -188,6 +188,16 @@ func branchDriftAdvisory(projects []db.Project) string {
 		if branchDriftSuppressedPath(p.Path) {
 			continue
 		}
+		// #1667 v0.87: skip projects whose on-disk path no longer
+		// exists. Those are dead-path ghosts that should be cleaned
+		// up by `list prune_dead=true`, not by `pincher index <path>`.
+		// Without this, the advisory keeps firing on stale rows that
+		// can't be remediated by the suggested action — `pincher
+		// index` against a non-existent path errors out, training
+		// the user to ignore the advisory.
+		if _, err := os.Stat(p.Path); os.IsNotExist(err) {
+			continue
+		}
 		probed++
 		ctx, cancel := context.WithTimeout(context.Background(), perProjectTimeout)
 		out, err := exec.CommandContext(ctx, "git", "-C", p.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
