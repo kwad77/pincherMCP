@@ -3264,7 +3264,7 @@ var toolComplexityTiers = map[string]string{
 	"plan_change":          "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
 	"audit_unused":         "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
 	"onboard_module":       "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
-	"why_empty":            "light", // #1391 v0.85: stateless catalog lookup — no DB query
+	"why_empty":            "lite", // #1391 v0.85: stateless catalog lookup — no DB query
 }
 
 // toolComplexityTier returns the registered tier for a tool, or the
