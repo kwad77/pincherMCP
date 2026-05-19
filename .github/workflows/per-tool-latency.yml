@@ -1,0 +1,51 @@
+name: Per-tool latency
+
+# FILE-C #1522 v0.91 — per-tool p50 + p99 latency advisory gate.
+#
+# Measures each tool's latency over a fixed query set against the
+# committed budget at testdata/bench/per-tool-latency-budget.json.
+# Phase-1 advisory (continue-on-error: true); phase-2 required at v1.0.
+#
+# Weekly + workflow_dispatch. Not per-PR — variance from runner load
+# would make the signal noisy at PR cadence; the existing
+# `make corpus-bench` gate catches in-process per-PR regressions.
+
+on:
+  schedule:
+    # Thursday 12:00 UTC — staggered against bench-baseline, govulncheck,
+    # time-to-first-success, and migration-rehearsal so a runner-pool
+    # outage doesn't take down all weekly signals at once.
+    - cron: '0 12 * * 4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  per-tool-latency:
+    name: per-tool latency (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # phase-1 advisory; flip at v1.0 per FILE-C.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build pincher
+        run: go build -trimpath -ldflags="-s -w" -o ./pincher ./cmd/pinch/
+
+      - name: Install jq
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+
+      - name: Run per-tool latency bench
+        env:
+          PINCHER_BIN: ${{ github.workspace }}/pincher
+          ITERATIONS: 100
+          THRESHOLD_PCT: 20
+        run: bash scripts/per-tool-latency.sh

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "captured_at": "v0.81.0 baseline",
+  "captured_on": "CI hardware (Linux AMD EPYC 7763, GOMAXPROCS=-4)",
+  "notes": [
+    "p50 / p99 in milliseconds, measured by scripts/per-tool-latency.sh against testdata/corpus/go-project (the smallest committed corpus).",
+    "Phase 1 (v0.91-v0.99): advisory in CI — failures log but don't block merge.",
+    "Phase 2 (v1.0+): required — per-tool p99 regression >20% blocks the release tag, per FILE-C #1522 acceptance criterion.",
+    "Tools NOT in this map are exempt from the gate (admin/init/diagnostic tools whose latency is not on the hot path)."
+  ],
+  "tools": {
+    "search":              {"p50_ms":  5, "p99_ms":  25},
+    "symbol":              {"p50_ms":  3, "p99_ms":  15},
+    "symbols":             {"p50_ms":  6, "p99_ms":  30},
+    "context":             {"p50_ms":  5, "p99_ms":  25},
+    "context_for_task":    {"p50_ms": 15, "p99_ms":  75},
+    "investigate_failure": {"p50_ms": 20, "p99_ms": 100},
+    "trace":               {"p50_ms": 10, "p99_ms":  50},
+    "query":               {"p50_ms":  8, "p99_ms":  40},
+    "guide":               {"p50_ms":  3, "p99_ms":  15},
+    "changes":             {"p50_ms": 10, "p99_ms":  50},
+    "fetch":               {"p50_ms": 50, "p99_ms": 250},
+    "architecture":        {"p50_ms": 15, "p99_ms":  75},
+    "dead_code":           {"p50_ms": 20, "p99_ms": 100},
+    "neighborhood":        {"p50_ms":  8, "p99_ms":  40},
+    "schema":              {"p50_ms":  3, "p99_ms":  15},
+    "list":                {"p50_ms":  3, "p99_ms":  15},
+    "stats":               {"p50_ms":  3, "p99_ms":  15},
+    "health":              {"p50_ms":  3, "p99_ms":  15}
+  }
+}
