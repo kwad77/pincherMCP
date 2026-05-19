@@ -497,14 +497,22 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		// server.go has 73 source methods but only 8 in the index after
 		// a force-reindex.
 		expectedPerFile = map[string]int{}
-		// #1613 v0.85 follow-up: per-language extraction timing. The
-		// per-file goroutine accumulates duration into this map keyed
+		// #1613 v0.85 follow-up: per-language extraction timing.
+		// Per-file goroutine accumulates duration into this map keyed
 		// by language; protected by bufMu. Emitted at end-of-extraction
 		// via pincher.index.extraction.by_language so dogfooders can
-		// see which extractor dominates the 82%-of-total extraction
-		// cost (per first-dogfood data on pincher-repo).
+		// see which extractor dominates.
 		extractByLang      = map[string]time.Duration{}
 		extractCountByLang = map[string]int{}
+		// #1627 v0.85 follow-up: per-phase CPU-time accumulators across
+		// all per-file goroutines. atomic.Int64 nanos because per-file
+		// goroutines run concurrently. Wall-clock ≈ (extract + delete +
+		// post) / effective_parallelism + idle. Emit at end of
+		// extraction phase. Includes lock-wait — these are wall-clock-
+		// per-goroutine sums, not pure CPU-time.
+		deleteSymsNS  atomic.Int64
+		extractNS     atomic.Int64
+		postExtractNS atomic.Int64
 	)
 
 	// Process files
@@ -625,9 +633,12 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			// to edges with either endpoint in this file. Errors are logged
 			// but non-fatal — emitting fresh symbols on top of a stale set is
 			// less wrong than emitting nothing at all.
+			// #1627 v0.85 follow-up: time the pre-extract DB delete.
+			deleteStart := time.Now()
 			if delErr := idx.store.DeleteSymbolsForFile(projectID, relPath); delErr != nil {
 				slog.Warn("pincher.index.delete_stale.err", "err", delErr, "file", relPath)
 			}
+			deleteSymsNS.Add(int64(time.Since(deleteStart)))
 
 			// Three-layer extraction in one pass.
 			//
@@ -642,6 +653,9 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			extractByLang[lang] += extractDur
 			extractCountByLang[lang]++
 			bufMu.Unlock()
+			extractNS.Add(int64(extractDur))
+			postExtractStart := time.Now()
+			defer func() { postExtractNS.Add(int64(time.Since(postExtractStart))) }()
 			if result == nil || (len(result.Symbols) == 0 && len(result.Edges) == 0) {
 				// #1313: zero-symbol extraction is a legitimate
 				// outcome — empty test fixtures (`package X` only),
@@ -998,6 +1012,22 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 			)
 		}
 		slog.Info("pincher.index.extraction.by_language", attrs...)
+
+		// #1627 v0.85 follow-up: per-phase CPU-time across all per-file
+		// goroutines. Splits the extraction-phase wall-clock into:
+		//   - delete_syms_ms: pre-extract DeleteSymbolsForFile (DB write)
+		//   - extract_ms:     safeExtractWithModule (extractor CPU)
+		//   - post_extract_ms: post-extract buffer mgmt + Replace* + SetFileHash + any mid-batch flushBuffers
+		// Sum / effective_parallelism + idle ≈ wall-clock; includes
+		// lock-wait, so the ratio matters more than absolutes.
+		slog.Info("pincher.index.extraction.per_phase",
+			"project_id", projectID,
+			"files_extracted", totalFiles,
+			"delete_syms_ms", time.Duration(deleteSymsNS.Load()).Milliseconds(),
+			"extract_ms", time.Duration(extractNS.Load()).Milliseconds(),
+			"post_extract_ms", time.Duration(postExtractNS.Load()).Milliseconds(),
+			"wall_clock_ms", time.Since(extractionStart).Milliseconds(),
+		)
 	}
 
 	// #457: resolve deferred edges against the FULL persisted candidate
