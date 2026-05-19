@@ -734,5 +734,21 @@
       },
       "type": "object"
     }
+  },
+  {
+    "name": "why_empty",
+    "description": "**Use when a previous tool call returned empty.** Pass `prior_empty_reason` (the `_meta.empty_reason` value from the empty response). Returns the matching catalog entry: `{title, when_it_fires, recovery_action, recovery_steps[]}`. Stateless catalog lookup — no DB query, no project scope needed. Replaces 'read the catalog doc + try recovery probes one at a time' with one round-trip. Source: `docs/empty-reasons.md`.",
+    "input_schema": {
+      "properties": {
+        "prior_empty_reason": {
+          "description": "The _meta.empty_reason value from a previous empty result. One of: no_project_indexed, stale_index, unsupported_language, low_confidence_extractor, same_file_only, cross_file_unavailable, query_too_narrow, no_results_in_corpus, cap_dropped_all, incremental_no_change, all_files_blocked, extractor_emitted_nothing.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prior_empty_reason"
+      ],
+      "type": "object"
+    }
   }
 ]
