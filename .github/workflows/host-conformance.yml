@@ -52,4 +52,7 @@ jobs:
       - name: Run host-conformance replay
         env:
           PINCHER_BIN: ${{ github.workspace }}/pincher
-        run: ./scripts/host-conformance.sh all
+        # Invoke via bash explicitly so a Windows-set file-mode (no
+        # executable bit) doesn't trip the runner — the script is
+        # POSIX bash regardless of who committed it.
+        run: bash scripts/host-conformance.sh all
