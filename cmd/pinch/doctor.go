@@ -360,6 +360,31 @@ func branchDriftAdvisory(projects []db.Project) string {
 	const maxProjectsToProbe = 30
 	const maxToShow = 5
 
+	// #1671 v0.87: nested-project skip set. Mirrors
+	// internal/server/admin.go per the bounded-duplication
+	// convention. A project whose path lives under ANOTHER indexed
+	// project would have its drift mis-resolved via the parent's
+	// .git — skip it. The nested-project advisory (#1209) is the
+	// canonical surface for these.
+	nestedNorms := make(map[string]bool, len(projects))
+	pathNorms := make([]string, 0, len(projects))
+	for _, p := range projects {
+		if p.Path != "" {
+			pathNorms = append(pathNorms, normalizePathForNesting(p.Path))
+		}
+	}
+	for _, inner := range pathNorms {
+		for _, outer := range pathNorms {
+			if inner == outer || outer == "" {
+				continue
+			}
+			if strings.HasPrefix(inner, outer+"/") {
+				nestedNorms[inner] = true
+				break
+			}
+		}
+	}
+
 	type drift struct {
 		Name        string
 		LastIndexed string
@@ -388,6 +413,11 @@ func branchDriftAdvisory(projects []db.Project) string {
 		// where a project's path got replaced by a file of the
 		// same name.
 		if fi, err := os.Stat(p.Path); err != nil || !fi.IsDir() {
+			continue
+		}
+		// #1671 v0.87: skip nested projects — git -C resolves via
+		// the parent's .git and false-reports drift.
+		if nestedNorms[normalizePathForNesting(p.Path)] {
 			continue
 		}
 		probed++

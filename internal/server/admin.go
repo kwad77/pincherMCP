@@ -164,6 +164,31 @@ func branchDriftAdvisory(projects []db.Project) string {
 	const maxProjectsToProbe = 30
 	const maxToShow = 5
 
+	// #1671 v0.87: build the nested-projects set so a project that's
+	// physically inside ANOTHER indexed project (e.g.,
+	// internal/supervisor/cmd/probe nested inside pincher-repo)
+	// can be skipped — git -C against the nested path resolves via
+	// the parent's .git and false-reports the parent's branch as
+	// the nested project's, producing a phantom drift advisory.
+	nestedNorms := make(map[string]bool, len(projects))
+	pathNorms := make([]string, 0, len(projects))
+	for _, p := range projects {
+		if p.Path != "" {
+			pathNorms = append(pathNorms, normalizePathForNesting(p.Path))
+		}
+	}
+	for _, inner := range pathNorms {
+		for _, outer := range pathNorms {
+			if inner == outer || outer == "" {
+				continue
+			}
+			if strings.HasPrefix(inner, outer+"/") {
+				nestedNorms[inner] = true
+				break
+			}
+		}
+	}
+
 	type drift struct {
 		Name        string
 		LastIndexed string
@@ -199,6 +224,20 @@ func branchDriftAdvisory(projects []db.Project) string {
 		// `probe.exe` executable that git -C then resolves via
 		// the parent's .git).
 		if fi, err := os.Stat(p.Path); err != nil || !fi.IsDir() {
+			continue
+		}
+		// #1671 v0.87: skip nested projects whose path lives under
+		// ANOTHER indexed project. git -C against the nested path
+		// resolves via the parent's .git and false-reports the
+		// parent's branch as the nested project's, producing a
+		// phantom drift on every parent branch switch. The
+		// nested-project advisory (#1209) already surfaces these as
+		// a doubled-DB-load concern with its own remediation;
+		// claiming "drift" here would be a duplicate signal that
+		// channels users toward the wrong fix (`pincher index
+		// <nested-path>` would just re-extract files already
+		// indexed by the parent).
+		if nestedNorms[normalizePathForNesting(p.Path)] {
 			continue
 		}
 		probed++
