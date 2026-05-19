@@ -1,1 +1,0 @@
-`pincher stats` adds a BY TOOL section showing the top-5 tools by total time spent this process lifetime (#1630 v0.85). Lets users answer "where did the time go?" — the cost × frequency view that flat avg_latency couldn't surface. In-memory aggregation (count, total ms, max ms per tool); persistent surfacing across restarts is filed as a follow-up.
