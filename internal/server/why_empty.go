@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -209,11 +210,15 @@ func (s *Server) handleWhyEmpty(ctx context.Context, req *mcp.CallToolRequest) (
 	entry, ok := whyEmptyCatalog[priorReason]
 	if !ok {
 		// Unknown reason — list every known reason so the caller can
-		// see which they should have passed.
+		// see which they should have passed. Sort first: Go map
+		// iteration order is randomised, which would otherwise produce
+		// a different "Known values:" string per invocation and break
+		// snapshot-stable test assertions (#1580).
 		known := make([]string, 0, len(whyEmptyCatalog))
 		for k := range whyEmptyCatalog {
 			known = append(known, k)
 		}
+		sort.Strings(known)
 		return s.errResultRich(
 			fmt.Sprintf("why_empty: unknown empty_reason %q. Known values: %s. The catalog lives in `docs/empty-reasons.md` — add a new constant via internal/server/empty_reason.go if you've shipped one that's not yet listed.",
 				priorReason, strings.Join(known, ", ")),
