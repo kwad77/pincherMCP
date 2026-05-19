@@ -238,15 +238,23 @@ func decideReadHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 	}
 
 	args := fmt.Sprintf(`{"id":"%s","lite":true}`, bestID)
+	// #1654 v0.86: advisory-only mode. Blocking the Read breaks
+	// Edit-prep workflows (Edit requires a prior Read) and prose
+	// reads where `context lite=true` returns nothing useful. The
+	// hook's signal — "this file is indexed, consider context
+	// next time" — is delivered via systemMessage on a passing
+	// decision instead of a stopReason on a blocked one. The
+	// `Decision: "redirect_advisory"` value preserves the
+	// telemetry counter so we can still measure how often the
+	// hook would have fired.
 	msg := fmt.Sprintf(
-		"This file is indexed (%d bytes). Use `context id=%s lite=true` instead — same retrieval, ~80%% smaller payload. Read passes through for files < 4KB or with < 5 symbols.",
+		"Pincher hint: this file is indexed (%d bytes). For navigation, `context id=%s lite=true` is ~80%% cheaper. (Hook is advisory since v0.86 — Read passes through to support Edit-prep workflows.)",
 		fileBytes, bestID,
 	)
 	return hookDecision{
-		Continue:       false,
-		StopReason:     "pincher hook: large indexed file",
+		Continue:       true,
 		SystemMessage:  msg,
-		Decision:       "redirect",
+		Decision:       "redirect_advisory",
 		SuggestedTool:  "context",
 		SuggestedArgs:  args,
 		FilePathParsed: path,
@@ -367,13 +375,15 @@ func isTestFile(path string) bool {
 
 func emitHookResponse(d hookDecision) {
 	resp := map[string]any{"continue": d.Continue}
-	if !d.Continue {
-		if d.StopReason != "" {
-			resp["stopReason"] = d.StopReason
-		}
-		if d.SystemMessage != "" {
-			resp["systemMessage"] = d.SystemMessage
-		}
+	if d.StopReason != "" {
+		resp["stopReason"] = d.StopReason
+	}
+	// #1654 v0.86: emit systemMessage on both pass-through and
+	// blocking decisions. Advisory-mode redirects use
+	// continue:true + systemMessage so the agent sees the nudge
+	// without the Read being interrupted.
+	if d.SystemMessage != "" {
+		resp["systemMessage"] = d.SystemMessage
 	}
 	out, _ := json.Marshal(resp)
 	os.Stdout.Write(out)

@@ -72,6 +72,10 @@ func indexLargeFakeFile(t *testing.T, store *db.Store, projectDir, relPath strin
 }
 
 func TestDecideHook_Read_LargeIndexedFile_Redirects(t *testing.T) {
+	// #1654 v0.86: advisory mode. The hook nudges via systemMessage
+	// but never blocks — blocking the Read broke Edit-prep workflows
+	// (Edit requires a prior Read) and prose-doc reads where the
+	// `context lite=true` redirect returns nothing useful.
 	store := newHookTestStore(t)
 	projectDir := t.TempDir()
 	relPath := "internal/server/server.go"
@@ -84,11 +88,11 @@ func TestDecideHook_Read_LargeIndexedFile_Redirects(t *testing.T) {
 		},
 	}
 	d := decideHook(store, in, false)
-	if d.Continue {
-		t.Fatalf("expected redirect for 50KB indexed file; got pass-through")
+	if !d.Continue {
+		t.Fatalf("advisory mode must NEVER block; got blocking decision %+v", d)
 	}
-	if d.Decision != "redirect" {
-		t.Errorf("decision = %q, want redirect", d.Decision)
+	if d.Decision != "redirect_advisory" {
+		t.Errorf("decision = %q, want redirect_advisory", d.Decision)
 	}
 	if d.SuggestedTool != "context" {
 		t.Errorf("suggested tool = %q, want context", d.SuggestedTool)
@@ -97,7 +101,10 @@ func TestDecideHook_Read_LargeIndexedFile_Redirects(t *testing.T) {
 		t.Errorf("suggested args should request lite mode; got %s", d.SuggestedArgs)
 	}
 	if !strings.Contains(d.SystemMessage, "context") {
-		t.Errorf("system message should explain the redirect; got %q", d.SystemMessage)
+		t.Errorf("system message should explain the suggested redirect; got %q", d.SystemMessage)
+	}
+	if d.StopReason != "" {
+		t.Errorf("advisory mode must not set StopReason; got %q", d.StopReason)
 	}
 }
 
@@ -243,8 +250,11 @@ func TestRunHookCheckCLI_PassThroughEndToEnd(t *testing.T) {
 	if !strings.Contains(got, `"continue":true`) {
 		t.Errorf("unindexed Read should pass through; got %q", got)
 	}
+	// Unindexed-path pass-through should still be silent — no hint
+	// to surface. Advisory hints only appear when matchIndexedFile
+	// resolved a hit.
 	if strings.Contains(got, "stopReason") || strings.Contains(got, "systemMessage") {
-		t.Errorf("pass-through should be silent; got %q", got)
+		t.Errorf("silent pass-through leaked chrome; got %q", got)
 	}
 }
 
@@ -273,25 +283,52 @@ func TestRunHookCheckCLI_BadJSONStillPassesThrough(t *testing.T) {
 	}
 }
 
-func TestEmitHookResponse_PassThroughIsSilent(t *testing.T) {
-	// Pass-through must NOT include stopReason / systemMessage —
-	// otherwise every successful Read would generate noise that
-	// trains the user to disable the hook.
+func TestEmitHookResponse_SilentPassThrough_NoChrome(t *testing.T) {
+	// Silent pass-through (Decision="pass_through", no message) must
+	// NOT include stopReason / systemMessage chrome — otherwise every
+	// successful Read generates noise that trains the user to disable
+	// the hook.
 	d := hookDecision{Continue: true, Decision: "pass_through"}
-	var buf bytes.Buffer
 	resp := map[string]any{"continue": d.Continue}
-	if !d.Continue {
-		if d.StopReason != "" {
-			resp["stopReason"] = d.StopReason
-		}
-		if d.SystemMessage != "" {
-			resp["systemMessage"] = d.SystemMessage
-		}
+	if d.StopReason != "" {
+		resp["stopReason"] = d.StopReason
 	}
+	if d.SystemMessage != "" {
+		resp["systemMessage"] = d.SystemMessage
+	}
+	var buf bytes.Buffer
 	out, _ := json.Marshal(resp)
 	buf.Write(out)
 	got := buf.String()
 	if strings.Contains(got, "stopReason") || strings.Contains(got, "systemMessage") {
-		t.Errorf("pass-through response leaked chrome: %s", got)
+		t.Errorf("silent pass-through leaked chrome: %s", got)
+	}
+}
+
+func TestEmitHookResponse_AdvisoryRedirect_CarriesSystemMessage_1654(t *testing.T) {
+	// #1654 v0.86: redirect_advisory mode passes through (continue=true)
+	// but emits systemMessage so the agent still sees the suggestion.
+	d := hookDecision{
+		Continue:      true,
+		Decision:      "redirect_advisory",
+		SystemMessage: "Pincher hint: this file is indexed",
+	}
+	resp := map[string]any{"continue": d.Continue}
+	if d.StopReason != "" {
+		resp["stopReason"] = d.StopReason
+	}
+	if d.SystemMessage != "" {
+		resp["systemMessage"] = d.SystemMessage
+	}
+	out, _ := json.Marshal(resp)
+	got := string(out)
+	if !strings.Contains(got, `"continue":true`) {
+		t.Errorf("advisory mode must pass through; got %q", got)
+	}
+	if !strings.Contains(got, "systemMessage") {
+		t.Errorf("advisory mode must carry systemMessage hint; got %q", got)
+	}
+	if strings.Contains(got, "stopReason") {
+		t.Errorf("advisory mode must not block via stopReason; got %q", got)
 	}
 }
