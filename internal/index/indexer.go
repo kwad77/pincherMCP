@@ -1190,14 +1190,21 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		// canonical var-declaration paths. Loads its own pool (no
 		// pre-load reuse with QN-keyed allImports/allCalls/allReads —
 		// USES_VAR resolution is name-keyed, not QN-keyed).
-		allUsesVar := loadOrFallback(idx, projectID, "USES_VAR", pendingUsesVar)
+		// #1629 v0.87 slice 3: USES_VAR participates in the incremental
+		// scoping when useResolveScope is true.
+		allUsesVar := loadKind("USES_VAR", pendingUsesVar)
+		// Empty-scope edge case mirrors the other three resolvers — wipe
+		// scoped prior even when no pending edges in scope.
+		if useResolveScope && len(allUsesVar) == 0 {
+			idx.resolveUsesVar(projectID, nil, resolveScope)
+		}
 		// resolveUsesVar has its own `pincher.uses_var.resolve.summary`
 		// emission with richer drop counters (#1500 for #1479) — keep its
 		// internal log canonical and just match the same shape here for
 		// the wrapper's `pincher.resolve.summary`. Both lines safely
 		// coexist; agents grepping for either prefix get a hit.
 		runResolve("USES_VAR", len(allUsesVar), func() int {
-			return idx.resolveUsesVar(projectID, allUsesVar)
+			return idx.resolveUsesVar(projectID, allUsesVar, resolveScope)
 		})
 
 		// #1613 v0.85 follow-up: total resolve-block duration. Allows
@@ -2630,8 +2637,17 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 // the Ansible context — task files and templates are filename-keyed —
 // but the existing IMPORTS resolver pattern (canonical-pick by ID) is
 // reused for consistency.
-func (idx *Indexer) resolveUsesVar(projectID string, pending []ast.ExtractedEdge) int {
+// scopeFiles works the same way as resolveImports / resolveCalls /
+// resolveReads (#1629 v0.87 slice 3): when non-empty, wipe only the
+// USES_VAR resolve_pass edges from those source files. Caller must
+// already have filtered `pending` to the same scope.
+func (idx *Indexer) resolveUsesVar(projectID string, pending []ast.ExtractedEdge, scopeFiles []string) int {
 	if len(pending) == 0 {
+		if len(scopeFiles) > 0 {
+			if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, "USES_VAR", scopeFiles); err != nil {
+				slog.Warn("pincher.uses_var.scoped_delete.err", "err", err)
+			}
+		}
 		return 0
 	}
 
@@ -2819,7 +2835,13 @@ func (idx *Indexer) resolveUsesVar(projectID string, pending []ast.ExtractedEdge
 	// paths, OR (b) the DELETE fires and INSERT silently fails. The
 	// new pincher.uses_var.resolve.summary log + the BulkUpsertEdges
 	// error path below pin both.
-	if err := idx.store.DeleteEdgesByKindAndSource(projectID, "USES_VAR", "resolve_pass"); err != nil {
+	// #1629 v0.87 slice 3: scoped USES_VAR resolve_pass delete on
+	// incremental ticks.
+	if len(scopeFiles) > 0 {
+		if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, "USES_VAR", scopeFiles); err != nil {
+			slog.Warn("pincher.uses_var.scoped_delete.err", "err", err)
+		}
+	} else if err := idx.store.DeleteEdgesByKindAndSource(projectID, "USES_VAR", "resolve_pass"); err != nil {
 		slog.Warn("pincher.uses_var.delete_prior.err", "err", err)
 	}
 	if len(edges) == 0 {

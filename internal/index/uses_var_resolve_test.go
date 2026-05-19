@@ -169,7 +169,7 @@ func TestResolveUsesVar_PickCanonicalLexSmallest_1165(t *testing.T) {
 			ToName: "db_host", Kind: "USES_VAR", Confidence: 0.85,
 		},
 	}
-	n := idx.resolveUsesVar(projectID, pending)
+	n := idx.resolveUsesVar(projectID, pending, nil)
 	if n != 1 {
 		t.Fatalf("resolveUsesVar inserted %d edges; want 1", n)
 	}
