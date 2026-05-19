@@ -926,7 +926,18 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// clean up edges to deleted symbols anyway, so deletions don't
 	// need to trigger a resolve.
 	resolveChanged := force || totalFiles > 0
+	var resolveBlockStart time.Time
 	if resolveChanged {
+		// #1613 v0.85 follow-up: total resolve-block timing so the
+		// per-stage summary lines (pincher.imports/calls/reads/uses_var)
+		// can be summed and compared against extraction wall-clock.
+		// Emit at slog.Info immediately after the block closes (NOT
+		// via defer — the function-scoped defer would fold in the GC
+		// pass + parity check + project upsert that follow, and the
+		// number wouldn't be comparable across watcher ticks where
+		// only some of those subpasses run).
+		resolveBlockStart = time.Now()
+
 		// #1317: deferred from the top of Index() — only the resolve
 		// block consumes pythonRoots, so on a no-change tick we skip
 		// the WalkDir entirely.
@@ -1009,6 +1020,15 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		runResolve("USES_VAR", len(allUsesVar), func() int {
 			return idx.resolveUsesVar(projectID, allUsesVar)
 		})
+
+		// #1613 v0.85 follow-up: total resolve-block duration. Allows
+		// summing the per-stage durations against this aggregate to
+		// see whether wrapper overhead exists. Pre-fix only the
+		// per-stage lines existed; the aggregate was implicit.
+		slog.Info("pincher.resolve_block.summary",
+			"project_id", projectID,
+			"duration_ms", time.Since(resolveBlockStart).Milliseconds(),
+		)
 	}
 
 	// #326: Tail-pass GC for files removed from disk. The walker yields only
