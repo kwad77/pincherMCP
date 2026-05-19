@@ -3603,6 +3603,15 @@ func (e *Executor) runBFS(ctx context.Context, q *queryAST, pat pattern) (*Resul
 	reCache := make(map[string]*regexp.Regexp)
 	var resultRows []map[string]any
 	for _, start := range startNodes {
+		// #1599 v0.84: per-iteration ctx.Err() check. bfsViaCTE uses
+		// QueryContext so it'll error on cancelled ctx — but the loop
+		// would otherwise iterate through every remaining startNode
+		// (up to 100) firing N error-returning SQL calls before
+		// returning. Bail early to honor cancellation cleanly. Mirrors
+		// the composite-loop pattern from #1579 / #1595.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		hops, err := e.bfsViaCTE(ctx, start.ID, edgeKinds, pat.minHops, maxDepth, e.ProjectID, e.maxRows(), inverted)
 		if err != nil {
 			return nil, fmt.Errorf("bfs traversal from %q: %w", start.ID, err)
