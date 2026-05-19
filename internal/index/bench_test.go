@@ -35,6 +35,17 @@ import (
 
 func benchIndexerForCorpus(b *testing.B, corpusName string) (*Indexer, string, func()) {
 	b.Helper()
+	idx, _, corpusPath, cleanup := benchIndexerAndStoreForCorpus(b, corpusName)
+	return idx, corpusPath, cleanup
+}
+
+// benchIndexerAndStoreForCorpus is benchIndexerForCorpus's four-return
+// sibling — the *db.Store is needed by benchmarks that exercise Store
+// methods directly (e.g. BenchmarkRebuildFTS calls store.RebuildFTS()
+// after the indexer populates the corpus). Same harness; the original
+// three-return wrapper preserves existing call sites.
+func benchIndexerAndStoreForCorpus(b *testing.B, corpusName string) (*Indexer, *db.Store, string, func()) {
+	b.Helper()
 
 	corpusPath, err := filepath.Abs("../../testdata/corpus/" + corpusName)
 	if err != nil {
@@ -48,7 +59,7 @@ func benchIndexerForCorpus(b *testing.B, corpusName string) (*Indexer, string, f
 	}
 	idx := New(store)
 	cleanup := func() { store.Close() }
-	return idx, corpusPath, cleanup
+	return idx, store, corpusPath, cleanup
 }
 
 // BenchmarkIndex_Cold measures the user-facing first-run cost: open a
@@ -140,6 +151,47 @@ func benchForceIndex(b *testing.B, corpus string) {
 	for i := 0; i < b.N; i++ {
 		if _, err := idx.Index(context.Background(), corpusPath, true); err != nil {
 			b.Fatalf("force Index: %v", err)
+		}
+	}
+}
+
+// BenchmarkRebuildFTS_* measures the cost of the FTS5 escape hatch
+// (#1612 v0.85). RebuildFTS drops every per-corpus FTS5 vtab + its
+// sync triggers, recreates them from canonical DDL, and bulk-loads
+// from `symbols`. The cost scales with symbol count — on large repos
+// this is seconds-to-minutes — and the path is the user's recovery
+// when FTS5 has drifted from canonical (interrupted index, partial
+// migration, trigger bug). We had no committed bench coverage on
+// this surface; landing one here gives us a defendable perf floor
+// and a baseline that #1612's chunked-rebuild stretch goal can
+// measure against.
+//
+// Each iteration recreates the FTS5 indexes from scratch on the same
+// pre-loaded symbol set — `idx.Index` (the prime) runs once outside
+// the timer, then `store.RebuildFTS` is the only operation measured.
+// b.ReportAllocs() so a future regression in transaction or DDL
+// allocation patterns shows up in the bench output alongside ns/op.
+func BenchmarkRebuildFTS_GoProject(b *testing.B)    { benchRebuildFTS(b, "go-project") }
+func BenchmarkRebuildFTS_K8sOps(b *testing.B)       { benchRebuildFTS(b, "k8s-ops") }
+func BenchmarkRebuildFTS_NodeMonorepo(b *testing.B) { benchRebuildFTS(b, "node-monorepo") }
+
+func benchRebuildFTS(b *testing.B, corpus string) {
+	b.Helper()
+	b.ReportAllocs()
+
+	idx, store, corpusPath, cleanup := benchIndexerAndStoreForCorpus(b, corpus)
+	defer cleanup()
+
+	// Prime: populate the symbol corpus once outside the timer so each
+	// iteration measures pure rebuild cost on a stable symbol set.
+	if _, err := idx.Index(context.Background(), corpusPath, false); err != nil {
+		b.Fatalf("prime Index: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := store.RebuildFTS(); err != nil {
+			b.Fatalf("RebuildFTS: %v", err)
 		}
 	}
 }
