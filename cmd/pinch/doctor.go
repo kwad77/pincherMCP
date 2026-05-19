@@ -375,6 +375,12 @@ func branchDriftAdvisory(projects []db.Project) string {
 		if p.CurrentBranch == "" {
 			continue
 		}
+		// #1665 v0.87: suppress drift on testdata corpora / worktree
+		// staging dirs. Mirrors internal/server/admin.go (#1644 +
+		// #1665) per the bounded-duplication convention.
+		if branchDriftSuppressedPath(p.Path) {
+			continue
+		}
 		probed++
 		ctx, cancel := context.WithTimeout(context.Background(), perProjectTimeout)
 		out, err := exec.CommandContext(ctx, "git", "-C", p.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
@@ -739,6 +745,25 @@ func nestedProjectAdvisory(projects []DoctorProjectSummary) string {
 		"after deleting the redundant project from disk, or use `pincher project rm` " +
 		"on the inner project if it remains on disk. See #1209."
 	return msg
+}
+
+// branchDriftSuppressedPath mirrors internal/server/admin.go's copy
+// (#1665 v0.87). Returns true when a project's own path lives under
+// a convention where branch drift is meaningless (testdata corpora,
+// worktree staging). Deliberately duplicated per CLAUDE.md
+// bounded-duplication convention.
+func branchDriftSuppressedPath(path string) bool {
+	norm := normalizePathForNesting(path)
+	for _, seg := range []string{
+		"/testdata/corpus/", "testdata/corpus/",
+		"/testdata/__fixtures__/", "testdata/__fixtures__/",
+		"/.atrium/work/", ".atrium/work/",
+	} {
+		if strings.Contains(norm, seg) {
+			return true
+		}
+	}
+	return false
 }
 
 // isIntentionallyNested mirrors internal/server/admin.go's copy (#1644).
