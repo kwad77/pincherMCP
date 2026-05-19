@@ -450,6 +450,16 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// gated block, but defer the actual scan.
 	var pythonRoots []string
 
+	// #1613 v0.85 follow-up: extraction-phase wall-clock timing so
+	// dogfooders can compare extract_ms vs resolve_ms (already in
+	// pincher.resolve_block.summary) vs gc_ms (already in
+	// pincher.index.gc.summary) — answering "where does the time go
+	// on this corpus?" without re-running with a profiler attached.
+	// Covers walker + per-file goroutine fan-out + wg.Wait + final
+	// flush — i.e. everything from walker launch to "every extracted
+	// symbol/edge is in the DB."
+	extractionStart := time.Now()
+
 	// Walk source files using gocodewalker (respects .gitignore)
 	fileListQueue := make(chan *gocodewalker.File, 256)
 	walker := gocodewalker.NewFileWalker(absPath, fileListQueue)
@@ -907,6 +917,19 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 		}
 	}
 	bufMu.Unlock()
+
+	// #1613 v0.85 follow-up: extraction-phase summary. Emitted on every
+	// run regardless of file count — even "0 files changed" watcher
+	// ticks pay the walker cost, and that's useful signal in itself
+	// (a 200ms walker tick on a 50k-file repo with no changes is the
+	// expected steady-state cost; a 2s tick implies a problem).
+	slog.Info("pincher.index.extraction.summary",
+		"project_id", projectID,
+		"files_extracted", totalFiles,
+		"files_hash_skipped", totalSkipped,
+		"files_blocked", totalBlocked,
+		"duration_ms", time.Since(extractionStart).Milliseconds(),
+	)
 
 	// #457: resolve deferred edges against the FULL persisted candidate
 	// pool, not just this run's in-memory pendingX slices. The DB rows
