@@ -504,6 +504,38 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 16f. onboard_module — #1391 Phase 4 composite #4 (v0.84).
+	// New-contributor orientation: scope-scan + entry-point + boundary edges.
+	"onboard_module": `{
+		"type":"object",
+		"required":["scope","entry_points_local_to_scope","external_dependencies","external_consumers","module_summary","_meta"],
+		"properties":{
+			"scope":{
+				"type":"object",
+				"required":["directory","file_count","symbol_count"],
+				"properties":{
+					"directory":{"type":"string"},
+					"file_count":{"type":"integer"},
+					"symbol_count":{"type":"integer"}
+				}
+			},
+			"entry_points_local_to_scope":{"type":"array","items":{"type":"object"}},
+			"external_dependencies":{"type":"array","items":{"type":"object"}},
+			"external_consumers":{"type":"array","items":{"type":"object"}},
+			"module_summary":{
+				"type":"object",
+				"required":["language_breakdown","test_to_code_ratio","exported_surface_count","entry_point_count"],
+				"properties":{
+					"language_breakdown":{"type":"object"},
+					"test_to_code_ratio":{"type":"number"},
+					"exported_surface_count":{"type":"integer"},
+					"entry_point_count":{"type":"integer"}
+				}
+			},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 16c. investigate_failure — #1391 Phase 4 composite #1 (v0.81).
 	// Bug-hunt composite: parses stack trace, ranks suspects, unions
 	// callers, intersects recent changes.

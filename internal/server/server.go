@@ -3263,6 +3263,7 @@ var toolComplexityTiers = map[string]string{
 	"investigate_failure":  "heavy", // #1391 v0.81: composite of search × frames + trace × suspects + changes
 	"plan_change":          "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
 	"audit_unused":         "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
+	"onboard_module":       "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
 }
 
 // toolComplexityTier returns the registered tier for a tool, or the
@@ -3297,6 +3298,7 @@ var toolIdempotent = map[string]bool{
 	"investigate_failure": true, // #1391 v0.81 — read-only composite
 	"plan_change":         true, // #1391 v0.82 — read-only composite
 	"audit_unused":        true, // #1391 v0.83 — read-only composite (dead_code + deep-trace confirmation)
+	"onboard_module":      true, // #1391 v0.84 — read-only composite (scope scan + boundary edges)
 	"trace":               true,
 	"query":            true,
 	"guide":            true,
@@ -3619,6 +3621,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"investigate_failure": {Title: "Bug-hunt composite from a stack trace", Annotations: annotationsReadOnly}, // #1391 v0.81
 	"plan_change":         {Title: "Pre-edit blast-radius composite", Annotations: annotationsReadOnly},       // #1391 v0.82
 	"audit_unused":        {Title: "Dead-code composite with deep-trace confirmation", Annotations: annotationsReadOnly}, // #1391 v0.83
+	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},           // #1391 v0.84
 
 	// Diagnostics (read-only, idempotent).
 	"health":  {Annotations: annotationsReadOnly},
@@ -4081,6 +4084,24 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleAuditUnused)
+
+	// 16f. onboard_module (#1391 Phase 4 composite #4, v0.84). New-
+	// contributor orientation. Takes a directory path; enumerates every
+	// symbol whose file_path is prefixed by it; identifies entry points
+	// + exported surface; computes language breakdown + test-to-code
+	// ratio; partitions CALLS edges into external_dependencies (calls
+	// out of scope) + external_consumers (calls into scope).
+	s.addTool(&mcp.Tool{
+		Name:        "onboard_module",
+		Description: "**Use to orient on an unfamiliar sub-package or module before reading code.** Takes `directory` (relative path inside the indexed project, e.g. 'internal/auth/'). Enumerates every symbol in scope, identifies entry points + the exported surface, computes language breakdown + test-to-code ratio, and partitions CALLS edges into `external_dependencies` (the module's outbound boundary — what it depends on) and `external_consumers` (its inbound boundary — what depends on it). Returns `{scope, entry_points_local_to_scope, external_dependencies, external_consumers, module_summary}`. Replaces the typical 5-10 call orientation sequence (`architecture` + `search file_pattern=path/**` + `trace direction=out` × N + `context` × N). Read-only; safe to call repeatedly.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["directory"],"properties":{
+				"directory":{"type":"string","description":"Relative directory path inside the indexed project (e.g. 'internal/auth/', 'cmd/pinch/'). Trailing slash optional. Use 'list' first if you're not sure which paths are indexed."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"depth":{"type":"integer","description":"Reserved for future deep-edge traversal (default 3, max 4). Currently informational — the composite scans CALLS edges once across the project's edge set; deeper traversal would require iterating per boundary edge."}
+			}
+		}`),
+	}, s.handleOnboardModule)
 
 	// 17. neighborhood — graph view around a symbol. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -12131,6 +12152,7 @@ var baselineMethodForTool = map[string]string{
 	"investigate_failure": baselineMethodFullFileRead, // #1391 v0.81: composite replaces N atomic search/trace/changes reads
 	"plan_change":         baselineMethodFullFileRead, // #1391 v0.82: composite replaces N atomic resolve/trace/adr reads
 	"audit_unused":        baselineMethodFullFileRead, // #1391 v0.83: composite replaces dead_code + N atomic trace confirmations
+	"onboard_module":      baselineMethodFullFileRead, // #1391 v0.84: composite replaces architecture + N×context + N×trace
 	"search":       baselineMethodFullFileRead,
 	"query":        baselineMethodFullFileRead,
 	"trace":        baselineMethodFullFileRead,
