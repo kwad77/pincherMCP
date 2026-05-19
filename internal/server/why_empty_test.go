@@ -134,6 +134,7 @@ func TestWhyEmpty_CatalogCoversEveryConstant(t *testing.T) {
 		EmptyReasonIncrementalNoChange,
 		EmptyReasonAllFilesBlocked,
 		EmptyReasonExtractorEmittedNothing,
+		EmptyReasonTargetNotResolved,
 	}
 	for _, reason := range allReasons {
 		entry, ok := whyEmptyCatalog[reason]
@@ -177,6 +178,7 @@ func TestWhyEmpty_NoUnknownCatalogEntries(t *testing.T) {
 		EmptyReasonIncrementalNoChange:     true,
 		EmptyReasonAllFilesBlocked:         true,
 		EmptyReasonExtractorEmittedNothing: true,
+		EmptyReasonTargetNotResolved:       true,
 	}
 	for key, entry := range whyEmptyCatalog {
 		if !known[key] {

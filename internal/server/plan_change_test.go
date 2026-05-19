@@ -205,8 +205,12 @@ func TestPlanChange_TargetNotFound_EmptyReason(t *testing.T) {
 	if !ok {
 		t.Fatal("missing _meta")
 	}
-	if meta["empty_reason"] != EmptyReasonNoResultsInCorpus {
-		t.Errorf("empty_reason = %v; want %s", meta["empty_reason"], EmptyReasonNoResultsInCorpus)
+	// #1578 v0.82: target_not_resolved is the correct code when the
+	// composite's resolution heuristic accepted input that didn't match
+	// any indexed symbol. NoResultsInCorpus implied "data missing" —
+	// wrong recovery shape.
+	if meta["empty_reason"] != EmptyReasonTargetNotResolved {
+		t.Errorf("empty_reason = %v; want %s", meta["empty_reason"], EmptyReasonTargetNotResolved)
 	}
 	if _, ok := meta["diagnosis"]; !ok {
 		t.Error("diagnosis must accompany empty_reason")

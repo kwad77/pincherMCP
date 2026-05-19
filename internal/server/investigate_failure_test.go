@@ -219,8 +219,11 @@ func TestInvestigateFailure_NoFramesParse(t *testing.T) {
 	if !ok {
 		t.Fatal("missing _meta")
 	}
-	if meta["empty_reason"] != EmptyReasonNoResultsInCorpus {
-		t.Errorf("empty_reason = %v; want %s", meta["empty_reason"], EmptyReasonNoResultsInCorpus)
+	// #1578 v0.82: parser-can't-extract-anything is target_not_resolved
+	// (input was wrong shape — neither identifier-shaped tokens nor
+	// file:line patterns matched), not no_results_in_corpus.
+	if meta["empty_reason"] != EmptyReasonTargetNotResolved {
+		t.Errorf("empty_reason = %v; want %s", meta["empty_reason"], EmptyReasonTargetNotResolved)
 	}
 	fp, ok := body["frames_parsed"].(map[string]any)
 	if !ok {
