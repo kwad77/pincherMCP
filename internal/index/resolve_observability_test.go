@@ -71,6 +71,19 @@ func Use() int { return b.Helper() }
 			t.Errorf("`pincher.resolve.summary` line missing field %q; got:\n%s", field, out)
 		}
 	}
+
+	// #1613 v0.85 follow-up: per-language extraction breakdown must
+	// also fire for a non-empty corpus. Pin the line shape + at least
+	// one lang_1_* set so a future refactor that drops the
+	// per-language detail surfaces in PR review.
+	if !strings.Contains(out, "pincher.index.extraction.by_language") {
+		t.Errorf("expected pincher.index.extraction.by_language line for non-empty corpus; got:\n%s", out)
+	}
+	for _, field := range []string{"lang_1_name=", "lang_1_ms=", "lang_1_files=", "total_languages="} {
+		if !strings.Contains(out, field) {
+			t.Errorf("`pincher.index.extraction.by_language` line missing field %q; got:\n%s", field, out)
+		}
+	}
 }
 
 // Negative: on an empty project (no symbols, no pending edges), the
