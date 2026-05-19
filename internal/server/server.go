@@ -217,6 +217,16 @@ type Server struct {
 	// deletes, and we don't want a hot lock under high call volume.
 	statsCallsByLanguage sync.Map
 
+	// #1630 v0.85: per-tool latency aggregation. sync.Map keyed by
+	// tool name with *toolLatencyStats values (count + totalMs + maxMs,
+	// each atomically maintained). Lets `pincher stats` surface the
+	// "where did the time go?" view that cost-per-call observability
+	// (#1613, #1627) alone couldn't answer. In-memory only this
+	// iteration; persistent surfacing across restarts requires a
+	// schema migration on session_tool_calls and is filed as a
+	// follow-up.
+	toolLatency sync.Map
+
 	// Query-failure / retry-rate counters (#241). Incremented from
 	// jsonResultWithMeta only when the tool is "query-shaped"
 	// (search/query/trace/neighborhood) — admin tools like list,
@@ -10325,6 +10335,21 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		b.WriteString(line("Edges:", commify(int64(proj.EdgeCount))))
 	}
 
+	// #1630 v0.85: BY TOOL — top-5 tools by total time spent this
+	// process lifetime. Empty when there's been no tool activity yet
+	// (e.g. fresh server, stats called immediately).
+	if rows := s.topToolsByTotalTime(5); len(rows) > 0 {
+		b.WriteString(sep)
+		b.WriteString(header("BY TOOL (top-5 by total ms)"))
+		for _, r := range rows {
+			avg := int64(0)
+			if r.Count > 0 {
+				avg = r.TotalMs / r.Count
+			}
+			b.WriteString(line(r.Tool+":", fmt.Sprintf("%d×, %dms tot, %dms avg, %dms max", r.Count, r.TotalMs, avg, r.MaxMs)))
+		}
+	}
+
 	b.WriteString("└" + strings.Repeat("─", w) + "┘")
 	// #1024: prepend the project-resolve warning so the caller sees
 	// it before the box. The text-rendered shape has no _meta.warnings
@@ -12125,6 +12150,12 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 		atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
 	}
 	atomic.AddInt64(&s.statsLatencyMS, latency)
+
+	// #1630 v0.85: per-tool latency aggregation. Records this call's
+	// latency into the per-tool atomic counters so `pincher stats` can
+	// surface "BY TOOL (top-5 by total time)" — the cost × frequency
+	// view that flat avg_latency alone couldn't answer.
+	s.recordToolLatency(tool, latency)
 
 	// Per-language call attribution (#240). Scans the marshalled
 	// payload for the first `"language":"X"` occurrence; records the
