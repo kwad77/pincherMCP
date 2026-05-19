@@ -1,0 +1,58 @@
+name: govulncheck
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Run weekly on Monday at 09:00 UTC so a CVE published mid-week
+    # surfaces by the next dep-update cycle even if no PRs land.
+    - cron: '0 9 * * 1'
+
+# Permissions: just read code. govulncheck calls out to the OSV
+# database for vulnerability data — no GitHub API access needed.
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck (advisory)
+    runs-on: ubuntu-latest
+    # Advisory phase — failing this job doesn't block merges. After
+    # one full release window of green runs (no flake, no false
+    # positives), flip to required via branch protection per FILE-F
+    # acceptance criteria.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Scan for known vulnerabilities
+        # -test scans test code too. -show traces prints affected
+        # call paths so the failure is actionable (vs the bare CVE
+        # ID which requires another lookup).
+        run: govulncheck -test -show traces ./...
+
+      # Failure-mode hint: when this job goes red, the most common
+      # remediations (in order):
+      #   1. `go get -u <module>` + `go mod tidy` if the affected
+      #      dep has a fixed-version upgrade available.
+      #   2. If no fixed version exists, check whether the vuln's
+      #      affected symbol is on a reachable path in pincher — the
+      #      -show traces output names the path. Unreachable vulns
+      #      can be acknowledged in a SECURITY.md exception list
+      #      until upstream ships a fix.
+      #   3. For test-only deps (e.g. testing tools), upgrading is
+      #      lowest-friction and rarely affects runtime behavior.
+      # The dep-upgrade procedure doc (#1525 FILE-F) details the
+      # full process including the MCP SDK upgrade path.
