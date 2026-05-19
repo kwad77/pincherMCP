@@ -113,9 +113,21 @@ func TestHandleTrace_GenuineLeaf_StillSuggestsContext(t *testing.T) {
 	if len(steps) == 0 {
 		t.Fatal("genuine-leaf trace must still suggest a next step")
 	}
-	first, _ := steps[0].(map[string]any)
-	if first["tool"] != "context" {
-		t.Errorf("genuine-leaf next_step should be 'context'; got %v", first)
+	// #1634 v0.85: the empty-leaf branch now prepends a reverse-
+	// direction trace retry before the context-on-self step when the
+	// caller used a one-sided direction. The original guarantee still
+	// holds — a `context` next_step IS present — but it's no longer
+	// at index 0. Scan the slice instead of pinning a position.
+	foundContext := false
+	for _, raw := range steps {
+		s, _ := raw.(map[string]any)
+		if s["tool"] == "context" {
+			foundContext = true
+			break
+		}
+	}
+	if !foundContext {
+		t.Errorf("genuine-leaf next_steps should include a 'context' entry; got %v", steps)
 	}
 	// The include_tests hint must NOT fire.
 	if diag, _ := meta["diagnosis"].(string); strings.Contains(diag, "include_tests=true") {

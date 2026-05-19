@@ -8056,10 +8056,24 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		// Empty trace = no inbound/outbound CALLS edges. Likely a leaf
 		// (no callers) or an entry point (no callees). Direct the agent
 		// to the source itself.
-		meta["next_steps"] = []map[string]string{
-			{"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, starts[0].ID),
-				"why": "no call edges found at this depth — read the symbol's own source instead"},
+		//
+		// #1634 v0.85: when the caller used a one-sided direction
+		// (inbound or outbound) and got 0 hops, PREPEND a reverse-
+		// direction retry. Pre-fix the only suggestion was to read
+		// the symbol's own source — confidently wrong half the time
+		// on hub functions where the other-direction edge set is
+		// populated. Reverse-direction is a single re-issue away with
+		// the same seed id, so the agent can recover without re-
+		// running search.
+		emptyTraceSteps := []map[string]string{}
+		if reverseStep, ok := suggestReverseTraceDirection(seedID, direction); ok {
+			emptyTraceSteps = append(emptyTraceSteps, reverseStep)
 		}
+		emptyTraceSteps = append(emptyTraceSteps, map[string]string{
+			"tool": "context", "args": fmt.Sprintf(`{"id":"%s"}`, starts[0].ID),
+			"why": "no call edges found at this depth — read the symbol's own source instead",
+		})
+		meta["next_steps"] = emptyTraceSteps
 		// #858: distinguish "this symbol is a leaf" from "this language
 		// has no edge graph at all." For C / TS / etc. an empty trace is
 		// the second case — say so rather than letting it read like a
