@@ -117,6 +117,60 @@ jobs:
           cd dist
           sha256sum pincher-*.tar.gz pincher-*.zip > SHA256SUMS
 
+      # #1524 FILE-E: sign each release artifact + SHA256SUMS with cosign
+      # when COSIGN_PRIVATE_KEY is configured. Skipped (with a clear log
+      # message) until the maintainer configures the secret — non-breaking:
+      # unsigned releases still ship checksums.
+      #
+      # Setup (one-time, maintainer):
+      #   cosign generate-key-pair                            # locally
+      #   # Set repository secrets:
+      #   #   COSIGN_PRIVATE_KEY = contents of cosign.key
+      #   #   COSIGN_PASSWORD    = the passphrase used at generate-key-pair
+      #   # Publish cosign.pub at https://github.com/kwad77/pincher/blob/master/cosign.pub
+      #
+      # Verify (any user, post-release):
+      #   cosign verify-blob \
+      #     --key https://raw.githubusercontent.com/kwad77/pincher/master/cosign.pub \
+      #     --signature pincher-vX.Y.Z-linux-amd64.tar.gz.sig \
+      #     pincher-vX.Y.Z-linux-amd64.tar.gz
+      - name: Install cosign
+        if: env.COSIGN_PRIVATE_KEY != ''
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts
+        if: env.COSIGN_PRIVATE_KEY != ''
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cd dist
+          # Write the private key to a temp file (cosign sign-blob reads
+          # via --key path). Clean up on exit even if signing fails.
+          tmp_key=$(mktemp)
+          trap 'rm -f "$tmp_key"' EXIT
+          printf '%s' "$COSIGN_PRIVATE_KEY" > "$tmp_key"
+
+          for artifact in pincher-*.tar.gz pincher-*.zip SHA256SUMS; do
+            echo "Signing $artifact"
+            cosign sign-blob --yes --key "$tmp_key" \
+              --output-signature "${artifact}.sig" \
+              "$artifact"
+          done
+
+          echo "Signed artifacts:"
+          ls -1 *.sig
+
+      - name: Note unsigned release
+        if: env.COSIGN_PRIVATE_KEY == ''
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          echo "::warning::COSIGN_PRIVATE_KEY not configured — release ships unsigned (#1524 FILE-E)."
+          echo "Maintainer: see docs/security/release-signing.md for setup."
+
       # #642: stable-channel rule — minor version divisible by 10 is a
       # stable promotion (v0.60, v0.70, ..., v1.0, v1.10, ...). Everything
       # else (v0.53, v0.54, ..., v0.59, v0.61, ...) is dev channel.
@@ -147,6 +201,7 @@ jobs:
             dist/pincher-*.tar.gz
             dist/pincher-*.zip
             dist/SHA256SUMS
+            dist/*.sig
           generate_release_notes: true
           draft: false
           # Mark dev releases as prerelease so the GitHub UI shows them
