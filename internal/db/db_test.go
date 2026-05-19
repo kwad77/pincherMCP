@@ -2779,6 +2779,82 @@ func TestHealthCheck_WithProject(t *testing.T) {
 	}
 }
 
+// #1476 v0.84: HealthCheck must scope extraction_coverage to the
+// queried project. The bug report claims health returns symbol counts
+// for languages that exist in OTHER indexed projects, framed as if
+// they belong to the queried project. This test pins the contract.
+func TestHealthCheck_ExtractionCoverageIsProjectScoped(t *testing.T) {
+	s := newTestStore(t)
+
+	// Project A: Go + Markdown.
+	if err := s.UpsertProject(testProject("pA")); err != nil {
+		t.Fatalf("UpsertProject pA: %v", err)
+	}
+	goSym := testSymbol("pA::Foo#Function", "Foo", "Function", "pA", "main.go")
+	goSym.Language = "Go"
+	goSym.ExtractionConfidence = 1.0
+	mdSym := testSymbol("pA::README#Section", "README", "Section", "pA", "README.md")
+	mdSym.Language = "Markdown"
+	mdSym.ExtractionConfidence = 0.85
+	if err := s.BulkUpsertSymbols([]Symbol{goSym, mdSym}); err != nil {
+		t.Fatalf("BulkUpsertSymbols pA: %v", err)
+	}
+
+	// Project B: Python + JavaScript. These must NOT leak into pA's coverage.
+	if err := s.UpsertProject(testProject("pB")); err != nil {
+		t.Fatalf("UpsertProject pB: %v", err)
+	}
+	pySym := testSymbol("pB::bar#Function", "bar", "Function", "pB", "app.py")
+	pySym.Language = "Python"
+	pySym.ExtractionConfidence = 1.0
+	jsSym := testSymbol("pB::baz#Variable", "baz", "Variable", "pB", "index.js")
+	jsSym.Language = "JavaScript"
+	jsSym.ExtractionConfidence = 0.95
+	if err := s.BulkUpsertSymbols([]Symbol{pySym, jsSym}); err != nil {
+		t.Fatalf("BulkUpsertSymbols pB: %v", err)
+	}
+
+	// HealthCheck(pA) should only see Go + Markdown.
+	reportA, err := s.HealthCheck("pA")
+	if err != nil {
+		t.Fatalf("HealthCheck(pA): %v", err)
+	}
+	gotLangsA := map[string]bool{}
+	for _, lc := range reportA.Coverage {
+		gotLangsA[lc.Language] = true
+	}
+	for _, leak := range []string{"Python", "JavaScript"} {
+		if gotLangsA[leak] {
+			t.Errorf("HealthCheck(pA) leaked language %q from project pB — extraction_coverage is not project-scoped (#1476)", leak)
+		}
+	}
+	for _, want := range []string{"Go", "Markdown"} {
+		if !gotLangsA[want] {
+			t.Errorf("HealthCheck(pA) missing expected language %q", want)
+		}
+	}
+
+	// Cross-check: HealthCheck(pB) is symmetric.
+	reportB, err := s.HealthCheck("pB")
+	if err != nil {
+		t.Fatalf("HealthCheck(pB): %v", err)
+	}
+	gotLangsB := map[string]bool{}
+	for _, lc := range reportB.Coverage {
+		gotLangsB[lc.Language] = true
+	}
+	for _, leak := range []string{"Go", "Markdown"} {
+		if gotLangsB[leak] {
+			t.Errorf("HealthCheck(pB) leaked language %q from project pA — extraction_coverage is not project-scoped (#1476)", leak)
+		}
+	}
+	for _, want := range []string{"Python", "JavaScript"} {
+		if !gotLangsB[want] {
+			t.Errorf("HealthCheck(pB) missing expected language %q", want)
+		}
+	}
+}
+
 func TestHealthCheck_RegexLanguageCoverage(t *testing.T) {
 	s := newTestStore(t)
 	p := testProject("hpr")
