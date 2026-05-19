@@ -172,6 +172,7 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 		EmptyReasonExtractorEmittedNothing: true, // server.go handleIndex
 		EmptyReasonTargetNotResolved:       true, // plan_change, investigate_failure, context_for_task (v0.82 #1578 + v0.83 #1591)
 		EmptyReasonLowConfidenceExtractor:  true, // search min_confidence filter exclude-all (v0.84 #1603 follow-up)
+		EmptyReasonUnsupportedLanguage:     true, // search stub-tier language filter (Haskell — v0.84 #1603 follow-up)
 	}
 
 	// knownOrphan — constant exists in empty_reason.go + has a catalog
@@ -184,9 +185,8 @@ func TestEmptyReason_OrphanStampAudit(t *testing.T) {
 	// the row to knownStamped and a future PR will see the orphan
 	// count shrink.
 	knownOrphan := map[string]bool{
-		EmptyReasonStaleIndex:          true, // condition fires via _meta.warnings (binary_stale)
-		EmptyReasonUnsupportedLanguage: true, // condition surfaces in doctor advisory, not stamped on search empty
-		EmptyReasonSameFileOnly:        true, // collapsed into EmptyReasonCrossFileUnavailable in current trace path
+		EmptyReasonStaleIndex:   true, // condition fires via _meta.warnings (binary_stale)
+		EmptyReasonSameFileOnly: true, // collapsed into EmptyReasonCrossFileUnavailable in current trace path
 	}
 
 	// Every constant must appear in exactly one of the two sets.
@@ -260,6 +260,87 @@ func TestEmptyReason_SearchHighMinConfidenceStampsLowConfidenceExtractor(t *test
 	if reason != EmptyReasonLowConfidenceExtractor {
 		t.Errorf("min_confidence=0.99 exclude-all should stamp %q; got %q",
 			EmptyReasonLowConfidenceExtractor, reason)
+	}
+}
+
+// #1603 v0.84: integration test pinning EmptyReasonUnsupportedLanguage.
+// When handleSearch is called with language=Haskell (the only stub-tier
+// extractor — confidence=0, produces zero symbols), the response stamps
+// UnsupportedLanguage instead of letting the verifier rescue it with a
+// QueryTooNarrow stamp ("drop the language filter"). The verifier's
+// stamp would be technically correct but misleading: the language is
+// structurally broken for symbol extraction, not a filter-ergonomics
+// issue. Closes another orphan from #1603.
+func TestEmptyReason_SearchHaskellLanguageStampsUnsupportedLanguage(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+
+	// Project + a Go symbol so dropping language=Haskell WOULD rescue
+	// the query — proves the stamp wins over the verifier's
+	// QueryTooNarrow path.
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "p1",
+		IndexedAt: time.Now(),
+	})
+	sym := db.Symbol{
+		ID: "p1::Foo#Function", ProjectID: "p1", FilePath: "main.go",
+		Name: "Foo", QualifiedName: "Foo", Kind: "Function",
+		Language: "Go", ExtractionConfidence: 1.0,
+	}
+	store.BulkUpsertSymbols([]db.Symbol{sym})
+
+	res, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":    "Foo",
+		"language": "Haskell",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatalf("expected _meta on empty response; got: %#v", body)
+	}
+	reason, _ := meta["empty_reason"].(string)
+	if reason != EmptyReasonUnsupportedLanguage {
+		t.Errorf("language=Haskell stub-tier should stamp %q; got %q (diagnosis=%q)",
+			EmptyReasonUnsupportedLanguage, reason, meta["diagnosis"])
+	}
+}
+
+// #1603 v0.84: case-insensitive coverage — language=haskell (lowercase)
+// also stamps UnsupportedLanguage. Pre-fix canonicalLanguageCase would
+// normalize the input, but the stamp would compare against the input
+// directly. Pin the contract so a future refactor that drops the
+// canonicalization fails loud.
+func TestEmptyReason_SearchLowercaseHaskellStillStampsUnsupportedLanguage(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1"
+	store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "p1",
+		IndexedAt: time.Now(),
+	})
+	store.BulkUpsertSymbols([]db.Symbol{{
+		ID: "p1::Foo#Function", ProjectID: "p1", FilePath: "main.go",
+		Name: "Foo", QualifiedName: "Foo", Kind: "Function",
+		Language: "Go", ExtractionConfidence: 1.0,
+	}})
+
+	res, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":    "Foo",
+		"language": "haskell", // lowercase
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	reason, _ := meta["empty_reason"].(string)
+	if reason != EmptyReasonUnsupportedLanguage {
+		t.Errorf("language=haskell (lowercase) should still stamp %q; got %q",
+			EmptyReasonUnsupportedLanguage, reason)
 	}
 }
 

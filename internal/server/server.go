@@ -6190,7 +6190,26 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			}
 			return len(r), nil
 		}
-		if cause, steps, ok := verifyEmptySearchCause(query, kind, language, corpus, minConfidence, rawPreConfidenceCount, relax); ok {
+		// #1603 v0.84: stub-tier language filter (Haskell — confidence=0,
+		// no real extractor) is the most honest stamp before the verifier
+		// runs. The verifier would rescue the query by dropping the
+		// language filter and stamp EmptyReasonQueryTooNarrow ("drop the
+		// language filter"). That's misleading — the language filter is
+		// structurally broken for stub-tier extractors, not a filter
+		// ergonomics issue. Pincher detects .hs files but produces zero
+		// symbols, so no number of corpus-side adjustments will recover.
+		// Closes one of the remaining orphan stamps in #1603.
+		if canonLang := canonicalLanguageCase(language); canonLang != "" && ast.RegisteredConfidence(canonLang) <= 0 {
+			stampEmpty(meta, EmptyReasonUnsupportedLanguage, fmt.Sprintf(
+				"language=%q has a stub-tier extractor (confidence=0): pincher detects the file extension but produces zero symbols. No query relaxation will surface results — drop the language filter to search other languages.",
+				canonLang))
+			meta["next_steps"] = []map[string]string{
+				{"tool": "search", "args": nextStepArgs(map[string]any{"query": query, "kind": kind, "corpus": corpus}),
+					"why": fmt.Sprintf("retry without language=%q — %s has no real extractor", canonLang, canonLang)},
+				{"tool": "architecture", "args": `{}`,
+					"why": "see the per-language symbol counts to pick a language that has indexed symbols"},
+			}
+		} else if cause, steps, ok := verifyEmptySearchCause(query, kind, language, corpus, minConfidence, rawPreConfidenceCount, relax); ok {
 			// Verifier proved a single filter relaxation surfaces results
 			// — so the query is too narrow, not absent from the corpus.
 			// #1603 v0.84: differentiate the min_confidence-only case
