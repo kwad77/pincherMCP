@@ -47,9 +47,51 @@ The release-prep PR (the one before tagging) MUST touch all six below. CHANGELOG
 
 7. **Bench baseline decision** — decide whether the release refreshes `testdata/bench/{index,server}.bench.txt`. **Default: skip** for patch releases and feature releases that don't intentionally change perf shape. **Refresh** for `.x9` hardening releases (workstream 2 of the hardening umbrella — see `#672` shape) and for any release that ships a deliberate perf-affecting refactor whose new numbers ARE the rationale. Mechanism: trigger `.github/workflows/bench-baseline.yml` via `workflow_dispatch` on the Actions UI; download the artifact; copy `*.bench.txt` files into `testdata/bench/`; commit. Wrong call: refreshing on every release silently absorbs regressions and defeats the gate's purpose (per the v0.79 prep audit, the committed baseline drifted 8 minors with no enforcement because every release auto-refreshed without justification).
 
+8. **`DOGFOOD:` CHANGELOG section** — every release-prep PR adds a `DOGFOOD:` subsection to the release's CHANGELOG entry, bullet-listing friction found AND fixed in that window. Friction found but NOT fixed gets filed as an issue with the `dogfood-found` label, never silently dropped. Skipping this section is a release defect (same severity as skipping the README roadmap-table bump). Rationale: dogfood-found work is the dominant source of pre-1.0 fixes; making it auditable per release lets us see the planned-vs-discovery ratio and trigger the volume-based axis-escalation rule below.
+
 If a release ships without README touched, the user's first reaction is "the README didn't say anything about it" and follow-up cleanup PRs read as forgetting, not catching up. Do it inline.
 
 After tag pushes, the auto-bump workflow handles the Homebrew formula and Docker image — those don't go in the release-prep PR itself.
+
+## Dogfood routing
+
+When a probe surfaces net-new work mid-flight, route by **type**, not just severity. Sloppy routing either silently bloats planned scope or loses the finding entirely. Long-form context lives in `.planning-roadmap-to-v1.md`; the rules below are the autonomous-loop quick-reference.
+
+### Routing table
+
+| Discovery shape | Lands in |
+|---|---|
+| **Regression in shipped code** — canonical workflow broken | Next patch (v0.81.x / v0.82.x). Ships within days, doesn't wait for the next minor. |
+| **Bug in current in-flight PR** | Same PR or a sibling PR before merge. Never punted forward. |
+| **Bug in shipped feature, silent-wrong / misleading** | Next minor's dogfood reserve slot. |
+| **Net-new capability gap** — missing composite / doctor advisory / tool | Triage: v1.0 blocker → insert into nearest minor with reserve room. Otherwise → file with `v1.x` milestone. |
+| **Perf gap crossing a published claim** | v1.0 blocker. Next `.x9` hardening minor. |
+| **Schema / API surface issue** | **Before v0.84 API-freeze checkpoint:** next minor. **After v0.84:** slips v1.0 unless it's a corruption bug. |
+| **Docs / UX polish** | Next reserve slot, or v0.95 final dogfood reserve, whichever closer. |
+
+### Decision authority (no over-asking)
+
+- **Severity-1 / canonical workflow break** → file + ship as patch without asking.
+- **Bug in in-flight PR** → fix in same/sibling PR, mention in PR body.
+- **Net-new capability surface** (new tool / composite / advisory) → file with recommended milestone, then ask before assigning.
+- **API-surface change after v0.84 freeze** → ALWAYS ask, never assume.
+
+### Buffer + overflow rules
+
+- **Soft overflow:** when a minor's dogfood reserve fills, the next 2–3 items roll forward one minor. Planned items keep their slot; the polish scope of the receiving minor absorbs the overflow.
+- **Hard overflow signal:** reserve overflows by >50% in two consecutive minors → planned-vs-discovery ratio is wrong. Pause planned work, drain dogfood first, update `.planning-roadmap-to-v1.md`.
+- **Dogfood beats planned:** dogfood-found work that compromises a v1.0 surface guarantee takes priority over any `FILE-X` item from the roadmap.
+
+### Volume-based axis escalation
+
+If the same axis (e.g., `axis-extractor-bash`, `axis-trace-bidirectional`) generates >3 `dogfood-found` issues in a release window, that axis gets a dedicated hardening slot in the next `.x9`, not patched piecemeal. Precedent: v0.56 resolver bug family (4 related fixes that should have been one batched session).
+
+### Tagging discipline (makes routing auditable)
+
+Every probe-surfaced issue gets:
+- `dogfood-found` — distinct from user-reported, so we can audit "how much v1.0 work came from dogfood vs planning"
+- `axis-{ast,doctor,cli,trace,fts,extractor-go,extractor-bash,...}` — feeds the >3-in-a-release escalation trigger
+- `severity-{1,2,3}` — drives the routing table above
 
 ## CI conventions
 

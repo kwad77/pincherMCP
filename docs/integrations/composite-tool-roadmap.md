@@ -1,11 +1,24 @@
 # Phase 4 composite-tool roadmap
 
-**Status:** v0.74 first draft ([#1391](https://github.com/kwad77/pincher/issues/1391)).
+**Status:** v0.74 first draft ([#1391](https://github.com/kwad77/pincher/issues/1391));
+refreshed 2026-05-18 with shipped vs in-flight markers + replanned
+sequencing per `.planning-roadmap-to-v1.md`.
+
 Names the composite-tool patterns slated for Phase 4 (v0.81 → v0.90)
 so the work has a roadmap to execute against. Pairs with
 [`loop-leverage-layers.md`](./loop-leverage-layers.md) (Layer 3 —
 composite call) and [`meta-envelope-contract.md`](./meta-envelope-contract.md)
 (every composite emits typed `_meta` per the same contract).
+
+## Composite shipping status
+
+| # | Composite | Release | Status |
+|---|---|---|---|
+| 1 | `investigate_failure` | v0.81 | ✅ shipped (PR #1517) |
+| 2 | `plan_change` | v0.82 | 🚧 in flight (PR #1519) |
+| 3 | `audit_unused` | v0.83 | ⏳ next |
+| 4 | `onboard_module` | v0.84 | ⏳ paired with API freeze checkpoint (FILE-K + FILE-L) |
+| 5 | `why_empty` | v0.85 | ⏳ paired with failure-mode catalog (FILE-O) |
 
 ---
 
@@ -248,21 +261,23 @@ machine correlation).
 ## Sequencing across v0.81–v0.90
 
 Phase 4 is the v0.81 → v0.90 block, ending with the v0.90 stable
-promotion + v1.0 release-prep. Suggested order:
+promotion + v1.0 release-prep.
 
-| Release | Composite | Rationale |
-|---|---|---|
-| v0.81 | `investigate_failure` | Highest-frequency loop; biggest immediate ROI |
-| v0.82 | `plan_change` | Pre-edit confirmation; complements the existing `changes` atomic |
-| v0.83 | `audit_unused` | Polish on existing `dead_code`; lowest implementation risk |
-| v0.84 | `onboard_module` | Architecture-shaped; refines `architecture` aspect surface |
-| v0.85 | `why_empty` | Cross-tool diagnostic; depends on every other composite already shipping with structured `_meta.diagnosis_v2` |
-| v0.86–v0.90 | Iteration + REFERENCE doc + v1.0 contract-freeze prep | — |
+| Release | Composite | Rationale | Status |
+|---|---|---|---|
+| v0.81 | `investigate_failure` | Highest-frequency loop; biggest immediate ROI | ✅ shipped |
+| v0.82 | `plan_change` | Pre-edit confirmation; complements the existing `changes` atomic | 🚧 PR #1519 |
+| v0.83 | `audit_unused` | Polish on existing `dead_code`; lowest implementation risk | ⏳ next |
+| v0.84 | `onboard_module` | Architecture-shaped; refines `architecture` aspect surface; paired with the API freeze checkpoint (FILE-K + FILE-L) | ⏳ |
+| v0.85 | `why_empty` | Cross-tool diagnostic; depends on every other composite already shipping with structured `_meta.diagnosis_v2`; paired with the failure-mode catalog (FILE-O) | ⏳ |
+| v0.86–v0.88 | Non-composite v1.0 blockers (field data, security, supply chain) per `.planning-roadmap-to-v1.md` | — | ⏳ |
+| v0.89 | HARDENING (no new features) | — | ⏳ |
+| v0.90 | STABLE PROMOTION (channel re-tag) | — | ⏳ |
 
-This order is a recommendation, not a constraint. The acceptance
-criteria from [#1391] require at least 3 of the 5 shipped across the
-block, each with its own audit suite. Reorder as dogfood signal
-dictates.
+The acceptance criteria from [#1391] require all 5 composites shipped
+across the block, each with its own audit suite. The v0.86–v0.88
+slots that were originally "iteration" now carry the production-
+readiness gaps identified in the v1.0 plan refresh.
 
 ---
 
