@@ -173,8 +173,12 @@ func TestDecideHook_Grep_IdentifierPattern_RedirectsToSearch(t *testing.T) {
 				ToolInput: map[string]any{"pattern": pattern},
 			}
 			d := decideHook(store, in, false)
-			if d.Continue {
-				t.Errorf("identifier pattern %q should redirect; got pass-through", pattern)
+			// #1656 v0.86: Grep redirect is advisory, must pass through.
+			if !d.Continue {
+				t.Errorf("advisory mode must always pass Grep through; pattern %q got Continue=false", pattern)
+			}
+			if d.Decision != "redirect_advisory" {
+				t.Errorf("decision = %q, want redirect_advisory", d.Decision)
 			}
 			if d.SuggestedTool != "search" {
 				t.Errorf("suggested = %q, want search", d.SuggestedTool)
