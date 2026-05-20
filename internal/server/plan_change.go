@@ -421,10 +421,19 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	// rendered lists are truncated, with blast_radius.truncated set so
 	// the consumer knows the lists are shorter than the counts. Fixed
 	// cap — no new tool-contract parameter (v1.0 surface freeze).
-	const maxBlastRows = 50
+	// #1788: 50 rows × 3 lists is ~45 KB of blastRow JSON on a hub
+	// symbol — `plan_change db.Open` hit 61 KB and exceeded the MCP
+	// per-call token cap, so the agent got nothing usable on exactly
+	// the symbols it most needs to plan around. The summary block keeps
+	// the true counts; the per-row lists past ~25 add no decision value
+	// once `blast_radius_high` has already fired. test_files_intersecting
+	// was entirely uncapped — a hub is exercised by hundreds of test
+	// files.
+	const maxBlastRows = 25
 	depth1Total := len(depth1)
 	depth2Total := len(depth2plus)
 	crossPkgTotal := len(crossPackage)
+	testFilesTotal := len(testFilesList)
 	blastTruncated := false
 	if len(depth1) > maxBlastRows {
 		depth1 = depth1[:maxBlastRows]
@@ -436,6 +445,10 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	}
 	if len(crossPackage) > maxBlastRows {
 		crossPackage = crossPackage[:maxBlastRows]
+		blastTruncated = true
+	}
+	if len(testFilesList) > maxBlastRows {
+		testFilesList = testFilesList[:maxBlastRows]
 		blastTruncated = true
 	}
 
@@ -475,7 +488,7 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				"depth_1_count":       depth1Total,
 				"depth_2_count":       depth2Total,
 				"cross_package_count": crossPkgTotal,
-				"test_file_count":     len(testFilesList),
+				"test_file_count":     testFilesTotal,
 			},
 			// True when depth_*_callers / cross_package lists were
 			// truncated to maxBlastRows — the *_count fields above

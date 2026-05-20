@@ -102,6 +102,32 @@ var stopwordFrames = map[string]bool{
 	"IndexError":  true,
 	"NameError":   true,
 	"RuntimeError": true,
+	// #1787: Go runtime panic-message vocabulary. "index out of range
+	// [3] with length 3" / "slice bounds out of range" / "invalid
+	// memory address or nil pointer dereference" / "goroutine N
+	// [running]" appear verbatim in nearly every Go panic — these
+	// English words are never the load-bearing symbol token but BM25-
+	// match unrelated symbols whose signature happens to contain them
+	// (e.g. `out` matched `runGoInstall(out io.Writer)`).
+	"out":         true,
+	"range":       true,
+	"with":        true,
+	"length":      true,
+	"bounds":      true,
+	"running":     true,
+	"created":     true,
+	"address":     true,
+	"dereference": true,
+	// #1787: VCS-host / import-path host segments. Every Go stack frame
+	// is fully qualified (`github.com/<org>/<repo>/...`); these host
+	// tokens appear in every frame and are never symbol names. Interior
+	// path segments (org / repo / `internal`) are dropped structurally
+	// by the slash-delimited filter in parseStackFrames.
+	"github": true,
+	"gitlab": true,
+	"bitbucket": true,
+	"golang": true,
+	"gopkg":  true,
 }
 
 // parseStackFrames extracts candidate symbol names and file paths from
@@ -119,8 +145,28 @@ func parseStackFrames(errorText string) (names []string, files []string) {
 	// stack. A function that appears 5 times in the trace is more
 	// likely the failure site than one that appears once.
 	nameCounts := map[string]int{}
-	for _, m := range stackFrameRE.FindAllStringSubmatch(errorText, -1) {
-		tok := m[1]
+	for _, idx := range stackFrameRE.FindAllStringSubmatchIndex(errorText, -1) {
+		// idx = [fullStart, fullEnd, group1Start, group1End].
+		tok := errorText[idx[2]:idx[3]]
+		// #1787: drop slash-delimited path segments. A Go stack frame is
+		// `host/org/repo/internal/pkg.Func` — the org / repo / internal
+		// segments sit between slashes and are never symbol names, yet
+		// they appear in every frame and BM25-match unrelated symbols
+		// (the repo name `pincher` matched a Homebrew Ruby class). A
+		// token followed by `/` is a path prefix; a token with `/` on
+		// BOTH sides is an interior segment — drop both. The trailing
+		// `pkg.Func` token is preceded by `/` but followed by `.`/`(`,
+		// so it survives.
+		var before, after byte
+		if idx[2] > 0 {
+			before = errorText[idx[2]-1]
+		}
+		if idx[3] < len(errorText) {
+			after = errorText[idx[3]]
+		}
+		if after == '/' || (before == '/' && after == '/') {
+			continue
+		}
 		if stopwordFrames[tok] {
 			continue
 		}
