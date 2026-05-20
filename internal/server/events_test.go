@@ -64,6 +64,15 @@ func readSSEFrames(t *testing.T, r *http.Response, want int, timeout time.Durati
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		// Timeout: the reader goroutine is still scanning and
+		// appending to `frames`. Returning the slice now races the
+		// goroutine's writes against the caller's reads (the `-race`
+		// CI job, #1733, flagged exactly this). Close the body to
+		// unblock the scanner — sc.Scan() then returns false and the
+		// goroutine exits — and wait for `done` so `frames` is
+		// quiescent before we return it.
+		_ = r.Body.Close()
+		<-done
 	}
 	return frames
 }
