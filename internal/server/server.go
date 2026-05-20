@@ -11364,19 +11364,27 @@ func inferAuditPinchQL(task string) (pinchql, why string) {
 		// `(n:Function)` — Go's method-heavy idioms slipped through.
 		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
 			"structural audit — pinchQL lists exported non-test Go functions AND methods. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
-	default:
-		// Docstring audit is the canonical #467 example and still the
-		// most common shapeAudit query — keep it as the fallback.
+	case strings.Contains(t, "docstring") || strings.Contains(t, "undocumented") ||
+		strings.Contains(t, "comment"):
+		// Docstring audit is the canonical #467 example.
 		// #923: scope to Go + non-test. Regex-tier languages don't
 		// populate the docstring property (so 100% match the IS NULL
 		// filter), and test functions don't need docstrings by
-		// convention. Pre-fix the top results were JS handlers, Bash
-		// helpers, and `TestDashboardJS_*` — pure noise.
-		// #943: include Methods alongside Functions. On a method-heavy
-		// codebase (Go MCP server pattern) the previous Function-only
-		// template hid the majority of the coverage gap.
+		// convention. #943: include Methods alongside Functions.
 		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.docstring IS NULL AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
-			"structural audit — pinchQL filters on docstring/is_exported directly across Functions AND Methods. Scoped to Go (AST-extracted docstrings) and non-test symbols so regex-tier languages and tests don't flood the result. BM25 search of the literal phrase wouldn't surface anything"
+			"structural audit — pinchQL filters on docstring/is_exported directly across Functions AND Methods. Scoped to Go (AST-extracted docstrings) and non-test symbols so regex-tier languages and tests don't flood the result"
+	default:
+		// #1759: the task is audit-shaped ("find every X without Y") but
+		// its predicate ("writes to the DB", "lacks auth checks") is not
+		// a property pincher's graph indexes — guide cannot compile it
+		// into a precise WHERE clause. Emit the neutral candidate set
+		// (exported non-test Go Functions + Methods) and SAY SO. The
+		// previous fallback bolted on `n.docstring IS NULL` — an
+		// arbitrary filter unrelated to the task — with a `why` that
+		// claimed it WAS the audit, confidently wrong for every
+		// non-docstring audit.
+		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
+			"structural audit — your specific predicate isn't a property pincher's graph indexes, so guide can't compile it into a precise WHERE clause. This is the candidate set (exported non-test Go Functions + Methods); add a WHERE predicate you CAN express (see `schema` for available properties) or filter the results manually against your criterion"
 	}
 }
 

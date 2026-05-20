@@ -111,6 +111,8 @@ func TestInferAuditPinchQL_AllTemplatesParseable(t *testing.T) {
 		"find functions longer than 100 lines",
 		"find untested exported functions",
 		"find undocumented exported APIs",
+		// #1759: the unrecognized-predicate default branch.
+		"find every function that writes to the database",
 	}
 	for _, task := range tasks {
 		t.Run(task, func(t *testing.T) {
@@ -151,19 +153,45 @@ func TestGuideRecommendations_AdjectiveUntestedGetsCoverageQuery(t *testing.T) {
 	}
 }
 
-// #923: the docstring fallback template now scopes to Go + non-test
-// so it doesn't recommend a query that returns JS/Bash regex-tier
-// false positives or test functions.
-func TestInferAuditPinchQL_DocstringFallbackExcludesTestsAndNonGo(t *testing.T) {
+// #923: the docstring template scopes to Go + non-test so it doesn't
+// recommend a query that returns JS/Bash regex-tier false positives or
+// test functions. #1759: the docstring query is now keyed on an
+// explicit docstring/undocumented/comment keyword — `audit exported
+// APIs` (no such keyword) is a different, unrecognized-predicate case.
+func TestInferAuditPinchQL_DocstringTemplateExcludesTestsAndNonGo(t *testing.T) {
 	t.Parallel()
-	pinchql, _ := inferAuditPinchQL("audit exported APIs")
+	pinchql, _ := inferAuditPinchQL("audit undocumented exported APIs")
 	if !strings.Contains(pinchql, "docstring IS NULL") {
-		t.Fatalf("fallback should still emit docstring template; got %q", pinchql)
+		t.Fatalf("an undocumented-API task should emit the docstring template; got %q", pinchql)
 	}
 	if !strings.Contains(pinchql, "n.is_test=false") {
-		t.Errorf("docstring fallback must exclude test functions; got %q", pinchql)
+		t.Errorf("docstring template must exclude test functions; got %q", pinchql)
 	}
 	if !strings.Contains(pinchql, `n.language='Go'`) {
-		t.Errorf("docstring fallback must scope to Go; got %q", pinchql)
+		t.Errorf("docstring template must scope to Go; got %q", pinchql)
+	}
+}
+
+// #1759: an audit-shape task whose predicate guide cannot keyword-match
+// ("writes to the DB", "lacks auth checks") must NOT get a docstring
+// query — it gets the neutral candidate set, and the `why` must say
+// guide could not compile the predicate so the agent doesn't trust the
+// query as the literal answer.
+func TestInferAuditPinchQL_UnrecognizedPredicate_HonestScaffold(t *testing.T) {
+	t.Parallel()
+	for _, task := range []string{
+		"find every function that writes to the database without going through the reader pool",
+		"find every HTTP handler that lacks authentication checks",
+	} {
+		pinchql, why := inferAuditPinchQL(task)
+		if strings.Contains(pinchql, "docstring") {
+			t.Errorf("task %q must not get a docstring query; got %q", task, pinchql)
+		}
+		if !strings.Contains(pinchql, "is_exported=true AND n.is_test=false") {
+			t.Errorf("task %q should emit the neutral candidate set; got %q", task, pinchql)
+		}
+		if !strings.Contains(why, "can't compile") && !strings.Contains(why, "filter the results manually") {
+			t.Errorf("task %q `why` must signal guide couldn't map the predicate; got %q", task, why)
+		}
 	}
 }
