@@ -2711,11 +2711,17 @@ var rustRE = &regexExtractor{
 	// Pre-fix, `^(?:pub...)fn name` required the declaration at column 0,
 	// dropping every fn inside `impl Type { ... }` blocks. Same shape as
 	// the PHP regex which already allows indentation.
+	// #1757: every anchored Rust regex carries the same leading `\s*`
+	// #1183 gave funcRE — a struct / trait / enum / impl / use inside a
+	// `mod { … }` block is indented, and a bare `^` anchor dropped all
+	// of them (and orphaned the methods of an indented `impl`). All five
+	// keywords are definition keywords, so tolerating indentation adds
+	// no false positives.
 	funcRE:      regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?(?:async\s+)?fn\s+(?P<name>[a-z_][a-z0-9_]*)`),
-	classRE:     regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?struct\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
-	interfaceRE: regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?trait\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
-	enumRE:      regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
-	importRE:    regexp.MustCompile(`(?m)^use\s+(?P<path>[a-zA-Z0-9_:]+)`),
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?struct\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?trait\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	importRE:    regexp.MustCompile(`(?m)^\s*use\s+(?P<path>[a-zA-Z0-9_:]+)`),
 	// #1183 v0.67: impl blocks. Both forms — `impl Type { ... }` and
 	// `impl Trait for Type { ... }` — set the receiver type (`Type`,
 	// in the second form the second capture) as the scope so inner
@@ -2723,7 +2729,7 @@ var rustRE = &regexExtractor{
 	// on the type are tolerated (`impl<T> Vec<T>` extracts `Vec`).
 	// The two alternations: the "for-form" first so its match wins
 	// when both could fire on `impl Trait for Type<X>`.
-	scopeRE: regexp.MustCompile(`(?m)^impl(?:<[^>]*>)?\s+(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
+	scopeRE: regexp.MustCompile(`(?m)^\s*impl(?:<[^>]*>)?\s+(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
 }
 
 // extractRust: 'pub' keyword marks exports; approximated here as always-exported.
