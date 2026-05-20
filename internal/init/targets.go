@@ -604,24 +604,29 @@ var JetBrainsTarget = Target{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// antigravity (./.antigravity/rules.md — Google Antigravity IDE project rules)
+// antigravity (./.agents/rules/pincher.md — Google Antigravity IDE workspace rules)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Google Antigravity (Gemini-3 IDE, announced late 2025) follows the
-// `.<tool>/rules.md` project-rules convention common across the agent-IDE
-// ecosystem (mirrors `.cursor/rules` / `.windsurf/rules.md` shapes).
-// Adding it surfaces pincher to a fresh user base without requiring
-// hand-crafted MCP host configuration. #1368.
+// Google Antigravity (Gemini agent IDE) reads workspace rules from the
+// `.agents/` directory at the project root — `.agents/rules/` holds
+// supplementary rule files (alongside `.agents/workflows/` and
+// `.agents/skills/`); project-root `GEMINI.md` / `AGENTS.md` carry the
+// primary rules, and `~/.gemini/GEMINI.md` is the global surface.
 //
-// Detection: the `.antigravity/` directory at the project root is the
-// canonical marker. Presence alone confirms an Antigravity user;
-// `rules.md` may or may not exist yet (writing the target bootstraps it).
+// #1765: the target previously wrote `./.antigravity/rules.md`, a path
+// Antigravity does not read (the `.<tool>/rules.md` convention was a
+// guess and there is no `.antigravity/` directory in the product). It
+// now writes a dedicated `./.agents/rules/pincher.md` — the workspace-
+// supplements shape, mirroring the `cursor` target's
+// `.cursor/rules/pincher.mdc`: a pincher-owned file that re-runs
+// idempotently and never clobbers the user's own GEMINI.md / AGENTS.md.
 //
-// Path: project-local only. Antigravity's global-rules surface — if it
-// exposes one — lives in the IDE's preferences UI rather than a stable
-// filesystem path; SupportsGlobal stays false to match the
-// cursor / windsurf / jetbrains pattern. The error message routes users
-// to the IDE's settings explicitly so they don't silently get a no-op.
+// Detection: the `.agents/` directory at the project root is the
+// canonical Antigravity workspace marker (#1368).
+//
+// Path: project-local only. Antigravity's global rules live at
+// `~/.gemini/GEMINI.md` — already covered by the `gemini` target — so
+// SupportsGlobal stays false here to avoid two targets owning one file.
 //
 // Writer: MergePolicyBlockBare (no front-matter header — the file is
 // plain markdown the agent inlines into its system prompt). Mirrors
@@ -631,15 +636,15 @@ var JetBrainsTarget = Target{
 
 var AntigravityTarget = Target{
 	Name:     "antigravity",
-	Describe: "Google Antigravity: ./.antigravity/rules.md (Gemini-3 agent IDE)",
+	Describe: "Google Antigravity: ./.agents/rules/pincher.md (Gemini agent IDE workspace rules)",
 	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
-			return "", fmt.Errorf("antigravity target is project-only — global rules are configured via Antigravity's preferences UI, not a stable filesystem path")
+			return "", fmt.Errorf("antigravity target is project-only — Antigravity's global rules live at ~/.gemini/GEMINI.md; use `pincher init --target=gemini --global`")
 		}
-		return filepath.Join(cwd, ".antigravity", "rules.md"), nil
+		return filepath.Join(cwd, ".agents", "rules", "pincher.md"), nil
 	},
 	DetectFn: func(cwd string) bool {
-		_, err := os.Stat(filepath.Join(cwd, ".antigravity"))
+		_, err := os.Stat(filepath.Join(cwd, ".agents"))
 		return err == nil
 	},
 	WriteFn: MergePolicyBlockBare,
