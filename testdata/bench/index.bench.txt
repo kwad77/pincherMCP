@@ -1,13 +1,16 @@
 goos: linux
 goarch: amd64
 pkg: github.com/kwad77/pincher/internal/index
-cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkIndex_Cold_GoProject-4                      	     700	  17167317 ns/op	  391099 B/op	    6857 allocs/op
-BenchmarkIndex_Cold_K8sOps-4                         	     609	  19778960 ns/op	  391451 B/op	    4607 allocs/op
-BenchmarkIndex_Cold_NodeMonorepo-4                   	     651	  18647861 ns/op	  465345 B/op	    5098 allocs/op
-BenchmarkIndex_Incremental_NoChange_GoProject-4      	   14769	    811341 ns/op	   30147 B/op	     583 allocs/op
-BenchmarkIndex_Incremental_NoChange_K8sOps-4         	   14407	    832165 ns/op	   29420 B/op	     551 allocs/op
-BenchmarkIndex_Incremental_NoChange_NodeMonorepo-4   	   13846	    868444 ns/op	   35262 B/op	     637 allocs/op
-BenchmarkIndex_Force_GoProject-4                     	     903	  13220053 ns/op	  386432 B/op	    6826 allocs/op
+cpu: AMD EPYC 9V74 80-Core Processor                
+BenchmarkIndex_Cold_GoProject-4                      	     722	  16771449 ns/op	  398821 B/op	    7013 allocs/op
+BenchmarkIndex_Cold_K8sOps-4                         	     608	  19478980 ns/op	  402818 B/op	    4842 allocs/op
+BenchmarkIndex_Cold_NodeMonorepo-4                   	     652	  18496836 ns/op	  480709 B/op	    5352 allocs/op
+BenchmarkIndex_Incremental_NoChange_GoProject-4      	   15918	    754194 ns/op	   30294 B/op	     588 allocs/op
+BenchmarkIndex_Incremental_NoChange_K8sOps-4         	   15452	    777410 ns/op	   29568 B/op	     556 allocs/op
+BenchmarkIndex_Incremental_NoChange_NodeMonorepo-4   	   14839	    807220 ns/op	   35378 B/op	     642 allocs/op
+BenchmarkIndex_Force_GoProject-4                     	     920	  12961376 ns/op	  386900 B/op	    6855 allocs/op
+BenchmarkRebuildFTS_GoProject-4                      	    3685	   3215445 ns/op	    1998 B/op	      86 allocs/op
+BenchmarkRebuildFTS_K8sOps-4                         	    3560	   3294544 ns/op	    1994 B/op	      86 allocs/op
+BenchmarkRebuildFTS_NodeMonorepo-4                   	    3542	   3347424 ns/op	    1996 B/op	      86 allocs/op
 PASS
-ok  	github.com/kwad77/pincher/internal/index	207.330s
+ok  	github.com/kwad77/pincher/internal/index	273.830s
