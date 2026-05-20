@@ -211,6 +211,76 @@ func TestOnboardModule_ExternalDependenciesFromInside(t *testing.T) {
 	}
 }
 
+// TestOnboardModule_BoundaryEdgesProjectScoped — onboard_module's
+// edge query joins `symbols` to resolve from/to names. The symbols
+// primary key is (project_id, id), so the same symbol id can exist
+// in several indexed projects (forks, nested registrations). Pre-fix
+// the joins matched on id alone, so every boundary edge was
+// multiplied by the count of projects sharing that id — a module
+// dependency surfaced once per colliding project. Found dogfooding
+// onboard_module against a multi-project install.
+func TestOnboardModule_BoundaryEdgesProjectScoped(t *testing.T) {
+	t.Parallel()
+	srv, store, rootA := newTestServer(t)
+	srv.sessionRoot = rootA
+
+	const mod = "module example.com/scoped\n\ngo 1.22\n"
+	const libSrc = `package lib
+
+func Target() int { return 1 }
+`
+	const appSrc = `package app
+
+import "example.com/scoped/lib"
+
+func CallsTarget() int { return lib.Target() }
+`
+	writeGoFile(t, rootA, "go.mod", mod)
+	writeGoFile(t, rootA, "lib/lib.go", libSrc)
+	writeGoFile(t, rootA, "app/app.go", appSrc)
+	idx := index.New(store)
+	resA, err := idx.Index(context.Background(), rootA, false)
+	if err != nil {
+		t.Fatalf("index A: %v", err)
+	}
+	srv.sessionID = resA.ProjectID
+
+	// Project B — identical relative paths + symbols, so every symbol
+	// id collides with project A's. A correct project-scoped join
+	// ignores B entirely when onboard_module runs against A.
+	rootB := t.TempDir()
+	writeGoFile(t, rootB, "go.mod", mod)
+	writeGoFile(t, rootB, "lib/lib.go", libSrc)
+	writeGoFile(t, rootB, "app/app.go", appSrc)
+	if _, err := idx.Index(context.Background(), rootB, false); err != nil {
+		t.Fatalf("index B: %v", err)
+	}
+
+	out, err := srv.handleOnboardModule(context.Background(), makeReq(map[string]any{
+		"directory": "app/",
+		"project":   resA.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	deps, _ := body["external_dependencies"].([]any)
+	targetCount := 0
+	for _, d := range deps {
+		if m, ok := d.(map[string]any); ok && m["to_name"] == "Target" {
+			targetCount++
+		}
+	}
+	if targetCount == 0 {
+		t.Fatalf("lib.Target not in external_dependencies — fixture/resolver regression; got %v", deps)
+	}
+	if targetCount != 1 {
+		t.Errorf("lib.Target listed %d× in external_dependencies; expected 1 — "+
+			"cross-project JOIN leak: the symbol joins matched project B's identical "+
+			"ids. The joins must be scoped to e.project_id.", targetCount)
+	}
+}
+
 // TestOnboardModule_ModuleSummaryShape — control: module_summary
 // is populated with language breakdown + exported count + ratio.
 func TestOnboardModule_ModuleSummaryShape(t *testing.T) {

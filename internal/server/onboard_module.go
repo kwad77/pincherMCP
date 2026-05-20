@@ -260,12 +260,18 @@ func (s *Server) handleOnboardModule(ctx context.Context, req *mcp.CallToolReque
 	// blow up the consumer list with implementation-detail edges.
 	externalDeps := []onboardEdgeRef{}
 	externalConsumers := []onboardEdgeRef{}
+	// The symbol joins MUST be project-scoped: symbols' primary key is
+	// (project_id, id), so the same symbol id can exist in several
+	// indexed projects (forks, nested registrations). Joining on fs.id
+	// alone multiplies every boundary edge by the number of projects
+	// that share the id — onboard_module showed each dependency once
+	// per colliding project. (#1232-class cross-project leak, #1725.)
 	edgeRows, err := s.store.RO().Query(
 		`SELECT e.from_id, e.to_id, e.kind,
 		        fs.name AS from_name, ts.name AS to_name
 		   FROM edges e
-		   LEFT JOIN symbols fs ON fs.id = e.from_id
-		   LEFT JOIN symbols ts ON ts.id = e.to_id
+		   LEFT JOIN symbols fs ON fs.id = e.from_id AND fs.project_id = e.project_id
+		   LEFT JOIN symbols ts ON ts.id = e.to_id   AND ts.project_id = e.project_id
 		  WHERE e.project_id = ?
 		    AND e.kind = 'CALLS'`,
 		projectID)
