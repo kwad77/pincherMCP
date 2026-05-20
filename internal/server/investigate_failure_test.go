@@ -474,3 +474,79 @@ func TestInvestigateFailure_IsRegistered(t *testing.T) {
 		t.Errorf("description should mention stack trace; got %q", tool.Description)
 	}
 }
+
+const investigateSiblingSrc = `package work
+
+type Worker struct{}
+
+func NewWorker() *Worker { return &Worker{} }
+func (w *Worker) Reset()       {}
+func (w *Worker) Flush()       {}
+func (w *Worker) MaxSize() int { return 0 }
+
+// processItem is the crash site named in the panic frame below.
+func (w *Worker) processItem() error { return nil }
+`
+
+// TestInvestigateFailure_ExactNameOutranksSiblingMethods is the #1751
+// fix: a Go panic naming (*Worker).processItem must rank processItem —
+// the symbol literally named in the trace — above the unrelated
+// *Worker sibling methods that merely share the receiver-type token
+// `Worker`. Pre-fix two bugs compounded: package-path noise tokens
+// (`github.com`, `internal`, `work` — repeated once per Go frame)
+// out-frequencied the once-mentioned function name, so the search
+// loop's candidate budget was exhausted before processItem was ever
+// searched; and a flat +0.45 frame-match score let a sibling method
+// tie the real crash site.
+func TestInvestigateFailure_ExactNameOutranksSiblingMethods(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+	writeGoFile(t, root, "internal/work/worker.go", investigateSiblingSrc)
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	// A 3-frame Go panic. The package path repeats once per frame, so
+	// `github.com` / `internal` / `work` reach count 3 while the crash
+	// function `processItem` appears once — the exact condition that
+	// starved the pre-fix search loop.
+	trace := `panic: runtime error: invalid memory address or nil pointer dereference
+goroutine 9 [running]:
+github.com/acme/widgets/internal/work.(*Worker).processItem(0xc0001a2000)
+	internal/work/worker.go:11 +0x1a4
+github.com/acme/widgets/internal/work.runPipeline(0xc0001a2000)
+	internal/work/pipeline.go:30 +0x88
+github.com/acme/widgets/internal/work.dispatch(0xc0001a2000)
+	internal/work/pipeline.go:12 +0x44
+`
+	out, err := srv.handleInvestigateFailure(context.Background(), makeReq(map[string]any{
+		"error_text": trace,
+		"project":    res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	rank, ok := body["rank"].([]any)
+	if !ok || len(rank) == 0 {
+		t.Fatalf("expected ranked suspects; got %v", body["rank"])
+	}
+	top := rank[0].(map[string]any)
+	if top["name"] != "processItem" {
+		t.Errorf("top suspect = %v, want processItem (the function named in the panic frame, not a sibling *Worker method)", top["name"])
+	}
+	ev, _ := top["evidence"].([]any)
+	hasExact := false
+	for _, e := range ev {
+		if s, _ := e.(string); s == "stack_frame_exact_name_match" {
+			hasExact = true
+		}
+	}
+	if !hasExact {
+		t.Errorf("top suspect missing stack_frame_exact_name_match evidence; got %v", ev)
+	}
+}
