@@ -14,7 +14,7 @@ with checksums only and the release workflow logs a `::warning::` line.
 Download the artifact, its `.sig`, and the published public key:
 
 ```bash
-VERSION=v0.88.0        # the release tag you downloaded
+VERSION=v0.89.0        # the release tag you downloaded
 ARCH=linux-amd64       # or darwin-arm64, windows-amd64, etc.
 
 # Fetch the public key (one-time).
