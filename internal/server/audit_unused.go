@@ -92,6 +92,18 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 	if len(kinds) == 0 {
 		kinds = []string{"Function", "Method"}
 	}
+	// #1780: Class/Type/Interface/Enum have no inbound type-reference
+	// edges in the graph — a struct used only as `&T{}` looks dead. When
+	// the caller widens `kinds` to a type-shaped kind the resulting
+	// candidates are high-false-positive; flag it so a `high` confidence
+	// row on a type isn't read as a safe-to-delete verdict.
+	typeKindsRequested := []string{}
+	for _, k := range kinds {
+		switch k {
+		case "Class", "Type", "Interface", "Enum":
+			typeKindsRequested = append(typeKindsRequested, k)
+		}
+	}
 	maxResults := intArg(args, "max_results", 20)
 	if maxResults <= 0 {
 		maxResults = 20
@@ -127,7 +139,7 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 	if len(raw) == 0 {
 		meta := map[string]any{}
 		diag := fmt.Sprintf(
-			"no dead-code candidates surfaced for project %q with kinds=%v language=%q min_confidence=%.2f. Either the project really is clean (great!) or the filters are too tight — try widening kinds (kinds=\"Function,Method,Type,Class\") or dropping min_confidence to 0.85 to include stable-regex extractors.",
+			"no dead-code candidates surfaced for project %q with kinds=%v language=%q min_confidence=%.2f. Either the project really is clean (great!) or the filters are too tight — drop min_confidence to 0.85 to include stable-regex extractors. (Widening kinds to Class/Type is possible but those have no inbound type-reference edges, so type-kind candidates are high-false-positive and advisory-only.)",
 			projectID, kinds, language, minConfidence)
 		stampEmpty(meta, EmptyReasonNoResultsInCorpus, diag)
 		meta["next_steps"] = []map[string]string{
@@ -284,14 +296,23 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 		{"tool": "context", "args": fmt.Sprintf(`{"id":%q}`, candidates[0].SymbolID),
 			"why": "read the top high-confidence candidate before deleting"},
 	}
+	warningsV2 := []map[string]any{}
+	if len(typeKindsRequested) > 0 {
+		warningsV2 = append(warningsV2, map[string]any{
+			"code":     "type_kinds_no_reference_edges",
+			"severity": "warning",
+			"message":  fmt.Sprintf("kinds %v are type-shaped — the graph tracks no inbound type-reference edges (only CALLS/READS/WRITES/IMPORTS), so a struct used only as `&T{}` looks dead. Type-kind candidates here are high-false-positive and advisory-only; do not treat a `high` confidence row on a type as a safe-to-delete verdict.", typeKindsRequested),
+		})
+	}
 	if summary.DeepTraceSurfacedDirectCallers > 0 {
-		meta["warnings_v2"] = []map[string]any{
-			{
-				"code":     "resolver_inconsistency_detected",
-				"severity": "warning",
-				"message":  fmt.Sprintf("%d candidate(s) had no inbound edges per the SQL check but deep trace surfaced a depth-1 caller — likely a resolver bug; file an issue rather than delete the symbol(s).", summary.DeepTraceSurfacedDirectCallers),
-			},
-		}
+		warningsV2 = append(warningsV2, map[string]any{
+			"code":     "resolver_inconsistency_detected",
+			"severity": "warning",
+			"message":  fmt.Sprintf("%d candidate(s) had no inbound edges per the SQL check but deep trace surfaced a depth-1 caller — likely a resolver bug; file an issue rather than delete the symbol(s).", summary.DeepTraceSurfacedDirectCallers),
+		})
+	}
+	if len(warningsV2) > 0 {
+		meta["warnings_v2"] = warningsV2
 	}
 
 	data := map[string]any{
