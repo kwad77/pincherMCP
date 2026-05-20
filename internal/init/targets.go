@@ -557,40 +557,44 @@ func continueJSONWriter(existing, policy string) (string, string) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// jetbrains (.idea/.junie/guidelines.md — JetBrains AI Assistant project rules)
+// jetbrains (.junie/guidelines.md — JetBrains Junie project rules)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// JetBrains AI Assistant (the AI feature shipped in 2024+ IDE builds —
+// JetBrains Junie (the agentic AI companion in 2024+ IDE builds —
 // IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc.) reads project-level
-// instructions from `.idea/.junie/guidelines.md` (the "Junie" code-
-// generation companion's per-project conventions file). #1335 v0.76
-// parity wave 2.
+// guidelines from the `.junie/` directory at the project root: per
+// JetBrains' Junie documentation it looks for `.junie/AGENTS.md`
+// (modern, preferred), `.junie/guidelines.md` (legacy, still
+// supported), then root `AGENTS.md`. #1335 v0.76 parity wave 2.
 //
-// Detection: the `.idea/` directory is the canonical JetBrains project
-// marker — every JetBrains IDE creates it on first open. The presence
-// of `.idea/` alone is enough to identify the user as a JetBrains
-// user; we don't require `.junie/` to pre-exist because part of this
-// target's value is bootstrapping the directory for new adopters.
+// #1767: the target previously wrote `.idea/.junie/guidelines.md` —
+// nesting `.junie/` inside the IDE-config directory `.idea/`. Junie
+// reads `.junie/` at the project ROOT (a sibling of `.idea/`), so the
+// nested file was never read. It now writes `./.junie/guidelines.md`:
+// the legacy-but-supported, Junie-specific path — the right pincher-
+// owned file (writing `AGENTS.md` would clobber the user's shared
+// cross-tool rules).
 //
-// Path: project-local only. JetBrains AI Assistant's global-rules
-// path varies per IDE (preferences UI rather than a stable filesystem
-// path), so SupportsGlobal stays false — pincher init --global
-// against this target is an error, matching the cursor / windsurf /
-// aider pattern. Users who want global JetBrains rules add them via
-// the IDE's Preferences > Tools > AI Assistant settings.
+// Detection: the `.idea/` directory is still the canonical "is this a
+// JetBrains IDE project" marker — every JetBrains IDE creates it on
+// first open. `.junie/` may not pre-exist; writing the target
+// bootstraps it.
+//
+// Path: project-local only. Junie's global rules vary per IDE
+// (preferences UI), so SupportsGlobal stays false — matching the
+// cursor / windsurf / aider pattern.
 //
 // Writer: MergePolicyBlockBare (no front-matter header — the file is
-// plain markdown that AI Assistant inlines into its system prompt
-// when the file exists).
+// plain markdown that Junie inlines into its system prompt).
 
 var JetBrainsTarget = Target{
 	Name:     "jetbrains",
-	Describe: "JetBrains AI Assistant: ./.idea/.junie/guidelines.md (IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc.)",
+	Describe: "JetBrains Junie: ./.junie/guidelines.md (IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc.)",
 	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
-			return "", fmt.Errorf("jetbrains target is project-only — global rules are configured via the IDE's Preferences > Tools > AI Assistant UI, not a stable filesystem path")
+			return "", fmt.Errorf("jetbrains target is project-only — global rules are configured via the IDE's Junie settings UI, not a stable filesystem path")
 		}
-		return filepath.Join(cwd, ".idea", ".junie", "guidelines.md"), nil
+		return filepath.Join(cwd, ".junie", "guidelines.md"), nil
 	},
 	DetectFn: func(cwd string) bool {
 		// `.idea/` is the JetBrains project marker — every JetBrains

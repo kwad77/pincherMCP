@@ -448,19 +448,24 @@ func TestPolicyMarkdown_NotEmpty(t *testing.T) {
 	}
 }
 
-// ─── jetbrains (.idea/.junie/guidelines.md) ──────────────────────────────────
-// #1335 v0.76 parity wave 2.
+// ─── jetbrains (.junie/guidelines.md) ────────────────────────────────────────
+// #1335 v0.76 parity wave 2; path corrected #1767.
 
-// Positive: PathFn produces the expected project-relative path.
+// Positive: PathFn produces Junie's project-root path. #1767: must be
+// `.junie/guidelines.md` — the directory Junie reads — NOT the pre-fix
+// `.idea/.junie/guidelines.md`, which Junie ignores.
 func TestJetBrainsTarget_PathFn_ProjectLocal(t *testing.T) {
 	cwd := "/proj/myrepo"
 	got, err := JetBrainsTarget.PathFn(cwd, false)
 	if err != nil {
 		t.Fatalf("PathFn: %v", err)
 	}
-	want := filepath.Join(cwd, ".idea", ".junie", "guidelines.md")
+	want := filepath.Join(cwd, ".junie", "guidelines.md")
 	if got != want {
 		t.Errorf("PathFn = %q, want %q", got, want)
+	}
+	if strings.Contains(got, ".idea") {
+		t.Errorf("PathFn still nests .junie/ under .idea/ — Junie reads .junie/ at the project root: %q", got)
 	}
 }
 

@@ -6,7 +6,7 @@ This page is the *why*. For setup, see the [JetBrains tutorial](../../tutorials/
 
 ## How JetBrains reaches pincher
 
-`pincher init --target=jetbrains` writes `.idea/.junie/guidelines.md` — the steering file Junie reads — and registers pincher's MCP server. The guidelines tell the assistant when to prefer pincher's tools over re-deriving the same information.
+`pincher init --target=jetbrains` writes `.junie/guidelines.md` — the steering file Junie reads — and registers pincher's MCP server. The guidelines tell the assistant when to prefer pincher's tools over re-deriving the same information.
 
 ## What you get
 
