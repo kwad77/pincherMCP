@@ -89,7 +89,7 @@ instead" plus a `_meta`-shaped justification.
 | Zed | (TBD — slash-commands?) | Tracked in #1336, v0.77 |
 | VSCode + Copilot | `.github/copilot-instructions.md` | Production — `pincher init --target=vscode-copilot` |
 | JetBrains AI Assistant | `.idea/.junie/guidelines.md` | Production — `pincher init --target=jetbrains` |
-| Google Antigravity | `.antigravity/rules.md` | Production — `pincher init --target=antigravity` |
+| Google Antigravity | `.agents/rules/pincher.md` | Production — `pincher init --target=antigravity` |
 
 `pincher init --target=detect` walks the local filesystem, detects
 which hosts are installed, and writes the appropriate hook/rules
