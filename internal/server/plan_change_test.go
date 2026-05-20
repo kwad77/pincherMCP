@@ -415,6 +415,61 @@ func TestPlanChange_DepthPartitioning_AndCrossPackage(t *testing.T) {
 	}
 }
 
+// TestPlanChange_CapsBlastRadius — plan_change against a hotspot (a
+// symbol with hundreds of inbound callers) used to emit every caller
+// row, blowing the envelope past the MCP token limit (#1727, same
+// class as #1723). The depth_* / cross_package lists are now capped
+// at maxBlastRows; blast_radius.summary keeps the TRUE counts and
+// blast_radius.truncated flags the truncation.
+func TestPlanChange_CapsBlastRadius(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+	writeGoFile(t, root, "go.mod", "module example.com/hot\n\ngo 1.22\n")
+	writeGoFile(t, root, "hot/hot.go", "package hot\n\nfunc Hot() int { return 1 }\n")
+
+	// 60 distinct callers of hot.Hot — well over maxBlastRows (50).
+	const callerCount = 60
+	var b strings.Builder
+	b.WriteString("package callers\n\nimport \"example.com/hot/hot\"\n\n")
+	for i := 0; i < callerCount; i++ {
+		fmt.Fprintf(&b, "func Caller%d() int { return hot.Hot() }\n", i)
+	}
+	writeGoFile(t, root, "callers/callers.go", b.String())
+
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handlePlanChange(context.Background(), makeReq(map[string]any{
+		"target":  "hot/hot.go",
+		"project": res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	br, ok := body["blast_radius"].(map[string]any)
+	if !ok {
+		t.Fatal("missing blast_radius")
+	}
+	d1, _ := br["depth_1_callers"].([]any)
+	if len(d1) > 50 {
+		t.Errorf("depth_1_callers rendered %d rows; must be capped at 50", len(d1))
+	}
+	summary, _ := br["summary"].(map[string]any)
+	if c, _ := summary["depth_1_count"].(float64); int(c) < callerCount {
+		t.Errorf("summary depth_1_count = %v; expected the true total ≥ %d "+
+			"(the count must survive truncation, not collapse to the capped list length)", c, callerCount)
+	}
+	if tr, _ := br["truncated"].(bool); !tr {
+		t.Error("blast_radius.truncated = false; expected true when the caller list exceeds the cap")
+	}
+}
+
 // TestPlanChange_TestFilesIntersecting — positive: test files crossing
 // the call graph are surfaced separately. Both TestCharge and
 // TestProcessOrder live in *_test.go files matching isTestFile, so
