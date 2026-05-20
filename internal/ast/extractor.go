@@ -2684,8 +2684,16 @@ func extractJava(source []byte, relPath string) *FileResult {
 }
 
 var rubyRE = &regexExtractor{
-	funcRE:  regexp.MustCompile(`(?m)^\s*def\s+(?P<name>[a-zA-Z_][a-zA-Z0-9_?!]*)`),
-	classRE: regexp.MustCompile(`(?m)^class\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:\s*<\s*(?P<parent>[A-Z][A-Za-z0-9_:]*))?`),
+	// funcRE skips an optional `self.` / `Receiver.` prefix: a Ruby
+	// class method is `def self.create` (or `def Klass.create`), and
+	// without the skip the name group captured `self` — every class
+	// method in the file then collided on the name "self".
+	funcRE: regexp.MustCompile(`(?m)^\s*def\s+(?:self\.|[A-Za-z_][A-Za-z0-9_:]*\.)?(?P<name>[a-zA-Z_][a-zA-Z0-9_?!]*)`),
+	// classRE: `^\s*` (not bare `^`) so a class indented inside a
+	// module — idiomatic Ruby, `module Foo` then `  class Bar` — is
+	// captured, not just column-0 classes; and `module` is a type
+	// container Ruby code declares constantly, so it joins `class`.
+	classRE: regexp.MustCompile(`(?m)^\s*(?:class|module)\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:\s*<\s*(?P<parent>[A-Z][A-Za-z0-9_:]*))?`),
 }
 
 func extractRuby(source []byte, relPath string) *FileResult {
