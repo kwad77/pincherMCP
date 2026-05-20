@@ -41,9 +41,10 @@ var ProjectMarkers = []string{
 //     Code from there.
 //
 // The strictness depends on context: a manual `pincher index PATH` is
-// an explicit user action and only trips on the catastrophic cases ($HOME,
-// /). The SessionStart hook can target any directory and needs the
-// broader project-marker check.
+// an explicit user action and only trips on the catastrophic cases
+// (filesystem root, $HOME, the OS temp directory). The SessionStart
+// hook can target any directory and needs the broader project-marker
+// check.
 //
 // Lives in internal/index (not cmd/pinch) so both the CLI entry point
 // AND the MCP `index` tool handler share the guard — pre-#790 only the
@@ -74,6 +75,18 @@ func IsBloatTrap(path string, hookMode bool) (bool, string) {
 			return true, "user home directory"
 		}
 	}
+	// #1781: the OS temp directory is structurally as bad a target as
+	// $HOME — it's never a real project root, churns constantly (so any
+	// index is stale immediately), and accumulates transient junk (build
+	// caches, extracted archives, test scratch dirs) that bloats the DB.
+	// On the dogfood machine a manual index landed 767k symbols from
+	// %LOCALAPPDATA%\Temp. Exact-match only: subdirectories of temp
+	// (e.g. a `t.TempDir()` test corpus) are still legitimate targets.
+	if tmp := osTempDir(); tmp != "" {
+		if abs == tmp {
+			return true, "OS temp directory"
+		}
+	}
 
 	if !hookMode {
 		return false, ""
@@ -100,4 +113,19 @@ func userHomeDir() string {
 		return resolved
 	}
 	return home
+}
+
+// osTempDir resolves the platform temp directory (%TMP%/%TEMP% on
+// Windows, $TMPDIR or /tmp on Unix) and follows symlinks so the
+// comparison in IsBloatTrap matches a caller-supplied path that
+// resolves to the same location. Returns "" when os.TempDir is empty.
+func osTempDir() string {
+	tmp := os.TempDir()
+	if tmp == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
+		return resolved
+	}
+	return tmp
 }
