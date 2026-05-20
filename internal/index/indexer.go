@@ -1116,6 +1116,17 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		// only some of those subpasses run).
 		resolveBlockStart = time.Now()
 
+		// #1772: snapshot the CALLS edge count before the resolve runs.
+		// A scoped incremental resolve that nets a CALLS-edge loss is the
+		// #986 graph-degradation signature; capturing before/after turns
+		// that silent drift into an attributable logged event (the
+		// before count is the WAL-committed state — the resolve passes
+		// commit independently and haven't run yet).
+		callsEdgesBefore := -1
+		_ = idx.store.RO().QueryRow(
+			`SELECT COUNT(*) FROM edges WHERE project_id=? AND kind='CALLS'`,
+			projectID).Scan(&callsEdgesBefore)
+
 		// #1317: deferred from the top of Index() — only the resolve
 		// block consumes pythonRoots, so on a no-change tick we skip
 		// the WalkDir entirely.
@@ -1287,6 +1298,32 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			"project_id", projectID,
 			"duration_ms", time.Since(resolveBlockStart).Milliseconds(),
 		)
+
+		// #1772: a scoped incremental resolve must not net-lose CALLS
+		// edges. When it does, the graph has drifted (#986 family) —
+		// log a warning naming the scope shape so the loss is
+		// attributable to a specific tick. The Watch self-heal (#1774 /
+		// #1786) restores the graph; this surfaces the root-cause
+		// signal that static analysis of the resolve path couldn't pin.
+		// Scoped-resolve only — a full resolve re-derives every edge so
+		// a count drop there just reflects deleted source.
+		if useResolveScope && callsEdgesBefore >= 0 {
+			callsEdgesAfter := -1
+			if idx.store.RO().QueryRow(
+				`SELECT COUNT(*) FROM edges WHERE project_id=? AND kind='CALLS'`,
+				projectID).Scan(&callsEdgesAfter) == nil &&
+				callsEdgesAfter >= 0 && callsEdgesAfter < callsEdgesBefore {
+				slog.Warn("pincher.resolve.scoped_calls_net_loss",
+					"project_id", projectID,
+					"before", callsEdgesBefore,
+					"after", callsEdgesAfter,
+					"lost", callsEdgesBefore-callsEdgesAfter,
+					"scope_files", len(resolveScope),
+					"extracted_files", len(extractedFiles),
+					"referrer_files", len(referrerFiles),
+				)
+			}
+		}
 	}
 
 	// #326: Tail-pass GC for files removed from disk. The walker yields only
