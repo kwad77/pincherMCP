@@ -102,6 +102,34 @@ func TestDiagnoseEmptyIndex_AllBlocked(t *testing.T) {
 	}
 }
 
+// #1773: a healthy fully-indexed project's no-change incremental
+// re-index hash-skips its source files (Skipped>0) AND blocks its
+// lockfiles / minified bundles (Blocked>0). That must diagnose as
+// incremental_no_change — NOT all_files_blocked, which would tell the
+// agent a project with thousands of indexed symbols is a vendor-only
+// directory with no sources. The all_files_blocked branch now requires
+// Skipped==0 (blocked must be the ONLY reason nothing processed).
+func TestDiagnoseEmptyIndex_BlockedPlusSkippedIsIncrementalNoChange_1773(t *testing.T) {
+	t.Parallel()
+	meta := diagnoseEmptyIndex(&index.IndexResult{
+		Files:   0,
+		Blocked: 71,
+		Skipped: 874,
+		Symbols: 0,
+	}, false)
+	if meta == nil {
+		t.Fatal("expected diagnosis, got nil")
+	}
+	if meta["empty_reason"] != EmptyReasonIncrementalNoChange {
+		t.Errorf("empty_reason = %v, want %s — blocked lockfiles must not mask a healthy hash-skip pass",
+			meta["empty_reason"], EmptyReasonIncrementalNoChange)
+	}
+	diag, _ := meta["diagnosis"].(string)
+	if !strings.Contains(diag, "all 874 files unchanged") {
+		t.Errorf("diagnosis = %q, want 'all 874 files unchanged'", diag)
+	}
+}
+
 func TestDiagnoseEmptyIndex_NonZeroSymbolsSilent(t *testing.T) {
 	t.Parallel()
 	// Healthy run — no diagnosis surfaced.

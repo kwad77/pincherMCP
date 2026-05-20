@@ -102,6 +102,32 @@ var stopwordFrames = map[string]bool{
 	"IndexError":  true,
 	"NameError":   true,
 	"RuntimeError": true,
+	// #1787: Go runtime panic-message vocabulary. "index out of range
+	// [3] with length 3" / "slice bounds out of range" / "invalid
+	// memory address or nil pointer dereference" / "goroutine N
+	// [running]" appear verbatim in nearly every Go panic — these
+	// English words are never the load-bearing symbol token but BM25-
+	// match unrelated symbols whose signature happens to contain them
+	// (e.g. `out` matched `runGoInstall(out io.Writer)`).
+	"out":         true,
+	"range":       true,
+	"with":        true,
+	"length":      true,
+	"bounds":      true,
+	"running":     true,
+	"created":     true,
+	"address":     true,
+	"dereference": true,
+	// #1787: VCS-host / import-path host segments. Every Go stack frame
+	// is fully qualified (`github.com/<org>/<repo>/...`); these host
+	// tokens appear in every frame and are never symbol names. Interior
+	// path segments (org / repo / `internal`) are dropped structurally
+	// by the slash-delimited filter in parseStackFrames.
+	"github": true,
+	"gitlab": true,
+	"bitbucket": true,
+	"golang": true,
+	"gopkg":  true,
 }
 
 // parseStackFrames extracts candidate symbol names and file paths from
@@ -119,8 +145,28 @@ func parseStackFrames(errorText string) (names []string, files []string) {
 	// stack. A function that appears 5 times in the trace is more
 	// likely the failure site than one that appears once.
 	nameCounts := map[string]int{}
-	for _, m := range stackFrameRE.FindAllStringSubmatch(errorText, -1) {
-		tok := m[1]
+	for _, idx := range stackFrameRE.FindAllStringSubmatchIndex(errorText, -1) {
+		// idx = [fullStart, fullEnd, group1Start, group1End].
+		tok := errorText[idx[2]:idx[3]]
+		// #1787: drop slash-delimited path segments. A Go stack frame is
+		// `host/org/repo/internal/pkg.Func` — the org / repo / internal
+		// segments sit between slashes and are never symbol names, yet
+		// they appear in every frame and BM25-match unrelated symbols
+		// (the repo name `pincher` matched a Homebrew Ruby class). A
+		// token followed by `/` is a path prefix; a token with `/` on
+		// BOTH sides is an interior segment — drop both. The trailing
+		// `pkg.Func` token is preceded by `/` but followed by `.`/`(`,
+		// so it survives.
+		var before, after byte
+		if idx[2] > 0 {
+			before = errorText[idx[2]-1]
+		}
+		if idx[3] < len(errorText) {
+			after = errorText[idx[3]]
+		}
+		if after == '/' || (before == '/' && after == '/') {
+			continue
+		}
 		if stopwordFrames[tok] {
 			continue
 		}
@@ -297,14 +343,23 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 	candidates := map[string]*candidate{}
 
 	maxRaw := maxSuspects * 3
-	for _, name := range frameNames {
+	// #1751: search every parsed frame name, bounded by NAME COUNT — not
+	// by accumulated-candidate count. The old `len(candidates) >= maxRaw`
+	// break filled its budget on high-frequency package-path tokens
+	// (`internal`, `index`, `com` — repeated once per Go frame, so they
+	// out-rank function names that appear once) and broke before the
+	// once-mentioned crash functions (`resolveCalls`, `Index`) were ever
+	// searched. A real trace carries well under maxFrameSearches distinct
+	// tokens; the cap only guards a pathological input.
+	const maxFrameSearches = 60
+	for i, name := range frameNames {
 		// #1595: per-iteration cancellation check. N frame names × one
 		// SQL search each; without this the loop runs to completion
 		// after the client cancels.
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		if len(candidates) >= maxRaw {
+		if i >= maxFrameSearches {
 			break
 		}
 		// SearchSymbolsByCorpus does BM25 over the code corpus; we
@@ -440,10 +495,29 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 			evidence []string
 		)
 		// Frame-match: always fires for entries in `ranked` since
-		// they were seeded by a frame search.
+		// they were seeded by a frame search. #1751: an EXACT-name
+		// match (the symbol is literally named by a trace frame) is
+		// the strongest implication signal and must outrank a loose
+		// BM25 hit — the receiver-type token `Indexer` BM25-matches
+		// every `*Indexer` method, so a flat score let an unrelated
+		// hub method (`New`, fan-in 500) edge out the real crash site.
 		if len(r.c.frameMatches) > 0 {
-			score += 0.45
 			evidence = append(evidence, "stack_frame_match")
+			exactName := false
+			for tok := range r.c.frameMatches {
+				if strings.EqualFold(tok, r.c.Name) {
+					exactName = true
+					break
+				}
+			}
+			if exactName {
+				score += 0.45
+				evidence = append(evidence, "stack_frame_exact_name_match")
+			} else {
+				// Loose match — the token appears in the symbol's
+				// signature or qualified name but isn't its name.
+				score += 0.20
+			}
 		}
 		if len(r.c.frameMatches) > 1 {
 			score += 0.10

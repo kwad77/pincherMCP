@@ -63,10 +63,27 @@ type adrMatch struct {
 // symbol (when input was an id or single-symbol search hit) or a
 // file with its symbols (when input was a file path).
 type targetSummary struct {
-	File             string     `json:"file,omitempty"`
-	SymbolsAffected  []blastRow `json:"symbols_affected"`
-	ResolutionPath   string     `json:"resolution_path"` // "symbol_id" | "file_path" | "name_search"
+	File                     string     `json:"file,omitempty"`
+	SymbolsAffected          []blastRow `json:"symbols_affected"`
+	SymbolsAffectedTotal     int        `json:"symbols_affected_total"`
+	SymbolsAffectedTruncated bool       `json:"symbols_affected_truncated"`
+	ResolutionPath           string     `json:"resolution_path"` // "symbol_id" | "file_path" | "name_search"
 }
+
+// maxAffectedSymbols bounds the file-path branch's symbol enumeration.
+// A `plan_change` against a large file (server.go has hundreds of
+// callable symbols) otherwise enumerated every one into
+// target.symbols_affected AND fired an inbound trace per symbol — the
+// #1727 cap bounded blast_radius but missed this list, so the envelope
+// still blew the MCP token limit (90 KB on server.go) and the trace
+// loop ran tens of seconds. symbols_affected_total keeps the true
+// count; symbols_affected_truncated flags the cut.
+const maxAffectedSymbols = 50
+
+// maxRelatedADRs bounds the advisory ADR list. A file-shaped target in
+// a package with many session-log ADRs matched dozens of full ADR
+// bodies — a secondary contributor to the #1727 oversize envelope.
+const maxRelatedADRs = 20
 
 func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
@@ -142,6 +159,12 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				// with non-actionable hits.
 				switch sym.Kind {
 				case "Function", "Method", "Class", "Interface", "Type":
+					resolved.SymbolsAffectedTotal++
+					// Cap the enumerated list — see maxAffectedSymbols.
+					if len(resolved.SymbolsAffected) >= maxAffectedSymbols {
+						resolved.SymbolsAffectedTruncated = true
+						continue
+					}
 					resolved.SymbolsAffected = append(resolved.SymbolsAffected, blastRow{
 						ID:            sym.ID,
 						Name:          sym.Name,
@@ -219,6 +242,13 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				}
 			}
 		}
+	}
+
+	// The id / name-search branches cap their own list small (1 / ≤3)
+	// and don't set the total explicitly — backfill it so the field is
+	// honest for every resolution path, not just file_path.
+	if resolved.SymbolsAffectedTotal == 0 {
+		resolved.SymbolsAffectedTotal = len(resolved.SymbolsAffected)
 	}
 
 	if len(resolved.SymbolsAffected) == 0 {
@@ -369,6 +399,9 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			if len(relatedADRs) >= maxRelatedADRs {
+				break
+			}
 			v := adrs[k]
 			combined := strings.ToLower(k + " " + v)
 			for kw, why := range keywords {
@@ -388,10 +421,19 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	// rendered lists are truncated, with blast_radius.truncated set so
 	// the consumer knows the lists are shorter than the counts. Fixed
 	// cap — no new tool-contract parameter (v1.0 surface freeze).
-	const maxBlastRows = 50
+	// #1788: 50 rows × 3 lists is ~45 KB of blastRow JSON on a hub
+	// symbol — `plan_change db.Open` hit 61 KB and exceeded the MCP
+	// per-call token cap, so the agent got nothing usable on exactly
+	// the symbols it most needs to plan around. The summary block keeps
+	// the true counts; the per-row lists past ~25 add no decision value
+	// once `blast_radius_high` has already fired. test_files_intersecting
+	// was entirely uncapped — a hub is exercised by hundreds of test
+	// files.
+	const maxBlastRows = 25
 	depth1Total := len(depth1)
 	depth2Total := len(depth2plus)
 	crossPkgTotal := len(crossPackage)
+	testFilesTotal := len(testFilesList)
 	blastTruncated := false
 	if len(depth1) > maxBlastRows {
 		depth1 = depth1[:maxBlastRows]
@@ -403,6 +445,10 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	}
 	if len(crossPackage) > maxBlastRows {
 		crossPackage = crossPackage[:maxBlastRows]
+		blastTruncated = true
+	}
+	if len(testFilesList) > maxBlastRows {
+		testFilesList = testFilesList[:maxBlastRows]
 		blastTruncated = true
 	}
 
@@ -442,7 +488,7 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				"depth_1_count":       depth1Total,
 				"depth_2_count":       depth2Total,
 				"cross_package_count": crossPkgTotal,
-				"test_file_count":     len(testFilesList),
+				"test_file_count":     testFilesTotal,
 			},
 			// True when depth_*_callers / cross_package lists were
 			// truncated to maxBlastRows — the *_count fields above

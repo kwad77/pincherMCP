@@ -665,6 +665,46 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 		}
 	}
 
+	// #1747 v0.89: pre-pass collecting package-level `var X = &T{...}` /
+	// `T{...}` / `new(T)` / `var X *T` → same-package type name. Calls
+	// through a package-global singleton (`var pyRE = &regexExtractor{}`;
+	// `pyRE.extract(...)`) otherwise carry only the enclosing method's
+	// receiver type — empty for a free function — so the #423 receiver-
+	// type binding has nothing to resolve against and the edge drops.
+	// The visible cost: a type only ever instantiated as a package-level
+	// singleton looks 100% dead, so dead_code / audit_unused confidently
+	// flagged `*regexExtractor.extract` (15+ call sites) as safe-to-delete.
+	// Same-package type idents only; qualified types (`*foo.Bar`) are
+	// skipped — resolveByReceiverType can't map them without import-graph
+	// awareness anyway.
+	filePkgVarTypes := map[string]string{}
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if name == nil || name.Name == "_" {
+					continue
+				}
+				var typ string
+				if vs.Type != nil {
+					typ = goSamePackageTypeName(vs.Type)
+				} else if i < len(vs.Values) {
+					typ = goValueExprTypeName(vs.Values[i])
+				}
+				if typ != "" {
+					filePkgVarTypes[name.Name] = typ
+				}
+			}
+		}
+	}
+
 	// Walk top-level declarations
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
@@ -691,7 +731,7 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 				// every `contains(...)` call edge to the unrelated
 				// project Function `contains`).
 				localCallables := goLocalCallableNames(d)
-				calls := extractGoCalls(d.Body, sym.QualifiedName, receiverType, localCallables)
+				calls := extractGoCalls(d.Body, sym.QualifiedName, receiverType, localCallables, filePkgVarTypes)
 				result.Edges = append(result.Edges, calls...)
 				// #247 #3: identifier references for READS edges. Walks
 				// the same body — costs an extra ast.Inspect pass per
@@ -840,9 +880,24 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 			}
 			specStart := fset.Position(sp.Pos())
 			specEnd := fset.Position(sp.End())
-			for _, name := range sp.Names {
+			for i, name := range sp.Names {
 				if name == nil || name.Name == "_" {
 					continue
+				}
+				// #1778: stamp the inferred same-package type for the
+				// unambiguous singleton shapes (`var X = &T{}` / `T{}` /
+				// `new(T)`, or an explicit `var X *T`) into Signature.
+				// #1747's extract-time pre-pass only sees declarations in
+				// the file currently being extracted; a singleton called
+				// from a sibling file carries no ReceiverType. Persisting
+				// the type on the Variable symbol lets resolveCalls
+				// recover it cross-file. Empty for every other var/const
+				// shape — the inference must be certain, never guessed.
+				varType := ""
+				if sp.Type != nil {
+					varType = goSamePackageTypeName(sp.Type)
+				} else if i < len(sp.Values) {
+					varType = goValueExprTypeName(sp.Values[i])
 				}
 				syms = append(syms, ExtractedSymbol{
 					Name:          name.Name,
@@ -854,6 +909,7 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 					EndLine:       specEnd.Line,
 					Docstring:     doc,
 					IsExported:    ast.IsExported(name.Name),
+					Signature:     varType,
 				})
 			}
 		}
@@ -861,7 +917,7 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 	return syms
 }
 
-func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNames map[string]bool) []ExtractedEdge {
+func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNames map[string]bool, pkgVarTypes map[string]string) []ExtractedEdge {
 	var edges []ExtractedEdge
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -885,16 +941,78 @@ func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNam
 		if !strings.Contains(callee, ".") && localNames[callee] {
 			return true
 		}
+		// #1747: a call through a package-level singleton var
+		// (`pyRE.extract(...)`) needs the *var's* type, not the
+		// enclosing method's receiver, for the #423 receiver-type
+		// binding. Only for a 2-segment `IDENT.method` callee whose
+		// IDENT is a known package var and isn't shadowed by a local,
+		// param, or receiver of the same name (localNames covers all
+		// three). 3-segment `recv.field.method` shapes keep the
+		// enclosing receiver — resolveByReceiverType case-3 needs it.
+		recvType := receiverType
+		if dot := strings.IndexByte(callee, '.'); dot > 0 &&
+			!strings.ContainsRune(callee[dot+1:], '.') {
+			if base := callee[:dot]; !localNames[base] {
+				if vt := pkgVarTypes[base]; vt != "" {
+					recvType = vt
+				}
+			}
+		}
 		edges = append(edges, ExtractedEdge{
 			FromQN:       callerQN,
 			ToName:       callee,
 			Kind:         "CALLS",
 			Confidence:   0.7, // unresolved, lower confidence
-			ReceiverType: receiverType,
+			ReceiverType: recvType,
 		})
 		return true
 	})
 	return edges
+}
+
+// goSamePackageTypeName returns a same-package type name (with a
+// leading `*` for pointer types) for an explicit type expression, or
+// "" for qualified (`foo.Bar`), composite, or unsupported types. Used
+// by the #1747 package-var-type pre-pass.
+func goSamePackageTypeName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			return "*" + id.Name
+		}
+	}
+	return ""
+}
+
+// goValueExprTypeName infers a same-package type name from a package-
+// level var initializer for the three unambiguous singleton shapes:
+// `&T{...}` → `*T`, `T{...}` → `T`, `new(T)` → `*T`. Anything else
+// (function-call results, conversions, qualified types) returns "" —
+// the inference must be certain, never guessed. Used by #1747.
+func goValueExprTypeName(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.UnaryExpr:
+		if v.Op == token.AND {
+			if cl, ok := v.X.(*ast.CompositeLit); ok {
+				if id, ok := cl.Type.(*ast.Ident); ok {
+					return "*" + id.Name
+				}
+			}
+		}
+	case *ast.CompositeLit:
+		if id, ok := v.Type.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.CallExpr:
+		if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "new" && len(v.Args) == 1 {
+			if argID, ok := v.Args[0].(*ast.Ident); ok {
+				return "*" + argID.Name
+			}
+		}
+	}
+	return ""
 }
 
 // goLocalCallableNames returns the set of identifier names in d's
@@ -1737,6 +1855,13 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 
 	var currentClass string
 	var currentClassEnd int
+	// #1783: currentClassQN is the qualified-name scope segment for
+	// inner methods — normally identical to currentClass, but a Rust
+	// trait-impl sets it to `Type::Trait` so methods in `impl Debug for
+	// Foo` and `impl Display for Foo` get distinct QNs while both still
+	// carry Parent=Foo. Kept in lockstep with currentClass: every site
+	// that sets or clears currentClass sets or clears this too.
+	var currentClassQN string
 
 	// #1375: track the most-recent top-level function so Variable
 	// declarations inside its body get a scoped QN
@@ -1810,6 +1935,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// "Base " (#817).
 					parent := strings.TrimSpace(namedGroup(rx.classRE, m, "parent"))
 					currentClass = name
+					currentClassQN = name
 					currentClassEnd = endLine
 					classMatchedThisLine = true
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
@@ -1831,6 +1957,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 		// Reset class context when past its end
 		if lineNum > currentClassEnd {
 			currentClass = ""
+			currentClassQN = ""
 		}
 
 		// #1183 v0.67: scope-only container (Rust impl blocks). Sets
@@ -1846,6 +1973,15 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					endLine := offsetToLine(lineOffsets, endByte)
 					currentClass = name
 					currentClassEnd = endLine
+					// #1783: a trait-impl (`impl Trait for Type`) scopes
+					// inner methods' QN as `Type::Trait::method` so two
+					// trait impls of the same type don't collide on
+					// qualified_name. Parent stays Type. An inherent
+					// `impl Type` has no trait group → QN scope = Type.
+					currentClassQN = name
+					if trait := namedGroup(rx.scopeRE, m, "trait"); trait != "" {
+						currentClassQN = name + opts.modSep + trait
+					}
 				}
 			}
 		}
@@ -1861,6 +1997,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// member declarations come out as Method/parent=Iface
 					// rather than top-level Function/parent="".
 					currentClass = name
+					currentClassQN = name
 					currentClassEnd = endLine
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
@@ -1893,6 +2030,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// enum's method set. Mirrors the #819 interfaceRE
 					// fix for the same shape.
 					currentClass = name
+					currentClassQN = name
 					currentClassEnd = endLine
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
 						Name: name, QualifiedName: qn, Kind: "Enum",
@@ -1934,7 +2072,17 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					if currentClass != "" {
 						kind = "Method"
 						parent = moduleQN(relPath, opts.modSep) + opts.modSep + currentClass
-						qn = parent + opts.modSep + name
+						// #1783: the QN scope is currentClassQN, which for
+						// a Rust trait-impl is `Type::Trait` — so methods
+						// in different trait impls of the same type get
+						// distinct QNs. Parent stays the bare type. For
+						// every other scope kind currentClassQN ==
+						// currentClass, so the QN is unchanged.
+						qnScope := currentClassQN
+						if qnScope == "" {
+							qnScope = currentClass
+						}
+						qn = moduleQN(relPath, opts.modSep) + opts.modSep + qnScope + opts.modSep + name
 					} else if len(funcStack) > 0 {
 						// #1422: nested function — scope to the
 						// enclosing function's QN so the inner's
@@ -2344,15 +2492,30 @@ var tsRE = &regexExtractor{
 			`(?m)(?:^|\s)(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\((?:[^()]|\([^)]*\))*\)\s*(?::\s*[\w<>\[\]\s,|&'"]+\s*)?=>|` +
 			`(?m)^\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s+)?function\s*\(|` +
 			`(?m)^\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s*)?\((?:[^()]|\([^)]*\))*\)\s*(?::\s*[\w<>\[\]\s,|&'"]+\s*)?=>`),
+	// #1761: `abstract` joins the modifier set — an `abstract foo(): T;`
+	// method declaration otherwise had `abstract` captured as the name
+	// and then failed the `(` anchor, dropping every abstract method.
+	// static / abstract are mutually exclusive in TS so they share one
+	// optional group.
 	methodRE: regexp.MustCompile(
-		`(?m)^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)?(?:static\s+)?(?:async\s+)?\*?\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
+		`(?m)^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)?(?:static\s+|abstract\s+)?(?:async\s+)?\*?\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
 	// #261: top-level const/let/var emit Variable symbols (TS parity
 	// with JS).
 	varRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=`),
-	classRE:     regexp.MustCompile(`(?m)^(?:export\s+)?(?:abstract\s+)?class\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Za-z_$][A-Za-z0-9_$]*))?`),
-	interfaceRE: regexp.MustCompile(`(?m)^(?:export\s+)?interface\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
-	enumRE:      regexp.MustCompile(`(?m)^(?:export\s+)?(?:const\s+)?enum\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
+	// #1761: classRE / interfaceRE / enumRE lead with `^\s*` — a class /
+	// interface / enum nested inside a `namespace { … }` block is
+	// indented, and a bare `^` anchor dropped all of them (only methodRE
+	// already tolerated indentation).
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:abstract\s+)?class\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Za-z_$][A-Za-z0-9_$]*))?`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?interface\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const\s+)?enum\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
 	importRE:    regexp.MustCompile(`(?m)^import\s+.*?from\s+['"](?P<path>[^'"]+)['"]`),
+	// #1761: `namespace Foo { … }` is intentionally NOT a scopeRE here.
+	// A TS namespace body holds `function`/`class`/`const` declarations,
+	// not method-syntax members — and the regex framework switches a
+	// scoped body to methodRE, which would drop every `function` inside
+	// the namespace. Parenting namespace members correctly needs a
+	// framework change (a scope that keeps funcRE); tracked separately.
 }
 
 func extractTypeScript(source []byte, relPath string) *FileResult {
@@ -2609,11 +2772,17 @@ var rustRE = &regexExtractor{
 	// Pre-fix, `^(?:pub...)fn name` required the declaration at column 0,
 	// dropping every fn inside `impl Type { ... }` blocks. Same shape as
 	// the PHP regex which already allows indentation.
+	// #1757: every anchored Rust regex carries the same leading `\s*`
+	// #1183 gave funcRE — a struct / trait / enum / impl / use inside a
+	// `mod { … }` block is indented, and a bare `^` anchor dropped all
+	// of them (and orphaned the methods of an indented `impl`). All five
+	// keywords are definition keywords, so tolerating indentation adds
+	// no false positives.
 	funcRE:      regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?(?:async\s+)?fn\s+(?P<name>[a-z_][a-z0-9_]*)`),
-	classRE:     regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?struct\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
-	interfaceRE: regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?trait\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
-	enumRE:      regexp.MustCompile(`(?m)^(?:pub(?:\(.*?\))?\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
-	importRE:    regexp.MustCompile(`(?m)^use\s+(?P<path>[a-zA-Z0-9_:]+)`),
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?struct\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?trait\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:pub(?:\(.*?\))?\s+)?enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
+	importRE:    regexp.MustCompile(`(?m)^\s*use\s+(?P<path>[a-zA-Z0-9_:]+)`),
 	// #1183 v0.67: impl blocks. Both forms — `impl Type { ... }` and
 	// `impl Trait for Type { ... }` — set the receiver type (`Type`,
 	// in the second form the second capture) as the scope so inner
@@ -2621,7 +2790,14 @@ var rustRE = &regexExtractor{
 	// on the type are tolerated (`impl<T> Vec<T>` extracts `Vec`).
 	// The two alternations: the "for-form" first so its match wins
 	// when both could fire on `impl Trait for Type<X>`.
-	scopeRE: regexp.MustCompile(`(?m)^impl(?:<[^>]*>)?\s+(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
+	// #1783: capture the trait name from the `for`-form so inner
+	// methods can QN as `Type::Trait::method`. Without it, `impl Debug
+	// for Foo` and `impl Display for Foo` both scope methods to `Foo`
+	// and the two `fmt` methods collide on qualified_name (359 such
+	// collisions on a real Rust corpus). The `trait` group is inside
+	// the optional `for`-form group, so it's empty for an inherent
+	// `impl Foo { ... }`.
+	scopeRE: regexp.MustCompile(`(?m)^\s*impl(?:<[^>]*>)?\s+(?:(?P<trait>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
 }
 
 // extractRust: 'pub' keyword marks exports; approximated here as always-exported.
@@ -3537,8 +3713,16 @@ func extractLua(source []byte, relPath string) *FileResult {
 
 var zigRE = &regexExtractor{
 	// Zig: `fn name(...)`, `pub fn name(...)`, `export fn name(...)`.
-	funcRE:  regexp.MustCompile(`(?m)^\s*(?:pub\s+|export\s+|extern\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
-	classRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*struct`),
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+|export\s+|extern\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
+	// #1755: a Zig named type is `const Name = <kind> {…}`. classRE
+	// owns struct / union / opaque; enumRE owns enum. Pre-fix classRE
+	// matched only `struct`, so enum / union / opaque types vanished
+	// entirely. `packed` / `extern` layout qualifiers are tolerated.
+	// `union(enum)` (tagged union) matches classRE — the `(enum)` tag
+	// follows `union`; enumRE requires `enum` immediately after `=`,
+	// so there is no double-match.
+	classRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*(?:packed\s+|extern\s+)?(?:struct|union|opaque)\b`),
+	enumRE:  regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*enum\b`),
 }
 
 func extractZig(source []byte, relPath string) *FileResult {
@@ -3581,7 +3765,15 @@ var dartRE = &regexExtractor{
 	// but require either a type token before the name OR a static
 	// modifier. The trailing `\(` anchor reduces false-positives.
 	funcRE:      regexp.MustCompile(`(?m)^\s*(?:static\s+|external\s+|abstract\s+)?(?:async\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>?,\s]*?\s+)?(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
-	classRE:     regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?class\s+(?P<name>[A-Z][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Z][A-Za-z0-9_$]*))?`),
+	// #1753: tolerate any sequence of Dart 3 class modifiers
+	// (`sealed` / `final` / `base` / `interface` / `mixin` — alongside
+	// the pre-existing `abstract`). A modifier the regex didn't accept
+	// made the whole `class` line miss, so the type vanished AND every
+	// method inside it degraded from Method (parented) to an orphan
+	// Function. No double-emission with interfaceRE: its name capture
+	// requires `[A-Z]…` and the keyword `class` is lowercase, so
+	// `interface class Foo` / `mixin class Foo` only match classRE.
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+(?P<name>[A-Z][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Z][A-Za-z0-9_$]*))?`),
 	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?(?:mixin|interface)\s+(?P<name>[A-Z][A-Za-z0-9_$]*)`),
 	enumRE:      regexp.MustCompile(`(?m)^\s*enum\s+(?P<name>[A-Z][A-Za-z0-9_$]*)`),
 }

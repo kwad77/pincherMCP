@@ -371,6 +371,36 @@ func (s *Server) handleOnboardModule(ctx context.Context, req *mcp.CallToolReque
 			})
 	}
 
+	// #1789: the in/out boundary is derived from the CALLS graph, which
+	// under-resolves cross-package METHOD calls (no import-graph
+	// receiver-type resolution). When that gap bites, a consumed module
+	// looks falsely isolated — external_consumers empty, and
+	// external_dependencies dominated by test files (which reach
+	// cross-package *package functions* that DO resolve). Caveat it so
+	// the boundary isn't read as authoritative.
+	isTestPath := func(id string) bool {
+		p := id
+		if i := strings.Index(p, "::"); i >= 0 {
+			p = p[:i]
+		}
+		return strings.Contains(p, "_test.") || strings.Contains(p, ".test.") ||
+			strings.Contains(p, ".spec.") || strings.Contains(p, "_spec.")
+	}
+	testDeps := 0
+	for _, e := range externalDeps {
+		if isTestPath(e.FromID) {
+			testDeps++
+		}
+	}
+	depsAllTest := len(externalDeps) > 0 && testDeps*5 >= len(externalDeps)*4 // >=80%
+	if len(externalConsumers) == 0 || depsAllTest {
+		meta["warnings_v2"] = []map[string]any{{
+			"code":     "boundary_calls_under_resolved",
+			"severity": "warning",
+			"message": "the module boundary is derived from the CALLS graph, which under-resolves cross-package method calls (no import-graph receiver-type resolution). external_consumers being empty, or external_dependencies being dominated by test files, often means the boundary is incomplete — not that the module is isolated. Corroborate with `search` / `grep` before concluding nothing depends on this module.",
+		}}
+	}
+
 	data := map[string]any{
 		"scope":                       scope,
 		"entry_points_local_to_scope": entryPoints,

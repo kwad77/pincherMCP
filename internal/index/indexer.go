@@ -237,6 +237,28 @@ const qnPreloadThreshold = 1000
 // Index indexes a repository at the given path (incremental by default).
 // If force=true, all files are re-parsed regardless of content hash.
 func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*IndexResult, error) {
+	return idx.indexImpl(ctx, repoPath, force, false)
+}
+
+// ResolveOnly re-runs the resolve passes over the project's FULL
+// persisted pending_edges pool without re-extracting any file. It is
+// the #1772 self-heal: an incremental-tick resolve can leave the graph
+// with fewer edges than a force-reindex would produce (edges silently
+// dropped from files outside the tick's resolve scope), and this
+// restores them. Cheap relative to a force-reindex — extraction (the
+// ~82% cost per #1611) is skipped; only the walk's hash-check + the
+// project-wide resolve run. The watcher calls it once a project goes
+// idle after a burst of incremental ticks.
+func (idx *Indexer) ResolveOnly(ctx context.Context, repoPath string) (*IndexResult, error) {
+	return idx.indexImpl(ctx, repoPath, false, true)
+}
+
+// indexImpl is the shared Index / ResolveOnly core. resolveOnly forces
+// the resolve block to run even on a no-change pass (totalFiles==0),
+// which — because the incremental-scope gate also keys on totalFiles —
+// runs the resolve project-wide, identical to a force-reindex's
+// resolve phase. resolveOnly never skips work; it is purely additive.
+func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resolveOnly bool) (*IndexResult, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("abs path: %w", err)
@@ -1075,7 +1097,13 @@ func (idx *Indexer) Index(ctx context.Context, repoPath string, force bool) (*In
 	// runs unconditionally and handles deleted files; resolve doesn't
 	// clean up edges to deleted symbols anyway, so deletions don't
 	// need to trigger a resolve.
-	resolveChanged := force || totalFiles > 0
+	//
+	// #1772: resolveOnly deliberately bypasses this no-change gate. The
+	// self-heal pass re-resolves the full pending_edges pool to restore
+	// edges an earlier incremental tick dropped — and since totalFiles
+	// is 0 on that pass, the incremental-scope gate below stays off, so
+	// the resolve runs project-wide (identical to a force-reindex).
+	resolveChanged := force || totalFiles > 0 || resolveOnly
 	var resolveBlockStart time.Time
 	if resolveChanged {
 		// #1613 v0.85 follow-up: total resolve-block timing so the
@@ -1818,6 +1846,23 @@ func (idx *Indexer) Watch(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
+	// #1772: projectID → an incremental reindex has run since the last
+	// resolve-only self-heal, so the graph may have edges dropped by a
+	// scoped resolve. Set on every reindex; consumed (once) the first
+	// idle tick after the project settles. Watcher-goroutine-local — no
+	// mutex (the watcher is the only reader/writer).
+	selfHealNeeded := map[string]bool{}
+	// #1772 follow-up: the idle self-heal above only fires on an
+	// active→idle transition. A continuously-active project (a busy
+	// dogfood/dev session with edits every tick) never reaches the
+	// changed==0 branch, so the scoped-resolve edge drift accumulates
+	// unbounded for the whole session. Count incremental reindexes per
+	// project and force a resolve-only pass once the count crosses the
+	// threshold, even while the project is still active — bounding the
+	// drift window regardless of whether the project ever goes idle.
+	incrementalSinceHeal := map[string]int{}
+	const selfHealReindexThreshold = 8
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1860,6 +1905,23 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				// differs from the running binary.
 				binaryDrifted := p.BinaryVersion != "" && idx.binaryVersion != "" && p.BinaryVersion != idx.binaryVersion
 				if len(changed) == 0 && !binaryDrifted {
+					// #1772 self-heal: once a project settles (no changes
+					// this tick) after a burst of incremental reindexes,
+					// run ONE resolve-only pass — re-resolve the full
+					// pending_edges pool, no re-extraction — to restore
+					// any CALLS / IMPORTS / READS edges a scoped
+					// incremental resolve dropped. Consumed once per
+					// active→idle settle, so a steady-state idle project
+					// costs nothing. Deleted before the call so a
+					// persistent ResolveOnly error doesn't retry-loop
+					// every tick.
+					if selfHealNeeded[p.ID] {
+						delete(selfHealNeeded, p.ID)
+						delete(incrementalSinceHeal, p.ID)
+						if _, err := idx.ResolveOnly(ctx, p.Path); err != nil {
+							slog.Warn("pincher.watcher.selfheal.err", "project", p.Name, "err", err)
+						}
+					}
 					continue
 				}
 				slog.Debug("pincher.watcher.reindex",
@@ -1901,6 +1963,26 @@ func (idx *Indexer) Watch(ctx context.Context) {
 						slog.Warn("pincher.watcher.reindex.err", "project", p.Name, "err", err)
 					}
 				}(p)
+				// #1772: an incremental reindex just ran — its scoped
+				// resolve may have dropped edges from files outside the
+				// scope. Flag the project so the next idle tick runs the
+				// resolve-only self-heal.
+				selfHealNeeded[p.ID] = true
+				// #1772 follow-up: bound the drift window for a project
+				// that never goes idle. After selfHealReindexThreshold
+				// incremental reindexes with no intervening idle settle,
+				// force the resolve-only pass now rather than waiting for
+				// an active→idle transition that may never come.
+				incrementalSinceHeal[p.ID]++
+				if incrementalSinceHeal[p.ID] >= selfHealReindexThreshold {
+					delete(incrementalSinceHeal, p.ID)
+					delete(selfHealNeeded, p.ID)
+					slog.Debug("pincher.watcher.selfheal.forced",
+						"project", p.Name, "reason", "reindex_threshold")
+					if _, err := idx.ResolveOnly(ctx, p.Path); err != nil {
+						slog.Warn("pincher.watcher.selfheal.err", "project", p.Name, "err", err)
+					}
+				}
 			}
 		}
 	}
@@ -3846,6 +3928,47 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		return ""
 	}
 
+	// resolveBySingletonVar handles #1778: a Go method call through a
+	// package-level singleton var declared in a sibling file of the same
+	// package (`defaultPythonRunner.extract(...)` where
+	// `var defaultPythonRunner = &pythonRunner{}` lives in another file).
+	// #1747's extract-time pre-pass is file-scoped, so such a call carries
+	// no ReceiverType and resolveByReceiverType has nothing to bind. The
+	// extractor now stamps the inferred singleton type into the Variable
+	// symbol's Signature; recover it here and feed resolveByReceiverType.
+	// Only fires for a 2-segment `base.method` callee whose base resolves
+	// to a same-package Variable symbol with a non-empty type signature.
+	singletonVarCache := map[string]string{}
+	resolveBySingletonVar := func(toName, fromQN string) string {
+		if toName == "" || fromQN == "" {
+			return ""
+		}
+		dot := strings.IndexByte(toName, '.')
+		if dot <= 0 || dot >= len(toName)-1 || strings.Contains(toName[dot+1:], ".") {
+			return "" // need exactly base.method
+		}
+		base := toName[:dot]
+		pkg := fromQN
+		if i := strings.Index(pkg, "."); i > 0 {
+			pkg = pkg[:i]
+		}
+		varQN := pkg + "." + base
+		recvType, cached := singletonVarCache[varQN]
+		if !cached {
+			for _, s := range lookupSyms(varQN) {
+				if s.Kind == "Variable" && s.Signature != "" {
+					recvType = s.Signature
+					break
+				}
+			}
+			singletonVarCache[varQN] = recvType
+		}
+		if recvType == "" {
+			return ""
+		}
+		return resolveByReceiverType(toName, recvType, fromQN)
+	}
+
 	// lookupPythonCall expands a Python call's to_name through every
 	// source-root candidate, returning the first hit. The extractor has
 	// already alias-rewritten imported names and self.X → class.X, so
@@ -3951,6 +4074,14 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// looser project-wide receiver-method fallback.
 		if toID == "" {
 			toID = resolveByReceiverType(e.ToName, e.ReceiverType, e.FromQN)
+		}
+		// #1778: cross-file package-var singleton. When the call carries
+		// no ReceiverType (the #1747 pre-pass is file-scoped and didn't
+		// see the singleton's declaration), recover the receiver type
+		// from the package-level Variable symbol's signature and retry
+		// the #423 binding. Go callers only — the QN shape is Go-specific.
+		if toID == "" && e.ReceiverType == "" && strings.HasSuffix(e.FromFile, ".go") {
+			toID = resolveBySingletonVar(e.ToName, e.FromQN)
 		}
 		// #1177 v0.72: TS/JS receiver-type fallback for files where
 		// the Go pkg-prefix path can't reach the real Class.method

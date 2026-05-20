@@ -3994,7 +3994,7 @@ func (s *Server) registerTools() {
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"language":{"type":"string","description":"Language filter, e.g. 'Go' or 'Python'. Default: empty (all languages above the min_confidence floor). The default min_confidence=0.95 already restricts results to AST-tier extractors (Go, Python, JSON/YAML/HCL/TOML); pin language= only when you want a single language."},
-				"kinds":{"type":"string","description":"Comma-separated kinds to consider. Default: 'Function,Method' (applied store-side when this field is empty). Pass e.g. 'Function,Method,Class' to widen. Setting/Variable/Section are excluded by default since dead-DATA has different semantics than dead-code."},
+				"kinds":{"type":"string","description":"Comma-separated kinds to consider. Default: 'Function,Method' (applied store-side when this field is empty) — the only kinds with reliable inbound-edge coverage. Class/Type/Interface/Enum CAN be passed but the graph tracks no type-reference edges, so type-kind results are high-false-positive (a struct used only as &T{} looks dead) and advisory-only; the response stamps a _meta warning when they're requested. Setting/Variable/Section are excluded by default since dead-DATA has different semantics than dead-code."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (default 0.95 — biases to AST-tier languages: Go, Python, JSON/YAML/HCL/TOML). Drop to 0.0 to include regex-tier languages (higher false-positive rate from under-resolved cross-file CALLS)."},
 				"limit":{"type":"integer","description":"Max symbols returned (default 100, max 500)."}
 			}
@@ -4179,7 +4179,7 @@ func (s *Server) registerTools() {
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"language":{"type":"string","description":"Restrict to a single language (e.g. Go, Python). Empty = all languages."},
-				"kinds":{"type":"string","description":"Comma-separated symbol kinds. Default 'Function,Method'. Add Type/Class to widen the candidate set."},
+				"kinds":{"type":"string","description":"Comma-separated symbol kinds. Default 'Function,Method' — the only kinds with reliable inbound-edge coverage. Type/Class/Interface/Enum CAN be passed but the graph has no type-reference edges, so type-kind candidates are high-false-positive (a struct used only as &T{} looks dead) and advisory-only; the response stamps a _meta warning when they're requested."},
 				"max_results":{"type":"integer","description":"Maximum candidates to audit (default 20, max 100). Each candidate fires one TraceViaCTE call at confirm_depth."},
 				"confirm_depth":{"type":"integer","description":"BFS depth for the per-candidate confirmation trace (default 2, max 4). Depth-1 means 'any direct caller anywhere'; depth-2 picks up one-hop indirection through wrappers/forwarders."},
 				"min_confidence":{"type":"number","description":"Extractor confidence floor (default 0.95 — AST-extracted languages only). Drop to 0.85 to include stable-regex extractors at known false-positive cost; the deep-trace step will still classify but the candidate population is wider."}
@@ -4246,10 +4246,10 @@ func (s *Server) registerTools() {
 	// warning so agents confirm with the user before invoking.
 	s.addTool(&mcp.Tool{
 		Name:        "init",
-		Description: "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / cursor / cursor-legacy / windsurf / aider / codex / zed / gemini / warp / vscode (Copilot rules) / vscode-mcp (Copilot Chat MCP) / jetbrains (#1335, .idea/.junie/guidelines.md) / antigravity (#1385, .antigravity/rules.md) / detect / all. The continue target is rejected outright (always-global; whole request errors); the codex target appears as a `skipped_always_global` per-result entry (its config is always under ~/.codex — use the `pincher init --target=codex` CLI to write it). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out} for in-scope writes, or {target, action: \"skipped_always_global\", reason} for filtered targets.",
+		Description: "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / cursor / cursor-legacy / windsurf / aider / codex / zed / gemini / warp / vscode (Copilot rules) / vscode-mcp (Copilot Chat MCP) / jetbrains (#1335, .junie/guidelines.md) / antigravity (#1385, .agents/rules/pincher.md rules) / antigravity-mcp (#1770, ~/.gemini/antigravity/mcp_config.json MCP-server registration) / detect / all. The continue target is rejected outright (always-global; whole request errors); the codex and antigravity-mcp targets appear as `skipped_always_global` per-result entries (their config is always global — under ~/.codex and ~/.gemini/antigravity respectively — use the `pincher init --target=<name>` CLI to write them). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out} for in-scope writes, or {target, action: \"skipped_always_global\", reason} for filtered targets.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
-				"target":{"type":"string","description":"Editor target: claude|cursor|cursor-legacy|windsurf|aider|codex|zed|gemini|warp|vscode|vscode-mcp|jetbrains|antigravity|detect|all. Default: detect."},
+				"target":{"type":"string","description":"Editor target: claude|cursor|cursor-legacy|windsurf|aider|codex|zed|gemini|warp|vscode|vscode-mcp|jetbrains|antigravity|antigravity-mcp|detect|all. Default: detect."},
 				"write":{"type":"boolean","description":"If true, mutate target files. Default false (dry-run)."},
 				"project_path":{"type":"string","description":"Project root override. Defaults to the session project root."}
 			}
@@ -4312,7 +4312,13 @@ func diagnoseEmptyIndex(result *index.IndexResult, force bool) map[string]any {
 			"diagnosis":    "no indexable source files found at this path",
 			"hint":         "verify the path is a project root (contains code in a recognised language) or check `pincher health` for indexing failures",
 		}
-	case result.Files == 0 && result.Blocked > 0:
+	case result.Files == 0 && result.Blocked > 0 && result.Skipped == 0:
+		// #1773: all_files_blocked requires Skipped==0 — blocked must be
+		// the ONLY reason nothing was processed. A healthy project with
+		// indexed sources hash-skips its unchanged files (Skipped>0) and
+		// also blocks its lockfiles (Blocked>0) on every no-change tick;
+		// without the Skipped==0 guard that benign incremental pass was
+		// misdiagnosed as a vendor-only directory with no sources.
 		return map[string]any{
 			"empty_reason": EmptyReasonAllFilesBlocked,
 			"diagnosis":    fmt.Sprintf("all %d files were blocked by ast.ShouldSkip (lockfiles, minified bundles, source maps)", result.Blocked),
@@ -8790,6 +8796,19 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			}
 		}
 	}
+	// #1780: type-shaped kinds (Class/Type/Interface/Enum) have no
+	// inbound-edge tracking — the graph carries CALLS/READS/WRITES/
+	// IMPORTS but no type-reference edge, so a struct used only as
+	// `&T{}` looks dead. Results for those kinds are high-false-positive
+	// and advisory-only; warn so a caller who widened `kinds` doesn't
+	// read a type-kind "dead" row as a safe-to-delete verdict.
+	for _, k := range kinds {
+		switch k {
+		case "Class", "Type", "Interface", "Enum":
+			kindWarnings = append(kindWarnings, fmt.Sprintf(
+				"kind %q has no inbound type-reference edges in the graph (only CALLS/READS/WRITES/IMPORTS are tracked) — type-kind results are high-false-positive and advisory-only, not safe-to-delete verdicts", k))
+		}
+	}
 	// #1045: validate language= against the project's actual language
 	// histogram, mirroring the kinds validation above. Pre-fix
 	// `dead_code language="Java"` on a Go-only project silently returned
@@ -11364,19 +11383,27 @@ func inferAuditPinchQL(task string) (pinchql, why string) {
 		// `(n:Function)` — Go's method-heavy idioms slipped through.
 		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
 			"structural audit — pinchQL lists exported non-test Go functions AND methods. Combine with trace(direction=inbound, include_tests=true) per result to spot test coverage"
-	default:
-		// Docstring audit is the canonical #467 example and still the
-		// most common shapeAudit query — keep it as the fallback.
+	case strings.Contains(t, "docstring") || strings.Contains(t, "undocumented") ||
+		strings.Contains(t, "comment"):
+		// Docstring audit is the canonical #467 example.
 		// #923: scope to Go + non-test. Regex-tier languages don't
 		// populate the docstring property (so 100% match the IS NULL
 		// filter), and test functions don't need docstrings by
-		// convention. Pre-fix the top results were JS handlers, Bash
-		// helpers, and `TestDashboardJS_*` — pure noise.
-		// #943: include Methods alongside Functions. On a method-heavy
-		// codebase (Go MCP server pattern) the previous Function-only
-		// template hid the majority of the coverage gap.
+		// convention. #943: include Methods alongside Functions.
 		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.docstring IS NULL AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
-			"structural audit — pinchQL filters on docstring/is_exported directly across Functions AND Methods. Scoped to Go (AST-extracted docstrings) and non-test symbols so regex-tier languages and tests don't flood the result. BM25 search of the literal phrase wouldn't surface anything"
+			"structural audit — pinchQL filters on docstring/is_exported directly across Functions AND Methods. Scoped to Go (AST-extracted docstrings) and non-test symbols so regex-tier languages and tests don't flood the result"
+	default:
+		// #1759: the task is audit-shaped ("find every X without Y") but
+		// its predicate ("writes to the DB", "lacks auth checks") is not
+		// a property pincher's graph indexes — guide cannot compile it
+		// into a precise WHERE clause. Emit the neutral candidate set
+		// (exported non-test Go Functions + Methods) and SAY SO. The
+		// previous fallback bolted on `n.docstring IS NULL` — an
+		// arbitrary filter unrelated to the task — with a `why` that
+		// claimed it WAS the audit, confidently wrong for every
+		// non-docstring audit.
+		return `MATCH (n) WHERE (n.kind="Function" OR n.kind="Method") AND n.is_exported=true AND n.is_test=false AND n.language='Go' RETURN n.name, n.file_path, n.kind LIMIT 50`,
+			"structural audit — your specific predicate isn't a property pincher's graph indexes, so guide can't compile it into a precise WHERE clause. This is the candidate set (exported non-test Go Functions + Methods); add a WHERE predicate you CAN express (see `schema` for available properties) or filter the results manually against your criterion"
 	}
 }
 

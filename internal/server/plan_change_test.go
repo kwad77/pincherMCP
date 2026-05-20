@@ -674,3 +674,74 @@ func TestPlanChange_IsRegistered(t *testing.T) {
 		t.Errorf("description should mention blast/pre-edit/caller intent; got %q", tool.Description)
 	}
 }
+
+// TestPlanChange_FilePath_CapsSymbolsAffected is the #1748 fix: a
+// plan_change against a large file must cap target.symbols_affected at
+// maxAffectedSymbols. Pre-fix the file branch enumerated every callable
+// symbol (server.go has hundreds) and fired an inbound trace per one —
+// the #1727 cap bounded blast_radius but missed this list, so the
+// envelope blew the MCP token limit (90 KB) and the trace loop ran
+// tens of seconds.
+func TestPlanChange_FilePath_CapsSymbolsAffected(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+	writeGoFile(t, root, "go.mod", "module example.com/big\n\ngo 1.22\n")
+	var b strings.Builder
+	b.WriteString("package big\n\n")
+	const nFuncs = maxAffectedSymbols + 10
+	for i := 0; i < nFuncs; i++ {
+		fmt.Fprintf(&b, "func Fn%d() int { return %d }\n\n", i, i)
+	}
+	writeGoFile(t, root, "big/big.go", b.String())
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handlePlanChange(context.Background(), makeReq(map[string]any{
+		"target":  "big/big.go",
+		"project": res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	tgt := body["target"].(map[string]any)
+	syms, _ := tgt["symbols_affected"].([]any)
+	if len(syms) > maxAffectedSymbols {
+		t.Errorf("symbols_affected has %d entries, want ≤ %d", len(syms), maxAffectedSymbols)
+	}
+	if total, _ := tgt["symbols_affected_total"].(float64); int(total) != nFuncs {
+		t.Errorf("symbols_affected_total = %v, want %d (the true count)", total, nFuncs)
+	}
+	if trunc, _ := tgt["symbols_affected_truncated"].(bool); !trunc {
+		t.Errorf("symbols_affected_truncated = false, want true (%d funcs > cap %d)", nFuncs, maxAffectedSymbols)
+	}
+}
+
+// TestPlanChange_FilePath_SmallFileNotTruncated is the control: a file
+// under the cap reports symbols_affected_truncated=false and a total
+// equal to the rendered list length.
+func TestPlanChange_FilePath_SmallFileNotTruncated(t *testing.T) {
+	t.Parallel()
+	srv, _, projectID := setupPlanChangeTestServer(t)
+	out, err := srv.handlePlanChange(context.Background(), makeReq(map[string]any{
+		"target":  "payments/charge.go",
+		"project": projectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	tgt := body["target"].(map[string]any)
+	syms, _ := tgt["symbols_affected"].([]any)
+	if trunc, _ := tgt["symbols_affected_truncated"].(bool); trunc {
+		t.Error("symbols_affected_truncated = true on a small (3-symbol) file")
+	}
+	if total, _ := tgt["symbols_affected_total"].(float64); int(total) != len(syms) {
+		t.Errorf("symbols_affected_total = %v, want %d (== rendered list length)", total, len(syms))
+	}
+}

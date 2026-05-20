@@ -94,6 +94,44 @@ func TestIsBloatTrap_HookModeAllowsRecognizedProject(t *testing.T) {
 	}
 }
 
+// #1781: the OS temp directory itself is refused regardless of mode —
+// it's never a real project root and indexing it bloats the DB with
+// transient junk (a manual index landed 767k symbols from %TEMP% on the
+// dogfood machine).
+func TestIsBloatTrap_OSTempDir(t *testing.T) {
+	tmp := os.TempDir()
+	if tmp == "" {
+		t.Skip("no OS temp dir")
+	}
+	for _, hook := range []bool{true, false} {
+		trap, reason := IsBloatTrap(tmp, hook)
+		if !trap {
+			t.Errorf("IsBloatTrap(%q, hook=%v) = false; want true (OS temp dir)", tmp, hook)
+		}
+		if reason == "" {
+			t.Errorf("hook=%v: empty reason for OS temp dir", hook)
+		}
+	}
+}
+
+// Control: a subdirectory of the OS temp dir is a legitimate target —
+// pincher's own tests index `t.TempDir()` corpora. The exact-match
+// guard must not refuse them.
+func TestIsBloatTrap_TempSubdirNotRefused(t *testing.T) {
+	// t.TempDir() lives under os.TempDir() but is not the temp root.
+	dir := t.TempDir()
+	markerPath := filepath.Join(dir, "go.mod")
+	if err := os.WriteFile(markerPath, []byte("module x\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if trap, reason := IsBloatTrap(dir, true); trap {
+		t.Errorf("a project subdir under temp must not be refused; got refused (%s)", reason)
+	}
+	if trap, reason := IsBloatTrap(dir, false); trap {
+		t.Errorf("manual mode: a subdir under temp must not be refused; got refused (%s)", reason)
+	}
+}
+
 func TestIsBloatTrap_NonexistentPath(t *testing.T) {
 	// A path that doesn't exist: filepath.EvalSymlinks fails and we fall
 	// back to the absolute path. Catastrophic-case checks still apply,

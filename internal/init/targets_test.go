@@ -35,7 +35,7 @@ func withHome(t *testing.T, dir string) {
 }
 
 func TestInitTargets_RegistryShape(t *testing.T) {
-	want := []string{"claude", "cursor", "cursor-legacy", "windsurf", "aider", "continue", "codex", "zed", "gemini", "warp", "vscode", "vscode-mcp", "jetbrains", "antigravity"}
+	want := []string{"claude", "cursor", "cursor-legacy", "windsurf", "aider", "continue", "codex", "zed", "gemini", "warp", "vscode", "vscode-mcp", "jetbrains", "antigravity", "antigravity-mcp"}
 	if len(AllTargets) != len(want) {
 		t.Fatalf("registry has %d targets, want %d", len(AllTargets), len(want))
 	}
@@ -448,19 +448,24 @@ func TestPolicyMarkdown_NotEmpty(t *testing.T) {
 	}
 }
 
-// ─── jetbrains (.idea/.junie/guidelines.md) ──────────────────────────────────
-// #1335 v0.76 parity wave 2.
+// ─── jetbrains (.junie/guidelines.md) ────────────────────────────────────────
+// #1335 v0.76 parity wave 2; path corrected #1767.
 
-// Positive: PathFn produces the expected project-relative path.
+// Positive: PathFn produces Junie's project-root path. #1767: must be
+// `.junie/guidelines.md` — the directory Junie reads — NOT the pre-fix
+// `.idea/.junie/guidelines.md`, which Junie ignores.
 func TestJetBrainsTarget_PathFn_ProjectLocal(t *testing.T) {
 	cwd := "/proj/myrepo"
 	got, err := JetBrainsTarget.PathFn(cwd, false)
 	if err != nil {
 		t.Fatalf("PathFn: %v", err)
 	}
-	want := filepath.Join(cwd, ".idea", ".junie", "guidelines.md")
+	want := filepath.Join(cwd, ".junie", "guidelines.md")
 	if got != want {
 		t.Errorf("PathFn = %q, want %q", got, want)
+	}
+	if strings.Contains(got, ".idea") {
+		t.Errorf("PathFn still nests .junie/ under .idea/ — Junie reads .junie/ at the project root: %q", got)
 	}
 }
 
@@ -516,24 +521,29 @@ func TestJetBrainsTarget_WriteIdempotent(t *testing.T) {
 	}
 }
 
-// ─── antigravity (.antigravity/rules.md) ─────────────────────────────────────
-// #1368.
+// ─── antigravity (.agents/rules/pincher.md) ──────────────────────────────────
+// #1368, #1765.
 
-// Positive: PathFn produces the expected project-relative path.
+// Positive: PathFn produces Antigravity's workspace-rules path. #1765:
+// must be `.agents/rules/pincher.md` — the directory Antigravity reads
+// — NOT the pre-fix `.antigravity/rules.md`, which Antigravity ignores.
 func TestAntigravityTarget_PathFn_ProjectLocal(t *testing.T) {
 	cwd := "/proj/myrepo"
 	got, err := AntigravityTarget.PathFn(cwd, false)
 	if err != nil {
 		t.Fatalf("PathFn: %v", err)
 	}
-	want := filepath.Join(cwd, ".antigravity", "rules.md")
+	want := filepath.Join(cwd, ".agents", "rules", "pincher.md")
 	if got != want {
 		t.Errorf("PathFn = %q, want %q", got, want)
 	}
+	if strings.Contains(got, ".antigravity") {
+		t.Errorf("PathFn still uses the .antigravity/ path Antigravity does not read: %q", got)
+	}
 }
 
-// Negative: --global is rejected loudly with a message that routes
-// users to the IDE's preferences UI.
+// Negative: --global is rejected; the message routes users to the
+// `gemini` target, which owns ~/.gemini/GEMINI.md.
 func TestAntigravityTarget_PathFn_GlobalRejected(t *testing.T) {
 	_, err := AntigravityTarget.PathFn("/proj/x", true)
 	if err == nil {
@@ -544,22 +554,22 @@ func TestAntigravityTarget_PathFn_GlobalRejected(t *testing.T) {
 	}
 }
 
-// Positive: detection fires on .antigravity/.
-func TestAntigravityTarget_DetectFn_FiresOnAntigravityDir(t *testing.T) {
+// Positive: detection fires on the .agents/ workspace directory.
+func TestAntigravityTarget_DetectFn_FiresOnAgentsDir(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".antigravity"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".agents"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if !AntigravityTarget.DetectFn(dir) {
-		t.Error("DetectFn returned false despite .antigravity/ being present")
+		t.Error("DetectFn returned false despite .agents/ being present")
 	}
 }
 
-// Negative: no .antigravity/ means not an Antigravity project.
-func TestAntigravityTarget_DetectFn_FalseOnNonAntigravityDir(t *testing.T) {
+// Negative: no .agents/ means not an Antigravity project.
+func TestAntigravityTarget_DetectFn_FalseOnNonAgentsDir(t *testing.T) {
 	dir := t.TempDir()
 	if AntigravityTarget.DetectFn(dir) {
-		t.Error("DetectFn returned true on a directory without .antigravity/")
+		t.Error("DetectFn returned true on a directory without .agents/")
 	}
 }
 

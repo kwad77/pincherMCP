@@ -242,6 +242,60 @@ func TopLevel() {
 	}
 }
 
+const pkgSingletonSrc = `package svc
+
+type Extractor struct{}
+func (e *Extractor) Run() {}
+
+var defaultExtractor = &Extractor{}
+
+func Process() {
+	defaultExtractor.Run()
+}
+`
+
+// TestResolveCalls_PkgSingletonReceiver_Binds is the #1747 fix: a
+// method reached only through a package-level singleton var
+// (`var defaultExtractor = &Extractor{}`; `defaultExtractor.Run()`)
+// must resolve. Pre-fix the CALLS edge carried no receiver-type hint
+// (the caller is a free function, so the enclosing receiver is empty),
+// so resolveByReceiverType had nothing to bind and (*Extractor).Run
+// looked 100% dead — dead_code / audit_unused flagged it safe-to-delete.
+func TestResolveCalls_PkgSingletonReceiver_Binds(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "svc/svc.go", pkgSingletonSrc)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	pid := db.ProjectIDFromPath(dir)
+	syms, _ := store.GetSymbolsByName(pid, "Run", 5)
+	var runID string
+	for _, s := range syms {
+		if s.Kind == "Method" && s.Parent == "svc.*Extractor" {
+			runID = s.ID
+		}
+	}
+	if runID == "" {
+		t.Fatal("(*Extractor).Run not extracted")
+	}
+	results, err := store.TraceViaCTEScoped(pid, runID, "inbound", []string{"CALLS"}, 3)
+	if err != nil {
+		t.Fatalf("TraceViaCTEScoped: %v", err)
+	}
+	var sawProcess bool
+	for _, r := range results {
+		sym, _ := store.GetSymbol(r.SymbolID)
+		if sym != nil && sym.Name == "Process" {
+			sawProcess = true
+		}
+	}
+	if !sawProcess {
+		t.Error("(*Extractor).Run has no inbound caller — the package-singleton " +
+			"call defaultExtractor.Run() did not resolve (#1747)")
+	}
+}
+
 // TestResolveCalls_FieldNotInStructFields_FallsThrough exercises the
 // case-3 path where the struct exists but the named field doesn't —
 // e.g. a typo at the call site, or a field that was removed. The

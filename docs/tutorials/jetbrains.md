@@ -5,7 +5,7 @@ PyCharm, GoLand, WebStorm, RubyMine, etc.) so the AI Assistant /
 Junie agent reaches for pincher tools when navigating code.
 
 JetBrains AI Assistant reads project-level rules from
-`.idea/.junie/guidelines.md`. `pincher init --target=jetbrains` writes
+`.junie/guidelines.md`. `pincher init --target=jetbrains` writes
 the pincher policy block to that file.
 
 For the long-form manual see [`docs/REFERENCE.md`](../REFERENCE.md).
@@ -41,7 +41,7 @@ pincher index
 
 ```bash
 pincher init --target=jetbrains
-# pincher init [jetbrains]: wrote /home/you/code/your-project/.idea/.junie/guidelines.md
+# pincher init [jetbrains]: wrote /home/you/code/your-project/.junie/guidelines.md
 ```
 
 The block lands inside `<!-- pincher:start --> ... <!-- pincher:end -->`
@@ -103,10 +103,10 @@ pincher stats
   JetBrains project, drop the same policy block into the IDE's
   global instructions (Settings → Tools → AI Assistant → Custom
   Instructions).
-- **`.idea/` is sometimes in `.gitignore`.** If your team
-  `.gitignore`s the whole `.idea/` directory, the `.junie/guidelines.md`
-  file won't be shared with teammates. Add an exception:
-  `!.idea/.junie/` (and `!.idea/.junie/**`) in `.gitignore`.
+- **Commit `.junie/guidelines.md`.** It lives at the project root —
+  a sibling of `.idea/`, not nested inside it — so a `.gitignore` rule
+  for `.idea/` does not affect it. Track and review it like any other
+  shared config so the whole team gets the same Junie guidelines.
 - **`notifications/tools/list_changed` support varies by AI Assistant
   version.** Most recent JetBrains releases honor it; older versions
   require an IDE restart to surface tools added by a mid-session

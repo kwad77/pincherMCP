@@ -76,6 +76,7 @@ var AllTargets = []Target{
 	VSCodeMCPTarget,
 	JetBrainsTarget,
 	AntigravityTarget,
+	AntigravityMCPTarget,
 }
 
 // FindTarget looks up a target by its --target value.
@@ -557,40 +558,44 @@ func continueJSONWriter(existing, policy string) (string, string) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// jetbrains (.idea/.junie/guidelines.md — JetBrains AI Assistant project rules)
+// jetbrains (.junie/guidelines.md — JetBrains Junie project rules)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// JetBrains AI Assistant (the AI feature shipped in 2024+ IDE builds —
+// JetBrains Junie (the agentic AI companion in 2024+ IDE builds —
 // IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc.) reads project-level
-// instructions from `.idea/.junie/guidelines.md` (the "Junie" code-
-// generation companion's per-project conventions file). #1335 v0.76
-// parity wave 2.
+// guidelines from the `.junie/` directory at the project root: per
+// JetBrains' Junie documentation it looks for `.junie/AGENTS.md`
+// (modern, preferred), `.junie/guidelines.md` (legacy, still
+// supported), then root `AGENTS.md`. #1335 v0.76 parity wave 2.
 //
-// Detection: the `.idea/` directory is the canonical JetBrains project
-// marker — every JetBrains IDE creates it on first open. The presence
-// of `.idea/` alone is enough to identify the user as a JetBrains
-// user; we don't require `.junie/` to pre-exist because part of this
-// target's value is bootstrapping the directory for new adopters.
+// #1767: the target previously wrote `.idea/.junie/guidelines.md` —
+// nesting `.junie/` inside the IDE-config directory `.idea/`. Junie
+// reads `.junie/` at the project ROOT (a sibling of `.idea/`), so the
+// nested file was never read. It now writes `./.junie/guidelines.md`:
+// the legacy-but-supported, Junie-specific path — the right pincher-
+// owned file (writing `AGENTS.md` would clobber the user's shared
+// cross-tool rules).
 //
-// Path: project-local only. JetBrains AI Assistant's global-rules
-// path varies per IDE (preferences UI rather than a stable filesystem
-// path), so SupportsGlobal stays false — pincher init --global
-// against this target is an error, matching the cursor / windsurf /
-// aider pattern. Users who want global JetBrains rules add them via
-// the IDE's Preferences > Tools > AI Assistant settings.
+// Detection: the `.idea/` directory is still the canonical "is this a
+// JetBrains IDE project" marker — every JetBrains IDE creates it on
+// first open. `.junie/` may not pre-exist; writing the target
+// bootstraps it.
+//
+// Path: project-local only. Junie's global rules vary per IDE
+// (preferences UI), so SupportsGlobal stays false — matching the
+// cursor / windsurf / aider pattern.
 //
 // Writer: MergePolicyBlockBare (no front-matter header — the file is
-// plain markdown that AI Assistant inlines into its system prompt
-// when the file exists).
+// plain markdown that Junie inlines into its system prompt).
 
 var JetBrainsTarget = Target{
 	Name:     "jetbrains",
-	Describe: "JetBrains AI Assistant: ./.idea/.junie/guidelines.md (IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc.)",
+	Describe: "JetBrains Junie: ./.junie/guidelines.md (IntelliJ IDEA, PyCharm, GoLand, WebStorm, etc.)",
 	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
-			return "", fmt.Errorf("jetbrains target is project-only — global rules are configured via the IDE's Preferences > Tools > AI Assistant UI, not a stable filesystem path")
+			return "", fmt.Errorf("jetbrains target is project-only — global rules are configured via the IDE's Junie settings UI, not a stable filesystem path")
 		}
-		return filepath.Join(cwd, ".idea", ".junie", "guidelines.md"), nil
+		return filepath.Join(cwd, ".junie", "guidelines.md"), nil
 	},
 	DetectFn: func(cwd string) bool {
 		// `.idea/` is the JetBrains project marker — every JetBrains
@@ -604,24 +609,29 @@ var JetBrainsTarget = Target{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// antigravity (./.antigravity/rules.md — Google Antigravity IDE project rules)
+// antigravity (./.agents/rules/pincher.md — Google Antigravity IDE workspace rules)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Google Antigravity (Gemini-3 IDE, announced late 2025) follows the
-// `.<tool>/rules.md` project-rules convention common across the agent-IDE
-// ecosystem (mirrors `.cursor/rules` / `.windsurf/rules.md` shapes).
-// Adding it surfaces pincher to a fresh user base without requiring
-// hand-crafted MCP host configuration. #1368.
+// Google Antigravity (Gemini agent IDE) reads workspace rules from the
+// `.agents/` directory at the project root — `.agents/rules/` holds
+// supplementary rule files (alongside `.agents/workflows/` and
+// `.agents/skills/`); project-root `GEMINI.md` / `AGENTS.md` carry the
+// primary rules, and `~/.gemini/GEMINI.md` is the global surface.
 //
-// Detection: the `.antigravity/` directory at the project root is the
-// canonical marker. Presence alone confirms an Antigravity user;
-// `rules.md` may or may not exist yet (writing the target bootstraps it).
+// #1765: the target previously wrote `./.antigravity/rules.md`, a path
+// Antigravity does not read (the `.<tool>/rules.md` convention was a
+// guess and there is no `.antigravity/` directory in the product). It
+// now writes a dedicated `./.agents/rules/pincher.md` — the workspace-
+// supplements shape, mirroring the `cursor` target's
+// `.cursor/rules/pincher.mdc`: a pincher-owned file that re-runs
+// idempotently and never clobbers the user's own GEMINI.md / AGENTS.md.
 //
-// Path: project-local only. Antigravity's global-rules surface — if it
-// exposes one — lives in the IDE's preferences UI rather than a stable
-// filesystem path; SupportsGlobal stays false to match the
-// cursor / windsurf / jetbrains pattern. The error message routes users
-// to the IDE's settings explicitly so they don't silently get a no-op.
+// Detection: the `.agents/` directory at the project root is the
+// canonical Antigravity workspace marker (#1368).
+//
+// Path: project-local only. Antigravity's global rules live at
+// `~/.gemini/GEMINI.md` — already covered by the `gemini` target — so
+// SupportsGlobal stays false here to avoid two targets owning one file.
 //
 // Writer: MergePolicyBlockBare (no front-matter header — the file is
 // plain markdown the agent inlines into its system prompt). Mirrors
@@ -631,15 +641,15 @@ var JetBrainsTarget = Target{
 
 var AntigravityTarget = Target{
 	Name:     "antigravity",
-	Describe: "Google Antigravity: ./.antigravity/rules.md (Gemini-3 agent IDE)",
+	Describe: "Google Antigravity: ./.agents/rules/pincher.md (Gemini agent IDE workspace rules)",
 	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
-			return "", fmt.Errorf("antigravity target is project-only — global rules are configured via Antigravity's preferences UI, not a stable filesystem path")
+			return "", fmt.Errorf("antigravity target is project-only — Antigravity's global rules live at ~/.gemini/GEMINI.md; use `pincher init --target=gemini --global`")
 		}
-		return filepath.Join(cwd, ".antigravity", "rules.md"), nil
+		return filepath.Join(cwd, ".agents", "rules", "pincher.md"), nil
 	},
 	DetectFn: func(cwd string) bool {
-		_, err := os.Stat(filepath.Join(cwd, ".antigravity"))
+		_, err := os.Stat(filepath.Join(cwd, ".agents"))
 		return err == nil
 	},
 	WriteFn: MergePolicyBlockBare,
