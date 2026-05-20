@@ -12,7 +12,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /pincher ./cmd/pinch/
+
+# #1793: stamp main.version so the in-image binary reports the release
+# version, not the `dev` default. release.yml passes --build-arg VERSION;
+# a bare `docker build` with no arg falls back to `dev` (same as a
+# `go build` without the ldflag).
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /pincher ./cmd/pinch/
 
 # ── Stage 2: minimal runtime ─────────────────────────────────────────────────
 # scratch + CA certs = smallest possible image; no shell attack surface.
