@@ -3167,7 +3167,58 @@ func extractCSharp(source []byte, relPath string) *FileResult {
 	opts := simpleOpts(".", '{')
 	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
 	opts.extractCalls = true
-	return csRE.extract(source, relPath, "C#", opts)
+	result := csRE.extract(source, relPath, "C#", opts)
+	// #1693 v0.89: drop control-flow keywords mis-captured as methods.
+	// The C# funcRE shape `(?:[\w...]+\s+)+ name \(` matches
+	// `else if (cond)` — `else` is consumed as a return-type token,
+	// `if` lands in the name group, `(` follows. Every C# file with an
+	// `else if` then emits a phantom `if` Method; repeated `else if`s
+	// collide on the qualified name and `pincher doctor` reports
+	// `qualified_name_collision`. Mirrors C's dropCKeywordFalsePositives
+	// (#1148) — the #1389 cross-language sweep surfaced the same class
+	// in C# (and `for`/`while`/`switch`/`lock`/etc.).
+	result.Symbols = dropCSharpKeywordFalsePositives(result.Symbols)
+	return result
+}
+
+// csharpReservedKeywords is the set of C# reserved keywords the regex
+// extractor can accidentally lift to a Function/Method symbol when
+// they appear in `<token> KEYWORD (` position — overwhelmingly
+// `else if (`, but also `<modifier> for (` etc. after tokenization.
+// Every entry is a C# reserved word the compiler rejects as an
+// identifier, so dropping a symbol with one of these as its exact
+// name is safe regardless of context. Intentionally limited to
+// control-flow / statement keywords that take a `(` — contextual
+// keywords that ARE legal identifiers (`value`, `var`, `record`,
+// `async`, `await`, `yield`, `nameof`) are deliberately excluded so
+// a legitimately-named method isn't dropped.
+var csharpReservedKeywords = map[string]struct{}{
+	"if": {}, "else": {}, "for": {}, "foreach": {}, "while": {},
+	"do": {}, "switch": {}, "case": {}, "default": {}, "break": {},
+	"continue": {}, "return": {}, "goto": {}, "lock": {}, "using": {},
+	"fixed": {}, "try": {}, "catch": {}, "finally": {}, "throw": {},
+	"checked": {}, "unchecked": {},
+}
+
+// dropCSharpKeywordFalsePositives filters out Function/Method symbols
+// whose Name is exactly a C# reserved keyword (per
+// csharpReservedKeywords). Other kinds (Class/Interface/Enum) pass
+// through untouched — their REs don't have the `<token> name (`
+// ambiguity. Mirrors dropCKeywordFalsePositives (#1148 / #1693).
+func dropCSharpKeywordFalsePositives(syms []ExtractedSymbol) []ExtractedSymbol {
+	if len(syms) == 0 {
+		return syms
+	}
+	out := syms[:0]
+	for _, s := range syms {
+		if s.Kind == "Function" || s.Kind == "Method" {
+			if _, isKeyword := csharpReservedKeywords[s.Name]; isKeyword {
+				continue
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // Kotlin regex-tier extractor. #1457 v0.73 promotes from 0.70 →
