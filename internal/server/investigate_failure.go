@@ -551,6 +551,20 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		}
 	}
 
+	// Bound the callers union for transport. A hot suspect — a hub
+	// symbol named in the trace — has hundreds of depth-2 inbound
+	// callers; the uncapped union blew the envelope past the MCP
+	// token limit (#1723, same class as the plan_change blast-radius
+	// cap #1727). The loop above visits suspects in rank order, so a
+	// head truncation keeps the highest-ranked suspects' callers.
+	const maxCallers = 50
+	callersTotal := len(callers)
+	callersTruncated := false
+	if len(callers) > maxCallers {
+		callers = callers[:maxCallers]
+		callersTruncated = true
+	}
+
 	// ── Step 7: recent_changes intersection with implicated files ───────
 	implicatedFiles := map[string]bool{}
 	for _, sus := range suspects {
@@ -633,6 +647,11 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		"error_text":         truncateForOutput(errorText, 500),
 		"implicated_symbols": suspects,
 		"callers":            callers,
+		// callers_total is the full pre-truncation union size;
+		// callers_truncated flags that `callers` was capped for
+		// transport (the count survives, the list does not).
+		"callers_total":      callersTotal,
+		"callers_truncated":  callersTruncated,
 		"recent_changes":     recentChanges,
 		"rank":               suspects, // alias for the roadmap's contract; same data
 		"frames_parsed": map[string]any{

@@ -380,18 +380,44 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 		}
 	}
 
+	// Bound the caller lists for transport. plan_change against a file
+	// full of hotspots (an indexer with Index/New, a server with its
+	// handler set) traces thousands of unique inbound callers; the
+	// uncapped envelope blew past the MCP token limit (#1727,
+	// same class as #1723). The summary keeps the TRUE counts; the
+	// rendered lists are truncated, with blast_radius.truncated set so
+	// the consumer knows the lists are shorter than the counts. Fixed
+	// cap — no new tool-contract parameter (v1.0 surface freeze).
+	const maxBlastRows = 50
+	depth1Total := len(depth1)
+	depth2Total := len(depth2plus)
+	crossPkgTotal := len(crossPackage)
+	blastTruncated := false
+	if len(depth1) > maxBlastRows {
+		depth1 = depth1[:maxBlastRows]
+		blastTruncated = true
+	}
+	if len(depth2plus) > maxBlastRows {
+		depth2plus = depth2plus[:maxBlastRows]
+		blastTruncated = true
+	}
+	if len(crossPackage) > maxBlastRows {
+		crossPackage = crossPackage[:maxBlastRows]
+		blastTruncated = true
+	}
+
 	// ── Step 4: assemble envelope + warnings ────────────────────────────
 	const highBlastThreshold = 14 // per the roadmap's example
 	meta := map[string]any{}
 	var warnings []map[string]any
-	if len(depth1) > highBlastThreshold {
+	if depth1Total > highBlastThreshold {
 		warnings = append(warnings, map[string]any{
 			"code":                   "blast_radius_high",
 			"severity":               "warning",
-			"message":                fmt.Sprintf("depth-1 caller count is %d (threshold %d) — consider a staged refactor or interface-shim before the edit", len(depth1), highBlastThreshold),
-			"depth_1_caller_count":   len(depth1),
+			"message":                fmt.Sprintf("depth-1 caller count is %d (threshold %d) — consider a staged refactor or interface-shim before the edit", depth1Total, highBlastThreshold),
+			"depth_1_caller_count":   depth1Total,
 			"threshold":              highBlastThreshold,
-			"cross_package_callers":  len(crossPackage),
+			"cross_package_callers":  crossPkgTotal,
 			"suggestion":             "consider staged refactor",
 		})
 	}
@@ -413,11 +439,15 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 			"cross_package":           crossPackage,
 			"test_files_intersecting": testFilesList,
 			"summary": map[string]any{
-				"depth_1_count":       len(depth1),
-				"depth_2_count":       len(depth2plus),
-				"cross_package_count": len(crossPackage),
+				"depth_1_count":       depth1Total,
+				"depth_2_count":       depth2Total,
+				"cross_package_count": crossPkgTotal,
 				"test_file_count":     len(testFilesList),
 			},
+			// True when depth_*_callers / cross_package lists were
+			// truncated to maxBlastRows — the *_count fields above
+			// remain the full totals.
+			"truncated": blastTruncated,
 		},
 		"related_adrs": relatedADRs,
 		"_meta":        meta,
@@ -494,5 +524,6 @@ func emptyBlastRadius() map[string]any {
 			"cross_package_count": 0,
 			"test_file_count":     0,
 		},
+		"truncated": false,
 	}
 }

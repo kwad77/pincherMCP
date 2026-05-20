@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -358,6 +359,52 @@ func TestInvestigateFailure_RankByFrameMatch(t *testing.T) {
 	}
 	if !foundLogin {
 		t.Errorf("expected Login among suspects; got %v", suspects)
+	}
+}
+
+// TestInvestigateFailure_CapsCallersUnion — a hot suspect named in
+// the trace (a hub symbol with hundreds of inbound callers) used to
+// produce an unbounded callers union, blowing the envelope past the
+// MCP token limit (#1723). The callers list is now capped;
+// callers_total keeps the true union size and callers_truncated
+// flags the truncation.
+func TestInvestigateFailure_CapsCallersUnion(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+
+	const callerCount = 60
+	var b strings.Builder
+	b.WriteString("package hot\n\nfunc Hot() int { return 1 }\n\n")
+	for i := 0; i < callerCount; i++ {
+		fmt.Fprintf(&b, "func Caller%d() int { return Hot() }\n", i)
+	}
+	writeGoFile(t, root, "hot.go", b.String())
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handleInvestigateFailure(context.Background(), makeReq(map[string]any{
+		"error_text": "panic at hot.Hot (hot.go:3)",
+		"project":    res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	callers, _ := body["callers"].([]any)
+	if len(callers) > 50 {
+		t.Errorf("callers list rendered %d rows; must be capped at 50", len(callers))
+	}
+	if total, _ := body["callers_total"].(float64); int(total) < callerCount {
+		t.Errorf("callers_total = %v; expected the true union size ≥ %d "+
+			"(the total must survive truncation, not collapse to the capped list length)", total, callerCount)
+	}
+	if tr, _ := body["callers_truncated"].(bool); !tr {
+		t.Error("callers_truncated = false; expected true when the callers union exceeds the cap")
 	}
 }
 
