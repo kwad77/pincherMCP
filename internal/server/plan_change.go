@@ -63,10 +63,27 @@ type adrMatch struct {
 // symbol (when input was an id or single-symbol search hit) or a
 // file with its symbols (when input was a file path).
 type targetSummary struct {
-	File             string     `json:"file,omitempty"`
-	SymbolsAffected  []blastRow `json:"symbols_affected"`
-	ResolutionPath   string     `json:"resolution_path"` // "symbol_id" | "file_path" | "name_search"
+	File                     string     `json:"file,omitempty"`
+	SymbolsAffected          []blastRow `json:"symbols_affected"`
+	SymbolsAffectedTotal     int        `json:"symbols_affected_total"`
+	SymbolsAffectedTruncated bool       `json:"symbols_affected_truncated"`
+	ResolutionPath           string     `json:"resolution_path"` // "symbol_id" | "file_path" | "name_search"
 }
+
+// maxAffectedSymbols bounds the file-path branch's symbol enumeration.
+// A `plan_change` against a large file (server.go has hundreds of
+// callable symbols) otherwise enumerated every one into
+// target.symbols_affected AND fired an inbound trace per symbol — the
+// #1727 cap bounded blast_radius but missed this list, so the envelope
+// still blew the MCP token limit (90 KB on server.go) and the trace
+// loop ran tens of seconds. symbols_affected_total keeps the true
+// count; symbols_affected_truncated flags the cut.
+const maxAffectedSymbols = 50
+
+// maxRelatedADRs bounds the advisory ADR list. A file-shaped target in
+// a package with many session-log ADRs matched dozens of full ADR
+// bodies — a secondary contributor to the #1727 oversize envelope.
+const maxRelatedADRs = 20
 
 func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
@@ -142,6 +159,12 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				// with non-actionable hits.
 				switch sym.Kind {
 				case "Function", "Method", "Class", "Interface", "Type":
+					resolved.SymbolsAffectedTotal++
+					// Cap the enumerated list — see maxAffectedSymbols.
+					if len(resolved.SymbolsAffected) >= maxAffectedSymbols {
+						resolved.SymbolsAffectedTruncated = true
+						continue
+					}
 					resolved.SymbolsAffected = append(resolved.SymbolsAffected, blastRow{
 						ID:            sym.ID,
 						Name:          sym.Name,
@@ -219,6 +242,13 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				}
 			}
 		}
+	}
+
+	// The id / name-search branches cap their own list small (1 / ≤3)
+	// and don't set the total explicitly — backfill it so the field is
+	// honest for every resolution path, not just file_path.
+	if resolved.SymbolsAffectedTotal == 0 {
+		resolved.SymbolsAffectedTotal = len(resolved.SymbolsAffected)
 	}
 
 	if len(resolved.SymbolsAffected) == 0 {
@@ -369,6 +399,9 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			if len(relatedADRs) >= maxRelatedADRs {
+				break
+			}
 			v := adrs[k]
 			combined := strings.ToLower(k + " " + v)
 			for kw, why := range keywords {
