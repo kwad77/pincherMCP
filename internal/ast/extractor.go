@@ -3257,6 +3257,17 @@ func extractCSharp(source []byte, relPath string) *FileResult {
 	// #1159 v0.62: per-file CALLS pass — parallel to Rust/Java/TS/C.
 	opts.extractCalls = true
 	result := csRE.extract(source, relPath, "C#", opts)
+	// #1693 v0.89: drop constructor calls / object initializers
+	// mis-captured as methods. funcRE's `(?:[\w...]+\s+)+ name \(`
+	// treats `new` as a return-type token, so `new Vector2(...)` and
+	// `new PrototypePlacedObjectData() { ... }` (object initializer,
+	// repeated 195× in one Yevolve file) emit a phantom Method named
+	// for the TYPE. Discriminator: a real method declaration never
+	// has the word `new` IMMEDIATELY before the method name — the
+	// `new` modifier (method hiding) is always followed by the
+	// return type, then the name. So `new <Name>(` is unambiguously
+	// object creation; `new <ReturnType> <Name>(` is a real method.
+	result.Symbols = dropCSharpConstructorCalls(result.Symbols, source)
 	// #1693 v0.89: drop control-flow keywords mis-captured as methods.
 	// The C# funcRE shape `(?:[\w...]+\s+)+ name \(` matches
 	// `else if (cond)` — `else` is consumed as a return-type token,
@@ -3308,6 +3319,63 @@ func dropCSharpKeywordFalsePositives(syms []ExtractedSymbol) []ExtractedSymbol {
 		out = append(out, s)
 	}
 	return out
+}
+
+// csharpExprStmtPrefixRE matches a line that opens with a statement
+// keyword introducing an expression — `return new X(...)`,
+// `throw new X(...)`, `yield return new X(...)`, the brace-less
+// `else Foo();` / `do Bar();` arm. funcRE treats the keyword as a
+// return-type token, so such a line emits a phantom Method named for
+// the constructed type or the *called* method (`else GetTree()` →
+// phantom `GetTree`, colliding with the real definition).
+var csharpExprStmtPrefixRE = regexp.MustCompile(`^[ \t]*(?:return|throw|await|else|do|yield[ \t]+return)[ \t]`)
+
+// dropCSharpConstructorCalls removes Function/Method symbols whose
+// declaration line is actually an object-creation expression. funcRE's
+// `(returntype)+ name (` form treats `new` / `return` as return-type
+// tokens, so `new Vector2(...)`, `return new Foo(...)`, and the
+// object-initializer `new PrototypePlacedObjectData() { ... }` (which
+// recurs 195× in one Yevolve file) each emit a phantom Method named
+// for the *type* — colliding on qualified_name (#1693, #1389 sweep).
+//
+// A real method declaration never has the word `new` IMMEDIATELY
+// before its name: the `new` modifier (method hiding) is always
+// followed by the return type, then the name. So `new <Name>(` is
+// unambiguously object creation, while `new <ReturnType> <Name>(`
+// stays a real method.
+func dropCSharpConstructorCalls(syms []ExtractedSymbol, source []byte) []ExtractedSymbol {
+	if len(syms) == 0 {
+		return syms
+	}
+	out := syms[:0]
+	for _, s := range syms {
+		if (s.Kind == "Function" || s.Kind == "Method") && csharpSymbolIsObjectCreation(s, source) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func csharpSymbolIsObjectCreation(s ExtractedSymbol, source []byte) bool {
+	line := sourceLineAt(source, s.StartByte)
+	if line == "" {
+		return false
+	}
+	if csharpExprStmtPrefixRE.MatchString(line) {
+		return true
+	}
+	rest, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "new ")
+	if !ok {
+		return false
+	}
+	rest = strings.TrimLeft(rest, " \t")
+	after, ok := strings.CutPrefix(rest, s.Name)
+	if !ok {
+		return false
+	}
+	after = strings.TrimLeft(after, " \t")
+	return after != "" && (after[0] == '(' || after[0] == '<' || after[0] == '{')
 }
 
 // Kotlin regex-tier extractor. #1457 v0.73 promotes from 0.70 →
