@@ -88,7 +88,7 @@ instead" plus a `_meta`-shaped justification.
 | Codex CLI | (TBD per Codex hooks) | Tracked in #1336, v0.77 |
 | Zed | (TBD — slash-commands?) | Tracked in #1336, v0.77 |
 | VSCode + Copilot | `.github/copilot-instructions.md` | Production — `pincher init --target=vscode-copilot` |
-| JetBrains AI Assistant | `.idea/.junie/guidelines.md` | Production — `pincher init --target=jetbrains` |
+| JetBrains AI Assistant | `.junie/guidelines.md` | Production — `pincher init --target=jetbrains` |
 | Google Antigravity | `.agents/rules/pincher.md` | Production — `pincher init --target=antigravity` |
 
 `pincher init --target=detect` walks the local filesystem, detects
