@@ -159,15 +159,32 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 			}
 		}
 		if err == nil {
-			for _, r := range results {
-				if len(seeds) >= maxSeeds {
-					break
-				}
-				// Filter to callable kinds for the composite. Document/
-				// Setting hits in a code-corpus query are usually noise
-				// when the caller named a fix/investigation task.
-				switch r.Symbol.Kind {
+			isCallableSeed := func(kind string) bool {
+				// Filter to callable kinds. Document / Setting hits in a
+				// code-corpus query are noise when the caller named a
+				// fix / investigation task.
+				switch kind {
 				case "Function", "Method", "Class", "Interface", "Type":
+					return true
+				}
+				return false
+			}
+			// #1776: two-pass seed selection — production code first,
+			// test symbols only fill the remaining slots. Test functions
+			// carry BM25-rich names (TestExecute_UnknownPropertyDedup…)
+			// that out-rank the terse implementation (Execute) for
+			// "how does X work" queries; seeding on them buries the real
+			// answer and floods `neighbors` with the test file's
+			// siblings. The second pass means a task that only matches
+			// tests ("fix failing TestFoo") still seeds.
+			for _, testPass := range []bool{false, true} {
+				for _, r := range results {
+					if len(seeds) >= maxSeeds {
+						break
+					}
+					if !isCallableSeed(r.Symbol.Kind) || r.Symbol.IsTest != testPass {
+						continue
+					}
 					seeds = append(seeds, seedRow{
 						ID:            r.Symbol.ID,
 						Name:          r.Symbol.Name,
