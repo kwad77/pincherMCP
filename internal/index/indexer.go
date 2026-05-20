@@ -1852,6 +1852,16 @@ func (idx *Indexer) Watch(ctx context.Context) {
 	// idle tick after the project settles. Watcher-goroutine-local — no
 	// mutex (the watcher is the only reader/writer).
 	selfHealNeeded := map[string]bool{}
+	// #1772 follow-up: the idle self-heal above only fires on an
+	// active→idle transition. A continuously-active project (a busy
+	// dogfood/dev session with edits every tick) never reaches the
+	// changed==0 branch, so the scoped-resolve edge drift accumulates
+	// unbounded for the whole session. Count incremental reindexes per
+	// project and force a resolve-only pass once the count crosses the
+	// threshold, even while the project is still active — bounding the
+	// drift window regardless of whether the project ever goes idle.
+	incrementalSinceHeal := map[string]int{}
+	const selfHealReindexThreshold = 8
 
 	for {
 		select {
@@ -1907,6 +1917,7 @@ func (idx *Indexer) Watch(ctx context.Context) {
 					// every tick.
 					if selfHealNeeded[p.ID] {
 						delete(selfHealNeeded, p.ID)
+						delete(incrementalSinceHeal, p.ID)
 						if _, err := idx.ResolveOnly(ctx, p.Path); err != nil {
 							slog.Warn("pincher.watcher.selfheal.err", "project", p.Name, "err", err)
 						}
@@ -1957,6 +1968,21 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				// scope. Flag the project so the next idle tick runs the
 				// resolve-only self-heal.
 				selfHealNeeded[p.ID] = true
+				// #1772 follow-up: bound the drift window for a project
+				// that never goes idle. After selfHealReindexThreshold
+				// incremental reindexes with no intervening idle settle,
+				// force the resolve-only pass now rather than waiting for
+				// an active→idle transition that may never come.
+				incrementalSinceHeal[p.ID]++
+				if incrementalSinceHeal[p.ID] >= selfHealReindexThreshold {
+					delete(incrementalSinceHeal, p.ID)
+					delete(selfHealNeeded, p.ID)
+					slog.Debug("pincher.watcher.selfheal.forced",
+						"project", p.Name, "reason", "reindex_threshold")
+					if _, err := idx.ResolveOnly(ctx, p.Path); err != nil {
+						slog.Warn("pincher.watcher.selfheal.err", "project", p.Name, "err", err)
+					}
+				}
 			}
 		}
 	}
