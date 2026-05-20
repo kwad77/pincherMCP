@@ -2295,6 +2295,17 @@ func safeExtractWithModule(idx *Indexer, projectID, lang, relPath string, conten
 // succeeded, so a parse-error path doesn't double-record (parse_error +
 // these heuristics).
 //
+// qnLastSegmentIsInit reports whether the final `.`-separated segment
+// of a qualified name is exactly `init` — i.e. the QN names a Go
+// `func init()`. Used to exclude Go's legitimate multiple-init shape
+// from the qualified_name_collision diagnostic (#1693).
+func qnLastSegmentIsInit(qn string) bool {
+	if i := strings.LastIndexByte(qn, '.'); i >= 0 {
+		return qn[i+1:] == "init"
+	}
+	return qn == "init"
+}
+
 // #42 part 1 — diagnostic surface.
 func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, result *ast.FileResult) {
 	// #1319 v0.71: track which reasons this pass actually re-records, so
@@ -2363,17 +2374,34 @@ func recordExtractionHeuristics(idx *Indexer, projectID, lang, relPath string, r
 		var worst string
 		worstCount := 0
 		for qn, n := range result.QNCollisions {
+			// #1693 v0.89: Go permits multiple `func init()` per file
+			// — they all run, in source order, by language design.
+			// The regex extractor correctly emits one symbol per
+			// init(); disambiguateDuplicates suffixes them `~<line>`
+			// so every one survives. The collision is legitimate Go
+			// semantics, NOT the regex-scope-blindness this
+			// diagnostic was built to surface — skip the `init` QN
+			// when scoring the worst offender. Found by the #1389
+			// cross-language sweep: every Go file with 2+ init()s
+			// was firing a false qualified_name_collision.
+			if lang == "Go" && qnLastSegmentIsInit(qn) {
+				continue
+			}
 			if n > worstCount {
 				worst = qn
 				worstCount = n
 			}
 		}
-		details := fmt.Sprintf("qualified_name %q appears %d times (extractor produced duplicates)",
-			worst, worstCount)
-		if err := idx.store.RecordExtractionFailureWithBinary(projectID, relPath, lang, "qualified_name_collision", details, idx.binaryVersion); err != nil {
-			slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+		// worstCount stays 0 when every colliding QN was skipped above
+		// (a Go file whose only collision is init) — don't record then.
+		if worstCount > 0 {
+			details := fmt.Sprintf("qualified_name %q appears %d times (extractor produced duplicates)",
+				worst, worstCount)
+			if err := idx.store.RecordExtractionFailureWithBinary(projectID, relPath, lang, "qualified_name_collision", details, idx.binaryVersion); err != nil {
+				slog.Warn("pincher.failure_record.err", "err", err, "file", relPath)
+			}
+			keep["qualified_name_collision"] = struct{}{}
 		}
-		keep["qualified_name_collision"] = struct{}{}
 	}
 
 	// #1319 v0.71: prune extraction_failures rows whose reason no longer
