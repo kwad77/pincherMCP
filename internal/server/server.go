@@ -3994,7 +3994,7 @@ func (s *Server) registerTools() {
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"language":{"type":"string","description":"Language filter, e.g. 'Go' or 'Python'. Default: empty (all languages above the min_confidence floor). The default min_confidence=0.95 already restricts results to AST-tier extractors (Go, Python, JSON/YAML/HCL/TOML); pin language= only when you want a single language."},
-				"kinds":{"type":"string","description":"Comma-separated kinds to consider. Default: 'Function,Method' (applied store-side when this field is empty). Pass e.g. 'Function,Method,Class' to widen. Setting/Variable/Section are excluded by default since dead-DATA has different semantics than dead-code."},
+				"kinds":{"type":"string","description":"Comma-separated kinds to consider. Default: 'Function,Method' (applied store-side when this field is empty) — the only kinds with reliable inbound-edge coverage. Class/Type/Interface/Enum CAN be passed but the graph tracks no type-reference edges, so type-kind results are high-false-positive (a struct used only as &T{} looks dead) and advisory-only; the response stamps a _meta warning when they're requested. Setting/Variable/Section are excluded by default since dead-DATA has different semantics than dead-code."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (default 0.95 — biases to AST-tier languages: Go, Python, JSON/YAML/HCL/TOML). Drop to 0.0 to include regex-tier languages (higher false-positive rate from under-resolved cross-file CALLS)."},
 				"limit":{"type":"integer","description":"Max symbols returned (default 100, max 500)."}
 			}
@@ -4179,7 +4179,7 @@ func (s *Server) registerTools() {
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"language":{"type":"string","description":"Restrict to a single language (e.g. Go, Python). Empty = all languages."},
-				"kinds":{"type":"string","description":"Comma-separated symbol kinds. Default 'Function,Method'. Add Type/Class to widen the candidate set."},
+				"kinds":{"type":"string","description":"Comma-separated symbol kinds. Default 'Function,Method' — the only kinds with reliable inbound-edge coverage. Type/Class/Interface/Enum CAN be passed but the graph has no type-reference edges, so type-kind candidates are high-false-positive (a struct used only as &T{} looks dead) and advisory-only; the response stamps a _meta warning when they're requested."},
 				"max_results":{"type":"integer","description":"Maximum candidates to audit (default 20, max 100). Each candidate fires one TraceViaCTE call at confirm_depth."},
 				"confirm_depth":{"type":"integer","description":"BFS depth for the per-candidate confirmation trace (default 2, max 4). Depth-1 means 'any direct caller anywhere'; depth-2 picks up one-hop indirection through wrappers/forwarders."},
 				"min_confidence":{"type":"number","description":"Extractor confidence floor (default 0.95 — AST-extracted languages only). Drop to 0.85 to include stable-regex extractors at known false-positive cost; the deep-trace step will still classify but the candidate population is wider."}
@@ -8794,6 +8794,19 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			} else {
 				kinds = validated
 			}
+		}
+	}
+	// #1780: type-shaped kinds (Class/Type/Interface/Enum) have no
+	// inbound-edge tracking — the graph carries CALLS/READS/WRITES/
+	// IMPORTS but no type-reference edge, so a struct used only as
+	// `&T{}` looks dead. Results for those kinds are high-false-positive
+	// and advisory-only; warn so a caller who widened `kinds` doesn't
+	// read a type-kind "dead" row as a safe-to-delete verdict.
+	for _, k := range kinds {
+		switch k {
+		case "Class", "Type", "Interface", "Enum":
+			kindWarnings = append(kindWarnings, fmt.Sprintf(
+				"kind %q has no inbound type-reference edges in the graph (only CALLS/READS/WRITES/IMPORTS are tracked) — type-kind results are high-false-positive and advisory-only, not safe-to-delete verdicts", k))
 		}
 	}
 	// #1045: validate language= against the project's actual language

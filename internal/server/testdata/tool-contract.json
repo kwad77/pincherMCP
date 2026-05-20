@@ -58,7 +58,7 @@
           "type": "integer"
         },
         "kinds": {
-          "description": "Comma-separated symbol kinds. Default 'Function,Method'. Add Type/Class to widen the candidate set.",
+          "description": "Comma-separated symbol kinds. Default 'Function,Method' — the only kinds with reliable inbound-edge coverage. Type/Class/Interface/Enum CAN be passed but the graph has no type-reference edges, so type-kind candidates are high-false-positive (a struct used only as \u0026T{} looks dead) and advisory-only; the response stamps a _meta warning when they're requested.",
           "type": "string"
         },
         "language": {
@@ -175,7 +175,7 @@
     "input_schema": {
       "properties": {
         "kinds": {
-          "description": "Comma-separated kinds to consider. Default: 'Function,Method' (applied store-side when this field is empty). Pass e.g. 'Function,Method,Class' to widen. Setting/Variable/Section are excluded by default since dead-DATA has different semantics than dead-code.",
+          "description": "Comma-separated kinds to consider. Default: 'Function,Method' (applied store-side when this field is empty) — the only kinds with reliable inbound-edge coverage. Class/Type/Interface/Enum CAN be passed but the graph tracks no type-reference edges, so type-kind results are high-false-positive (a struct used only as \u0026T{} looks dead) and advisory-only; the response stamps a _meta warning when they're requested. Setting/Variable/Section are excluded by default since dead-DATA has different semantics than dead-code.",
           "type": "string"
         },
         "language": {

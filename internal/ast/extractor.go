@@ -880,9 +880,24 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 			}
 			specStart := fset.Position(sp.Pos())
 			specEnd := fset.Position(sp.End())
-			for _, name := range sp.Names {
+			for i, name := range sp.Names {
 				if name == nil || name.Name == "_" {
 					continue
+				}
+				// #1778: stamp the inferred same-package type for the
+				// unambiguous singleton shapes (`var X = &T{}` / `T{}` /
+				// `new(T)`, or an explicit `var X *T`) into Signature.
+				// #1747's extract-time pre-pass only sees declarations in
+				// the file currently being extracted; a singleton called
+				// from a sibling file carries no ReceiverType. Persisting
+				// the type on the Variable symbol lets resolveCalls
+				// recover it cross-file. Empty for every other var/const
+				// shape — the inference must be certain, never guessed.
+				varType := ""
+				if sp.Type != nil {
+					varType = goSamePackageTypeName(sp.Type)
+				} else if i < len(sp.Values) {
+					varType = goValueExprTypeName(sp.Values[i])
 				}
 				syms = append(syms, ExtractedSymbol{
 					Name:          name.Name,
@@ -894,6 +909,7 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 					EndLine:       specEnd.Line,
 					Docstring:     doc,
 					IsExported:    ast.IsExported(name.Name),
+					Signature:     varType,
 				})
 			}
 		}

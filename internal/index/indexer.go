@@ -3902,6 +3902,47 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		return ""
 	}
 
+	// resolveBySingletonVar handles #1778: a Go method call through a
+	// package-level singleton var declared in a sibling file of the same
+	// package (`defaultPythonRunner.extract(...)` where
+	// `var defaultPythonRunner = &pythonRunner{}` lives in another file).
+	// #1747's extract-time pre-pass is file-scoped, so such a call carries
+	// no ReceiverType and resolveByReceiverType has nothing to bind. The
+	// extractor now stamps the inferred singleton type into the Variable
+	// symbol's Signature; recover it here and feed resolveByReceiverType.
+	// Only fires for a 2-segment `base.method` callee whose base resolves
+	// to a same-package Variable symbol with a non-empty type signature.
+	singletonVarCache := map[string]string{}
+	resolveBySingletonVar := func(toName, fromQN string) string {
+		if toName == "" || fromQN == "" {
+			return ""
+		}
+		dot := strings.IndexByte(toName, '.')
+		if dot <= 0 || dot >= len(toName)-1 || strings.Contains(toName[dot+1:], ".") {
+			return "" // need exactly base.method
+		}
+		base := toName[:dot]
+		pkg := fromQN
+		if i := strings.Index(pkg, "."); i > 0 {
+			pkg = pkg[:i]
+		}
+		varQN := pkg + "." + base
+		recvType, cached := singletonVarCache[varQN]
+		if !cached {
+			for _, s := range lookupSyms(varQN) {
+				if s.Kind == "Variable" && s.Signature != "" {
+					recvType = s.Signature
+					break
+				}
+			}
+			singletonVarCache[varQN] = recvType
+		}
+		if recvType == "" {
+			return ""
+		}
+		return resolveByReceiverType(toName, recvType, fromQN)
+	}
+
 	// lookupPythonCall expands a Python call's to_name through every
 	// source-root candidate, returning the first hit. The extractor has
 	// already alias-rewritten imported names and self.X → class.X, so
@@ -4007,6 +4048,14 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// looser project-wide receiver-method fallback.
 		if toID == "" {
 			toID = resolveByReceiverType(e.ToName, e.ReceiverType, e.FromQN)
+		}
+		// #1778: cross-file package-var singleton. When the call carries
+		// no ReceiverType (the #1747 pre-pass is file-scoped and didn't
+		// see the singleton's declaration), recover the receiver type
+		// from the package-level Variable symbol's signature and retry
+		// the #423 binding. Go callers only — the QN shape is Go-specific.
+		if toID == "" && e.ReceiverType == "" && strings.HasSuffix(e.FromFile, ".go") {
+			toID = resolveBySingletonVar(e.ToName, e.FromQN)
 		}
 		// #1177 v0.72: TS/JS receiver-type fallback for files where
 		// the Go pkg-prefix path can't reach the real Class.method
