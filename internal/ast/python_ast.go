@@ -175,13 +175,21 @@ func (r *pythonResponse) toFileResult() *FileResult {
 // non-zero exit, JSON parse error, or Python SyntaxError in the source.
 // The dispatch fn falls back to extractPython on false.
 //
-// #1626 v0.87: when PINCHER_PYTHON_AST_DAEMON=1, route through the
-// shared persistent subprocess (pythonRunner) instead of spawning a
-// fresh process per file. Amortises the ~80ms Windows process-spawn
-// + interpreter init across N files. Opt-in for now; promoted to
-// default once dogfood data confirms the win and stability.
+// #1626 v0.87 / #1685 v0.88: the persistent subprocess (pythonRunner)
+// is now the DEFAULT — one CPython process is kept alive and reused,
+// amortising the ~80ms Windows process-spawn + interpreter init
+// across N files. The #1685 bench gate measures 126× on the
+// steady-state per-file cost. Set PINCHER_PYTHON_AST_DAEMON=0 to opt
+// back into per-file spawn.
+//
+// The flip is safe: the daemon's JSON output is byte-identical to
+// the one-shot path (same embedded python_extract.py logic, just a
+// stdin loop vs argv), any daemon error falls through to the
+// per-file spawn below per-call, and a hung daemon is killed by the
+// 15s daemonRequestTimeout. The failure mode is "slower," never
+// "wrong."
 func extractPythonAST(src []byte, relPath string) (*FileResult, bool) {
-	if os.Getenv("PINCHER_PYTHON_AST_DAEMON") == "1" {
+	if os.Getenv("PINCHER_PYTHON_AST_DAEMON") != "0" {
 		if resp, ok := defaultPythonRunner.extract(relPath, src); ok {
 			return resp.toFileResult(), true
 		}
