@@ -248,6 +248,10 @@ jobs:
               ;;
           esac
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          # #1793: surface the bare version so the Docker build can stamp
+          # main.version via --build-arg — without it the in-image binary
+          # reports `vdev` and install-validation's docker cell fails.
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Docker tags for ${GITHUB_REF_NAME} (channel=$CHANNEL): ${TAGS}"
 
       - uses: docker/build-push-action@v6
@@ -255,6 +259,8 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
