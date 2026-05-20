@@ -216,7 +216,12 @@ jobs:
       - name: go test -race ./internal/...
         env:
           CGO_ENABLED: 1
-        run: go test -race ./internal/... -timeout 900s
+        # 30m per-package timeout: race instrumentation on the
+        # SQLite-heavy internal/server suite ran past the initial
+        # 900s budget (#1741). The job is advisory, so the headroom
+        # costs nothing; a genuine hang would still surface (later)
+        # rather than being masked.
+        run: go test -race ./internal/... -timeout 1800s
 
   # bench-regression removed in v0.55 (#681 Bucket B). The job ran with
   # continue-on-error: true and failed on most PRs (variance on shared
