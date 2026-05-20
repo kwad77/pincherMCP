@@ -3246,7 +3246,15 @@ var csRE = &regexExtractor{
 	// and qualified names (`System.IO.Stream`) via the [\w<>?,\.\[\]]+
 	// char class. Required for ASP.NET / Blazor / EF-style async
 	// method signatures that always carry a generic return.
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:(?:static|partial|abstract|sealed|virtual|override|async|extern|unsafe|new|readonly|required)\s+)*(?:[\w<>?,\.\[\]]+\s+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\(`),
+	// The return-type token must START with a word char: `byte[]`,
+	// `Task<T>`, `int?`, `System.IO.Stream` all do. The class still
+	// allows `[` `]` mid-token for arrays, but a token may not BEGIN
+	// with `[` — otherwise, when the attribute-skip group backtracks
+	// to zero on a multi-attribute line `[SerializeField, Range(0f,
+	// 1f)] private ...`, the leading `[SerializeField,` is eaten as a
+	// return-type token and the last attribute's name (`Range`) is
+	// captured as a phantom Method (#1693, #1389 sweep).
+	funcRE:      regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:(?:static|partial|abstract|sealed|virtual|override|async|extern|unsafe|new|readonly|required)\s+)*(?:\w[\w<>?,\.\[\]]*\s+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*\(`),
 	classRE:     regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:(?:abstract|sealed|static|partial|unsafe|new|readonly)\s+)*(?:record\s+class|record\s+struct|class|struct|record)\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_<>, ]*))?`),
 	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*(?:partial\s+)?interface\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
 	enumRE:      regexp.MustCompile(`(?m)^\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|internal|file)?\s*enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)`),
