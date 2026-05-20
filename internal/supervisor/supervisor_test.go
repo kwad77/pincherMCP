@@ -12,6 +12,36 @@ import (
 	"time"
 )
 
+// syncBuffer is a bytes.Buffer safe for the concurrent access these
+// tests do: a `sup.Run` goroutine writes the client stdout while the
+// test's poll loop reads it. A plain bytes.Buffer is not safe for
+// concurrent Write + Bytes/String, and the `-race` CI job (#1733)
+// flagged exactly that on TestSupervisor_StatusToolReturnsResponse.
+// Bytes() returns a copy — the caller reads it after the lock is
+// released while a writer may still mutate the backing array.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // fakeInner emulates a JSON-RPC stdio server for supervisor tests
 // without spawning real pincher binaries. Lines arriving on its stdin
 // are appended to Received; lines pre-loaded into Outbound are written
@@ -130,7 +160,7 @@ func (wc *writerCloser) Close() error                 { return wc.w.Close() }
 // arrives at the inner's stdin verbatim.
 func TestSupervisor_ForwardsClientToInner(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	fake := newFakeInner(1)
 
@@ -176,7 +206,7 @@ func TestSupervisor_ForwardsClientToInner(t *testing.T) {
 // respawn.
 func TestSupervisor_CapturesAndReplaysInit(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	var fakeMu sync.Mutex
 	var fakes []*fakeInner
@@ -280,7 +310,7 @@ func TestSupervisor_CapturesAndReplaysInit(t *testing.T) {
 // inner running.
 func TestSupervisor_ClientStdinEOFReturns(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	fake := newFakeInner(1)
 	t.Cleanup(fake.Close)
@@ -343,7 +373,7 @@ func TestSupervisor_SpawnFailureReturnsError(t *testing.T) {
 // as a replay.)
 func TestSupervisor_NonInitLinesNotReplayed(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	var fakes []*fakeInner
 	var fakeMu sync.Mutex
@@ -406,7 +436,7 @@ func TestSupervisor_NonInitLinesNotReplayed(t *testing.T) {
 // is intercepted (NOT forwarded to client) and ProbesAnswered ticks.
 func TestSupervisor_ProbeIsSentAndAnswered(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	fake := newFakeInner(1)
 
@@ -485,7 +515,7 @@ func TestSupervisor_ProbeIsSentAndAnswered(t *testing.T) {
 // the kill is a no-op but the counter still increments.
 func TestSupervisor_ProbeTimeoutKillsInner(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	fake := newFakeInner(1)
 
@@ -525,7 +555,7 @@ func TestSupervisor_ProbeTimeoutKillsInner(t *testing.T) {
 // MaxRestarts within RestartWindow, Run returns the breaker error.
 func TestSupervisor_CircuitBreakerTrips(t *testing.T) {
 	clientStdinR, _ := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	var (
 		spawnCount int
@@ -581,7 +611,7 @@ func TestSupervisor_CircuitBreakerTrips(t *testing.T) {
 // and a synthesized JSON-RPC response lands at the client.
 func TestSupervisor_StatusToolReturnsResponse(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	fake := newFakeInner(1)
 
@@ -639,7 +669,7 @@ func TestSupervisor_StatusToolReturnsResponse(t *testing.T) {
 // to the inner as normal.
 func TestSupervisor_NonStatusToolPassesThrough(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	fake := newFakeInner(1)
 
@@ -697,7 +727,7 @@ func TestSupervisor_StatusReflectsRestartReason(t *testing.T) {
 // duplicate would cause real MCP clients to close stdio.
 func TestSupervisor_InitReplayResponseIsIntercepted(t *testing.T) {
 	clientStdinR, clientStdinW := io.Pipe()
-	var clientStdout bytes.Buffer
+	var clientStdout syncBuffer
 
 	var fakeMu sync.Mutex
 	var fakes []*fakeInner
