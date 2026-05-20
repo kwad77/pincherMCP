@@ -3683,7 +3683,15 @@ var dartRE = &regexExtractor{
 	// but require either a type token before the name OR a static
 	// modifier. The trailing `\(` anchor reduces false-positives.
 	funcRE:      regexp.MustCompile(`(?m)^\s*(?:static\s+|external\s+|abstract\s+)?(?:async\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>?,\s]*?\s+)?(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
-	classRE:     regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?class\s+(?P<name>[A-Z][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Z][A-Za-z0-9_$]*))?`),
+	// #1753: tolerate any sequence of Dart 3 class modifiers
+	// (`sealed` / `final` / `base` / `interface` / `mixin` — alongside
+	// the pre-existing `abstract`). A modifier the regex didn't accept
+	// made the whole `class` line miss, so the type vanished AND every
+	// method inside it degraded from Method (parented) to an orphan
+	// Function. No double-emission with interfaceRE: its name capture
+	// requires `[A-Z]…` and the keyword `class` is lowercase, so
+	// `interface class Foo` / `mixin class Foo` only match classRE.
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+(?P<name>[A-Z][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Z][A-Za-z0-9_$]*))?`),
 	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:abstract\s+)?(?:mixin|interface)\s+(?P<name>[A-Z][A-Za-z0-9_$]*)`),
 	enumRE:      regexp.MustCompile(`(?m)^\s*enum\s+(?P<name>[A-Z][A-Za-z0-9_$]*)`),
 }
