@@ -4312,7 +4312,13 @@ func diagnoseEmptyIndex(result *index.IndexResult, force bool) map[string]any {
 			"diagnosis":    "no indexable source files found at this path",
 			"hint":         "verify the path is a project root (contains code in a recognised language) or check `pincher health` for indexing failures",
 		}
-	case result.Files == 0 && result.Blocked > 0:
+	case result.Files == 0 && result.Blocked > 0 && result.Skipped == 0:
+		// #1773: all_files_blocked requires Skipped==0 — blocked must be
+		// the ONLY reason nothing was processed. A healthy project with
+		// indexed sources hash-skips its unchanged files (Skipped>0) and
+		// also blocks its lockfiles (Blocked>0) on every no-change tick;
+		// without the Skipped==0 guard that benign incremental pass was
+		// misdiagnosed as a vendor-only directory with no sources.
 		return map[string]any{
 			"empty_reason": EmptyReasonAllFilesBlocked,
 			"diagnosis":    fmt.Sprintf("all %d files were blocked by ast.ShouldSkip (lockfiles, minified bundles, source maps)", result.Blocked),
