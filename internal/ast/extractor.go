@@ -665,6 +665,46 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 		}
 	}
 
+	// #1747 v0.89: pre-pass collecting package-level `var X = &T{...}` /
+	// `T{...}` / `new(T)` / `var X *T` → same-package type name. Calls
+	// through a package-global singleton (`var pyRE = &regexExtractor{}`;
+	// `pyRE.extract(...)`) otherwise carry only the enclosing method's
+	// receiver type — empty for a free function — so the #423 receiver-
+	// type binding has nothing to resolve against and the edge drops.
+	// The visible cost: a type only ever instantiated as a package-level
+	// singleton looks 100% dead, so dead_code / audit_unused confidently
+	// flagged `*regexExtractor.extract` (15+ call sites) as safe-to-delete.
+	// Same-package type idents only; qualified types (`*foo.Bar`) are
+	// skipped — resolveByReceiverType can't map them without import-graph
+	// awareness anyway.
+	filePkgVarTypes := map[string]string{}
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if name == nil || name.Name == "_" {
+					continue
+				}
+				var typ string
+				if vs.Type != nil {
+					typ = goSamePackageTypeName(vs.Type)
+				} else if i < len(vs.Values) {
+					typ = goValueExprTypeName(vs.Values[i])
+				}
+				if typ != "" {
+					filePkgVarTypes[name.Name] = typ
+				}
+			}
+		}
+	}
+
 	// Walk top-level declarations
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
@@ -691,7 +731,7 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 				// every `contains(...)` call edge to the unrelated
 				// project Function `contains`).
 				localCallables := goLocalCallableNames(d)
-				calls := extractGoCalls(d.Body, sym.QualifiedName, receiverType, localCallables)
+				calls := extractGoCalls(d.Body, sym.QualifiedName, receiverType, localCallables, filePkgVarTypes)
 				result.Edges = append(result.Edges, calls...)
 				// #247 #3: identifier references for READS edges. Walks
 				// the same body — costs an extra ast.Inspect pass per
@@ -861,7 +901,7 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 	return syms
 }
 
-func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNames map[string]bool) []ExtractedEdge {
+func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNames map[string]bool, pkgVarTypes map[string]string) []ExtractedEdge {
 	var edges []ExtractedEdge
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -885,16 +925,78 @@ func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNam
 		if !strings.Contains(callee, ".") && localNames[callee] {
 			return true
 		}
+		// #1747: a call through a package-level singleton var
+		// (`pyRE.extract(...)`) needs the *var's* type, not the
+		// enclosing method's receiver, for the #423 receiver-type
+		// binding. Only for a 2-segment `IDENT.method` callee whose
+		// IDENT is a known package var and isn't shadowed by a local,
+		// param, or receiver of the same name (localNames covers all
+		// three). 3-segment `recv.field.method` shapes keep the
+		// enclosing receiver — resolveByReceiverType case-3 needs it.
+		recvType := receiverType
+		if dot := strings.IndexByte(callee, '.'); dot > 0 &&
+			!strings.ContainsRune(callee[dot+1:], '.') {
+			if base := callee[:dot]; !localNames[base] {
+				if vt := pkgVarTypes[base]; vt != "" {
+					recvType = vt
+				}
+			}
+		}
 		edges = append(edges, ExtractedEdge{
 			FromQN:       callerQN,
 			ToName:       callee,
 			Kind:         "CALLS",
 			Confidence:   0.7, // unresolved, lower confidence
-			ReceiverType: receiverType,
+			ReceiverType: recvType,
 		})
 		return true
 	})
 	return edges
+}
+
+// goSamePackageTypeName returns a same-package type name (with a
+// leading `*` for pointer types) for an explicit type expression, or
+// "" for qualified (`foo.Bar`), composite, or unsupported types. Used
+// by the #1747 package-var-type pre-pass.
+func goSamePackageTypeName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			return "*" + id.Name
+		}
+	}
+	return ""
+}
+
+// goValueExprTypeName infers a same-package type name from a package-
+// level var initializer for the three unambiguous singleton shapes:
+// `&T{...}` → `*T`, `T{...}` → `T`, `new(T)` → `*T`. Anything else
+// (function-call results, conversions, qualified types) returns "" —
+// the inference must be certain, never guessed. Used by #1747.
+func goValueExprTypeName(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.UnaryExpr:
+		if v.Op == token.AND {
+			if cl, ok := v.X.(*ast.CompositeLit); ok {
+				if id, ok := cl.Type.(*ast.Ident); ok {
+					return "*" + id.Name
+				}
+			}
+		}
+	case *ast.CompositeLit:
+		if id, ok := v.Type.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.CallExpr:
+		if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "new" && len(v.Args) == 1 {
+			if argID, ok := v.Args[0].(*ast.Ident); ok {
+				return "*" + argID.Name
+			}
+		}
+	}
+	return ""
 }
 
 // goLocalCallableNames returns the set of identifier names in d's
