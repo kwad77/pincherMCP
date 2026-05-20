@@ -53,6 +53,32 @@ if [ ${#hosts[@]} -eq 0 ]; then
   exit 0
 fi
 
+# Index a project once, shared across every host's replay (#1718).
+# The canonical workflow's id=3 is a `search` tool call (and id=4 an
+# `architecture` call) — both need an indexed project to answer. A
+# real MCP host scopes those calls via MCP roots it advertised at
+# initialize; the replay corpus carries no roots (and wiring the
+# bidirectional roots/list round-trip into a static-stream replay is
+# disproportionate). Instead we index the pincher repo itself — the
+# corpus's `search "Indexer"` deliberately targets pincher's own
+# index.Indexer type — and inject the resulting project name into
+# every replayed tools/call payload below. The corpus files stay
+# canonical wire-shape on disk; the injection is a replay-environment
+# adaptation, and `project` is a first-class argument every
+# code-navigation tool already accepts.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# One temp root for the whole run — the shared index DB plus every
+# host's per-replay scratch — torn down by a single EXIT trap (a
+# per-host `trap ... EXIT` would clobber it, and each other).
+HC_TMP="$(mktemp -d -t hostconf-XXXXXX)"
+trap 'rm -rf "${HC_TMP}"' EXIT
+HC_DATA="${HC_TMP}/data"
+HC_PROJECT="$(basename "${REPO_ROOT}")"
+"${PINCHER_BIN}" index "${REPO_ROOT}" --data-dir "${HC_DATA}" >/dev/null 2>&1 || {
+  echo "::error::failed to index ${REPO_ROOT} for the host-conformance replay" >&2
+  exit 2
+}
+
 fail_count=0
 for host in "${hosts[@]}"; do
   host_dir="${CORPUS_ROOT}/${host}"
@@ -75,25 +101,31 @@ for host in "${hosts[@]}"; do
   # Build the input stream: every line whose direction is client→server
   # becomes one JSON-RPC line piped to pincher's stdin. Server→client
   # lines are expectations against the responses we capture.
-  work=$(mktemp -d -t hostconf-XXXXXX)
-  trap 'rm -rf "$work"' EXIT
+  work="${HC_TMP}/host-${host}"
+  mkdir -p "${work}"
   in_stream="${work}/in.jsonl"
   out_stream="${work}/out.jsonl"
 
-  jq -c 'select(.direction == "client→server") | .payload' "${workflow}" > "${in_stream}"
+  # Extract the client→server payloads, and inject the indexed
+  # project into every tools/call so project-scoped tools (search,
+  # architecture, …) resolve against the replay's index (#1718).
+  jq -c --arg proj "${HC_PROJECT}" \
+    'select(.direction == "client→server")
+     | .payload
+     | if .method == "tools/call"
+       then .params.arguments = ((.params.arguments // {}) + {project: $proj})
+       else . end' \
+    "${workflow}" > "${in_stream}"
   if [ ! -s "${in_stream}" ]; then
     echo "::warning::host '${host}' workflow.jsonl has no client→server lines" >&2
     fail_count=$(( fail_count + 1 ))
     continue
   fi
 
-  # Spin up pincher in stdio mode, feed the request stream, capture the
-  # response stream. The replay does not require an indexed project
-  # because the canonical flow's first call is the MCP initialize +
-  # tools/list — both work against an empty server.
-  pin_data="${work}/data"
-  mkdir -p "${pin_data}"
-
+  # Spin up pincher in stdio mode, feed the request stream, capture
+  # the response stream. The shared HC_DATA index (built once above)
+  # backs the project-scoped tool calls (search / architecture).
+  #
   # Hold stdin open for HOSTCONF_STDIN_HOLD seconds after the last
   # request, instead of letting `< in_stream` EOF the instant the
   # bytes are delivered (#1706). A real MCP host keeps the stdio
@@ -106,7 +138,7 @@ for host in "${hosts[@]}"; do
   # graceful EOF shutdown. The hold is generous (3s default vs. a
   # handful of ms of real work) so it is not load-flaky in CI.
   { cat "${in_stream}"; sleep "${HOSTCONF_STDIN_HOLD:-3}"; } \
-    | "${PINCHER_BIN}" --data-dir "${pin_data}" \
+    | "${PINCHER_BIN}" --data-dir "${HC_DATA}" \
         > "${out_stream}" 2>"${work}/stderr.log" || true
 
   if [ ! -s "${out_stream}" ]; then
@@ -119,7 +151,12 @@ for host in "${hosts[@]}"; do
   # Required-tools assertion (single jq pass over the tools/list
   # response). The expectations.json lists names every host depends on;
   # missing any of them is a release blocker by definition.
-  required_tools=$(jq -r '.assertions.tools_list_must_include[]' "${expectations}")
+  # `tr -d '\r'`: a Windows jq.exe writes stdout in text mode, so each
+  # emitted name arrives as `name\r` — the CR then rides into the
+  # `select(.name == $t)` comparison and every tool reads as missing.
+  # No-op on the Linux CI runner; lets the gate also run under
+  # Git Bash, where pincher is dogfooded.
+  required_tools=$(jq -r '.assertions.tools_list_must_include[]' "${expectations}" | tr -d '\r')
   tools_response=$(jq -c 'select(.id == 2)' "${out_stream}")
   if [ -z "${tools_response}" ]; then
     echo "::error::host '${host}': no tools/list response (id=2) in capture" >&2
