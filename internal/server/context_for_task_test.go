@@ -98,6 +98,60 @@ func TestContextForTask_TaskDriven_ReturnsComposite(t *testing.T) {
 	}
 }
 
+// #1776: task-mode seed selection must put production code ahead of
+// test functions. Test names are BM25-rich and can out-rank the terse
+// implementation, burying the real answer and flooding `neighbors`
+// with the test file's siblings. The two-pass selector fills seed
+// slots from non-test hits first; tests only fill the remainder.
+func TestContextForTask_TaskDriven_PrefersProductionSeedOverTest_1776(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+	writeGoFile(t, root, "cfg.go",
+		"package cfg\n\n// ParseConfig parses a config string.\nfunc ParseConfig(s string) int { return len(s) }\n")
+	// Three verbose, token-rich test names that all BM25-match the task.
+	writeGoFile(t, root, "cfg_test.go",
+		"package cfg\n\nimport \"testing\"\n\n"+
+			"func TestParseConfig_RejectsEmptyInputString(t *testing.T)   { _ = ParseConfig(\"\") }\n"+
+			"func TestParseConfig_HandlesUnicodeConfigKeys(t *testing.T)  { _ = ParseConfig(\"k\") }\n"+
+			"func TestParseConfig_RoundTripsNestedConfigBlocks(t *testing.T) { _ = ParseConfig(\"n\") }\n")
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handleContextForTask(context.Background(), makeReq(map[string]any{
+		"task":    "ParseConfig",
+		"project": res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handleContextForTask: %v", err)
+	}
+	body := decode(t, out)
+	seeds, _ := body["seeds"].([]any)
+	if len(seeds) == 0 {
+		t.Fatalf("expected seeds for task=\"ParseConfig\"; got 0")
+	}
+	// The production ParseConfig must be seeded, and ahead of any Test*.
+	sawProduction := false
+	for i, s := range seeds {
+		m, _ := s.(map[string]any)
+		name, _ := m["name"].(string)
+		if strings.HasPrefix(name, "Test") && !sawProduction {
+			t.Errorf("seed[%d] is a test function (%q) and no production seed preceded it — "+
+				"task-mode must fill seed slots from production code first", i, name)
+		}
+		if name == "ParseConfig" {
+			sawProduction = true
+		}
+	}
+	if !sawProduction {
+		t.Error("production ParseConfig was not seeded at all — test functions crowded it out")
+	}
+}
+
 // Positive: seed_id-driven composite skips search and goes straight to
 // callers + callees + neighbors. Validates the seed-anchor branch.
 func TestContextForTask_SeedIDDriven_SkipsSearch(t *testing.T) {
