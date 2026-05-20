@@ -1,0 +1,284 @@
+# Install validation harness (#1337, #668 Phase 3).
+#
+# On every published release — and on demand via workflow_dispatch — this
+# exercises the documented install paths on each supported platform and
+# asserts that `pincher --version` reports the released tag. It is the
+# automated successor to the manual cross-platform smoke described in
+# #670 §3.
+#
+# Cell tiers:
+#   - direct  — download the release tarball/zip, extract, run. Strictly
+#               version-asserted. Runs on EVERY release (dev or stable),
+#               because the release.yml `binaries` job uploads these
+#               artifacts for every tag.
+#   - docker  — pull ghcr.io/<repo>:<version> and run it. Strictly
+#               version-asserted, every release.
+#   - brew    — `brew install` from the kwad77/homebrew-pincher tap.
+#               release.yml only bumps the formula on STABLE tags
+#               (minor %% 10 == 0), so this tier is gated to the stable
+#               channel and skipped on dev releases.
+#   - scoop   — `scoop install` from packaging/scoop/pincher.json. The
+#               manifest has no release auto-bump yet (gap tracked in a
+#               sibling issue), so this tier runs smoke-only: it asserts
+#               the install path works and pincher runs, and emits a
+#               ::warning:: — not a failure — if the served version lags
+#               the tag. Stable-gated like brew.
+#
+# A dev release therefore shows 6 direct + 2 docker green and 4
+# package-manager cells skipped; a stable release runs all 12.
+
+name: Install validation
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to validate (e.g. v0.90.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve tag + channel
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      channel: ${{ steps.r.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve
+        id: r
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::tag must look like vX.Y.Z (got '$TAG')"; exit 1 ;;
+          esac
+          CHANNEL="$(bash scripts/release-channel.sh "$TAG")"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Validating install paths for $TAG (channel=$CHANNEL)"
+
+  direct:
+    name: direct ${{ matrix.label }}
+    needs: resolve
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: macos-arm64,   runs-on: macos-latest,     goos: darwin,  goarch: arm64 }
+          - { label: macos-amd64,   runs-on: macos-13,         goos: darwin,  goarch: amd64 }
+          - { label: linux-amd64,   runs-on: ubuntu-latest,    goos: linux,   goarch: amd64 }
+          - { label: linux-arm64,   runs-on: ubuntu-24.04-arm, goos: linux,   goarch: arm64 }
+          - { label: windows-amd64, runs-on: windows-latest,   goos: windows, goarch: amd64 }
+          - { label: windows-arm64, runs-on: windows-11-arm,   goos: windows, goarch: arm64 }
+    steps:
+      - name: Download + extract + verify (unix)
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ needs.resolve.outputs.tag }}'
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          ART="pincher-${TAG}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+          BIN="pincher-${TAG}-${{ matrix.goos }}-${{ matrix.goarch }}"
+
+          # --retry-all-errors covers the brief window where the release is
+          # published but the asset CDN hasn't propagated.
+          curl --fail --retry 6 --retry-delay 10 --retry-all-errors -sSL -o "$ART"        "${BASE}/${ART}"
+          curl --fail --retry 6 --retry-delay 10 --retry-all-errors -sSL -o SHA256SUMS    "${BASE}/SHA256SUMS"
+
+          EXPECTED="$(awk -v p="$ART" '$2==p {print $1}' SHA256SUMS)"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::$ART not listed in SHA256SUMS"; exit 1
+          fi
+          ACTUAL="$(shasum -a 256 "$ART" | awk '{print $1}')"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::checksum mismatch for $ART (expected $EXPECTED, got $ACTUAL)"; exit 1
+          fi
+
+          tar -xzf "$ART"
+          # macOS Gatekeeper quarantine bypass — a no-op for curl-fetched
+          # files (no com.apple.quarantine attr), kept so the harness
+          # exercises the exact command users with browser-downloaded
+          # artifacts must run.
+          if [ "${{ matrix.goos }}" = "darwin" ]; then
+            xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
+          fi
+          chmod +x "$BIN"
+
+          STAMPED="$(./"$BIN" --version | awk '{print $NF}')"
+          echo "stamped: $STAMPED — expected: $TAG"
+          if [ "$STAMPED" != "$TAG" ]; then
+            echo "::error::$BIN --version reported '$STAMPED', expected '$TAG'"; exit 1
+          fi
+
+      - name: Download + extract + verify (windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag  = '${{ needs.resolve.outputs.tag }}'
+          $base = "https://github.com/${{ github.repository }}/releases/download/$tag"
+          $art  = "pincher-$tag-windows-${{ matrix.goarch }}.zip"
+          $bin  = "pincher-$tag-windows-${{ matrix.goarch }}.exe"
+
+          curl.exe --fail --retry 6 --retry-delay 10 --retry-all-errors -sSL -o $art     "$base/$art"
+          curl.exe --fail --retry 6 --retry-delay 10 --retry-all-errors -sSL -o SHA256SUMS "$base/SHA256SUMS"
+
+          $expected = (Select-String -Path SHA256SUMS -Pattern ([regex]::Escape($art))) `
+            | ForEach-Object { ($_.Line -split '\s+')[0] } | Select-Object -First 1
+          if (-not $expected) { Write-Error "$art not listed in SHA256SUMS" }
+          $actual = (Get-FileHash -Algorithm SHA256 $art).Hash.ToLower()
+          if ($expected.ToLower() -ne $actual) {
+            Write-Error "checksum mismatch for $art (expected $expected, got $actual)"
+          }
+
+          Expand-Archive -Path $art -DestinationPath . -Force
+          # SmartScreen guidance: a browser-downloaded zip carries a
+          # Zone.Identifier MOTW; curl-fetched files do not, so CI never
+          # hits the prompt. Users unblock with `Unblock-File`.
+          Unblock-File -Path $bin -ErrorAction SilentlyContinue
+
+          $stamped = (& ".\$bin" --version) -split '\s+' | Select-Object -Last 1
+          Write-Host "stamped: $stamped — expected: $tag"
+          if ($stamped -ne $tag) {
+            Write-Error "$bin --version reported '$stamped', expected '$tag'"
+          }
+
+  docker:
+    name: docker ${{ matrix.label }}
+    needs: resolve
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: linux-amd64, runs-on: ubuntu-latest }
+          - { label: linux-arm64, runs-on: ubuntu-24.04-arm }
+    steps:
+      - name: Pull + run
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ needs.resolve.outputs.tag }}'
+          VERSION="${TAG#v}"
+          IMG="ghcr.io/${{ github.repository }}"
+          IMG="${IMG,,}"
+
+          # The release.yml `docker` job runs in parallel with the job
+          # that publishes the release, so the image may lag the
+          # release-published event that triggered us — retry the pull.
+          for i in 1 2 3 4 5 6 7 8; do
+            if docker pull "${IMG}:${VERSION}"; then break; fi
+            if [ "$i" -eq 8 ]; then
+              echo "::error::docker pull ${IMG}:${VERSION} failed after 8 attempts"; exit 1
+            fi
+            echo "pull attempt $i failed — docker release job may still be building; retrying in 20s"
+            sleep 20
+          done
+
+          # Override the entrypoint so the image's default
+          # `--data-dir /data` args don't interleave with `--version`.
+          STAMPED="$(docker run --rm --entrypoint /pincher "${IMG}:${VERSION}" --version | awk '{print $NF}')"
+          echo "stamped: $STAMPED — expected: $TAG"
+          if [ "$STAMPED" != "$TAG" ]; then
+            echo "::error::docker ${IMG}:${VERSION} --version reported '$STAMPED', expected '$TAG'"; exit 1
+          fi
+
+  brew:
+    name: brew ${{ matrix.label }}
+    needs: resolve
+    if: needs.resolve.outputs.channel == 'stable'
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: macos-arm64, runs-on: macos-latest }
+          - { label: macos-amd64, runs-on: macos-13 }
+    steps:
+      - name: brew install + verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ needs.resolve.outputs.tag }}'
+          brew tap kwad77/pincher https://github.com/kwad77/homebrew-pincher
+          brew install kwad77/pincher/pincher
+          STAMPED="$(pincher --version | awk '{print $NF}')"
+          echo "stamped: $STAMPED — expected: $TAG"
+          if [ "$STAMPED" != "$TAG" ]; then
+            echo "::error::brew-installed pincher --version reported '$STAMPED', expected '$TAG'"; exit 1
+          fi
+
+  scoop:
+    name: scoop ${{ matrix.label }}
+    needs: resolve
+    if: needs.resolve.outputs.channel == 'stable'
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: windows-amd64, runs-on: windows-latest }
+          - { label: windows-arm64, runs-on: windows-11-arm }
+    steps:
+      # Smoke-only: packaging/scoop/pincher.json has no release auto-bump
+      # workflow yet, so the manifest lags master. This cell asserts the
+      # documented `scoop install` path SUCCEEDS and yields a runnable
+      # pincher; a version lag is surfaced as a ::warning::, not a
+      # failure, until the scoop auto-bump gap is closed.
+      - name: scoop install + smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ needs.resolve.outputs.tag }}'
+
+          Invoke-RestMethod -Uri 'https://get.scoop.sh' | Invoke-Expression
+
+          $manifest = "https://raw.githubusercontent.com/${{ github.repository }}/master/packaging/scoop/pincher.json"
+          scoop install $manifest
+          if ($LASTEXITCODE -ne 0) { Write-Error "scoop install failed (exit $LASTEXITCODE)" }
+
+          $stamped = (& pincher --version) -split '\s+' | Select-Object -Last 1
+          Write-Host "stamped: $stamped — release tag: $tag"
+          if (-not $stamped) { Write-Error "scoop-installed pincher produced no --version output" }
+          if ($stamped -ne $tag) {
+            Write-Warning "scoop manifest serves $stamped, lags release $tag — see the scoop auto-bump gap issue"
+            Write-Output "::warning::scoop manifest serves $stamped, lags release $tag (scoop auto-bump not yet wired)"
+          }
+
+  summary:
+    name: Install validation summary
+    needs: [resolve, direct, docker, brew, scoop]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Roll up cell results
+        run: |
+          set -euo pipefail
+          echo "tag=${{ needs.resolve.outputs.tag }} channel=${{ needs.resolve.outputs.channel }}"
+          echo "direct=${{ needs.direct.result }} docker=${{ needs.docker.result }} brew=${{ needs.brew.result }} scoop=${{ needs.scoop.result }}"
+          # direct + docker must pass on every release. brew + scoop are
+          # 'skipped' on dev releases (channel-gated) — skipped is not a
+          # failure. Any 'failure' result fails the gate.
+          fail=0
+          for r in '${{ needs.direct.result }}' '${{ needs.docker.result }}' '${{ needs.brew.result }}' '${{ needs.scoop.result }}'; do
+            if [ "$r" = "failure" ]; then fail=1; fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::one or more install-validation cells failed"; exit 1
+          fi
+          echo "All install-validation cells passed (or were channel-skipped)."

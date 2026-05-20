@@ -53,6 +53,8 @@ If a release ships without README touched, the user's first reaction is "the REA
 
 After tag pushes, the auto-bump workflow handles the Homebrew formula and Docker image — those don't go in the release-prep PR itself.
 
+**Post-tag install validation (#1337).** `.github/workflows/install-validation.yml` fires automatically on every published release: it downloads each platform's release artifact (tarball/zip/docker) and asserts `pincher --version` matches the tag. After tagging, confirm the `Install validation` run went green — `direct` (6 cells) + `docker` (2 cells) gate every release; `brew` + `scoop` cells run only on stable tags (channel-gated) and are skipped on dev releases. A red `direct`/`docker` cell means the released binary for that platform doesn't run — treat as a release-blocking defect. The harness is also `workflow_dispatch`-able against any past tag from the Actions UI.
+
 ## Dogfood routing
 
 When a probe surfaces net-new work mid-flight, route by **type**, not just severity. Sloppy routing either silently bloats planned scope or loses the finding entirely. Long-form context lives in `.planning-roadmap-to-v1.md`; the rules below are the autonomous-loop quick-reference.
