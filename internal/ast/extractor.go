@@ -3639,8 +3639,16 @@ func extractLua(source []byte, relPath string) *FileResult {
 
 var zigRE = &regexExtractor{
 	// Zig: `fn name(...)`, `pub fn name(...)`, `export fn name(...)`.
-	funcRE:  regexp.MustCompile(`(?m)^\s*(?:pub\s+|export\s+|extern\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
-	classRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*struct`),
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+|export\s+|extern\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
+	// #1755: a Zig named type is `const Name = <kind> {…}`. classRE
+	// owns struct / union / opaque; enumRE owns enum. Pre-fix classRE
+	// matched only `struct`, so enum / union / opaque types vanished
+	// entirely. `packed` / `extern` layout qualifiers are tolerated.
+	// `union(enum)` (tagged union) matches classRE — the `(enum)` tag
+	// follows `union`; enumRE requires `enum` immediately after `=`,
+	// so there is no double-match.
+	classRE: regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*(?:packed\s+|extern\s+)?(?:struct|union|opaque)\b`),
+	enumRE:  regexp.MustCompile(`(?m)^\s*(?:pub\s+)?const\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*=\s*enum\b`),
 }
 
 func extractZig(source []byte, relPath string) *FileResult {
