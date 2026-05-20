@@ -2446,15 +2446,30 @@ var tsRE = &regexExtractor{
 			`(?m)(?:^|\s)(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\((?:[^()]|\([^)]*\))*\)\s*(?::\s*[\w<>\[\]\s,|&'"]+\s*)?=>|` +
 			`(?m)^\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s+)?function\s*\(|` +
 			`(?m)^\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:async\s*)?\((?:[^()]|\([^)]*\))*\)\s*(?::\s*[\w<>\[\]\s,|&'"]+\s*)?=>`),
+	// #1761: `abstract` joins the modifier set — an `abstract foo(): T;`
+	// method declaration otherwise had `abstract` captured as the name
+	// and then failed the `(` anchor, dropping every abstract method.
+	// static / abstract are mutually exclusive in TS so they share one
+	// optional group.
 	methodRE: regexp.MustCompile(
-		`(?m)^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)?(?:static\s+)?(?:async\s+)?\*?\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
+		`(?m)^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)?(?:static\s+|abstract\s+)?(?:async\s+)?\*?\s*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
 	// #261: top-level const/let/var emit Variable symbols (TS parity
 	// with JS).
 	varRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=`),
-	classRE:     regexp.MustCompile(`(?m)^(?:export\s+)?(?:abstract\s+)?class\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Za-z_$][A-Za-z0-9_$]*))?`),
-	interfaceRE: regexp.MustCompile(`(?m)^(?:export\s+)?interface\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
-	enumRE:      regexp.MustCompile(`(?m)^(?:export\s+)?(?:const\s+)?enum\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
+	// #1761: classRE / interfaceRE / enumRE lead with `^\s*` — a class /
+	// interface / enum nested inside a `namespace { … }` block is
+	// indented, and a bare `^` anchor dropped all of them (only methodRE
+	// already tolerated indentation).
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:abstract\s+)?class\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Za-z_$][A-Za-z0-9_$]*))?`),
+	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?interface\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
+	enumRE:      regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const\s+)?enum\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
 	importRE:    regexp.MustCompile(`(?m)^import\s+.*?from\s+['"](?P<path>[^'"]+)['"]`),
+	// #1761: `namespace Foo { … }` is intentionally NOT a scopeRE here.
+	// A TS namespace body holds `function`/`class`/`const` declarations,
+	// not method-syntax members — and the regex framework switches a
+	// scoped body to methodRE, which would drop every `function` inside
+	// the namespace. Parenting namespace members correctly needs a
+	// framework change (a scope that keeps funcRE); tracked separately.
 }
 
 func extractTypeScript(source []byte, relPath string) *FileResult {
