@@ -1855,6 +1855,13 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 
 	var currentClass string
 	var currentClassEnd int
+	// #1783: currentClassQN is the qualified-name scope segment for
+	// inner methods — normally identical to currentClass, but a Rust
+	// trait-impl sets it to `Type::Trait` so methods in `impl Debug for
+	// Foo` and `impl Display for Foo` get distinct QNs while both still
+	// carry Parent=Foo. Kept in lockstep with currentClass: every site
+	// that sets or clears currentClass sets or clears this too.
+	var currentClassQN string
 
 	// #1375: track the most-recent top-level function so Variable
 	// declarations inside its body get a scoped QN
@@ -1928,6 +1935,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// "Base " (#817).
 					parent := strings.TrimSpace(namedGroup(rx.classRE, m, "parent"))
 					currentClass = name
+					currentClassQN = name
 					currentClassEnd = endLine
 					classMatchedThisLine = true
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
@@ -1949,6 +1957,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 		// Reset class context when past its end
 		if lineNum > currentClassEnd {
 			currentClass = ""
+			currentClassQN = ""
 		}
 
 		// #1183 v0.67: scope-only container (Rust impl blocks). Sets
@@ -1964,6 +1973,15 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					endLine := offsetToLine(lineOffsets, endByte)
 					currentClass = name
 					currentClassEnd = endLine
+					// #1783: a trait-impl (`impl Trait for Type`) scopes
+					// inner methods' QN as `Type::Trait::method` so two
+					// trait impls of the same type don't collide on
+					// qualified_name. Parent stays Type. An inherent
+					// `impl Type` has no trait group → QN scope = Type.
+					currentClassQN = name
+					if trait := namedGroup(rx.scopeRE, m, "trait"); trait != "" {
+						currentClassQN = name + opts.modSep + trait
+					}
 				}
 			}
 		}
@@ -1979,6 +1997,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// member declarations come out as Method/parent=Iface
 					// rather than top-level Function/parent="".
 					currentClass = name
+					currentClassQN = name
 					currentClassEnd = endLine
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
@@ -2011,6 +2030,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					// enum's method set. Mirrors the #819 interfaceRE
 					// fix for the same shape.
 					currentClass = name
+					currentClassQN = name
 					currentClassEnd = endLine
 					result.Symbols = append(result.Symbols, ExtractedSymbol{
 						Name: name, QualifiedName: qn, Kind: "Enum",
@@ -2052,7 +2072,17 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					if currentClass != "" {
 						kind = "Method"
 						parent = moduleQN(relPath, opts.modSep) + opts.modSep + currentClass
-						qn = parent + opts.modSep + name
+						// #1783: the QN scope is currentClassQN, which for
+						// a Rust trait-impl is `Type::Trait` — so methods
+						// in different trait impls of the same type get
+						// distinct QNs. Parent stays the bare type. For
+						// every other scope kind currentClassQN ==
+						// currentClass, so the QN is unchanged.
+						qnScope := currentClassQN
+						if qnScope == "" {
+							qnScope = currentClass
+						}
+						qn = moduleQN(relPath, opts.modSep) + opts.modSep + qnScope + opts.modSep + name
 					} else if len(funcStack) > 0 {
 						// #1422: nested function — scope to the
 						// enclosing function's QN so the inner's
@@ -2760,7 +2790,14 @@ var rustRE = &regexExtractor{
 	// on the type are tolerated (`impl<T> Vec<T>` extracts `Vec`).
 	// The two alternations: the "for-form" first so its match wins
 	// when both could fire on `impl Trait for Type<X>`.
-	scopeRE: regexp.MustCompile(`(?m)^\s*impl(?:<[^>]*>)?\s+(?:[A-Z][A-Za-z0-9_]*(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
+	// #1783: capture the trait name from the `for`-form so inner
+	// methods can QN as `Type::Trait::method`. Without it, `impl Debug
+	// for Foo` and `impl Display for Foo` both scope methods to `Foo`
+	// and the two `fmt` methods collide on qualified_name (359 such
+	// collisions on a real Rust corpus). The `trait` group is inside
+	// the optional `for`-form group, so it's empty for an inherent
+	// `impl Foo { ... }`.
+	scopeRE: regexp.MustCompile(`(?m)^\s*impl(?:<[^>]*>)?\s+(?:(?P<trait>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s+for\s+)?(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\{?`),
 }
 
 // extractRust: 'pub' keyword marks exports; approximated here as always-exported.
