@@ -76,6 +76,7 @@ var AllTargets = []Target{
 	VSCodeMCPTarget,
 	JetBrainsTarget,
 	AntigravityTarget,
+	AntigravityMCPTarget,
 }
 
 // FindTarget looks up a target by its --target value.
