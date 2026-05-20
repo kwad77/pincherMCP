@@ -297,14 +297,23 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 	candidates := map[string]*candidate{}
 
 	maxRaw := maxSuspects * 3
-	for _, name := range frameNames {
+	// #1751: search every parsed frame name, bounded by NAME COUNT — not
+	// by accumulated-candidate count. The old `len(candidates) >= maxRaw`
+	// break filled its budget on high-frequency package-path tokens
+	// (`internal`, `index`, `com` — repeated once per Go frame, so they
+	// out-rank function names that appear once) and broke before the
+	// once-mentioned crash functions (`resolveCalls`, `Index`) were ever
+	// searched. A real trace carries well under maxFrameSearches distinct
+	// tokens; the cap only guards a pathological input.
+	const maxFrameSearches = 60
+	for i, name := range frameNames {
 		// #1595: per-iteration cancellation check. N frame names × one
 		// SQL search each; without this the loop runs to completion
 		// after the client cancels.
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		if len(candidates) >= maxRaw {
+		if i >= maxFrameSearches {
 			break
 		}
 		// SearchSymbolsByCorpus does BM25 over the code corpus; we
@@ -440,10 +449,29 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 			evidence []string
 		)
 		// Frame-match: always fires for entries in `ranked` since
-		// they were seeded by a frame search.
+		// they were seeded by a frame search. #1751: an EXACT-name
+		// match (the symbol is literally named by a trace frame) is
+		// the strongest implication signal and must outrank a loose
+		// BM25 hit — the receiver-type token `Indexer` BM25-matches
+		// every `*Indexer` method, so a flat score let an unrelated
+		// hub method (`New`, fan-in 500) edge out the real crash site.
 		if len(r.c.frameMatches) > 0 {
-			score += 0.45
 			evidence = append(evidence, "stack_frame_match")
+			exactName := false
+			for tok := range r.c.frameMatches {
+				if strings.EqualFold(tok, r.c.Name) {
+					exactName = true
+					break
+				}
+			}
+			if exactName {
+				score += 0.45
+				evidence = append(evidence, "stack_frame_exact_name_match")
+			} else {
+				// Loose match — the token appears in the symbol's
+				// signature or qualified name but isn't its name.
+				score += 0.20
+			}
 		}
 		if len(r.c.frameMatches) > 1 {
 			score += 0.10
