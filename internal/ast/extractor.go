@@ -2764,7 +2764,19 @@ var cRE = &regexExtractor{
 	// `list_head`, `log_level`). C++ uses PascalCase by convention
 	// but both flow through the same extractor via the C/C++ shared
 	// dispatch.
-	classRE:     regexp.MustCompile(`(?m)^\s*(?:class|struct|union)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*(?:(?:public|private|protected|virtual)\s+)*(?P<parent>[A-Za-z_][A-Za-z0-9_:]*))?`),
+	//
+	// #1693 v0.89: the optional `(?:[A-Z][A-Z0-9_]*_[A-Z0-9_]*\s+)?`
+	// group skips a leading ALLCAPS-with-underscore export macro —
+	// `class PYRITE_API AMyActor`, the Unreal Engine `<MODULE>_API`
+	// dllexport convention. Pre-fix the macro token (`PYRITE_API`)
+	// landed in the name group; every `class <MODULE>_API X` in a
+	// file then collided on `PYRITE_API` and `pincher doctor`
+	// reported qualified_name_collision (the #1389 sweep's dominant
+	// C/C++ class). The group requires an underscore (so single-word
+	// ALLCAPS class names aren't eaten) and is optional + greedy:
+	// when there's only one identifier after `class` (no macro),
+	// RE2 takes the not-taken branch and `name` captures it directly.
+	classRE:     regexp.MustCompile(`(?m)^\s*(?:class|struct|union)\s+(?:[A-Z][A-Z0-9_]*_[A-Z0-9_]*\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*(?:(?:public|private|protected|virtual)\s+)*(?P<parent>[A-Za-z_][A-Za-z0-9_:]*))?`),
 	enumRE:      regexp.MustCompile(`(?m)^\s*enum(?:\s+(?:class|struct))?\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)`),
 }
 
