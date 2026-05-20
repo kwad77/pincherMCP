@@ -145,6 +145,28 @@ func DataDir() (string, error) {
 // used the mattn form, so every PRAGMA was silently ignored — including
 // journal_mode=WAL — leaving every database in default `delete` (rollback
 // journal) mode. The post-Open assertion below catches any future regression.
+// isDBLockedErr reports whether err is a SQLite write-lock contention
+// failure (SQLITE_BUSY). modernc.org/sqlite surfaces it with the text
+// "database is locked" and code "(5)"; match the text so a friendlier
+// message can be substituted at the open path (#1784).
+func isDBLockedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
+		strings.Contains(msg, "SQLITE_BUSY")
+}
+
+// errorsLockedWrap wraps a SQLITE_BUSY open failure with an actionable,
+// user-facing message while keeping the raw cause inspectable (#1784).
+// CLI subcommands print the result verbatim, so the friendly text must
+// lead.
+func errorsLockedWrap(err error) error {
+	return fmt.Errorf("database is locked — another pincher process is writing it (an index is likely in progress); retry in a few seconds: %w", err)
+}
+
 func Open(dir string) (*Store, error) {
 	// #830: create the data dir if it's missing. DataDir() already
 	// MkdirAll's the default + PINCHER_DATA_DIR paths, but a `--data-dir`
@@ -187,6 +209,15 @@ func Open(dir string) (*Store, error) {
 	s := &Store{db: db, Path: path}
 	if err := s.migrate(); err != nil {
 		db.Close()
+		// #1784: migrate() takes a write lock (init schema_version). When
+		// another pincher process holds the writer longer than the 5s
+		// busy_timeout — a force-reindex of a large repo easily does —
+		// the open fails with a raw SQLITE_BUSY. Lead with a friendly,
+		// actionable message; CLI commands print this verbatim and the
+		// raw cause stays wrapped for debugging.
+		if isDBLockedErr(err) {
+			return nil, errorsLockedWrap(err)
+		}
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
