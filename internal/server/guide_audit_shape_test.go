@@ -141,9 +141,13 @@ func TestInferAuditPinchQL_RoutesByKeyword(t *testing.T) {
 		{"find functions with more than 80 lines", "n.start_line, n.end_line"},
 		{"show me untested exported functions", "is_exported=true AND n.is_test=false"},
 		{"functions missing test coverage", "is_exported=true AND n.is_test=false"},
-		// Default fallback — the canonical #467 docstring example.
+		// #1759: docstring/undocumented/comment keyword → the canonical
+		// #467 docstring template. An audit task with no recognized
+		// predicate keyword ("audit exported APIs") instead routes to
+		// the neutral candidate set — see
+		// TestInferAuditPinchQL_UnrecognizedPredicate_HonestScaffold.
 		{"find undocumented exported functions", "docstring IS NULL"},
-		{"audit exported APIs", "docstring IS NULL"},
+		{"survey methods missing a comment", "docstring IS NULL"},
 	}
 	for _, c := range cases {
 		t.Run(c.task, func(t *testing.T) {
