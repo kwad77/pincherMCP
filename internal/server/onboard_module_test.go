@@ -211,6 +211,56 @@ func TestOnboardModule_ExternalDependenciesFromInside(t *testing.T) {
 	}
 }
 
+// TestDedupBoundaryEdges_1808 — onboard_module reports a SET of distinct
+// boundary dependencies, not a multiset of call-sites. A live probe saw
+// the same (from_id,to_id) pair surface 6× and evict genuine distinct
+// deps past the maxEdgesPerList cap (#1808).
+func TestDedupBoundaryEdges_1808(t *testing.T) {
+	t.Parallel()
+
+	// Positive: a pair repeated 6× collapses to one; a distinct pair
+	// survives. First occurrence wins, so input order is preserved.
+	in := []onboardEdgeRef{
+		{FromID: "a", ToID: "x", FromName: "A", ToName: "X", Kind: "CALLS"},
+		{FromID: "a", ToID: "x", FromName: "A", ToName: "X", Kind: "CALLS"},
+		{FromID: "a", ToID: "x", FromName: "A", ToName: "X", Kind: "CALLS"},
+		{FromID: "b", ToID: "y", FromName: "B", ToName: "Y", Kind: "CALLS"},
+		{FromID: "a", ToID: "x", FromName: "A", ToName: "X", Kind: "CALLS"},
+		{FromID: "a", ToID: "x", FromName: "A", ToName: "X", Kind: "CALLS"},
+		{FromID: "a", ToID: "x", FromName: "A", ToName: "X", Kind: "CALLS"},
+	}
+	got := dedupBoundaryEdges(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 distinct boundary pairs; got %d (%v)", len(got), got)
+	}
+	if got[0].FromID != "a" || got[0].ToID != "x" {
+		t.Errorf("first surviving pair should be a→x (first occurrence wins); got %v", got[0])
+	}
+	if got[1].FromID != "b" || got[1].ToID != "y" {
+		t.Errorf("second surviving pair should be b→y; got %v", got[1])
+	}
+
+	// Control: a→x and x→a are distinct boundary edges (direction
+	// matters) — both must survive.
+	dir := dedupBoundaryEdges([]onboardEdgeRef{
+		{FromID: "a", ToID: "x"},
+		{FromID: "x", ToID: "a"},
+	})
+	if len(dir) != 2 {
+		t.Errorf("a→x and x→a are distinct edges; want 2, got %d", len(dir))
+	}
+
+	// Negative / boundary: nil and already-unique inputs pass through
+	// unchanged.
+	if got := dedupBoundaryEdges(nil); len(got) != 0 {
+		t.Errorf("nil input should yield empty; got %v", got)
+	}
+	uniq := []onboardEdgeRef{{FromID: "a", ToID: "x"}, {FromID: "b", ToID: "y"}}
+	if got := dedupBoundaryEdges(uniq); len(got) != 2 {
+		t.Errorf("already-unique input should pass through; want 2, got %d", len(got))
+	}
+}
+
 // TestOnboardModule_BoundaryEdgesProjectScoped — onboard_module's
 // edge query joins `symbols` to resolve from/to names. The symbols
 // primary key is (project_id, id), so the same symbol id can exist
