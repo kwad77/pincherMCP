@@ -539,6 +539,22 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		postExtractNS atomic.Int64
 	)
 
+	// #1772 v0.91: snapshot the CALLS edge count at Index() entry, BEFORE
+	// the per-file extraction goroutines run. The #1792 detector's other
+	// baseline (callsEdgesBefore) is taken after extraction, so a per_file
+	// CALLS edge dropped during extraction and not rebound by the resolve
+	// pass is invisible to it — the extraction-phase loss is masked by
+	// resolve-pass gains. This earlier baseline makes the whole-tick net
+	// delta observable: callsEdgesAfter < callsEdgesAtIndexStart on a
+	// scoped incremental is the user-visible graph-degradation signature,
+	// regardless of which phase dropped the edge.
+	callsEdgesAtIndexStart := -1
+	if !force {
+		_ = idx.store.RO().QueryRow(
+			`SELECT COUNT(*) FROM edges WHERE project_id=? AND kind='CALLS'`,
+			projectID).Scan(&callsEdgesAtIndexStart)
+	}
+
 	// Process files
 	for fileJob := range fileListQueue {
 		// Respect context cancellation (e.g. graceful shutdown).
@@ -1311,17 +1327,46 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			callsEdgesAfter := -1
 			if idx.store.RO().QueryRow(
 				`SELECT COUNT(*) FROM edges WHERE project_id=? AND kind='CALLS'`,
-				projectID).Scan(&callsEdgesAfter) == nil &&
-				callsEdgesAfter >= 0 && callsEdgesAfter < callsEdgesBefore {
-				slog.Warn("pincher.resolve.scoped_calls_net_loss",
-					"project_id", projectID,
-					"before", callsEdgesBefore,
-					"after", callsEdgesAfter,
-					"lost", callsEdgesBefore-callsEdgesAfter,
-					"scope_files", len(resolveScope),
-					"extracted_files", len(extractedFiles),
-					"referrer_files", len(referrerFiles),
-				)
+				projectID).Scan(&callsEdgesAfter) == nil && callsEdgesAfter >= 0 {
+				// Resolve-phase loss: the resolve pass itself net-dropped
+				// edges relative to the post-extraction state.
+				if callsEdgesAfter < callsEdgesBefore {
+					slog.Warn("pincher.resolve.scoped_calls_net_loss",
+						"project_id", projectID,
+						"before", callsEdgesBefore,
+						"after", callsEdgesAfter,
+						"lost", callsEdgesBefore-callsEdgesAfter,
+						"scope_files", len(resolveScope),
+						"extracted_files", len(extractedFiles),
+						"referrer_files", len(referrerFiles),
+					)
+				}
+				// #1772 v0.91: whole-tick loss. The resolve pass is meant to
+				// rebind whatever the extraction cascade deleted; if the
+				// end-to-end count is still below the pre-tick baseline, the
+				// tick net-lost CALLS edges — including the per_file-edge
+				// drift the post-extraction baseline can't see. likely_phase
+				// attributes it: "extraction" when the resolve pass did not
+				// itself lose edges (the deficit pre-dates the resolve), else
+				// "resolve". May also fire on a legitimate edit that removed
+				// a call — it is a signal to investigate, not an assertion.
+				if callsEdgesAtIndexStart >= 0 && callsEdgesAfter < callsEdgesAtIndexStart {
+					likelyPhase := "extraction"
+					if callsEdgesAfter < callsEdgesBefore {
+						likelyPhase = "resolve"
+					}
+					slog.Warn("pincher.index.scoped_calls_net_loss",
+						"project_id", projectID,
+						"at_index_start", callsEdgesAtIndexStart,
+						"before_resolve", callsEdgesBefore,
+						"after_resolve", callsEdgesAfter,
+						"lost", callsEdgesAtIndexStart-callsEdgesAfter,
+						"likely_phase", likelyPhase,
+						"scope_files", len(resolveScope),
+						"extracted_files", len(extractedFiles),
+						"referrer_files", len(referrerFiles),
+					)
+				}
 			}
 		}
 	}
