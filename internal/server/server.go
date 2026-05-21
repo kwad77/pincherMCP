@@ -1956,12 +1956,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"tokens_saved": atSaved,
 			}
 		}
-		// Session-scoped project ID, if a root has been detected. The
-		// dashboard uses this to default the ADR project picker so users
-		// don't re-select it every page load.
+		// Session-scoped project ID — the dashboard uses it to default the
+		// ADR project picker so users don't re-select it every page load.
+		// A standalone `pincher web` / --no-stdio process has no MCP roots
+		// so s.sessionID is empty; fall back to the process working
+		// directory (pincher web is launched from the project the user is
+		// working in). Without this the picker defaulted to the
+		// alphabetically-first project, which usually has no ADRs (#1815).
 		resp := map[string]any{"session": sess, "all_time": allTime}
-		if s.sessionID != "" {
-			resp["session_project"] = s.sessionID
+		sp := s.sessionID
+		if sp == "" {
+			if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+				sp = db.ProjectIDFromPath(cwd)
+			}
+		}
+		if sp != "" {
+			resp["session_project"] = sp
 		}
 		json.NewEncoder(w).Encode(resp)
 		return

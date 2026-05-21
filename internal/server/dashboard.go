@@ -1862,7 +1862,14 @@ async function loadADRs() {
     const r=await tabFetch('adrs','/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',project:proj})});
     if(!r.ok){setTabError('adr-list','Failed to load ADRs: '+(await extractErrMsg(r)),'loadADRs');return;}
     const data=await r.json();
-    const entries=(data.result||data).entries||[];
+    // The adr tool returns entries as a {key:value} object map, not an
+    // array — normalize to [{key,value}] so .length / .map work. Without
+    // this the ADR tab showed "No ADR entries" for every project, since
+    // ({}).length is undefined (#1815).
+    const rawEntries=(data.result||data).entries||{};
+    const entries=Array.isArray(rawEntries)
+      ? rawEntries
+      : Object.entries(rawEntries).map(([key,value])=>({key,value}));
     if(!entries.length){list.innerHTML='<div class="empty">No ADR entries yet. Add the first one above.</div>';return;}
     list.innerHTML=entries.map(e=>
       '<div class="adr-row">'+
