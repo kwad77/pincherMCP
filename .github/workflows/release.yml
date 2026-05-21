@@ -411,3 +411,96 @@ jobs:
           Mirrored from kwad77/pincher@master packaging/homebrew/pincher.rb
           after the ${GITHUB_REF_NAME} release automation ran."
           git push origin master
+
+  scoop:
+    name: Bump Scoop manifest
+    # #1702: runs AFTER homebrew (not in parallel) so the two
+    # `push origin master` commits serialise — a concurrent push would
+    # fail non-fast-forward. needs: homebrew transitively waits on
+    # checksums too. homebrew completes (job-success) even when its
+    # steps are channel-skipped, so this still runs on dev releases —
+    # where its own SKIP_SCOOP gate then skips it.
+    needs: homebrew
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # #642 channel rule: the scoop manifest, like the Homebrew formula,
+    # tracks the stable channel only. The raw-URL install path the docs
+    # advertise serves whatever `master` holds.
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - name: Verify stable-channel rule
+        run: |
+          REF="${GITHUB_REF_NAME}"
+          VER="${REF#v}"
+          MINOR="$(echo "$VER" | awk -F. '{print $2}')"
+          if ! [[ "$MINOR" =~ ^[0-9]+$ ]] || [[ $((MINOR % 10)) -ne 0 ]]; then
+            echo "::warning::Skipping Scoop bump for $REF — minor=$MINOR is not a stable promotion (minor % 10 != 0)."
+            echo "SKIP_SCOOP=1" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.SKIP_SCOOP != '1'
+        with:
+          ref: master
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch SHA256SUMS + patch manifest
+        if: env.SKIP_SCOOP != '1'
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/SHA256SUMS"
+          for i in 1 2 3 4 5; do
+            if curl --fail -sL -o SHA256SUMS "$URL"; then break; fi
+            echo "attempt $i failed; retrying in 5s"
+            sleep 5
+          done
+          get_sha() { awk -v p="$1" '$2==p{print $1}' SHA256SUMS; }
+          WIN_AMD=$(get_sha "pincher-${GITHUB_REF_NAME}-windows-amd64.zip")
+          WIN_ARM=$(get_sha "pincher-${GITHUB_REF_NAME}-windows-arm64.zip")
+          for name in WIN_AMD WIN_ARM; do
+            val="${!name}"
+            if [[ -z "$val" || ${#val} -ne 64 ]]; then
+              echo "::error::missing or malformed sha for $name (got '$val')"
+              exit 1
+            fi
+          done
+          VERSION="${GITHUB_REF_NAME#v}" WIN_AMD="$WIN_AMD" WIN_ARM="$WIN_ARM" python3 - <<'PY'
+          import os, json, pathlib
+          v = os.environ["VERSION"]
+          p = pathlib.Path("packaging/scoop/pincher.json")
+          # Explicit UTF-8 + ensure_ascii=False so a non-ASCII char in the
+          # manifest (the description carries a `§`) round-trips byte-
+          # faithfully instead of being escaped or, on a non-UTF-8 locale,
+          # corrupted.
+          d = json.loads(p.read_text(encoding="utf-8"))
+          d["version"] = v
+          base = "https://github.com/kwad77/pincher/releases/download"
+          for label, arch, sha in (
+              ("64bit", "amd64", os.environ["WIN_AMD"]),
+              ("arm64", "arm64", os.environ["WIN_ARM"]),
+          ):
+              a = d["architecture"][label]
+              a["url"] = f"{base}/v{v}/pincher-v{v}-windows-{arch}.zip"
+              a["hash"] = sha
+              a["bin"] = [[f"pincher-v{v}-windows-{arch}.exe", "pincher"]]
+          p.write_text(json.dumps(d, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+          PY
+          git diff --stat packaging/scoop/pincher.json
+
+      - name: Commit to main repo
+        if: env.SKIP_SCOOP != '1'
+        run: |
+          set -euo pipefail
+          if git diff --quiet packaging/scoop/pincher.json; then
+            echo "manifest unchanged; nothing to commit"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add packaging/scoop/pincher.json
+          git commit -m "chore(scoop): bump manifest to ${GITHUB_REF_NAME}
+
+          Automated bump from .github/workflows/release.yml after the
+          ${GITHUB_REF_NAME} release produced its SHA256SUMS."
+          git push origin HEAD:master
