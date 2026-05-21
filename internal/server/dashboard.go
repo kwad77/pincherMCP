@@ -1974,7 +1974,9 @@ async function loadDoctor() {
   const wrap = document.getElementById('doctor-body');
   wrap.innerHTML = skeletonRows(6, 'line');
   try {
-    const r = await tabFetch('doctor', '/v1/doctor');
+    // /v1/doctor is a tool endpoint — POST-only (GET → 405). The
+    // non-tool GET endpoints (/v1/sessions, /v1/health) differ.
+    const r = await tabFetch('doctor', '/v1/doctor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     if (!r.ok) { setTabError('doctor-body', 'Failed to load doctor report: ' + (await extractErrMsg(r)), 'loadDoctor'); return; }
     const d = await r.json();
     const schema = d.schema_version;
