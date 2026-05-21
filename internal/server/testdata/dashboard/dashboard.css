@@ -247,13 +247,24 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .adr-form-actions{display:flex;gap:8px}
 
 /* ── Sessions table ── */
-.sessions-table{width:100%;border-collapse:collapse;font-size:13px}
-.sessions-table th{border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.5px;padding:8px 12px;text-align:left;text-transform:uppercase}
-.sessions-table td{border-bottom:1px solid rgba(48,54,61,.5);padding:10px 12px;vertical-align:middle}
-.sessions-table tbody tr:last-child td{border-bottom:none}
-.sessions-table tr:hover td{background:rgba(22,27,34,.6)}
+.sessions-table,.doctor-table{width:100%;border-collapse:collapse;font-size:13px}
+.sessions-table th,.doctor-table th{border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.5px;padding:8px 12px;text-align:left;text-transform:uppercase}
+.sessions-table td,.doctor-table td{border-bottom:1px solid rgba(48,54,61,.5);padding:10px 12px;vertical-align:middle}
+.sessions-table tbody tr:last-child td,.doctor-table tbody tr:last-child td{border-bottom:none}
+.sessions-table tr:hover td,.doctor-table tr:hover td{background:rgba(22,27,34,.6)}
 .sessions-table tfoot tr.sessions-total td{background:rgba(88,166,255,.05);border-top:1px solid var(--border);color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;padding-top:12px;padding-bottom:12px}
 .sessions-table tfoot tr.sessions-total:hover td{background:rgba(88,166,255,.08)}
+/* Doctor tab — index-health report mirroring `pincher doctor` */
+.doctor-env{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:24px;font-size:12px;color:var(--muted)}
+.doctor-env b{color:var(--text);font-weight:600;margin-right:4px}
+.doctor-advisory{background:rgba(240,136,62,.08);border:1px solid rgba(240,136,62,.25);border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:12px;line-height:1.55;color:var(--text)}
+.doctor-ok{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.25);border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:13px;color:var(--green)}
+.doctor-table tr.doctor-drift td{background:rgba(240,136,62,.06)}
+.doctor-badge-warn{display:inline-block;background:rgba(240,136,62,.15);color:var(--orange);border:1px solid rgba(240,136,62,.3);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:600}
+.doctor-fails{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.doctor-fail-pill{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:4px 12px;font-size:12px;color:var(--muted)}
+.doctor-fail-pill b{color:var(--orange);font-weight:700;margin-right:4px}
+.doctor-note{font-size:11px;color:var(--muted);margin-top:6px}
 .mono{font-family:ui-monospace,monospace;font-size:11px}
 
 /* ── Projection banner ── */

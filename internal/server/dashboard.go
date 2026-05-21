@@ -86,6 +86,7 @@ const dashboardTemplate = `<!DOCTYPE html>
 <nav class="tab-bar">
   <button class="tab-btn active" data-action="showTab" data-args='["overview"]'>Overview</button>
   <button class="tab-btn" data-action="showTab" data-args='["insights"]'>Insights</button>
+  <button class="tab-btn" data-action="showTab" data-args='["doctor"]'>Doctor</button>
   <button class="tab-btn" data-action="showTab" data-args='["projects"]'>Projects</button>
   <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
   <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
@@ -148,6 +149,15 @@ const dashboardTemplate = `<!DOCTYPE html>
   <div class="bench-history-card">
     <div id="bench-history-body"><div class="loading">Loading…</div></div>
   </div>
+</main>
+</div>
+
+<!-- DOCTOR — mirrors ` + "`pincher doctor`" + `: index health, advisories,
+     per-project drift, extraction failures. Driven by /v1/doctor. -->
+<div id="tab-doctor" class="tab-pane">
+<main>
+  <p class="tab-intro">Index health at a glance — the same report as <code>pincher doctor</code>. When the agent gets stale or wrong answers, the cause is usually here.</p>
+  <div id="doctor-body"><div class="loading">Loading…</div></div>
 </main>
 </div>
 
@@ -486,13 +496,24 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .adr-form-actions{display:flex;gap:8px}
 
 /* ── Sessions table ── */
-.sessions-table{width:100%;border-collapse:collapse;font-size:13px}
-.sessions-table th{border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.5px;padding:8px 12px;text-align:left;text-transform:uppercase}
-.sessions-table td{border-bottom:1px solid rgba(48,54,61,.5);padding:10px 12px;vertical-align:middle}
-.sessions-table tbody tr:last-child td{border-bottom:none}
-.sessions-table tr:hover td{background:rgba(22,27,34,.6)}
+.sessions-table,.doctor-table{width:100%;border-collapse:collapse;font-size:13px}
+.sessions-table th,.doctor-table th{border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;letter-spacing:.5px;padding:8px 12px;text-align:left;text-transform:uppercase}
+.sessions-table td,.doctor-table td{border-bottom:1px solid rgba(48,54,61,.5);padding:10px 12px;vertical-align:middle}
+.sessions-table tbody tr:last-child td,.doctor-table tbody tr:last-child td{border-bottom:none}
+.sessions-table tr:hover td,.doctor-table tr:hover td{background:rgba(22,27,34,.6)}
 .sessions-table tfoot tr.sessions-total td{background:rgba(88,166,255,.05);border-top:1px solid var(--border);color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;padding-top:12px;padding-bottom:12px}
 .sessions-table tfoot tr.sessions-total:hover td{background:rgba(88,166,255,.08)}
+/* Doctor tab — index-health report mirroring ` + "`pincher doctor`" + ` */
+.doctor-env{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:24px;font-size:12px;color:var(--muted)}
+.doctor-env b{color:var(--text);font-weight:600;margin-right:4px}
+.doctor-advisory{background:rgba(240,136,62,.08);border:1px solid rgba(240,136,62,.25);border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:12px;line-height:1.55;color:var(--text)}
+.doctor-ok{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.25);border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:13px;color:var(--green)}
+.doctor-table tr.doctor-drift td{background:rgba(240,136,62,.06)}
+.doctor-badge-warn{display:inline-block;background:rgba(240,136,62,.15);color:var(--orange);border:1px solid rgba(240,136,62,.3);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:600}
+.doctor-fails{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.doctor-fail-pill{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:4px 12px;font-size:12px;color:var(--muted)}
+.doctor-fail-pill b{color:var(--orange);font-weight:700;margin-right:4px}
+.doctor-note{font-size:11px;color:var(--muted);margin-top:6px}
 .mono{font-family:ui-monospace,monospace;font-size:11px}
 
 /* ── Projection banner ── */
@@ -918,6 +939,7 @@ function showTab(name) {
   if (name === 'sessions') loadSessions();
   if (name === 'adrs') loadADRProjects();
   if (name === 'insights') load();
+  if (name === 'doctor') loadDoctor();
   if (name === 'search') document.getElementById('search-q').focus();
 }
 
@@ -1939,6 +1961,103 @@ async function loadSessions() {
   } catch(e) {
     if(e.name==='AbortError')return; // #539: superseded by newer call
     setTabError('sessions-table-wrap','Failed to load sessions: '+e.message,'loadSessions');
+  }
+}
+
+// ── Doctor tab ─────────────────────────────────────────────────────────────
+// Mirrors the CLI 'pincher doctor' report over /v1/doctor: environment,
+// advisories, per-project health with drift flagging, extraction
+// failures grouped by reason. The dashboard's trust signal — surfaces
+// stale / drifted / bloated index state the agent silently suffers
+// from otherwise.
+async function loadDoctor() {
+  const wrap = document.getElementById('doctor-body');
+  wrap.innerHTML = skeletonRows(6, 'line');
+  try {
+    const r = await tabFetch('doctor', '/v1/doctor');
+    if (!r.ok) { setTabError('doctor-body', 'Failed to load doctor report: ' + (await extractErrMsg(r)), 'loadDoctor'); return; }
+    const d = await r.json();
+    const schema = d.schema_version;
+    let html = '';
+
+    html += '<div class="doctor-env">' +
+      '<span><b>Binary</b>' + esc(d.binary_version || '?') + '</span>' +
+      '<span><b>Schema</b>v' + esc(String(schema || '?')) + '</span>' +
+      '<span><b>Database</b>' + fmtBytes(d.db_size_bytes || 0) + '</span>' +
+      '<span><b>WAL</b>' + fmtBytes(d.wal_size_bytes || 0) + '</span>' +
+      '</div>';
+
+    const advisories = d.advisories || [];
+    html += '<p class="section-title">Advisories</p>';
+    if (advisories.length) {
+      html += advisories.map(a => '<div class="doctor-advisory">⚠ ' + esc(a) + '</div>').join('');
+    } else {
+      html += '<div class="doctor-ok">✓ No advisories — nothing needs attention.</div>';
+    }
+
+    const projects = d.projects || [];
+    if (projects.length) {
+      html += '<p class="section-title">Project Health</p>';
+      html += '<table class="doctor-table"><thead><tr>' +
+        '<th>Project</th><th>Files</th><th>Symbols</th><th>Edges</th><th>Indexed</th><th>Schema</th><th></th>' +
+        '</tr></thead><tbody>' +
+        projects.map(p => {
+          const at = p.schema_version_at_index;
+          const drift = at && schema && at !== schema;
+          const schemaCell = drift
+            ? '<span class="doctor-badge-warn">v' + esc(String(at)) + ' · drift</span>'
+            : 'v' + esc(String(at || '?'));
+          return '<tr' + (drift ? ' class="doctor-drift"' : '') + '>' +
+            '<td title="' + esc(p.path || '') + '">' + esc(p.name || p.id || '?') + '</td>' +
+            '<td>' + fmt(p.files || 0) + '</td>' +
+            '<td>' + fmt(p.symbols || 0) + '</td>' +
+            '<td>' + fmt(p.edges || 0) + '</td>' +
+            '<td>' + timeAgo(p.indexed_at) + '</td>' +
+            '<td>' + schemaCell + '</td>' +
+            '<td><button class="btn secondary" data-action="doctorReindex" data-args="' + esc(JSON.stringify([p.id])) + '">Re-index</button></td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
+      if (d.projects_truncated) html += '<p class="doctor-note">' + fmt(d.projects_truncated) + ' more project(s) not shown.</p>';
+    }
+
+    html += '<p class="section-title">Extraction Failures</p>';
+    const fails = d.extraction_failures || [];
+    const truncated = d.extraction_failures_truncated || 0;
+    if (!fails.length && !truncated) {
+      html += '<div class="doctor-ok">✓ No extraction failures.</div>';
+    } else {
+      const byReason = {};
+      fails.forEach(f => { const k = f.reason || 'unknown'; byReason[k] = (byReason[k] || 0) + 1; });
+      html += '<div class="doctor-fails">' +
+        Object.keys(byReason).sort().map(k =>
+          '<span class="doctor-fail-pill"><b>' + fmt(byReason[k]) + '</b>' + esc(k) + '</span>').join('') +
+        '</div>';
+      html += '<p class="doctor-note">Showing ' + fmt(fails.length) + ' of ' + fmt(fails.length + truncated) +
+        ' recorded failure(s) — a failure is one file pincher could not extract; most are oversized generated files and safe to ignore.</p>';
+    }
+
+    wrap.innerHTML = html;
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    setTabError('doctor-body', 'Failed to load doctor report: ' + e.message, 'loadDoctor');
+  }
+}
+
+// doctorReindex force-reindexes one project from the Doctor tab — the
+// fix for a drifted or stale row. The data-action dispatch appends the
+// button element as the last argument.
+async function doctorReindex(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  showToast('Re-indexing ' + id + '…');
+  try {
+    const r = await fetch('/v1/index', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: id, force: true }) });
+    if (!r.ok) throw new Error(await extractErrMsg(r));
+    showToast('Re-indexed ' + id + '.');
+    loadDoctor();
+  } catch (e) {
+    showToast('Re-index failed: ' + e.message, false);
+    if (btn) { btn.disabled = false; btn.textContent = 'Re-index'; }
   }
 }
 

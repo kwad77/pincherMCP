@@ -48,6 +48,7 @@
 <nav class="tab-bar">
   <button class="tab-btn active" data-action="showTab" data-args='["overview"]'>Overview</button>
   <button class="tab-btn" data-action="showTab" data-args='["insights"]'>Insights</button>
+  <button class="tab-btn" data-action="showTab" data-args='["doctor"]'>Doctor</button>
   <button class="tab-btn" data-action="showTab" data-args='["projects"]'>Projects</button>
   <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
   <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
@@ -110,6 +111,15 @@
   <div class="bench-history-card">
     <div id="bench-history-body"><div class="loading">Loading…</div></div>
   </div>
+</main>
+</div>
+
+<!-- DOCTOR — mirrors `pincher doctor`: index health, advisories,
+     per-project drift, extraction failures. Driven by /v1/doctor. -->
+<div id="tab-doctor" class="tab-pane">
+<main>
+  <p class="tab-intro">Index health at a glance — the same report as <code>pincher doctor</code>. When the agent gets stale or wrong answers, the cause is usually here.</p>
+  <div id="doctor-body"><div class="loading">Loading…</div></div>
 </main>
 </div>
 
