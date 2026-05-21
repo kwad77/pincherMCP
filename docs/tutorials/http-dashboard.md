@@ -2,7 +2,7 @@
 
 About 10 minutes. By the end you'll have a pincher process serving the dashboard at `http://localhost:7777/v1/dashboard`, you'll have hit the REST API with `curl`, and you'll know how to point any HTTP-capable client at pincher.
 
-This walkthrough assumes nothing about pincher's internals. For the long-form manual, see [`docs/REFERENCE.md`](../REFERENCE.md).
+This walkthrough assumes nothing about pincher's internals. For the long-form manual, see [`docs/reference/`](../reference/README.md).
 
 ## What you need
 
@@ -140,12 +140,12 @@ For nginx-style fronting with HTTPS at the edge, pass `--basepath` and `--trust-
 pincher --http :7777 --http-key "$KEY" --basepath /pincher --trust-proxy
 ```
 
-Both `/pincher/v1/*` and `/v1/*` route to the same handler; the dashboard URLs respect `X-Forwarded-Prefix` / `X-Forwarded-Proto` / `X-Forwarded-Host`. See [REFERENCE.md → CLI flags](../REFERENCE.md#cli-flags) for the full table.
+Both `/pincher/v1/*` and `/v1/*` route to the same handler; the dashboard URLs respect `X-Forwarded-Prefix` / `X-Forwarded-Proto` / `X-Forwarded-Host`. See [Reference → CLI flags](../reference/cli.md#cli-flags) for the full table.
 
 ## What to read next
 
-- **[REFERENCE.md → HTTP REST API](../REFERENCE.md#http-rest-api)** — full request/response examples per tool
-- **[REFERENCE.md → CLI flags](../REFERENCE.md#cli-flags)** — every `--http-*` knob
+- **[Reference → HTTP REST API](../reference/http-api.md)** — full request/response examples per tool
+- **[Reference → CLI flags](../reference/cli.md#cli-flags)** — every `--http-*` knob
 - **[Tutorial: Claude Code](claude-code.md)** — same indexing, MCP stdio transport
 - **[Tutorial: Cursor](cursor.md)** — same indexing, Cursor rules file
 - **[`packaging/README.md`](../../packaging/README.md)** — Homebrew, systemd, launchd, Windows service, Docker

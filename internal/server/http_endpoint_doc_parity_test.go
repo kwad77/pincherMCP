@@ -55,29 +55,13 @@ var nonToolHTTPRoutes = []string{
 func TestHTTPRoutes_AllNonToolEndpointsDocumented(t *testing.T) {
 	t.Parallel()
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
+	refBytes, err := os.ReadFile("../../docs/reference/http-api.md")
 	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+		t.Fatalf("read docs/reference/http-api.md: %v", err)
 	}
-	ref := string(refBytes)
-
-	// Slice the doc to the HTTP REST API section to avoid matching
-	// path-shaped strings in code samples elsewhere (e.g. tutorials
-	// embedded later in REFERENCE.md).
-	startIdx := strings.Index(ref, "## HTTP REST API")
-	if startIdx < 0 {
-		t.Fatal("could not find ## HTTP REST API section in REFERENCE.md")
-	}
-	rest := ref[startIdx:]
-	// End at next H2 heading.
-	endRel := regexp.MustCompile(`(?m)^## `).FindAllStringIndex(rest, -1)
-	var section string
-	if len(endRel) >= 2 {
-		// First match is the section's own heading; second is the next H2.
-		section = rest[:endRel[1][0]]
-	} else {
-		section = rest
-	}
+	// The HTTP REST API reference is now its own dedicated file —
+	// the whole file is the section to scan.
+	section := string(refBytes)
 
 	// Parse documented endpoints from markdown table rows. The shape
 	// is: `| \`/v1/<path>\` | METHOD | Auth | ... |` — pick the path
@@ -93,7 +77,7 @@ func TestHTTPRoutes_AllNonToolEndpointsDocumented(t *testing.T) {
 
 	for _, route := range nonToolHTTPRoutes {
 		if !documented[route] {
-			t.Errorf("HTTP route %q is exposed by the server but no row in docs/REFERENCE.md → ### Additional HTTP endpoints table — add a row or drop the route", route)
+			t.Errorf("HTTP route %q is exposed by the server but no row in docs/reference/http-api.md → ### Additional HTTP endpoints table — add a row or drop the route", route)
 		}
 	}
 

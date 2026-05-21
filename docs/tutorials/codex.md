@@ -4,7 +4,7 @@ About 10 minutes. Wires pincher into the OpenAI Codex CLI as an MCP
 server. By the end the Codex CLI reaches for pincher tools instead of
 its built-in file-reading sub-tools when navigating code.
 
-For the long-form manual see [`docs/REFERENCE.md`](../REFERENCE.md).
+For the long-form manual see [`docs/reference/`](../reference/README.md).
 
 ## What you need
 
@@ -104,7 +104,7 @@ pincher stats
 
 ## What to read next
 
-- [REFERENCE.md → MCP tools](../REFERENCE.md#the-28-mcp-tools) — every tool, every parameter
+- [Reference → MCP tools](../reference/tools.md) — every tool, every parameter
 - [Tutorial: Claude Code](claude-code.md) — same flow with CLAUDE.md rules
 - [Tutorial: Cursor](cursor.md) — same flow with rules-file format
 - [`docs/integrations/loop-leverage-layers.md`](../integrations/loop-leverage-layers.md) — the three-layer agent-leverage frame

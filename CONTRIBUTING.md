@@ -134,14 +134,14 @@ Release-prep PR (the one before tagging) MUST touch all five:
 2. **`README.md` roadmap table** — bump prior `🚧 in flight` row to `✅ shipped`; add the next `🚧 in flight` row.
 3. **`README.md` Known limitations** — rewrite items whose fix lands this release into past tense.
 4. **Version-sensitive claims in README leading paragraph** — tool count, schema version, coverage badge if it moved meaningfully (>1%).
-5. **`docs/REFERENCE.md` leading metadata line** — `**Schema version:** vN · **MCP tools:** N · **Languages detected:** ~N`. Bump every release that moves any of those numbers.
+5. **`docs/reference/README.md` leading metadata line** — `**Schema version:** vN · **MCP tools:** N · **Languages detected:** ~N`. Bump every release that moves any of those numbers.
 
 Tag pushes trigger the auto-bump workflow for the Homebrew formula and Docker image — those don't go in the release-prep PR.
 
 ## Where to look next
 
 - [`CLAUDE.md`](CLAUDE.md) — full dev guidance + architecture notes (longer than this file).
-- [`docs/REFERENCE.md`](docs/REFERENCE.md) — every tool, every flag, every endpoint, schema history, performance numbers.
+- [`docs/reference/`](docs/reference/README.md) — every tool, every flag, every endpoint, schema history, performance numbers.
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — top recurring friction items with remediation.
 - [`internal/server/empty_reason.go`](internal/server/empty_reason.go) — the empty-response taxonomy enum.
 

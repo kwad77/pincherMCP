@@ -53,9 +53,9 @@ var expectedCLISubcommands = []string{
 func TestReferenceMD_EveryCLISubcommandHasSection(t *testing.T) {
 	t.Parallel()
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
+	refBytes, err := os.ReadFile("../../docs/reference/cli.md")
 	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+		t.Fatalf("read docs/reference/cli.md: %v", err)
 	}
 	ref := string(refBytes)
 
@@ -66,7 +66,7 @@ func TestReferenceMD_EveryCLISubcommandHasSection(t *testing.T) {
 	for _, sub := range expectedCLISubcommands {
 		heading := "### `pincher " + sub + "`"
 		if !strings.Contains(ref, heading) {
-			t.Errorf("CLI subcommand %q has no dedicated `### \\`pincher %s\\`` section in docs/REFERENCE.md — add one (see existing sections for the standard shape) or remove the subcommand from cmd/pinch/main.go printHelpBanner if intentionally hidden",
+			t.Errorf("CLI subcommand %q has no dedicated `### \\`pincher %s\\`` section in docs/reference/cli.md — add one (see existing sections for the standard shape) or remove the subcommand from cmd/pinch/main.go printHelpBanner if intentionally hidden",
 				sub, sub)
 		}
 	}
@@ -84,9 +84,9 @@ func TestReferenceMD_EveryCLISubcommandHasSection(t *testing.T) {
 func TestReferenceMD_NoOrphanCLISection(t *testing.T) {
 	t.Parallel()
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
+	refBytes, err := os.ReadFile("../../docs/reference/cli.md")
 	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+		t.Fatalf("read docs/reference/cli.md: %v", err)
 	}
 	ref := string(refBytes)
 
@@ -102,7 +102,7 @@ func TestReferenceMD_NoOrphanCLISection(t *testing.T) {
 	for _, m := range headingRE.FindAllStringSubmatch(ref, -1) {
 		name := m[1]
 		if !known[name] {
-			t.Errorf("REFERENCE.md has `### \\`pincher %s\\`` but %q is not on expectedCLISubcommands — either add it to the help banner + this test, or remove the orphan section",
+			t.Errorf("docs/reference/cli.md has `### \\`pincher %s\\`` but %q is not on expectedCLISubcommands — either add it to the help banner + this test, or remove the orphan section",
 				name, name)
 		}
 	}

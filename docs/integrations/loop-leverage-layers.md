@@ -378,7 +378,7 @@ that leaves leverage on the table.
   per-field contract for layer 2
 - [Migration guide](../migration/v0.4-to-v1.0.md) — version-by-version
   history of when each layer's surface stabilized
-- [`docs/REFERENCE.md`](../REFERENCE.md) — the per-tool reference
+- [`docs/reference/`](../reference/README.md) — the per-tool reference
 - [`docs/tutorials/claude-code.md`](../tutorials/claude-code.md) —
   end-to-end walkthrough for one specific host
 - [#1391](https://github.com/kwad77/pincher/issues/1391) —

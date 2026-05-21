@@ -2,7 +2,7 @@
 
 About 10 minutes. By the end you'll have a local pincher install, a Cursor rules file telling Cursor's agent to prefer pincher tools, and verified the agent reaches for pincher in chat.
 
-This walkthrough assumes nothing about pincher's internals. For the long-form manual, see [`docs/REFERENCE.md`](../REFERENCE.md).
+This walkthrough assumes nothing about pincher's internals. For the long-form manual, see [`docs/reference/`](../reference/README.md).
 
 ## What you need
 
@@ -107,7 +107,7 @@ pincher stats
 
 ## What to read next
 
-- **[REFERENCE.md → MCP tools](../REFERENCE.md#the-28-mcp-tools)** — full tool catalogue
-- **[REFERENCE.md → `pincher init`](../REFERENCE.md#pincher-init)** — every supported target (Claude Code, Cursor, Windsurf, Aider, Continue, …) and how the marker-block contract works
+- **[Reference → MCP tools](../reference/tools.md)** — full tool catalogue
+- **[Reference → `pincher init`](../reference/cli.md#pincher-init)** — every supported target (Claude Code, Cursor, Windsurf, Aider, Continue, …) and how the marker-block contract works
 - **[Tutorial: Claude Code](claude-code.md)** — same flow with `~/.claude/CLAUDE.md`
 - **[Tutorial: HTTP dashboard](http-dashboard.md)** — point any browser-friendly client at pincher's REST API

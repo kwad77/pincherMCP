@@ -42,36 +42,44 @@ func TestReferenceMD_ToolCountParity(t *testing.T) {
 		t.Fatal("registerTools() registered zero tools — newTestServer wiring drift")
 	}
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
+	// Metadata line lives in the reference index file.
+	idxBytes, err := os.ReadFile("../../docs/reference/README.md")
 	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+		t.Fatalf("read docs/reference/README.md: %v", err)
 	}
-	ref := string(refBytes)
+	idx := string(idxBytes)
 
-	// Metadata line: **Schema version:** v33 · **MCP tools:** 23 · ...
+	// Tool catalogue heading lives in the tools file.
+	toolsBytes, err := os.ReadFile("../../docs/reference/tools.md")
+	if err != nil {
+		t.Fatalf("read docs/reference/tools.md: %v", err)
+	}
+	tools := string(toolsBytes)
+
+	// Metadata line: **Schema version:** v34 · **MCP tools:** 28 · ...
 	metaRE := regexp.MustCompile(`\*\*MCP tools:\*\*\s+(\d+)`)
-	metaMatch := metaRE.FindStringSubmatch(ref)
+	metaMatch := metaRE.FindStringSubmatch(idx)
 	if metaMatch == nil {
-		t.Fatal("could not parse `**MCP tools:** N` from REFERENCE.md metadata line")
+		t.Fatal("could not parse `**MCP tools:** N` from docs/reference/README.md metadata line")
 	}
 	metaCount, _ := strconv.Atoi(metaMatch[1])
 
-	// Heading: ## The 23 MCP tools
-	headingRE := regexp.MustCompile(`(?m)^## The (\d+) MCP tools\s*$`)
-	headingMatch := headingRE.FindStringSubmatch(ref)
+	// Heading: # The 28 MCP tools
+	headingRE := regexp.MustCompile(`(?m)^# The (\d+) MCP tools\s*$`)
+	headingMatch := headingRE.FindStringSubmatch(tools)
 	if headingMatch == nil {
-		t.Fatal("could not parse `## The N MCP tools` heading from REFERENCE.md")
+		t.Fatal("could not parse `# The N MCP tools` heading from docs/reference/tools.md")
 	}
 	headingCount, _ := strconv.Atoi(headingMatch[1])
 
 	if metaCount != runtimeCount {
-		t.Errorf("REFERENCE.md metadata claims %d MCP tools but runtime registers %d — update the leading metadata line at docs/REFERENCE.md:5", metaCount, runtimeCount)
+		t.Errorf("docs/reference/README.md metadata claims %d MCP tools but runtime registers %d — update the leading metadata line", metaCount, runtimeCount)
 	}
 	if headingCount != runtimeCount {
-		t.Errorf("REFERENCE.md heading reads `## The %d MCP tools` but runtime registers %d — update the heading at docs/REFERENCE.md (search for `## The`)", headingCount, runtimeCount)
+		t.Errorf("docs/reference/tools.md heading reads `# The %d MCP tools` but runtime registers %d — update the heading", headingCount, runtimeCount)
 	}
 	if metaCount != headingCount {
-		t.Errorf("REFERENCE.md self-inconsistent: metadata says %d, heading says %d", metaCount, headingCount)
+		t.Errorf("reference docs self-inconsistent: README.md metadata says %d, tools.md heading says %d", metaCount, headingCount)
 	}
 }
 
@@ -83,14 +91,14 @@ func TestReferenceMD_ToolCountParity(t *testing.T) {
 func TestTutorials_ToolCountAnchorParity(t *testing.T) {
 	t.Parallel()
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
+	refBytes, err := os.ReadFile("../../docs/reference/tools.md")
 	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+		t.Fatalf("read docs/reference/tools.md: %v", err)
 	}
-	headingRE := regexp.MustCompile(`(?m)^## The (\d+) MCP tools\s*$`)
+	headingRE := regexp.MustCompile(`(?m)^# The (\d+) MCP tools\s*$`)
 	headingMatch := headingRE.FindStringSubmatch(string(refBytes))
 	if headingMatch == nil {
-		t.Fatal("could not parse `## The N MCP tools` heading from REFERENCE.md")
+		t.Fatal("could not parse `# The N MCP tools` heading from docs/reference/tools.md")
 	}
 	want := headingMatch[1]
 	wantAnchor := "#the-" + want + "-mcp-tools"
@@ -124,7 +132,7 @@ func TestTutorials_ToolCountAnchorParity(t *testing.T) {
 			if gotN != want {
 				// Find line number for a useful error message.
 				line := 1 + strings.Count(text[:m[0]], "\n")
-				t.Errorf("docs/tutorials/%s:%d links to %q but REFERENCE.md heading is %q — anchor is stale, update or REFERENCE.md heading moved", name, line, "#the-"+gotN+"-mcp-tools", wantAnchor)
+				t.Errorf("docs/tutorials/%s:%d links to %q but docs/reference/tools.md heading is %q — anchor is stale, update or the tools.md heading moved", name, line, "#the-"+gotN+"-mcp-tools", wantAnchor)
 			}
 		}
 	}
