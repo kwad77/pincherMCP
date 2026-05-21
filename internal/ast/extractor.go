@@ -917,8 +917,67 @@ func goGenDeclToSymbols(d *ast.GenDecl, fset *token.FileSet, source []byte, line
 	return syms
 }
 
+// goLocalVarTypes walks a function body and maps local variable names
+// to their same-package type for the unambiguous declaration shapes —
+// `x := &T{}` / `x := T{}` / `x := new(T)` / `var x T` / `var x = &T{}`.
+// #1764: a method called through a local-var receiver (`w := &Worker{};
+// w.Run()`) otherwise carries no receiver-type hint and the #423
+// binding drops the edge. Flat body-wide map — last assignment wins on
+// the rare same-name re-declaration; the inference must be certain
+// (only the shapes goValueExprTypeName / goSamePackageTypeName resolve
+// to a definite same-package type), never guessed.
+func goLocalVarTypes(body *ast.BlockStmt) map[string]string {
+	out := map[string]string{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			if s.Tok != token.DEFINE || len(s.Lhs) != len(s.Rhs) {
+				return true
+			}
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok || id.Name == "_" {
+					continue
+				}
+				if t := goValueExprTypeName(s.Rhs[i]); t != "" {
+					out[id.Name] = t
+				}
+			}
+		case *ast.GenDecl:
+			if s.Tok != token.VAR {
+				return true
+			}
+			for _, spec := range s.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if name == nil || name.Name == "_" {
+						continue
+					}
+					t := ""
+					if vs.Type != nil {
+						t = goSamePackageTypeName(vs.Type)
+					} else if i < len(vs.Values) {
+						t = goValueExprTypeName(vs.Values[i])
+					}
+					if t != "" {
+						out[name.Name] = t
+					}
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
 func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNames map[string]bool, pkgVarTypes map[string]string) []ExtractedEdge {
 	var edges []ExtractedEdge
+	// #1764: local-var receiver types for this body — a `w := &Worker{}`
+	// receiver shadows package-level vars of the same name, so it wins.
+	localVarTypes := goLocalVarTypes(body)
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -952,7 +1011,14 @@ func extractGoCalls(body *ast.BlockStmt, callerQN, receiverType string, localNam
 		recvType := receiverType
 		if dot := strings.IndexByte(callee, '.'); dot > 0 &&
 			!strings.ContainsRune(callee[dot+1:], '.') {
-			if base := callee[:dot]; !localNames[base] {
+			base := callee[:dot]
+			// #1764: a local-var receiver wins over the enclosing
+			// method's receiver AND a package var of the same name —
+			// the local declaration shadows both. #1747's package-var
+			// path stays as the fallback for a non-local base.
+			if vt := localVarTypes[base]; vt != "" {
+				recvType = vt
+			} else if !localNames[base] {
 				if vt := pkgVarTypes[base]; vt != "" {
 					recvType = vt
 				}
