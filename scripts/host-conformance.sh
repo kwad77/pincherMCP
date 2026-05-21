@@ -70,8 +70,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # One temp root for the whole run — the shared index DB plus every
 # host's per-replay scratch — torn down by a single EXIT trap (a
 # per-host `trap ... EXIT` would clobber it, and each other).
-HC_TMP="$(mktemp -d -t hostconf-XXXXXX)"
-trap 'rm -rf "${HC_TMP}"' EXIT
+# #1536: when HOSTCONF_OUT_DIR is set (CI), use it as the scratch root
+# and keep it on exit so the workflow can upload the per-host
+# transcripts as a failure-investigation artifact. Otherwise mktemp +
+# tear down as before.
+HC_TMP="${HOSTCONF_OUT_DIR:-$(mktemp -d -t hostconf-XXXXXX)}"
+mkdir -p "${HC_TMP}"
+trap '[ -n "${HOSTCONF_OUT_DIR:-}" ] || rm -rf "${HC_TMP}"' EXIT
 HC_DATA="${HC_TMP}/data"
 HC_PROJECT="$(basename "${REPO_ROOT}")"
 "${PINCHER_BIN}" index "${REPO_ROOT}" --data-dir "${HC_DATA}" >/dev/null 2>&1 || {

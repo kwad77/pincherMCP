@@ -7,13 +7,13 @@ name: Host conformance
 # and validates responses against expectations.json. Drift caught
 # here would break the listed host's canonical flow.
 #
-# Phase: v0.87 — advisory (informational; failure does NOT block
-#                merge or release).
-#        v0.91 — required (per #1536 FILE-R; failure blocks release
-#                tag, listed in CLAUDE.md required-gates).
-#
-# The phase is set by the `continue-on-error` flag on the job below;
-# flip when FILE-R promotes.
+# Phase: v0.87 — advisory (informational; failure did NOT block merge
+#                or release).
+#        v0.91 — REQUIRED (#1536 FILE-R): the job no longer carries
+#                `continue-on-error`, so a failed replay blocks the PR
+#                — including the release-prep PR, hence the tag. Listed
+#                in CLAUDE.md required-gates. On failure the per-host
+#                replay transcripts upload as an artifact.
 
 on:
   pull_request:
@@ -26,11 +26,8 @@ permissions:
 
 jobs:
   host-conformance:
-    name: host-conformance (advisory)
+    name: host-conformance
     runs-on: ubuntu-latest
-    # Advisory phase per FILE-M (v0.87). Flip to false at v0.91 when
-    # FILE-R promotes this gate to release-blocker.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +49,21 @@ jobs:
       - name: Run host-conformance replay
         env:
           PINCHER_BIN: ${{ github.workspace }}/pincher
+          # #1536: scratch root the script keeps on exit so the next
+          # step can upload the per-host transcripts.
+          HOSTCONF_OUT_DIR: ${{ github.workspace }}/host-conformance-out
         # Invoke via bash explicitly so a Windows-set file-mode (no
         # executable bit) doesn't trip the runner — the script is
         # POSIX bash regardless of who committed it.
         run: bash scripts/host-conformance.sh all
+
+      # #1536: on a failed replay, upload each host's request/response
+      # streams + stderr for offline investigation. The `data/` index
+      # DB is excluded — it's scratch, not a transcript.
+      - name: Upload per-host transcripts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-conformance-transcripts
+          path: host-conformance-out/host-*
+          if-no-files-found: warn
