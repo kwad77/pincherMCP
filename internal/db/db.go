@@ -3686,29 +3686,76 @@ func (s *Store) BulkUpsertEdges(edges []Edge) error {
 		return nil
 	}
 	return s.withTx(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(`
-		INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source, branch)
-		VALUES (?,?,?,?,?,?,?,?)`)
-		if err != nil {
+		return insertEdgesTx(tx, edges)
+	})
+}
+
+// insertEdgesTx INSERT-OR-IGNOREs edges within an existing transaction.
+// Shared by BulkUpsertEdges and ReplaceEdgesByKindSource so the edge
+// INSERT shape has exactly one definition.
+func insertEdgesTx(tx *sql.Tx, edges []Edge) error {
+	stmt, err := tx.Prepare(`
+	INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source, branch)
+	VALUES (?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for i := range edges {
+		e := &edges[i]
+		propsJSON := ""
+		if len(e.Properties) > 0 {
+			b, _ := json.Marshal(e.Properties)
+			propsJSON = string(b)
+		}
+		source := e.Source
+		if source == "" {
+			source = "per_file"
+		}
+		if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source, e.Branch); err != nil {
 			return err
 		}
-		defer stmt.Close()
-		for i := range edges {
-			e := &edges[i]
-			propsJSON := ""
-			if len(e.Properties) > 0 {
-				b, _ := json.Marshal(e.Properties)
-				propsJSON = string(b)
+	}
+	return nil
+}
+
+// ReplaceEdgesByKindSource atomically deletes the (kind, source) edge
+// set for a project and inserts `edges` in its place — both in ONE
+// transaction, so a concurrent reader sees either the old graph or the
+// new one, never the empty gap between them (#1772). When scopeFiles is
+// non-empty the delete is restricted to edges whose from-side symbol
+// lives in one of those files (the incremental-resolve scoped path);
+// otherwise the whole project (kind, source) set is replaced.
+//
+// Pre-#1772 the resolve passes called DeleteEdgesByKindAndSource (one
+// commit) then BulkUpsertEdges (a second commit). Between the two, the
+// committed DB held ZERO resolve_pass edges of that kind — every
+// watcher resolve tick opened that window, and any MCP read landing in
+// it (trace / query / changes / dead_code) saw cross-file CALLS edges
+// vanish. That is the graph-degrades-over-a-session symptom of #1772.
+func (s *Store) ReplaceEdgesByKindSource(projectID, kind, source string, scopeFiles []string, edges []Edge) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		if len(scopeFiles) > 0 {
+			placeholders := make([]string, len(scopeFiles))
+			args := []any{projectID, kind, source, projectID}
+			for i, f := range scopeFiles {
+				placeholders[i] = "?"
+				args = append(args, f)
 			}
-			source := e.Source
-			if source == "" {
-				source = "per_file"
-			}
-			if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source, e.Branch); err != nil {
+			if _, err := tx.Exec(
+				`DELETE FROM edges
+				   WHERE project_id=? AND kind=? AND source=?
+				     AND from_id IN (
+				       SELECT id FROM symbols WHERE project_id=? AND file_path IN (`+strings.Join(placeholders, ",")+`)
+				     )`, args...); err != nil {
 				return err
 			}
+		} else if _, err := tx.Exec(
+			`DELETE FROM edges WHERE project_id=? AND kind=? AND source=?`,
+			projectID, kind, source); err != nil {
+			return err
 		}
-		return nil
+		return insertEdgesTx(tx, edges)
 	})
 }
 
