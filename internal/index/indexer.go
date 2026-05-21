@@ -369,7 +369,17 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	if prev, _ := idx.store.GetProject(projectID); prev != nil {
 		fileCountEstimate = prev.FileCount
 		priorBinaryVersion = prev.BinaryVersion
-		if prev.BinaryVersion != "" && idx.binaryVersion != "" && prev.BinaryVersion != idx.binaryVersion {
+		// #1818: only force-reindex when the running binary is strictly
+		// NEWER than the project's stamp — a genuine upgrade. Pre-fix any
+		// version mismatch forced, so two concurrent pincher processes of
+		// different versions watching one project ping-ponged
+		// force-reindexes forever (each re-stamp re-triggered the other,
+		// leaving the index permanently mid-wipe). With strict-newer the
+		// higher-versioned process reindexes once, stamps its version,
+		// and the lower-versioned one never forces — a no-change tick
+		// never re-stamps — so the index settles.
+		if prev.BinaryVersion != "" && idx.binaryVersion != "" &&
+			db.CompareBinaryVersion(idx.binaryVersion, prev.BinaryVersion) > 0 {
 			binaryDriftForce = true
 			// #1497 v0.83: suppress the force-reindex cascade when the
 			// schema migrations applied during this Open() are all
@@ -1985,7 +1995,12 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				// until the user happens to save a file. Force the
 				// reindex when the binary stamped on the project
 				// differs from the running binary.
-				binaryDrifted := p.BinaryVersion != "" && idx.binaryVersion != "" && p.BinaryVersion != idx.binaryVersion
+				// #1818: strict-newer — mirrors the binaryDriftForce branch
+			// in Index(). A non-upgrade version mismatch (an older
+			// concurrent process, a dev build) must not run a pass, or
+			// two processes ping-pong force-reindexes forever.
+			binaryDrifted := p.BinaryVersion != "" && idx.binaryVersion != "" &&
+				db.CompareBinaryVersion(idx.binaryVersion, p.BinaryVersion) > 0
 				if len(changed) == 0 && !binaryDrifted {
 					// #1772 self-heal: once a project settles (no changes
 					// this tick) after a burst of incremental reindexes,
