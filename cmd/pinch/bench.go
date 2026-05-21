@@ -181,6 +181,13 @@ type ToolBench struct {
 	SavingsPct        float64 `json:"savings_pct"`
 }
 
+// benchTraceEdgeKinds is the CALLS-family edge set the trace measurement
+// traverses — the same default the MCP trace tool resolves an unset
+// `kinds` arg to. traceViaCTE rejects an empty/nil edgeKinds slice, so
+// this must be passed explicitly; passing nil silently errored and
+// floored the bench trace row to 0 (#1809).
+var benchTraceEdgeKinds = []string{"CALLS", "HTTP_CALLS", "ASYNC_CALLS"}
+
 // runBenchSuite runs each tool shape over the sample symbol set and
 // returns the aggregate report. Errors per call are tolerated — they
 // contribute zero tokens (which is the correct accounting: a failed
@@ -216,9 +223,11 @@ func runBenchSuite(store *db.Store, pid string, sample []*db.Symbol, depth int) 
 		ctxBaseline := fileBytesAsTokens(sym.FilePath)
 		contextM = append(contextM, measurement{lat, ctxActual, ctxBaseline})
 
-		// ───────── trace: depth=N outbound BFS.
+		// ───────── trace: depth=N outbound BFS over the CALLS family.
+		// traceViaCTE rejects empty edgeKinds — passing nil silently
+		// errored, flooring this row to 0 (#1809).
 		t0 = time.Now()
-		trace, _ := store.TraceViaCTEScoped(pid, sym.ID, "outbound", nil, depth)
+		trace, _ := store.TraceViaCTEScoped(pid, sym.ID, "outbound", benchTraceEdgeKinds, depth)
 		lat = float64(time.Since(t0)) / float64(time.Millisecond)
 		traceActual := jsonTokenCount(trace)
 		traceBaseline := uniqueFileBaselineFromTrace(store, pid, trace)
@@ -431,9 +440,10 @@ func benchLargestProjectID(store *db.Store) (string, error) {
 }
 
 // benchSampleSymbolsWithEdges returns up to n random Function/Method
-// symbols with at least one edge. Edge-bearing symbols are required
-// because the trace measurement is meaningless on orphans (depth=2
-// from an orphan returns 0 rows in O(1us), flooring the curve).
+// symbols with at least one OUTBOUND CALLS-family edge. The bench trace
+// measurement traverses outbound, so an inbound-only symbol (called but
+// calling nothing in-graph) traces to zero rows and floors the curve —
+// requiring an outbound edge keeps the sample meaningful (#1809).
 func benchSampleSymbolsWithEdges(store *db.Store, projectID string, n int, rng *rand.Rand) ([]*db.Symbol, error) {
 	rows, err := store.RO().Query(`
 		SELECT s.id
@@ -443,7 +453,8 @@ func benchSampleSymbolsWithEdges(store *db.Store, projectID string, n int, rng *
 		   AND EXISTS (
 			   SELECT 1 FROM edges e
 				WHERE e.project_id = s.project_id
-				  AND (e.from_id = s.id OR e.to_id = s.id)
+				  AND e.from_id = s.id
+				  AND e.kind IN ('CALLS', 'HTTP_CALLS', 'ASYNC_CALLS')
 				LIMIT 1
 		   )
 		 LIMIT 5000`,

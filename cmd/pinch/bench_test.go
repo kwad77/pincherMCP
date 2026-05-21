@@ -167,6 +167,15 @@ func TestBench_RunSuite_PositivePath(t *testing.T) {
 		if tb.Name == "context" && tb.MeanTokensBaseline == 0 {
 			t.Errorf("context: mean_tokens_baseline = 0, want >0 (file size lookup must succeed for seeded files)")
 		}
+		// trace measurement must traverse real edges — the seeded
+		// Foo→Bar→Baz CALLS chain gives every outbound-edge sample a
+		// non-empty depth-2 trace. Pre-#1809, bench passed nil edgeKinds
+		// to traceViaCTE, which errors on empty edgeKinds; the swallowed
+		// error made every trace return nil, flooring MeanTokensActual to
+		// 1 (jsonTokenCount of nil). A real trace serializes well above 1.
+		if tb.Name == "trace" && tb.MeanTokensActual <= 1 {
+			t.Errorf("trace: mean_tokens_actual = %d, want >1 (#1809 — bench must pass non-empty edgeKinds to traceViaCTE)", tb.MeanTokensActual)
+		}
 	}
 	for name, seen := range wantTools {
 		if !seen {
