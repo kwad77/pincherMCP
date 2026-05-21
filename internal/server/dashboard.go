@@ -197,7 +197,7 @@ const dashboardTemplate = `<!DOCTYPE html>
       <option>Function</option><option>Method</option><option>Class</option>
       <option>Interface</option><option>Type</option><option>Variable</option>
     </select>
-    <select class="search-select" id="search-proj"><option value="">All projects</option></select>
+    <select class="search-select" id="search-proj"><option value="*">All projects</option></select>
     <button class="search-btn" data-action="doSearch">Search</button>
   </div>
   <div id="search-results"></div>
