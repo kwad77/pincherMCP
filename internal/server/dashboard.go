@@ -54,10 +54,10 @@ const dashboardTemplate = `<!DOCTYPE html>
     <defs><linearGradient id="hg" x1="0" y1="0" x2="36" y2="36"><stop stop-color="#58a6ff"/><stop offset="1" stop-color="#a371f7"/></linearGradient></defs>
   </svg>
   <div>
-    <h1>pincher<span>MCP</span> <span style="font-size:12px;font-weight:400" id="ver"></span></h1>
+    <h1>pincher<span>MCP</span> <span class="ver-tag" id="ver"></span></h1>
     <p>Codebase intelligence · Token savings dashboard</p>
   </div>
-  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+  <div class="header-controls">
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-muted updated-ago" data-source="overview" title="Time since last auto-refresh">—</span>
     <select class="header-btn" id="refresh-select" title="Auto-refresh interval (#552)" data-action-change="onRefreshIntervalChange">
@@ -197,7 +197,7 @@ const dashboardTemplate = `<!DOCTYPE html>
       <option>Function</option><option>Method</option><option>Class</option>
       <option>Interface</option><option>Type</option><option>Variable</option>
     </select>
-    <select class="search-select" id="search-proj"><option value="">All projects</option></select>
+    <select class="search-select" id="search-proj"><option value="*">All projects</option></select>
     <button class="search-btn" data-action="doSearch">Search</button>
   </div>
   <div id="search-results"></div>
@@ -228,8 +228,8 @@ const dashboardTemplate = `<!DOCTYPE html>
 <!-- SESSIONS -->
 <div id="tab-sessions" class="tab-pane">
 <main>
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <p class="section-title" style="margin:0">Session History</p>
+  <div class="row-between">
+    <p class="section-title flush">Session History</p>
     <div>
       <button class="btn secondary" title="Export sessions as CSV (#551)" data-action="exportTable" data-args='["csv","sessions"]'>CSV</button>
       <button class="btn secondary" title="Export sessions as JSON (#551)" data-action="exportTable" data-args='["json","sessions"]'>JSON</button>
@@ -294,6 +294,17 @@ header p{color:var(--muted);font-size:13px;margin-top:3px}
 main{max-width:1200px;margin:0 auto;padding:32px}
 .section-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
 .tab-intro{color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:22px}
+/* #1814: utility classes replacing inline style= attributes so the
+   dashboard markup is clean under CSP style-src 'self'. */
+.ver-tag{font-size:12px;font-weight:400}
+.header-controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+.row-between{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.section-title.flush{margin-bottom:0}
+.col-green{color:var(--green)}
+.col-purple{color:var(--purple)}
+.col-muted{color:var(--muted)}
+.span-full{grid-column:1/-1}
+.mt-10{margin-top:10px}
 .grid{display:grid;gap:16px;margin-bottom:32px}
 .grid-4{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
 .grid-2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
@@ -548,7 +559,7 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 /* ── Progress bar ── */
 .progress-wrap{background:rgba(48,54,61,.5);border-radius:4px;height:4px;margin-top:8px;overflow:hidden;display:none}
 .progress-wrap.active{display:block}
-.progress-bar{background:linear-gradient(90deg,var(--accent),var(--purple));height:100%;transition:width .3s;border-radius:4px}
+.progress-bar{background:linear-gradient(90deg,var(--accent),var(--purple));height:100%;width:0;transition:width .3s;border-radius:4px}
 .progress-label{font-size:11px;color:var(--muted);margin-top:4px;display:none}
 .progress-label.active{display:block}
 
@@ -724,6 +735,18 @@ const fmtBytes = n => {
   return (n / (1024 * 1024)).toFixed(1) + ' MB';
 };
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+// #1814: CSP style-src 'self' blocks inline style= attributes in markup.
+// Bar widths / colours are per-render dynamic, so they can't be static
+// CSS classes — the markup carries data-flex / data-bg / data-width and
+// this applies them via CSSOM (element.style is NOT gated by CSP
+// style-src) right after the container's innerHTML is set.
+function applyBarStyles(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-bg]').forEach(el => { el.style.background = el.dataset.bg; });
+  root.querySelectorAll('[data-flex]').forEach(el => { el.style.flexBasis = el.dataset.flex + '%'; });
+  root.querySelectorAll('[data-width]').forEach(el => { el.style.width = el.dataset.width + '%'; });
+}
 function timeAgo(iso) {
   if (!iso) return '—';
   const secs = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -1069,7 +1092,7 @@ async function loadHookStats() {
     const breakdownCard = statCard('By tool (7d)', breakdownVal, 'green', breakdownSub, '');
     let body = headline + overrideCard + breakdownCard;
     if (redirects === 0) {
-      body += '<div class="empty" style="grid-column:1/-1">Install the PreToolUse hook to start capturing intercepts: <code>pincher init --target=claude</code>. Once the hook fires on indexed Read/Grep calls, the conversion rate populates here within ~1 day of normal usage.</div>';
+      body += '<div class="empty span-full">Install the PreToolUse hook to start capturing intercepts: <code>pincher init --target=claude</code>. Once the hook fires on indexed Read/Grep calls, the conversion rate populates here within ~1 day of normal usage.</div>';
     }
     document.getElementById('hook-stats-cards').innerHTML = body;
   } catch (e) {
@@ -1174,7 +1197,7 @@ async function loadTierBreakdown() {
       if (!t || t.call_count === 0) continue;
       const pct = (t.call_count / totalCalls * 100).toFixed(1);
       const color = tierColors[tier] || 'var(--muted)';
-      barHTML += '<div class="tier-bar-seg" style="flex-basis:' + pct + '%;background:' + color + '" title="' + esc(tier) + ': ' + pct + '%"></div>';
+      barHTML += '<div class="tier-bar-seg" data-flex="' + pct + '" data-bg="' + color + '" title="' + esc(tier) + ': ' + pct + '%"></div>';
     }
     barHTML += '</div>';
 
@@ -1194,7 +1217,7 @@ async function loadTierBreakdown() {
         ? fmt(t.sum_tokens_saved)
         : '—';
       tableHTML += '<tr>' +
-        '<td><span class="tier-swatch" style="background:' + color + '"></span>' + esc(tier) + '</td>' +
+        '<td><span class="tier-swatch" data-bg="' + color + '"></span>' + esc(tier) + '</td>' +
         '<td class="num">' + fmt(t.call_count) + '</td>' +
         '<td class="num">' + pct + '%</td>' +
         '<td class="num">' + fmt(Math.round(t.avg_tokens_used)) + '</td>' +
@@ -1204,6 +1227,7 @@ async function loadTierBreakdown() {
     tableHTML += '</tbody></table>';
 
     body.innerHTML = barHTML + tableHTML;
+    applyBarStyles(body);
   } catch (e) {
     document.getElementById('tier-breakdown-body').innerHTML =
       '<div class="error">Failed to load tier breakdown: ' + esc(String(e)) + '</div>';
@@ -1316,7 +1340,7 @@ async function loadEntropyPanel() {
         '<div class="entropy-band ' + bandClass + '">' + esc(bandLabel) + '</div>' +
       '</div>' +
       '<div class="entropy-bar-frame" title="Evenness: ' + evennessPct + '% of theoretical max for ' + tallies.length + ' tools">' +
-        '<div class="entropy-bar ' + bandClass + '" style="width:' + evennessPct + '%"></div>' +
+        '<div class="entropy-bar ' + bandClass + '" data-width="' + evennessPct + '"></div>' +
       '</div>' +
       '<div class="entropy-meta">' +
         '<span><strong>' + top1Share + '%</strong> of calls hit the top tool</span>' +
@@ -1325,6 +1349,7 @@ async function loadEntropyPanel() {
       '</div>' +
       '<div class="entropy-top">Top tools by call volume:</div>' +
       rankHTML;
+    applyBarStyles(body);
   } catch (e) {
     document.getElementById('entropy-body').innerHTML =
       '<div class="error">Failed to load tool-mix health panel: ' + esc(String(e)) + '</div>';
@@ -1589,12 +1614,12 @@ function renderProjects() {
         '<div class="proj-path'+(isEmpty||isStale?' missing':'')+'" title="'+esc(path)+'">'+esc(path)+esc(statusMsg)+'</div>'+
         '<div class="proj-stats">'+
         '<div class="proj-stat"><div class="proj-stat-val">'+fmt(files)+'</div><div class="proj-stat-label">Files</div></div>'+
-        '<div class="proj-stat"><div class="proj-stat-val" style="color:var(--purple)">'+fmt(syms)+'</div><div class="proj-stat-label">Symbols</div></div>'+
-        '<div class="proj-stat"><div class="proj-stat-val" style="color:var(--green)">'+fmt(edges)+'</div><div class="proj-stat-label">Edges</div></div>'+
+        '<div class="proj-stat"><div class="proj-stat-val col-purple">'+fmt(syms)+'</div><div class="proj-stat-label">Symbols</div></div>'+
+        '<div class="proj-stat"><div class="proj-stat-val col-green">'+fmt(edges)+'</div><div class="proj-stat-label">Edges</div></div>'+
         '</div>'+
-        '<div class="progress-wrap" id="prog-'+esc(id)+'"><div class="progress-bar" id="progbar-'+esc(id)+'" style="width:0%"></div></div>'+
+        '<div class="progress-wrap" id="prog-'+esc(id)+'"><div class="progress-bar" id="progbar-'+esc(id)+'"></div></div>'+
         '<div class="progress-label" id="proglabel-'+esc(id)+'"></div>'+
-        (ts?'<div style="margin-top:10px" title="'+esc(new Date(ts).toLocaleString())+'"><span class="pill'+pillCls+'">indexed '+timeAgo(ts)+'</span></div>':'')+
+        (ts?'<div class="mt-10" title="'+esc(new Date(ts).toLocaleString())+'"><span class="pill'+pillCls+'">indexed '+timeAgo(ts)+'</span></div>':'')+
       '</div>';
   }).join('');
 }
@@ -1837,7 +1862,14 @@ async function loadADRs() {
     const r=await tabFetch('adrs','/v1/adr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',project:proj})});
     if(!r.ok){setTabError('adr-list','Failed to load ADRs: '+(await extractErrMsg(r)),'loadADRs');return;}
     const data=await r.json();
-    const entries=(data.result||data).entries||[];
+    // The adr tool returns entries as a {key:value} object map, not an
+    // array — normalize to [{key,value}] so .length / .map work. Without
+    // this the ADR tab showed "No ADR entries" for every project, since
+    // ({}).length is undefined (#1815).
+    const rawEntries=(data.result||data).entries||{};
+    const entries=Array.isArray(rawEntries)
+      ? rawEntries
+      : Object.entries(rawEntries).map(([key,value])=>({key,value}));
     if(!entries.length){list.innerHTML='<div class="empty">No ADR entries yet. Add the first one above.</div>';return;}
     list.innerHTML=entries.map(e=>
       '<div class="adr-row">'+
@@ -1948,14 +1980,14 @@ async function loadSessions() {
         '<td title="'+esc(s.session_id)+'">'+timeAgo(s.started_at)+'</td>'+
         '<td>'+timeAgo(s.last_seen)+'</td>'+
         '<td>'+fmt(s.calls||0)+'</td>'+
-        '<td style="color:var(--green)">'+fmt(s.tokens_saved||0)+'</td>'+
+        '<td class="col-green">'+fmt(s.tokens_saved||0)+'</td>'+
         '<td>'+fmt(s.tokens_used||0)+'</td>'+
         '</tr>'
       ).join('')+
       '</tbody><tfoot><tr class="sessions-total">'+
       '<td colspan="2">Total across '+sessions.length+' session'+(sessions.length!==1?'s':'')+'</td>'+
       '<td>'+fmt(totalCalls)+'</td>'+
-      '<td style="color:var(--green)">'+fmt(totalSaved)+'</td>'+
+      '<td class="col-green">'+fmt(totalSaved)+'</td>'+
       '<td>'+fmt(totalUsed)+'</td>'+
       '</tr></tfoot></table>';
   } catch(e) {
@@ -2187,7 +2219,7 @@ async function openDetail(id, name) {
       (langs.length?'<div class="detail-section"><div class="detail-section-label">Languages</div>'+
         '<div class="lang-bar">'+langs.map(l=>'<span class="lang-chip">'+esc(l.language||l)+(l.file_count?' \u00b7 '+l.file_count+' files':'')+'</span>').join('')+'</div></div>':'')+
       renderTruncatable('Entry Points', eps, 8, 50, 'eps_'+id,
-        e=>'<li>'+esc(e.name||e)+(e.file?' <span style="color:var(--muted)">'+esc(e.file)+'</span>':'')+'</li>') +
+        e=>'<li>'+esc(e.name||e)+(e.file?' <span class="col-muted">'+esc(e.file)+'</span>':'')+'</li>') +
       renderTruncatable('Hotspot Functions', hotspots, 10, 50, 'hotspots_'+id,
         h=>'<li>'+esc(h.name||h)+'<span class="hotspot-calls">'+(h.call_count!=null?h.call_count+' calls':'')+'</span></li>') +
       (!langs.length&&!eps.length&&!hotspots.length?'<div class="empty">No architecture data available. Re-index the project first.</div>':'');

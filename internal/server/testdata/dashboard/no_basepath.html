@@ -16,10 +16,10 @@
     <defs><linearGradient id="hg" x1="0" y1="0" x2="36" y2="36"><stop stop-color="#58a6ff"/><stop offset="1" stop-color="#a371f7"/></linearGradient></defs>
   </svg>
   <div>
-    <h1>pincher<span>MCP</span> <span style="font-size:12px;font-weight:400" id="ver"></span></h1>
+    <h1>pincher<span>MCP</span> <span class="ver-tag" id="ver"></span></h1>
     <p>Codebase intelligence · Token savings dashboard</p>
   </div>
-  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+  <div class="header-controls">
     <span class="badge badge-green" id="health-badge">● checking…</span>
     <span class="badge badge-muted updated-ago" data-source="overview" title="Time since last auto-refresh">—</span>
     <select class="header-btn" id="refresh-select" title="Auto-refresh interval (#552)" data-action-change="onRefreshIntervalChange">
@@ -159,7 +159,7 @@
       <option>Function</option><option>Method</option><option>Class</option>
       <option>Interface</option><option>Type</option><option>Variable</option>
     </select>
-    <select class="search-select" id="search-proj"><option value="">All projects</option></select>
+    <select class="search-select" id="search-proj"><option value="*">All projects</option></select>
     <button class="search-btn" data-action="doSearch">Search</button>
   </div>
   <div id="search-results"></div>
@@ -190,8 +190,8 @@
 <!-- SESSIONS -->
 <div id="tab-sessions" class="tab-pane">
 <main>
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <p class="section-title" style="margin:0">Session History</p>
+  <div class="row-between">
+    <p class="section-title flush">Session History</p>
     <div>
       <button class="btn secondary" title="Export sessions as CSV (#551)" data-action="exportTable" data-args='["csv","sessions"]'>CSV</button>
       <button class="btn secondary" title="Export sessions as JSON (#551)" data-action="exportTable" data-args='["json","sessions"]'>JSON</button>
