@@ -1912,6 +1912,14 @@ type regexExtractor struct {
 	// group `name` is the type that becomes Parent for methods inside.
 	// Optional: extractors that don't supply this skip scope-only tracking.
 	scopeRE *regexp.Regexp
+	// nsScopeRE matches a namespace-style scope container (#1762): like
+	// scopeRE it sets Parent for inner symbols, but its body holds
+	// top-level-declaration-shaped members (`function` / `class` /
+	// `const`), NOT method-syntax members — so the funcRE→methodRE
+	// switch is suppressed inside it. Unlike scopeRE it ALSO emits its
+	// own Module symbol. The canonical case is a TypeScript
+	// `namespace Foo { … }`. Named group `name`.
+	nsScopeRE *regexp.Regexp
 }
 
 func (rx *regexExtractor) extract(source []byte, relPath, language string, opts extractOpts) *FileResult {
@@ -1928,6 +1936,11 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 	// carry Parent=Foo. Kept in lockstep with currentClass: every site
 	// that sets or clears currentClass sets or clears this too.
 	var currentClassQN string
+	// #1762: true while the current scope was opened by nsScopeRE (a
+	// namespace-style container). Suppresses the funcRE→methodRE switch
+	// so the scope's `function` / `class` members still match. Cleared
+	// in lockstep with currentClass.
+	var currentScopeFuncBody bool
 
 	// #1375: track the most-recent top-level function so Variable
 	// declarations inside its body get a scoped QN
@@ -2024,6 +2037,7 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 		if lineNum > currentClassEnd {
 			currentClass = ""
 			currentClassQN = ""
+			currentScopeFuncBody = false
 		}
 
 		// #1183 v0.67: scope-only container (Rust impl blocks). Sets
@@ -2048,6 +2062,37 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					if trait := namedGroup(rx.scopeRE, m, "trait"); trait != "" {
 						currentClassQN = name + opts.modSep + trait
 					}
+				}
+			}
+		}
+
+		// #1762: namespace-style scope (TS `namespace Foo { … }`). Sets
+		// Parent for inner symbols AND emits its own Module symbol, but
+		// keeps funcRE for the body — a namespace holds `function` /
+		// `class` declarations, not method-syntax members, so the
+		// methodRE switch must NOT fire inside it. Runs after classRE /
+		// scopeRE so a real type on the same line wins.
+		if rx.nsScopeRE != nil && currentClass == "" {
+			if m := rx.nsScopeRE.FindStringSubmatch(line); m != nil {
+				name := namedGroup(rx.nsScopeRE, m, "name")
+				if name != "" {
+					endByte := blockEnd(source, lineStart, opts)
+					endLine := offsetToLine(lineOffsets, endByte)
+					currentClass = name
+					currentClassQN = name
+					currentClassEnd = endLine
+					currentScopeFuncBody = true
+					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
+					result.Symbols = append(result.Symbols, ExtractedSymbol{
+						Name:          name,
+						QualifiedName: qn,
+						Kind:          "Module",
+						StartByte:     lineStart,
+						EndByte:       endByte,
+						StartLine:     lineNum,
+						EndLine:       endLine,
+						IsExported:    isExported(name, opts.exportedFn),
+					})
 				}
 			}
 		}
@@ -2109,7 +2154,9 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 
 		// Function / Method
 		funcPattern := rx.funcRE
-		if currentClass != "" && rx.methodRE != nil {
+		// #1762: a namespace-style scope keeps funcRE — its body holds
+		// `function` declarations, not method-syntax members.
+		if currentClass != "" && rx.methodRE != nil && !currentScopeFuncBody {
 			funcPattern = rx.methodRE
 		}
 		funcMatched := false
@@ -2136,7 +2183,14 @@ func (rx *regexExtractor) extract(source []byte, relPath, language string, opts 
 					qn := moduleQN(relPath, opts.modSep) + opts.modSep + name
 					parent := ""
 					if currentClass != "" {
-						kind = "Method"
+						// #1762: a member of a namespace-style scope keeps
+						// Kind=Function — a TS `namespace` body holds
+						// functions, not methods. Class-like scopes
+						// (classRE / scopeRE / enumRE) still promote to
+						// Method. Parent + QN-scope are set either way.
+						if !currentScopeFuncBody {
+							kind = "Method"
+						}
 						parent = moduleQN(relPath, opts.modSep) + opts.modSep + currentClass
 						// #1783: the QN scope is currentClassQN, which for
 						// a Rust trait-impl is `Type::Trait` — so methods
@@ -2576,12 +2630,12 @@ var tsRE = &regexExtractor{
 	interfaceRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?interface\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
 	enumRE:      regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const\s+)?enum\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
 	importRE:    regexp.MustCompile(`(?m)^import\s+.*?from\s+['"](?P<path>[^'"]+)['"]`),
-	// #1761: `namespace Foo { … }` is intentionally NOT a scopeRE here.
-	// A TS namespace body holds `function`/`class`/`const` declarations,
-	// not method-syntax members — and the regex framework switches a
-	// scoped body to methodRE, which would drop every `function` inside
-	// the namespace. Parenting namespace members correctly needs a
-	// framework change (a scope that keeps funcRE); tracked separately.
+	// #1762: `namespace Foo { … }` is a namespace-style scope — nsScopeRE
+	// parents its members AND emits a Module symbol for the namespace,
+	// while the framework keeps funcRE for the body (a namespace holds
+	// `function`/`class`/`const` declarations, not method-syntax
+	// members). `module Foo { … }` is the legacy-TS alias for the same.
+	nsScopeRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:declare\s+)?(?:namespace|module)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)`),
 }
 
 func extractTypeScript(source []byte, relPath string) *FileResult {
