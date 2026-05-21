@@ -21,7 +21,6 @@
   </div>
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
     <span class="badge badge-green" id="health-badge">● checking…</span>
-    <span class="badge badge-blue" id="last-refresh">—</span>
     <span class="badge badge-muted updated-ago" data-source="overview" title="Time since last auto-refresh">—</span>
     <select class="header-btn" id="refresh-select" title="Auto-refresh interval (#552)" data-action-change="onRefreshIntervalChange">
       <option value="5000">Refresh: 5s</option>
@@ -48,6 +47,7 @@
 
 <nav class="tab-bar">
   <button class="tab-btn active" data-action="showTab" data-args='["overview"]'>Overview</button>
+  <button class="tab-btn" data-action="showTab" data-args='["insights"]'>Insights</button>
   <button class="tab-btn" data-action="showTab" data-args='["projects"]'>Projects</button>
   <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
   <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
@@ -73,54 +73,39 @@
       <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="12">Loading…</text>
     </svg>
   </div>
-  <!-- #1163 v0.67 follow-up: backend-status widget. Renders the
-       observability surface state pulled from /v1/health so users
-       can see at a glance whether traces are flowing and metrics
-       are exposed — without dropping to the CLI. Compact strip at
-       the top of the Overview tab; no card chrome to keep it from
-       competing visually with the headline stat tiles. -->
-  <div id="backend-status-strip" class="backend-status"></div>
+  <!-- PreToolUse hook conversion stays on Overview: a redirected
+       Read/Grep is an avoided token cost, so it belongs in the ROI
+       story rather than the diagnostics tab. -->
   <p class="section-title">PreToolUse Hook (last 7 days)</p>
   <div class="grid grid-3" id="hook-stats-cards"><div class="loading">Loading…</div></div>
-  <!-- #635 v0.67: per-tool breakdown panel — driven by
-       /v1/tool-call-stats over schema v27 session_tool_calls.
-       Visible immediately after onboarding once the first session
-       lands a few tool calls. -->
+</main>
+</div>
+
+<!-- INSIGHTS — the deep per-tool diagnostics, split out of Overview so
+     the headline ROI stays glanceable instead of buried under a
+     6-panel scroll. All panels are driven by the same /v1/health and
+     /v1/tool-call-stats data the Overview poller already fetches. -->
+<div id="tab-insights" class="tab-pane">
+<main>
+  <p class="tab-intro">Overview answers "am I saving tokens?" — this tab answers "where is the call budget going, and is the backend healthy?"</p>
+  <p class="section-title">Backend Status</p>
+  <div id="backend-status-strip" class="backend-status"></div>
   <p class="section-title">Tool Call Breakdown (last 7 days)</p>
   <div class="tool-breakdown-card">
     <div id="tool-breakdown-body"><div class="loading">Loading…</div></div>
   </div>
-  <!-- #635 panel 2: per-complexity-tier breakdown. Same substrate
-       different cut — answers "where is my call budget being spent"
-       across lite / standard / heavy tiers. -->
   <p class="section-title">Calls by Complexity Tier (last 7 days)</p>
   <div class="tier-breakdown-card">
     <div id="tier-breakdown-body"><div class="loading">Loading…</div></div>
   </div>
-  <!-- #635 panel 3: per-tool payload-size distribution. Surfaces
-       outliers — tools whose max response is many multiples of their
-       avg, the ones occasionally blowing up token bills. Sorted by
-       max_bytes DESC to put the loud ones first. -->
   <p class="section-title">Response Payload Size by Tool (last 7 days)</p>
   <div class="payload-size-card">
     <div id="payload-size-body"><div class="loading">Loading…</div></div>
   </div>
-  <!-- #635 panel 4: tool-mix health. Shannon entropy of the per-tool
-       call distribution surfaces "agent stuck in a narrow loop" vs
-       "healthy diverse exploration" — low-entropy weeks are the ones
-       worth investigating. Computed client-side from the existing
-       /v1/tool-call-stats response (no new endpoint needed). -->
   <p class="section-title">Tool-Mix Health (last 7 days)</p>
   <div class="entropy-card">
     <div id="entropy-body"><div class="loading">Loading…</div></div>
   </div>
-  <!-- #1263 follow-up: pincher bench history. Per user mid-v0.67 ask:
-       results from pincher bench should pop up on the http, and long
-       term keep estimated vs actual for any project pincher bench
-       ran on. Renders the most recent runs persisted via the
-       --persist flag, with per-tool savings% from the bench_runs and
-       bench_results tables (schema v29). Empty state shows the
-       onboarding hint pointing the user at the persist flag. -->
   <p class="section-title">Bench History (last 20 runs)</p>
   <div class="bench-history-card">
     <div id="bench-history-body"><div class="loading">Loading…</div></div>
