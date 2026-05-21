@@ -128,11 +128,16 @@ func TestHandleSymbols_NoProject_CrossProjectResolution_Warns(t *testing.T) {
 			ExtractionConfidence: 1.0},
 	})
 
+	// #1799: the batch is session-scoped by default — a mirror-only ID
+	// would now surface as not_found. cross_project=true opts into the
+	// unscoped fallback that resolves it; a symbol resolved from a
+	// non-session project still warns.
 	result, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{
 		"ids": []any{
 			"a.go::pkg.Foo#Function",
 			"b.go::pkg.Bar#Function", // not found
 		},
+		"cross_project": true,
 	}))
 	if err != nil {
 		t.Fatalf("handleSymbols: %v", err)

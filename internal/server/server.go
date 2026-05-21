@@ -3889,8 +3889,9 @@ func (s *Server) registerTools() {
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["ids"],"properties":{
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
-				"project":{"type":"string"},
-				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."}
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo)."},
+				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."},
+				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."}
 			}
 		}`),
 	}, s.handleSymbols)
@@ -4969,6 +4970,8 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// cross-project sentinel. Batch lookups with "*" map to "look
 	// up each id globally without scoping". Same fix as symbol /
 	// neighborhood / context.
+	// #1799: cross_project opt-in — mirrors symbol/context/neighborhood.
+	crossProjectAllowed := boolArg(args, "cross_project")
 	var resolvedProjectID string
 	var symbolsProjectResolveWarning string
 	if projectArg != "" && projectArg != "*" {
@@ -4987,6 +4990,16 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 				projectArg,
 			)
 		}
+	} else if projectArg == "" && s.sessionID != "" {
+		// #1799: default-scope the batch to the session project — the
+		// same #1232/#1408 fix symbol/context/trace/neighborhood already
+		// carry. Without this, GetSymbolsByIDs("", ids) is an UNSCOPED
+		// lookup: an ID is path+QN+kind, so an indexed mirror of the
+		// session repo (identical IDs) can silently win the resolution
+		// and the batch returns the wrong project's source/lines. An ID
+		// genuinely absent from the session project now surfaces as
+		// not_found; cross_project=true opts into the unscoped fallback.
+		resolvedProjectID = s.sessionID
 	}
 
 	// One round trip to SQLite for the whole batch. Was N round trips
@@ -4997,6 +5010,24 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	bySymID, err := s.store.GetSymbolsByIDs(resolvedProjectID, ids)
 	if err != nil {
 		return errResult(fmt.Sprintf("db error: %v", err)), nil
+	}
+	// #1799: cross_project=true opts back into the legacy unscoped
+	// lookup — but only for the IDs the session-scoped pass missed, so
+	// a batch that's mostly session-local still resolves those locally.
+	if crossProjectAllowed && projectArg == "" && resolvedProjectID != "" {
+		var missing []string
+		for _, id := range ids {
+			if _, ok := bySymID[id]; !ok {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			if extra, e := s.store.GetSymbolsByIDs("", missing); e == nil {
+				for k, v := range extra {
+					bySymID[k] = v
+				}
+			}
+		}
 	}
 
 	results := make([]map[string]any, 0, len(ids))
@@ -5028,8 +5059,12 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			notFoundIDs = append(notFoundIDs, id)
 			continue
 		}
-		if resolvedProjectID == "" && projectArg == "" &&
-			s.sessionID != "" && sym.ProjectID != s.sessionID {
+		// #1799: post-fix this only fires for cross_project=true
+		// fallbacks — the default path is session-scoped, so a
+		// non-session ProjectID means the caller opted into the
+		// unscoped fallback and should still see which project the row
+		// came from.
+		if projectArg == "" && s.sessionID != "" && sym.ProjectID != s.sessionID {
 			crossProjectSources[sym.ProjectID]++
 		}
 		source := ""
