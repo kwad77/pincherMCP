@@ -3939,8 +3939,18 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 			// recv.Method — Method's QN is `pkg.<recvType>.<method>`
 			// using the receiver-type expression as written (Go's QN
 			// builder includes the * for pointer receivers).
-			methodQN := pkg + "." + receiverType + "." + segments[1]
-			return lookupQN(methodQN)
+			// #1764: try both pointer and value receiver forms — a
+			// value-typed local (`w := Worker{}`) can still call a
+			// pointer-receiver method (Go auto-addresses), and vice
+			// versa, so the receiver-type hint's `*` may not match how
+			// the method was declared. As-written form first.
+			bare := strings.TrimPrefix(receiverType, "*")
+			for _, recvForm := range []string{receiverType, "*" + bare, bare} {
+				if id := lookupQN(pkg + "." + recvForm + "." + segments[1]); id != "" {
+					return id
+				}
+			}
+			return ""
 		case 3:
 			// recv.field.Method — look up field type via struct_fields.
 			fieldType, ok := fieldsByStructQN[structQN][segments[1]]
