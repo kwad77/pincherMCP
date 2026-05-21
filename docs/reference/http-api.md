@@ -2,7 +2,7 @@
 
 [Back to reference index](README.md)
 
-All 23 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
+All 28 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
 
 ```bash
 # Start with both transports

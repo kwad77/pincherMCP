@@ -11,19 +11,19 @@
 | TOML | `github.com/BurntSushi/toml` parseability gate + structural source-walk | 1.0 | One `Setting` per section header and per key assignment with dotted qualified names. Array-of-tables indexed as `name.0`, `name.1`. Multi-line strings/arrays span their full body. Covers `.toml`. |
 | Markdown | `github.com/yuin/goldmark` CommonMark | 1.0 | One `Section` symbol per heading. Hierarchical dotted-path qualified name (`intro.getting_started.installation`). Each Section's byte range covers its full body. Covers `.md`, `.markdown`, `.mdx`, `.mdc`. |
 | Jinja2 | `github.com/nikolalohinski/gonja` parser | 1.0 | `{% macro %}` → Function, `{% block %}` → Block, `{% set %}` → Setting, `{% extends/include/import/from %}` → IMPORTS edges. 2-second per-file parse timeout protects against gonja lexer hangs on truncated input. Covers `.j2`, `.jinja`, `.jinja2`. |
-| Python | Regex | 0.85 | Functions, Classes, Methods |
+| Python | Regex → CPython AST (dispatcher upgrades when `python` is on PATH) | 0.85 → 1.0 | Functions, Classes, Methods |
 | TypeScript / TSX | Regex | 0.85 | Functions, Classes, Interfaces, Methods |
-| JavaScript / JSX | Regex | 0.85 | Functions, Classes, Methods |
+| JavaScript / JSX | Regex → AST (dispatcher, default-on since v0.20) | 0.85 → 1.0 | Functions, Classes, Methods |
 | Rust | Regex | 0.85 | Functions, Structs, Traits, Impls |
 | Java | Regex | 0.85 | Classes, Methods, Interfaces |
 | Makefile | Regex | 0.85 | Rule targets → Function (`.PHONY` → `IsExported=true`), variable assignments → Setting. Detected by basename (`Makefile`, `GNUmakefile`, lowercase `makefile`) + extension (`.mk`, `.mak`). |
 | SQL | Regex | 0.85 | `CREATE TABLE`/`VIEW` → Class; `CREATE FUNCTION`/`PROCEDURE`/`TRIGGER` → Function (handles `IF NOT EXISTS`). Schema prefix split into `qualified_name` (`auth.users`) with bare `name` (`users`). Dialect-aware quoting (backticks/quotes/brackets). Comment-aware. Covers `.sql`, `.ddl`. |
 | Ruby | Regex | 0.70 | Functions, Classes, Methods |
-| PHP | Regex | 0.70 | Functions, Classes, Methods |
-| C / C++ | Regex | 0.70 | Functions, Structs, Classes |
-| C# | Regex | 0.70 | Classes, Methods, Interfaces |
-| Kotlin | Regex | 0.70 | Functions, Classes |
-| Swift | Regex | 0.70 | Functions, Classes |
+| PHP | Regex | 0.85 | Functions, Classes, Methods |
+| C / C++ | Regex | 0.85 | Functions, Structs, Classes |
+| C# | Regex | 0.85 | Classes, Methods, Interfaces |
+| Kotlin | Regex | 0.85 | Functions, Classes |
+| Swift | Regex | 0.85 | Functions, Classes |
 
 YAML/JSON files emit one `Setting` symbol per key with a dotted-path qualified name (e.g. `services.web.image`, `tasks.0.name`). Multi-document YAML uses a `docN` prefix. Each Setting's byte range covers the key plus its full nested value, so retrieving `services.web` returns the entire `web` block.
 
@@ -42,17 +42,17 @@ The 9-axis honest breakdown. `✅` = supported, `⚠️` = partial / language-ti
 | Markdown | `.md/.markdown/.mdx/.mdc` | ✅ Section (heading hierarchy) | n/a | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
 | Jinja2 | `.j2/.jinja/.jinja2` | ✅ Function (macro) / Block / Setting | ✅ `extends/include/import/from` | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
 | TypeScript / TSX | `.ts/.tsx` | ✅ Function/Class/Interface/Method | ✅ | ✅ ([#1158](https://github.com/kwad77/pincher/pull/1158)) | ❌ (tracked: [#1177](https://github.com/kwad77/pincher/issues/1177)) | ❌ | ❌ | ✅ `*.test.ts/*.spec.ts` | Regex 0.85 |
-| JavaScript / JSX | `.js/.jsx/.mjs/.cjs` | ✅ Function/Class/Method | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ `*.test.js/*.spec.js` | Regex 0.85 |
+| JavaScript / JSX | `.js/.jsx/.mjs/.cjs` | ✅ Function/Class/Method | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ `*.test.js/*.spec.js` | AST 1.0 (dispatcher) |
 | Rust | `.rs` | ✅ Function/Struct/Trait/Impl | ⚠️ partial | ✅ (v0.62 [#1159](https://github.com/kwad77/pincher/pull/1159)) | ❌ (tracked: [#1182](https://github.com/kwad77/pincher/issues/1182)) | ❌ | ❌ | ⚠️ `#[cfg(test)]` blocks | Regex 0.85 |
 | Java | `.java` | ✅ Class/Method/Interface | ⚠️ partial | ✅ (v0.62) | ❌ (tracked: [#1183](https://github.com/kwad77/pincher/issues/1183)) | ❌ | ⚠️ Javadoc partial | ✅ `*Test.java` | Regex 0.85 |
 | Makefile | `Makefile/.mk` | ✅ Function (rule target) / Setting | ❌ | ❌ | ❌ | n/a | ❌ | ❌ | Regex 0.85 |
 | SQL | `.sql/.ddl` | ✅ Function/Class (table/view) | ❌ | ❌ | ❌ | n/a | ❌ | ❌ | Regex 0.85 |
-| Ruby | `.rb` | ✅ Function/Class/Method | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ⚠️ partial | Regex ~0.9 |
-| PHP | `.php` | ✅ Function/Class/Method | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
-| C / C++ | `.c/.h/.cpp/.hpp/.cc` | ✅ Function/Struct/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
-| C# | `.cs` | ✅ Class/Method/Interface | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
-| Kotlin | `.kt/.kts` | ✅ Function/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
-| Swift | `.swift` | ✅ Function/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
+| Ruby | `.rb` | ✅ Function/Class/Method | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ⚠️ partial | Regex 0.70 |
+| PHP | `.php` | ✅ Function/Class/Method | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.85 |
+| C / C++ | `.c/.h/.cpp/.hpp/.cc` | ✅ Function/Struct/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.85 |
+| C# | `.cs` | ✅ Class/Method/Interface | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.85 |
+| Kotlin | `.kt/.kts` | ✅ Function/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.85 |
+| Swift | `.swift` | ✅ Function/Class | ❌ | ✅ (v0.62) | ❌ | ❌ | ❌ | ❌ | Regex 0.85 |
 | Scala | `.scala/.sc` | ✅ Function/Class (v0.63 [#1187](https://github.com/kwad77/pincher/pull/1187)) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
 | Lua | `.lua` | ✅ Function (v0.63 [#1186](https://github.com/kwad77/pincher/pull/1186)) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
 | Zig | `.zig` | ✅ Function/Struct (v0.63) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Regex 0.70 |
