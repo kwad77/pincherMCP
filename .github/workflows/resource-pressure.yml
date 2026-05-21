@@ -2,7 +2,7 @@ name: Resource pressure
 
 # FILE-I #1528 v0.85 — weekly bench measuring peak RSS at four indexer
 # file-count tiers. Output anchors the "minimum recommended RAM per
-# indexed-file tier" budget published in REFERENCE.md.
+# indexed-file tier" budget published in docs/reference/architecture.md.
 #
 # Phase 1 (v0.85-v0.89): advisory. Numbers feed the published budget;
 # regressions surface as ::warning:: log lines.

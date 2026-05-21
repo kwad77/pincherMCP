@@ -34,19 +34,19 @@ func TestReferenceMD_EveryRegisteredToolMentioned(t *testing.T) {
 		t.Fatal("newTestServer registered zero tools")
 	}
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
+	refBytes, err := os.ReadFile("../../docs/reference/tools.md")
 	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+		t.Fatalf("read docs/reference/tools.md: %v", err)
 	}
 	ref := string(refBytes)
 
 	// Match any backticked code-span that's a registered tool name.
 	for name := range srv.tools {
-		// We only care about the body of REFERENCE.md once. Build
+		// We only care about the body of tools.md once. Build
 		// the literal needle: an exact backticked occurrence.
 		needle := "`" + name + "`"
 		if !strings.Contains(ref, needle) {
-			t.Errorf("registered tool %q has no backticked mention anywhere in docs/REFERENCE.md — add a tool-table row (preferred) or at minimum a prose mention", name)
+			t.Errorf("registered tool %q has no backticked mention anywhere in docs/reference/tools.md — add a tool-table row (preferred) or at minimum a prose mention", name)
 		}
 	}
 

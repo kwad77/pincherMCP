@@ -6,7 +6,7 @@ Per-tool p50 + p99 latency gate that catches single-tool regressions that the ag
 
 `make corpus-bench` gates the `internal/index` + `internal/server` packages as a whole. A regression in one tool (say, `trace` latency) can land if the aggregate stays within ±20%. The per-tool budget enforces a tighter contract: every advertised tool stays within its declared p99 budget, individually.
 
-This matters at v1.0 because the published latency claims (in `docs/REFERENCE.md` Performance table) are per-tool numbers. An aggregate-only gate lets the README claim "search 1ms" while the actual p99 has crept to 8ms across a quarter of releases.
+This matters at v1.0 because the published latency claims (in `docs/reference/architecture.md` Performance table) are per-tool numbers. An aggregate-only gate lets the README claim "search 1ms" while the actual p99 has crept to 8ms across a quarter of releases.
 
 ## The budget file
 
@@ -57,6 +57,6 @@ Do NOT refresh when:
 ## Related
 
 - [#1522](https://github.com/kwad77/pincher/issues/1522) FILE-C — this gate.
-- [`docs/REFERENCE.md`](../REFERENCE.md) Performance table — the budget numbers should match per-tool claims in the table when phase-2 lands.
+- [`docs/reference/architecture.md`](../reference/architecture.md) Performance table — the budget numbers should match per-tool claims in the table when phase-2 lands.
 - `make corpus-bench` — package-aggregate gate (catches in-process regressions; complementary).
 - `.github/workflows/time-to-first-success.yml` — user-path latency budget (orthogonal: end-to-end clone→answer wall-clock, not per-tool).

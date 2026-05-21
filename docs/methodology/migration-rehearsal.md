@@ -44,7 +44,7 @@ When the workflow goes red:
 
 1. Download the `migration-rehearsal-data-<run_id>` artifact.
 2. Open the `pincher.db` with `sqlite3` and run `SELECT version FROM schema_version;` — confirms which migration step the upgrade reached before breaking.
-3. Cross-reference the migration history table in `docs/REFERENCE.md` to identify the responsible step.
+3. Cross-reference the migration history table in `docs/reference/architecture.md` to identify the responsible step.
 4. Add a section to the migration guide explaining the break + the workaround, OR fix the migration step + add a regression test pinning the failure mode.
 
 The third option is preferred — the rehearsal exists so we fix breaks before users hit them, not so we document workarounds for users who hit them.
@@ -69,5 +69,5 @@ The schema-migration parity test (`TestClassifyCorpus_MatchesSQLTriggerRouting`)
 
 - [#1539](https://github.com/kwad77/pincher/issues/1539) FILE-U — this gate.
 - [#1390](https://github.com/kwad77/pincher/issues/1390) — external migration-guide review (consumer of this gate's findings).
-- `docs/REFERENCE.md` — migration history table.
+- `docs/reference/architecture.md` — migration history table.
 - `internal/db/db.go` — `schemaMigrations` slice (canonical migration source).

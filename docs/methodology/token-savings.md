@@ -23,7 +23,7 @@ The full mapping is the source of truth at `internal/server/server.go:baselineMe
 
 ## Token counting
 
-Two modes, both documented in REFERENCE.md:
+Two modes, both documented in the reference docs:
 
 ### Cheap mode (default — `PINCHER_TOKEN_ACCOUNTING=cheap` or unset)
 
@@ -93,6 +93,6 @@ A claim that doesn't pass those three checks is removed at the next release-prep
 
 - Issue: [#1520 (FILE-A)](https://github.com/kwad77/pincher/issues/1520)
 - Source: `internal/server/server.go:baselineMethodForTool`
-- Bench CLI: `pincher bench` ([REFERENCE.md → pincher bench](../REFERENCE.md#pincher-bench))
+- Bench CLI: `pincher bench` ([Reference → pincher bench](../reference/cli.md#pincher-bench))
 - External comparator follow-up: FILE-B (#1521 v0.86) — head-to-head vs raw Read+Grep agent loop
 - Per-tool latency budget follow-up: FILE-C (#1522 v0.91) — p50/p99 CI gate

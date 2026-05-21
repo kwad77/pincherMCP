@@ -2,7 +2,7 @@ name: Multi-project ceiling
 
 # FILE-J #1529 v0.86 — weekly bench measuring per-watcher-tick wall-clock
 # at multiple indexed-project counts. Anchors the "recommended max
-# concurrent indexed projects" budget in REFERENCE.md.
+# concurrent indexed projects" budget in docs/reference/architecture.md.
 #
 # Pairs with FILE-I (#1528, single-project resource limits) — together
 # they cover both axes of "what's the scaling ceiling" published claims.
