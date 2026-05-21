@@ -182,6 +182,13 @@ type Server struct {
 	persistentSessionID string
 	sessionStartedAt    time.Time
 
+	// httpOnly is true when this process runs the HTTP server WITHOUT the
+	// MCP stdio loop (`pincher --http --no-stdio`, the standalone dashboard
+	// `pincher web` spawns). In that mode this process's own session row is
+	// just dashboard-poll noise — GET /v1/stats must show the *agent's* MCP
+	// session instead of its own (#1815). Set via SetHTTPOnly from main.
+	httpOnly bool
+
 	// Session-level savings accumulators (atomic for goroutine safety).
 	statsCalls       int64
 	statsTokensUsed  int64
@@ -521,6 +528,12 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	}
 	return s
 }
+
+// SetHTTPOnly marks this process as HTTP-only (no MCP stdio loop) — the
+// standalone dashboard mode that `pincher web` spawns. GET /v1/stats
+// uses it to show the agent's MCP session rather than this process's
+// own dashboard-poll session (#1815).
+func (s *Server) SetHTTPOnly(v bool) { s.httpOnly = v }
 
 // pickPersistentSessionID returns the session ID this process should use
 // when flushing to the sessions table. Under supervised mode the
@@ -1844,13 +1857,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "dashboard" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Tightened CSP (#56): no 'unsafe-inline' anywhere. The
-		// dashboard's CSS and JS now load from /v1/dashboard.css and
-		// /v1/dashboard.js so they hit script-src 'self' / style-src 'self'.
-		// XSS that injects an inline <script> into the rendered HTML is
-		// now BLOCKED BY THE BROWSER even if it bypasses our esc()
-		// escape pipeline — defense-in-depth beyond the source-side
-		// escaping work in #46.
+		// Tightened CSP (#56): no 'unsafe-inline' anywhere — script-src
+		// AND style-src are strict 'self'. The dashboard's CSS and JS load
+		// from /v1/dashboard.css and /v1/dashboard.js, and the markup
+		// carries no inline style= attributes (#1814 removed the last of
+		// them — static styling is class-based, dynamic bar sizing is set
+		// via CSSOM after render, which CSP style-src does not gate).
 		s.writeDashboardSecurityHeaders(w, "default-src 'self'; "+
 			"script-src 'self'; "+
 			"style-src 'self'; "+
@@ -1891,10 +1903,42 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// GET /v1/stats — dashboard-safe stats reader. Reads from DB only; never
 	// touches in-memory atomic counters so it doesn't pollute the MCP session.
 	if path == "stats" && r.Method == http.MethodGet {
-		// Latest session (MCP process, flushed every 10s)
+		// Pick the session to surface as "current". GetSessions returns
+		// rows newest-first by last_seen. In standalone-dashboard mode
+		// (httpOnly — `pincher web` / `--http --no-stdio`) the naive
+		// newest row is wrong: this process AND every other `pincher web`
+		// instance write dashboard-poll noise (many calls, 0 saved) and
+		// keep their own last_seen fresh by polling. The agent's real
+		// session is a pure-MCP stdio process — it advertises NO http_url
+		// (every HTTP server sets one). So pick the newest http_url-less
+		// session; that's the agent. Fall back to newest-non-own, then
+		// own, if no pure-MCP session exists. In combined mode (this
+		// process serves MCP too) our own session IS the agent's, so the
+		// naive newest row stands. (#1815)
 		var sess map[string]any
-		if rows, err := s.store.GetSessions(1); err == nil && len(rows) > 0 {
-			r0 := rows[0]
+		if rows, err := s.store.GetSessions(30); err == nil && len(rows) > 0 {
+			pick := 0
+			if s.httpOnly {
+				found := -1
+				for i := range rows {
+					if rows[i].HTTPURL == "" {
+						found = i
+						break
+					}
+				}
+				if found < 0 {
+					for i := range rows {
+						if rows[i].SessionID != s.persistentSessionID {
+							found = i
+							break
+						}
+					}
+				}
+				if found >= 0 {
+					pick = found
+				}
+			}
+			r0 := rows[pick]
 			sess = map[string]any{
 				"calls":        r0.Calls,
 				"tokens_used":  r0.TokensUsed,

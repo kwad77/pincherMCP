@@ -231,6 +231,11 @@ func main() {
 	// registerTools for the authoritative list).
 	srv := server.New(store, idx, version)
 
+	// #1815: in --no-stdio mode this process serves only the HTTP
+	// dashboard, so its own session row is poll-noise — GET /v1/stats
+	// must surface the agent's MCP session instead.
+	srv.SetHTTPOnly(*noStdio)
+
 	// Slow-query capture (#42 part 2) applies to BOTH MCP stdio calls and
 	// HTTP requests — must be set before either transport starts.
 	if *slowQueryMS > 0 {
