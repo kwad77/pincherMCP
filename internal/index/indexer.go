@@ -4306,24 +4306,22 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		)
 	}
 
-	// #475: atomic replace of the prior resolve pass's CALLS edges so
-	// rule changes (e.g. the #465 polymorphic-method blocklist) converge
-	// without --force on every incremental re-index. Per-file CALLS
-	// edges keep their cascade-on-delete model.
-	// #1629 v0.87 slice 2: scope the delete when only some files
-	// re-extracted, preserving unchanged files' resolved CALLS.
-	if len(scopeFiles) > 0 {
-		if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, "CALLS", scopeFiles); err != nil {
-			slog.Warn("pincher.calls.scoped_delete.err", "err", err)
-		}
-	} else if err := idx.store.DeleteEdgesByKindAndSource(projectID, "CALLS", "resolve_pass"); err != nil {
-		slog.Warn("pincher.calls.delete_prior.err", "err", err)
-	}
-	if len(edges) == 0 {
-		return 0
-	}
-	if err := idx.store.BulkUpsertEdges(edges); err != nil {
-		slog.Warn("pincher.calls.upsert.err", "err", err)
+	// #1772: delete the prior resolve_pass CALLS edges AND insert the
+	// fresh set in ONE transaction. Pre-fix these were two separate
+	// commits — between them the committed DB held zero resolve_pass
+	// CALLS edges for the project (scoped path: for the scoped files),
+	// so any concurrent MCP read (trace / query / changes / dead_code)
+	// landing in that window saw cross-file CALLS edges vanish. Every
+	// watcher resolve tick opened the window; that is the
+	// graph-degrades-over-a-session symptom of #1772.
+	//
+	// #475: replacing (not merging) converges rule changes — e.g. the
+	// #465 polymorphic-method blocklist — without --force. #1629 v0.87:
+	// scopeFiles restricts the delete to the re-extracted files on an
+	// incremental tick, preserving unchanged files' resolved CALLS. An
+	// empty `edges` is fine — the call then just clears the stale set.
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "CALLS", "resolve_pass", scopeFiles, edges); err != nil {
+		slog.Warn("pincher.calls.replace.err", "err", err)
 		return 0
 	}
 	return len(edges)
