@@ -2920,22 +2920,13 @@ func (idx *Indexer) resolveImports(projectID string, pending []ast.ExtractedEdge
 		}
 	}
 
-	// #475: atomic replace of the prior resolve pass's IMPORTS edges.
-	// #1629 v0.87: when scopeFiles is set, wipe only the resolve_pass
-	// edges originating from those files — leaves unchanged-file
-	// edges intact for the incremental-tick fast path.
-	if len(scopeFiles) > 0 {
-		if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, "IMPORTS", scopeFiles); err != nil {
-			slog.Warn("pincher.imports.scoped_delete.err", "err", err)
-		}
-	} else if err := idx.store.DeleteEdgesByKindAndSource(projectID, "IMPORTS", "resolve_pass"); err != nil {
-		slog.Warn("pincher.imports.delete_prior.err", "err", err)
-	}
-	if len(edges) == 0 {
-		return 0
-	}
-	if err := idx.store.BulkUpsertEdges(edges); err != nil {
-		slog.Warn("pincher.imports.upsert.err", "err", err)
+	// #1772/#1828: delete the prior resolve_pass IMPORTS edges AND
+	// insert the fresh set in ONE transaction, so a concurrent reader
+	// never sees the empty delete-before-reinsert gap. #1629 v0.87:
+	// scopeFiles restricts the delete to the re-extracted files on an
+	// incremental tick. An empty `edges` just clears the stale set.
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "IMPORTS", "resolve_pass", scopeFiles, edges); err != nil {
+		slog.Warn("pincher.imports.replace.err", "err", err)
 		return 0
 	}
 	return len(edges)
@@ -3169,20 +3160,14 @@ func (idx *Indexer) resolveUsesVar(projectID string, pending []ast.ExtractedEdge
 	// paths, OR (b) the DELETE fires and INSERT silently fails. The
 	// new pincher.uses_var.resolve.summary log + the BulkUpsertEdges
 	// error path below pin both.
-	// #1629 v0.87 slice 3: scoped USES_VAR resolve_pass delete on
-	// incremental ticks.
-	if len(scopeFiles) > 0 {
-		if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, "USES_VAR", scopeFiles); err != nil {
-			slog.Warn("pincher.uses_var.scoped_delete.err", "err", err)
-		}
-	} else if err := idx.store.DeleteEdgesByKindAndSource(projectID, "USES_VAR", "resolve_pass"); err != nil {
-		slog.Warn("pincher.uses_var.delete_prior.err", "err", err)
-	}
-	if len(edges) == 0 {
-		return 0
-	}
-	if err := idx.store.BulkUpsertEdges(edges); err != nil {
-		slog.Warn("pincher.uses_var.upsert.err", "err", err, "edge_count", len(edges))
+	// #1772/#1828: delete the prior resolve_pass USES_VAR edges AND
+	// insert the fresh set in ONE transaction, so a concurrent reader
+	// never sees the empty delete-before-reinsert gap. #1629 v0.87:
+	// scopeFiles restricts the delete on an incremental tick. An empty
+	// `edges` still fires the delete (intentional, see the #1479 note
+	// above) — ReplaceEdgesByKindSource deletes then inserts nothing.
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "USES_VAR", "resolve_pass", scopeFiles, edges); err != nil {
+		slog.Warn("pincher.uses_var.replace.err", "err", err, "edge_count", len(edges))
 		return 0
 	}
 	return len(edges)
@@ -4804,39 +4789,38 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 		)
 	}
 
-	// #475: atomic replace of the prior resolve pass's READS + WRITES.
-	// Both kinds share the read-pass output, so wipe both before insert.
-	// #1629 v0.87 slice 2: scoped deletion when incremental tick.
-	if len(scopeFiles) > 0 {
-		for _, k := range []string{"READS", "WRITES"} {
-			if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, k, scopeFiles); err != nil {
-				slog.Warn("pincher.reads.scoped_delete.err", "kind", k, "err", err)
-			}
-		}
-	} else {
-		for _, k := range []string{"READS", "WRITES"} {
-			if err := idx.store.DeleteEdgesByKindAndSource(projectID, k, "resolve_pass"); err != nil {
-				slog.Warn("pincher.reads.delete_prior.err", "kind", k, "err", err)
-			}
+	// #1772/#1828: atomic delete+reinsert per (kind, source). Pre-fix
+	// READS / WRITES / binding_pass-CALLS were deleted, then the mixed
+	// set was bulk-inserted in a SEPARATE transaction — a concurrent
+	// reader between the commits saw those edges vanish. Splitting
+	// `edges` by kind and routing each through ReplaceEdgesByKindSource
+	// makes every kind's replace atomic. Cross-kind ordering can still
+	// differ by one tick (READS refreshed, WRITES not yet) — a far
+	// milder inconsistency than a wholesale vanish, acceptable for the
+	// data-flow edge kinds. #565: binding_pass CALLS are kept distinct
+	// from resolveCalls's resolve_pass CALLS so neither delete nukes the
+	// other; per_file CALLS are untouched by both.
+	readsEdges := make([]db.Edge, 0, len(edges))
+	writesEdges := make([]db.Edge, 0, len(edges))
+	bindingEdges := make([]db.Edge, 0, len(edges))
+	for _, e := range edges {
+		switch e.Kind {
+		case "READS":
+			readsEdges = append(readsEdges, e)
+		case "WRITES":
+			writesEdges = append(writesEdges, e)
+		case "CALLS": // #565 function-value binding, source='binding_pass'
+			bindingEdges = append(bindingEdges, e)
 		}
 	}
-	// #565: separate atomic replace for function-value-binding CALLS
-	// edges (source='binding_pass'). Distinct from resolveCalls's
-	// resolve_pass CALLS so this delete doesn't nuke the direct-call
-	// graph. Per-file CALLS (source='per_file') are also untouched.
-	if len(scopeFiles) > 0 {
-		if err := idx.store.DeleteEdgesByKindAndSourceForSourceFiles(projectID, "CALLS", "binding_pass", scopeFiles); err != nil {
-			slog.Warn("pincher.binding.scoped_delete.err", "err", err)
-		}
-	} else if err := idx.store.DeleteEdgesByKindAndSource(projectID, "CALLS", "binding_pass"); err != nil {
-		slog.Warn("pincher.binding.delete_prior.err", "err", err)
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "READS", "resolve_pass", scopeFiles, readsEdges); err != nil {
+		slog.Warn("pincher.reads.replace.err", "err", err)
 	}
-	if len(edges) == 0 {
-		return 0
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "WRITES", "resolve_pass", scopeFiles, writesEdges); err != nil {
+		slog.Warn("pincher.writes.replace.err", "err", err)
 	}
-	if err := idx.store.BulkUpsertEdges(edges); err != nil {
-		slog.Warn("pincher.reads.upsert.err", "err", err)
-		return 0
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "CALLS", "binding_pass", scopeFiles, bindingEdges); err != nil {
+		slog.Warn("pincher.binding.replace.err", "err", err)
 	}
 	return len(edges)
 }
