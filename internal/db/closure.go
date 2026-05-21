@@ -169,7 +169,9 @@ func (s *Store) BuildClosure(ctx context.Context, projectID string, maxDepth int
 // or hasn't been built yet for this project.
 func (s *Store) ClosureRowCount(projectID string) (int64, error) {
 	var n int64
-	err := s.db.QueryRow(
+	// Reader pool (#1824/#1826): a pure SELECT must not run on the
+	// single-writer connection — it would serialize behind index writes.
+	err := s.ro.QueryRow(
 		"SELECT COUNT(*) FROM closure WHERE project_id = ?", projectID).Scan(&n)
 	return n, err
 }
@@ -204,7 +206,7 @@ func (s *Store) TraceViaClosure(projectID, startID, direction string, maxDepth i
 	}
 
 	if direction == "outbound" || direction == "both" {
-		rows, err := s.db.Query(
+		rows, err := s.ro.Query( // reader pool — pure SELECT (#1824/#1826)
 			"SELECT to_id, depth, via_kind FROM closure WHERE project_id = ? AND from_id = ? AND depth <= ? ORDER BY depth, to_id LIMIT 500",
 			projectID, startID, maxDepth)
 		if err != nil {
@@ -217,7 +219,7 @@ func (s *Store) TraceViaClosure(projectID, startID, direction string, maxDepth i
 		}
 	}
 	if direction == "inbound" || direction == "both" {
-		rows, err := s.db.Query(
+		rows, err := s.ro.Query( // reader pool — pure SELECT (#1824/#1826)
 			"SELECT from_id, depth, via_kind FROM closure WHERE project_id = ? AND to_id = ? AND depth <= ? ORDER BY depth, from_id LIMIT 500",
 			projectID, startID, maxDepth)
 		if err != nil {
