@@ -649,6 +649,10 @@
     "description": "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source.",
     "input_schema": {
       "properties": {
+        "cross_project": {
+          "description": "#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set.",
+          "type": "boolean"
+        },
         "fields": {
           "description": "Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata.",
           "type": "string"
@@ -661,6 +665,7 @@
           "type": "array"
         },
         "project": {
+          "description": "Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo).",
           "type": "string"
         }
       },
