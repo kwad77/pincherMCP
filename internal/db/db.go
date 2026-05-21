@@ -167,6 +167,26 @@ func errorsLockedWrap(err error) error {
 	return fmt.Errorf("database is locked — another pincher process is writing it (an index is likely in progress); retry in a few seconds: %w", err)
 }
 
+// retryOnDBLock runs fn up to maxAttempts times, retrying with a fixed
+// backoff between attempts whenever fn returns a SQLITE_BUSY-class
+// error (#1817). Any other error (or success) returns immediately. fn
+// must be idempotent — used for the migrate() step of Open, which is
+// (version-gated migrations + IF NOT EXISTS DDL). Returns fn's last
+// result.
+func retryOnDBLock(fn func() error, maxAttempts int, backoff time.Duration) error {
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(backoff)
+		}
+		err = fn()
+		if err == nil || !isDBLockedErr(err) {
+			return err
+		}
+	}
+	return err
+}
+
 func Open(dir string) (*Store, error) {
 	// #830: create the data dir if it's missing. DataDir() already
 	// MkdirAll's the default + PINCHER_DATA_DIR paths, but a `--data-dir`
@@ -207,18 +227,21 @@ func Open(dir string) (*Store, error) {
 	}
 
 	s := &Store{db: db, Path: path}
-	if err := s.migrate(); err != nil {
+	// #1784/#1817: migrate() takes a write lock (init schema_version +
+	// IF NOT EXISTS DDL). Another pincher process mid-index can hold the
+	// writer past the 5s busy_timeout — a force-reindex of a large repo
+	// easily does. Rather than fail the open outright, bounded-retry:
+	// migrate() is idempotent (version-gated migrations, IF NOT EXISTS
+	// DDL), so a fresh attempt is safe. Worst case ~3×5s busy-wait + 2×1s
+	// backoff ≈ 17s before surfacing the friendly #1784 error — far
+	// better than exiting 1 and making the user retry by hand.
+	if migErr := retryOnDBLock(s.migrate, 3, time.Second); migErr != nil {
 		db.Close()
-		// #1784: migrate() takes a write lock (init schema_version). When
-		// another pincher process holds the writer longer than the 5s
-		// busy_timeout — a force-reindex of a large repo easily does —
-		// the open fails with a raw SQLITE_BUSY. Lead with a friendly,
-		// actionable message; CLI commands print this verbatim and the
-		// raw cause stays wrapped for debugging.
-		if isDBLockedErr(err) {
-			return nil, errorsLockedWrap(err)
+		// CLI commands print this verbatim; the raw cause stays wrapped.
+		if isDBLockedErr(migErr) {
+			return nil, errorsLockedWrap(migErr)
 		}
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, fmt.Errorf("migrate: %w", migErr)
 	}
 
 	// WAL guardrail — silent no-op when journal_mode is not WAL.

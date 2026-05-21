@@ -66,3 +66,52 @@ func TestOpen_FreshDir_StillSucceeds_1784(t *testing.T) {
 	}
 	store.Close()
 }
+
+// #1817: retryOnDBLock bounded-retries a SQLITE_BUSY-class failure so
+// transient writer-lock contention (another pincher mid-index) doesn't
+// fail db.Open outright. Backoff 0 keeps the test instant.
+func TestRetryOnDBLock_1817(t *testing.T) {
+	t.Parallel()
+	busy := errors.New("init schema_version: database is locked (5) (SQLITE_BUSY)")
+
+	// Retries past transient BUSY, then succeeds.
+	calls := 0
+	if err := retryOnDBLock(func() error {
+		calls++
+		if calls < 3 {
+			return busy
+		}
+		return nil
+	}, 3, 0); err != nil {
+		t.Errorf("expected success after transient BUSY; got %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 attempts; got %d", calls)
+	}
+
+	// Persistent BUSY: exhausts attempts, returns the lock error.
+	calls = 0
+	if err := retryOnDBLock(func() error { calls++; return busy }, 3, 0); !isDBLockedErr(err) {
+		t.Errorf("persistent BUSY should return the lock error; got %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("persistent BUSY should use all 3 attempts; got %d", calls)
+	}
+
+	// A non-lock error returns immediately — a real migration bug must
+	// not be masked by retrying.
+	calls = 0
+	nonLock := errors.New("no such table: symbols")
+	if err := retryOnDBLock(func() error { calls++; return nonLock }, 3, 0); err != nonLock {
+		t.Errorf("non-lock error should return as-is; got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("non-lock error must not retry; got %d calls", calls)
+	}
+
+	// First-try success — exactly one call.
+	calls = 0
+	if err := retryOnDBLock(func() error { calls++; return nil }, 3, 0); err != nil || calls != 1 {
+		t.Errorf("first-try success: err=%v calls=%d, want nil/1", err, calls)
+	}
+}
