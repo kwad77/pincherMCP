@@ -121,7 +121,7 @@ footer a{color:var(--accent)}
   <img src="assets/pinchy.png" alt="Pinchy, the pincherMCP mascot — a pixel-art crab holding a copper penny" class="pixel pinchy-hero"/>
   <div class="pill">Single binary · pure Go · no cloud</div>
   <h1>Codebase intelligence<br/>for LLM agents.</h1>
-  <p class="sub">pincherMCP indexes any repo into a byte-offset symbol store, a knowledge graph, and a BM25 full-text search — all populated in one AST pass — then exposes 23 tools over MCP stdio or HTTP REST. Agents get what they need in tokens, not files. <strong>Pincher is the foundation</strong>; the <code>_meta</code> envelope on every response is the enabler; the LLM in your host's loop is the router. <a href="integrations/loop-leverage-layers.md">Read the leverage-layers frame →</a></p>
+  <p class="sub">pincherMCP indexes any repo into a byte-offset symbol store, a knowledge graph, and a BM25 full-text search — all populated in one AST pass — then exposes 28 tools over MCP stdio or HTTP REST. Agents get what they need in tokens, not files. <strong>Pincher is the foundation</strong>; the <code>_meta</code> envelope on every response is the enabler; the LLM in your host's loop is the router. <a href="integrations/loop-leverage-layers.md">Read the leverage-layers frame →</a></p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">Install</a>
     <a class="btn btn-secondary" href="#leverage">How it earns its keep →</a>
@@ -130,12 +130,12 @@ footer a{color:var(--accent)}
 
 <section>
   <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Why it matters</h2>
-  <p class="section-sub">Every tool response carries a real BPE token count. Real numbers on this codebase (~850 files, ~8,800 symbols, ~14,600 edges, v0.89):</p>
+  <p class="section-sub">Every tool response carries a real BPE token count. Real numbers on this codebase (~850 files, ~8,800 symbols, ~14,600 edges, v0.90):</p>
   <div class="stats">
     <div class="stat"><div class="num green">~95%</div><div class="label">Token reduction<br/>vs reading whole files</div></div>
     <div class="stat"><div class="num blue">&lt;1ms</div><div class="label">Symbol fetch<br/>(byte-offset seek)</div></div>
     <div class="stat"><div class="num purple">&lt;5ms</div><div class="label">BFS depth 3<br/>call-graph trace</div></div>
-    <div class="stat"><div class="num orange">~25 langs</div><div class="label">10 AST-tier + 21 regex-tier<br/>extractors</div></div>
+    <div class="stat"><div class="num orange">~27 langs</div><div class="label">8 AST-tier + 19 regex-tier<br/>extractors</div></div>
   </div>
 </section>
 
@@ -197,7 +197,7 @@ footer a{color:var(--accent)}
 </section>
 
 <section id="tools">
-  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>23 tools, one mental model</h2>
+  <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>28 tools, one mental model</h2>
   <p class="section-sub">Every tool returns a <code>_meta</code> envelope with tokens used / saved and latency. Pick the tool by what you're trying to do, not by the underlying index.</p>
   <div class="cards">
     <div class="card">
@@ -267,8 +267,8 @@ brew services start pincher</code></pre>
 
   <div class="install-pane" id="pane-bin">
 <pre><code># Download the matching archive from the releases page, then:
-tar -xzf pincher-v0.89.0-linux-amd64.tar.gz
-sudo mv pincher-v0.89.0-linux-amd64 /usr/local/bin/pincher
+tar -xzf pincher-v0.90.0-linux-amd64.tar.gz
+sudo mv pincher-v0.90.0-linux-amd64 /usr/local/bin/pincher
 pincher --version</code></pre>
   </div>
 
@@ -318,11 +318,11 @@ pincher init --target=gemini         # ~/.gemini/settings.json</code></pre>
 
 <section id="vision">
   <h2><img src="assets/crab.png" alt="" class="pixel crab-divider"/>Where pincher is going</h2>
-  <p class="section-sub">Pre-1.0. The cadence: nine minor releases per phase ending at a stable promotion (v0.60, v0.70, v0.80, v0.90, v1.0). Phase 3 closed at v0.80 stable; currently in Phase 4 — composite-tool buildout through v0.90.</p>
+  <p class="section-sub">Pre-1.0. The cadence: nine minor releases per phase ending at a stable promotion (v0.60, v0.70, v0.80, v0.90, v1.0). Phase 3 closed at v0.80 stable, Phase 4 (composite-tool buildout) at v0.90 stable; currently in Phase 5 — the v1.0 supply-chain + measurement + RC dogfood path.</p>
   <div class="cards">
     <div class="card">
-      <h3>Phase 4 today <span class="badge">v0.89 complete</span></h3>
-      <p>Composite-tool buildout — bundling recognised investigation sequences (5–10 atomic calls today) behind single round-trip entry points. All five composites now shipped: <code>investigate_failure</code> (bug-hunt from stack trace), <code>plan_change</code> (pre-edit blast radius), <code>audit_unused</code> (dead-code with deep-trace confirmation), <code>onboard_module</code> (new-contributor orientation), <code>why_empty</code> (empty-result recovery). Each emits the same typed <code>_meta</code> contract as the atomic tools. Phase 4 umbrella: <a href="https://github.com/kwad77/pincher/issues/1391">#1391</a>. Phase 3 (v0.71 → v0.80) closed at stable promotion 2026-05-18 — umbrella: <a href="https://github.com/kwad77/pincher/issues/668">#668</a>. Phase 5 (v0.83 → v0.99) covers the v1.0 supply-chain + measurement + RC dogfood path.</p>
+      <h3>Phase 5 today <span class="badge">v0.90 stable</span></h3>
+      <p>The v1.0 supply-chain + measurement + RC dogfood path (v0.83 → v0.99). Phase 4's composite-tool buildout completed at the v0.90 stable promotion — all five composites shipped: <code>investigate_failure</code> (bug-hunt from stack trace), <code>plan_change</code> (pre-edit blast radius), <code>audit_unused</code> (dead-code with deep-trace confirmation), <code>onboard_module</code> (new-contributor orientation), <code>why_empty</code> (empty-result recovery). Each emits the same typed <code>_meta</code> contract as the atomic tools. Phase 4 umbrella: <a href="https://github.com/kwad77/pincher/issues/1391">#1391</a>. Phase 3 (v0.71 → v0.80) closed at stable promotion 2026-05-18 — umbrella: <a href="https://github.com/kwad77/pincher/issues/668">#668</a>.</p>
     </div>
     <div class="card">
       <h3>v1.0 freeze <span class="badge">planned</span></h3>
