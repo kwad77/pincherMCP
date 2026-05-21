@@ -193,7 +193,7 @@ func TestUpsertProjectMeta_DowngradeStillUpdatesOtherFields(t *testing.T) {
 	}
 }
 
-// Cross-check: compareBinaryVersion table-driven probe. Asserts the
+// Cross-check: CompareBinaryVersion table-driven probe. Asserts the
 // comparator handles every shape the storage layer might see. Avoids
 // brittle exact-byte assertions by testing the relative order.
 func TestCompareBinaryVersion_TableDriven(t *testing.T) {
@@ -232,7 +232,7 @@ func TestCompareBinaryVersion_TableDriven(t *testing.T) {
 		{"dev", "dev", 0},
 	}
 	for _, c := range cases {
-		got := compareBinaryVersion(c.a, c.b)
+		got := CompareBinaryVersion(c.a, c.b)
 		// Normalize to sign for comparison — comparator may return any
 		// negative / positive integer; spec is -1 / 0 / 1.
 		sign := func(n int) int {
@@ -245,7 +245,7 @@ func TestCompareBinaryVersion_TableDriven(t *testing.T) {
 			return 0
 		}
 		if sign(got) != c.want {
-			t.Errorf("compareBinaryVersion(%q, %q) = %d, want %d",
+			t.Errorf("CompareBinaryVersion(%q, %q) = %d, want %d",
 				c.a, c.b, got, c.want)
 		}
 	}
@@ -268,6 +268,6 @@ func TestCompareBinaryVersion_UnparseableFallsBackToString(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Should return without panicking.
-		_ = compareBinaryVersion(c.a, c.b)
+		_ = CompareBinaryVersion(c.a, c.b)
 	}
 }

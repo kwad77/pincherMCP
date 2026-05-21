@@ -2638,6 +2638,28 @@ func (s *Store) UpsertProject(p Project) error {
 	// Path/name/counts always update — those are cheap and a stale
 	// re-walk of the same files is still accurate for them. The full
 	// reaping fix (parent-liveness self-exit) is the other half of #724.
+	//
+	// #1818: the schema CASE above only blocks an OLDER-schema binary
+	// from downgrading the stamp — two binaries on the SAME schema but
+	// different versions (a release MCP + a dev `pincher web`) still
+	// stomped each other every pass. With version-gated drift detection
+	// that re-triggers a force-reindex ping-pong. Guard the version
+	// directly in Go (semver-with-commit-count compare is impractical
+	// in SQL — same rationale as UpsertProjectMeta's #1154 guard):
+	// never let an older binary_version displace a newer one.
+	binaryToWrite := p.BinaryVersion
+	if p.BinaryVersion != "" {
+		var existingBV sql.NullString
+		if err := s.ro.QueryRow(
+			`SELECT binary_version FROM projects WHERE id = ?`, p.ID,
+		).Scan(&existingBV); err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if existingBV.Valid && existingBV.String != "" &&
+			CompareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
+			binaryToWrite = existingBV.String
+		}
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch)
 		VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -2650,7 +2672,7 @@ func (s *Store) UpsertProject(p Project) error {
 			schema_version_at_index=MAX(schema_version_at_index, excluded.schema_version_at_index),
 			current_branch=excluded.current_branch`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, p.BinaryVersion, p.CurrentBranch,
+		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, binaryToWrite, p.CurrentBranch,
 	)
 	return err
 }
@@ -2709,7 +2731,7 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 	}
 	binaryToWrite := p.BinaryVersion
 	if existingBV.Valid && existingBV.String != "" {
-		if compareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
+		if CompareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
 			// Incoming is older — don't downgrade. Keep the existing
 			// value by writing back what's already there.
 			binaryToWrite = existingBV.String
@@ -2747,7 +2769,7 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 	return err
 }
 
-// compareBinaryVersion compares pincher build version strings of the
+// CompareBinaryVersion compares pincher build version strings of the
 // form "0.58.0", "0.58.0-44-g91e9c0f", or "dev". Returns -1 if a < b,
 // 0 if equal, +1 if a > b. Parse-failure falls back to string compare
 // so callers that pass weird values get a deterministic-if-arbitrary
@@ -2758,7 +2780,7 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 // Format expected: [v]MAJOR.MINOR.PATCH[-COMMITS-gSHA]
 // "dev" (the unstamped go build sentinel) is treated as the lowest
 // possible version — it must never displace a real release stamp.
-func compareBinaryVersion(a, b string) int {
+func CompareBinaryVersion(a, b string) int {
 	if a == b {
 		return 0
 	}
