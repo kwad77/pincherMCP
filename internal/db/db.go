@@ -4245,7 +4245,7 @@ func (s *Store) RecordSymbolMove(projectID, oldID, newID string) error {
 // Returns (newID, true) if a redirect exists, ("", false) otherwise.
 func (s *Store) ResolveStaleID(projectID, oldID string) (string, bool) {
 	var newID string
-	err := s.db.QueryRow(
+	err := s.ro.QueryRow(
 		`SELECT new_id FROM symbol_moves WHERE old_id=? AND project_id=?`,
 		oldID, projectID,
 	).Scan(&newID)
@@ -4371,7 +4371,14 @@ func (s *Store) traceViaCTE(projectID, startID, direction string, edgeKinds []st
 		}
 		args = append(args, maxDepth, startID)
 
-		rows, err := s.db.Query(q, args...)
+		// Reader pool (#51): a recursive-CTE trace is a pure SELECT.
+		// Routing it to s.db (the single-writer connection,
+		// SetMaxOpenConns(1)) serialized every trace behind indexer
+		// writes — `changes` fires one TraceByID per changed symbol, so
+		// a scope=all run over a doc-heavy diff queued hundreds of
+		// traces behind the watcher and took minutes. TraceViaCTEScoped
+		// is already classified reader-routed; this matches the impl.
+		rows, err := s.ro.Query(q, args...)
 		if err != nil {
 			return err
 		}
@@ -5651,7 +5658,7 @@ func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
 	}
-	rows, err := s.db.Query(q)
+	rows, err := s.ro.Query(q)
 	if err != nil {
 		return nil, err
 	}
@@ -5684,7 +5691,7 @@ func (s *Store) GetSessions(limit int) ([]SessionRow, error) {
 // this many tokens were burned on the zero-result attempts."
 func (s *Store) GetAllTimeQueryMetrics() (QueryMetrics, error) {
 	var qm QueryMetrics
-	err := s.db.QueryRow(
+	err := s.ro.QueryRow(
 		`SELECT COALESCE(SUM(queries_total),0),
 		        COALESCE(SUM(queries_zero_result),0),
 		        COALESCE(SUM(queries_retried_succeeded),0),
@@ -5724,7 +5731,7 @@ func (s *Store) GetLatestHTTPSession() (SessionRow, error) {
 
 // GetAllTimeSavings returns the cumulative savings across all recorded sessions.
 func (s *Store) GetAllTimeSavings() (calls, tokensUsed, tokensSaved int64, costAvoided float64, err error) {
-	err = s.db.QueryRow(
+	err = s.ro.QueryRow(
 		`SELECT COALESCE(SUM(calls),0), COALESCE(SUM(tokens_used),0),
 		        COALESCE(SUM(tokens_saved),0), COALESCE(SUM(cost_avoided),0.0)
 		 FROM sessions`,
@@ -5793,7 +5800,7 @@ func (s *Store) MaybeFireCelebration(cumulativeTokensSaved int64) (threshold int
 // for every other session. Returns an empty (non-nil) map when no
 // session has ever recorded language data.
 func (s *Store) GetAllTimeCallsByLanguage() (map[string]int64, error) {
-	rows, err := s.db.Query(`SELECT calls_by_language FROM sessions WHERE calls_by_language IS NOT NULL`)
+	rows, err := s.ro.Query(`SELECT calls_by_language FROM sessions WHERE calls_by_language IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}
