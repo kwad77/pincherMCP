@@ -118,6 +118,26 @@ var stopwordFrames = map[string]bool{
 	"created":     true,
 	"address":     true,
 	"dereference": true,
+	// The rest of the Go SIGSEGV panic header. A nil-pointer-dereference
+	// panic prints `invalid memory address or nil pointer dereference
+	// [signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x..]`
+	// — #1787 caught `address`/`dereference` but the remaining header
+	// words leak as identifier-shaped tokens and BM25-match unrelated
+	// symbols (`violation` matched a workflow-lint Class; `signal` /
+	// `memory` match broadly). This is the single most common Go crash
+	// shape, so the whole header vocabulary has to go.
+	"invalid":      true,
+	"memory":       true,
+	"pointer":      true,
+	"signal":       true,
+	"SIGSEGV":      true,
+	"sigsegv":      true,
+	"SIGABRT":      true,
+	"SIGBUS":       true,
+	"segmentation": true,
+	"violation":    true,
+	"code":         true,
+	"addr":         true,
 	// #1787: VCS-host / import-path host segments. Every Go stack frame
 	// is fully qualified (`github.com/<org>/<repo>/...`); these host
 	// tokens appear in every frame and are never symbol names. Interior
@@ -164,7 +184,14 @@ func parseStackFrames(errorText string) (names []string, files []string) {
 		if idx[3] < len(errorText) {
 			after = errorText[idx[3]]
 		}
-		if after == '/' || (before == '/' && after == '/') {
+		// A token immediately followed by '-' is a segment of a
+		// hyphenated path component (`pincher-repo`, `my-service`) — never
+		// a Go/Python identifier, since neither language allows '-' in a
+		// name. The slash-delimited drop misses these: the hyphen sits
+		// where the next slash would, so a local checkout path like
+		// `/home/me/pincher-repo/internal/...` leaks `pincher`, which then
+		// BM25-matches an unrelated symbol (the Homebrew `Pincher` class).
+		if after == '/' || after == '-' || (before == '/' && after == '/') {
 			continue
 		}
 		if stopwordFrames[tok] {
