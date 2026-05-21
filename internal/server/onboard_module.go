@@ -66,6 +66,25 @@ type onboardEdgeRef struct {
 	Kind        string `json:"kind"`
 }
 
+// dedupBoundaryEdges collapses boundary edges to a SET keyed on
+// (from_id, to_id) — onboard_module reports distinct boundary
+// dependencies, not a multiset of call-sites (#1808). First occurrence
+// wins, so input order (and thus the caller's sort) is preserved for
+// the surviving rows.
+func dedupBoundaryEdges(edges []onboardEdgeRef) []onboardEdgeRef {
+	seen := make(map[string]bool, len(edges))
+	out := make([]onboardEdgeRef, 0, len(edges))
+	for _, e := range edges {
+		key := e.FromID + "\x00" + e.ToID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, e)
+	}
+	return out
+}
+
 type onboardModuleSummary struct {
 	LanguageBreakdown    map[string]float64 `json:"language_breakdown"`
 	TestToCodeRatio      float64            `json:"test_to_code_ratio"`
@@ -317,6 +336,15 @@ func (s *Server) handleOnboardModule(ctx context.Context, req *mcp.CallToolReque
 			}
 		}
 	}
+
+	// #1808: collapse to a SET of distinct boundary pairs before the
+	// cap. onboard_module reports distinct boundary dependencies, not a
+	// multiset of call-sites — a live probe saw the same (from,to) pair
+	// surface 6× and evict genuine distinct deps past maxEdgesPerList.
+	// Dedup runs before the sort+cap so the cap can't truncate real
+	// deps in favour of duplicate rows.
+	externalDeps = dedupBoundaryEdges(externalDeps)
+	externalConsumers = dedupBoundaryEdges(externalConsumers)
 
 	// Bound the lists — onboard_module is for orientation; thousands of
 	// edges would drown the agent.
