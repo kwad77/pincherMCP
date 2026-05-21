@@ -358,7 +358,9 @@ func TestDetectTargets_FindsCursorAndWindsurf(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmp, ".cursor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp, ".windsurfrules"), []byte("hi"), 0o644); err != nil {
+	// #1769: modern Windsurf detection keys on the .windsurf/ rules
+	// directory, not the legacy .windsurfrules single file.
+	if err := os.MkdirAll(filepath.Join(tmp, ".windsurf", "rules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	hits := DetectTargets(tmp)
@@ -371,7 +373,7 @@ func TestDetectTargets_FindsCursorAndWindsurf(t *testing.T) {
 		t.Errorf("expected cursor in detection (.cursor/ exists), got %q", joined)
 	}
 	if !strings.Contains(joined, "windsurf") {
-		t.Errorf("expected windsurf in detection (.windsurfrules exists), got %q", joined)
+		t.Errorf("expected windsurf in detection (.windsurf/ exists), got %q", joined)
 	}
 }
 

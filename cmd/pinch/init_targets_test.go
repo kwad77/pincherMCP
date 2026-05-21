@@ -75,7 +75,7 @@ func TestRunInitTarget_DryRunDoesNotWrite(t *testing.T) {
 	if err := runInitTarget(&buf, pinit.WindsurfTarget, tmp, false, true); err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmp, ".windsurf", "rules", "pincher.md")); !os.IsNotExist(err) {
 		t.Errorf("dry run should NOT create file; stat err=%v", err)
 	}
 	// #803: present-tense verb — "would write", not "would wrote".
@@ -95,7 +95,7 @@ func TestRunInitTarget_GlobalIgnoredForUnsupportedTargets(t *testing.T) {
 	if err := runInitTarget(&buf, pinit.WindsurfTarget, tmp, true, false); err != nil {
 		t.Fatalf("windsurf with --global should not error: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); err != nil {
+	if _, err := os.Stat(filepath.Join(tmp, ".windsurf", "rules", "pincher.md")); err != nil {
 		t.Errorf("expected project-local windsurf file: %v", err)
 	}
 }

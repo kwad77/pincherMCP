@@ -721,7 +721,7 @@ pincher init                              # default: ./CLAUDE.md
 pincher init --global                     # claude global: ~/.claude/CLAUDE.md
 pincher init --target=cursor              # ./.cursor/rules/pincher.mdc (with frontmatter)
 pincher init --target=cursor-legacy       # ./.cursorrules
-pincher init --target=windsurf            # ./.windsurfrules
+pincher init --target=windsurf            # ./.windsurf/rules/pincher.md
 pincher init --target=aider               # ./CONVENTIONS.md
 pincher init --target=continue            # ~/.continue/config.json (merges into systemMessage)
 pincher init --target=detect              # write only to editors whose marker file exists under cwd

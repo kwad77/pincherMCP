@@ -280,23 +280,49 @@ var CursorLegacyTarget = Target{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// windsurf (./.windsurfrules, plain text/markdown)
+// windsurf (./.windsurf/rules/pincher.md, modern rules directory)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// windsurfRuleFrontmatter is the YAML frontmatter for a Windsurf rule
+// file (#1769). Modern Windsurf (Wave 8+) reads `.windsurf/rules/*.md`,
+// one file per rule, each with a `trigger:` activation mode —
+// `always_on` keeps the pincher policy in every Cascade system prompt,
+// the right mode for a tool-usage rule.
+const windsurfRuleFrontmatter = `---
+trigger: always_on
+---
+
+`
+
+// windsurfMDWriter writes the pincher rule to ./.windsurf/rules/pincher.md
+// — a dedicated pincher-owned file, mirroring the cursor target's
+// .cursor/rules/pincher.mdc shape. On a fresh write it prepends the
+// trigger frontmatter; a re-run only touches the marker block, so the
+// frontmatter survives policy refreshes.
+func windsurfMDWriter(existing, policy string) (string, string) {
+	if existing == "" {
+		body, _ := MergePolicyBlockBare("", policy)
+		return windsurfRuleFrontmatter + body, "wrote"
+	}
+	frontmatter, body := SplitMDXFrontmatter(existing)
+	mergedBody, action := MergePolicyBlockBare(body, policy)
+	return frontmatter + mergedBody, action
+}
 
 var WindsurfTarget = Target{
 	Name:     "windsurf",
-	Describe: "Windsurf: ./.windsurfrules plain text/markdown",
+	Describe: "Windsurf (modern): ./.windsurf/rules/pincher.md with trigger:always_on frontmatter",
 	PathFn: func(cwd string, global bool) (string, error) {
 		if global {
-			return "", fmt.Errorf("windsurf target has no global variant")
+			return "", fmt.Errorf("windsurf target has no global variant; rules live per-project under .windsurf/rules/")
 		}
-		return filepath.Join(cwd, ".windsurfrules"), nil
+		return filepath.Join(cwd, ".windsurf", "rules", "pincher.md"), nil
 	},
 	DetectFn: func(cwd string) bool {
-		_, err := os.Stat(filepath.Join(cwd, ".windsurfrules"))
+		_, err := os.Stat(filepath.Join(cwd, ".windsurf"))
 		return err == nil
 	},
-	WriteFn: MergePolicyBlockBare,
+	WriteFn: windsurfMDWriter,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

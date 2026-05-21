@@ -221,7 +221,7 @@ func TestInitCLI_Binary_TargetAll(t *testing.T) {
 		filepath.Join(workdir, "CLAUDE.md"),
 		filepath.Join(workdir, ".cursor", "rules", "pincher.mdc"),
 		filepath.Join(workdir, ".cursorrules"),
-		filepath.Join(workdir, ".windsurfrules"),
+		filepath.Join(workdir, ".windsurf", "rules", "pincher.md"),
 		filepath.Join(workdir, "CONVENTIONS.md"),
 		filepath.Join(homeDir, ".continue", "config.json"),
 	} {
@@ -239,7 +239,9 @@ func TestInitCLI_Binary_TargetDetect(t *testing.T) {
 	bin := buildPincherBinary(t)
 	workdir := t.TempDir()
 	homeDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workdir, ".windsurfrules"), []byte("# old\n"), 0o644); err != nil {
+	// #1769: modern Windsurf detection keys on the .windsurf/ rules
+	// directory — create it so `detect` picks windsurf up.
+	if err := os.MkdirAll(filepath.Join(workdir, ".windsurf", "rules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,12 +253,12 @@ func TestInitCLI_Binary_TargetDetect(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("pincher init --target=detect: %v\n%s", err, out)
 	}
-	got, err := os.ReadFile(filepath.Join(workdir, ".windsurfrules"))
+	got, err := os.ReadFile(filepath.Join(workdir, ".windsurf", "rules", "pincher.md"))
 	if err != nil {
-		t.Fatalf("windsurfrules should exist: %v", err)
+		t.Fatalf(".windsurf/rules/pincher.md should exist: %v", err)
 	}
 	if !strings.Contains(string(got), pinit.MarkerStart) {
-		t.Error("expected pincher block in .windsurfrules")
+		t.Error("expected pincher block in .windsurf/rules/pincher.md")
 	}
 	if _, err := os.Stat(filepath.Join(workdir, "CLAUDE.md")); err == nil {
 		t.Error("CLAUDE.md should not be written when only windsurf was detected")

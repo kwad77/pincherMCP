@@ -55,7 +55,7 @@ func TestHandleInit_DefaultIsDryRun(t *testing.T) {
 		t.Errorf("action = %q, want one of would_write/would_update/would_append (grammatical present tense)", action)
 	}
 	// Disk untouched.
-	if _, err := os.Stat(filepath.Join(tmp, ".windsurfrules")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmp, ".windsurf", "rules", "pincher.md")); !os.IsNotExist(err) {
 		t.Errorf("dry-run created file: %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func TestHandleInit_WriteTrueMutates(t *testing.T) {
 	if dryRun, _ := body["dry_run"].(bool); dryRun {
 		t.Error("dry_run = true with write=true requested")
 	}
-	got, err := os.ReadFile(filepath.Join(tmp, ".windsurfrules"))
+	got, err := os.ReadFile(filepath.Join(tmp, ".windsurf", "rules", "pincher.md"))
 	if err != nil {
 		t.Fatalf("expected file written: %v", err)
 	}
@@ -155,7 +155,9 @@ func TestHandleInit_TargetDetect(t *testing.T) {
 	tmp := t.TempDir()
 	setSessionRoot(t, srv, tmp)
 
-	if err := os.WriteFile(filepath.Join(tmp, ".windsurfrules"), []byte("# old"), 0o644); err != nil {
+	// #1769: modern Windsurf detection keys on the .windsurf/ rules
+	// directory.
+	if err := os.MkdirAll(filepath.Join(tmp, ".windsurf", "rules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -234,8 +236,8 @@ func TestHandleInit_PathPreviewIncluded(t *testing.T) {
 	results, _ := body["results"].([]any)
 	first := results[0].(map[string]any)
 
-	if path, _ := first["path"].(string); !strings.HasSuffix(path, ".windsurfrules") {
-		t.Errorf("path = %q, expected .windsurfrules suffix", path)
+	if path, _ := first["path"].(string); !strings.HasSuffix(path, filepath.Join(".windsurf", "rules", "pincher.md")) {
+		t.Errorf("path = %q, expected .windsurf/rules/pincher.md suffix", path)
 	}
 	if preview, _ := first["diff_preview"].(string); !strings.Contains(preview, pinit.MarkerStart) {
 		t.Error("diff_preview missing marker block")
