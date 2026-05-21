@@ -87,7 +87,7 @@ except FileNotFoundError:
     print(f"NOTE: no baseline at {baseline_path}; printing run only.")
 
 # Schema: pincher bench --json emits {"tools": [{"tool":"search","actual_tokens_avg":...,"baseline_tokens_avg":...,"savings_pct_avg":...,"p50_ms":...,"p95_ms":...}, ...]}.
-# The exact shape is documented at REFERENCE.md > pincher bench. Adjust the
+# The exact shape is documented at docs/reference/cli.md > pincher bench. Adjust the
 # field names below if the bench shape evolves (the test
 # TestBenchReproducerSchemaPin pins this).
 tools = bench.get("tools", [])

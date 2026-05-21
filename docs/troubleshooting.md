@@ -126,7 +126,7 @@ Already wired. With `pincher --http :8080` running:
 http://localhost:8080/v1/metrics
 ```
 
-Returns Prometheus text exposition format with the standard counters / histograms / gauges documented in [REFERENCE.md → Observability](REFERENCE.md#observability-1163-654-628).
+Returns Prometheus text exposition format with the standard counters / histograms / gauges documented in [Reference → Observability](reference/http-api.md#observability-1163-654-628).
 
 ## Still stuck?
 

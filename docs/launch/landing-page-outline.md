@@ -40,7 +40,7 @@ Three claims, every number a `<<placeholder>>`:
 
 - **Frozen v1.0 surface** — link to [ADR-0002](../adr/0002-v1-frozen-surface.md) (PR #1547).
 - **Semver promise** — link to [CONTRIBUTING § Semver](../../CONTRIBUTING.md) (FILE-L).
-- **Supported languages table** — 22 extractors, confidence tiers — link to [`docs/REFERENCE.md`](../REFERENCE.md) FILE-N rows.
+- **Supported languages table** — 22 extractors, confidence tiers — link to [`docs/reference/languages.md`](../reference/languages.md) FILE-N rows.
 
 ### Section 4 — "Hosts"
 
@@ -74,7 +74,7 @@ This is the v0.97 prep checklist. Every `<<placeholder>>` resolves to a number m
 | `<<find_pincher_ms>>` / `<<find_pincher_bytes>>` / `<<find_raw_ms>>` / `<<find_raw_bytes>>` | FILE-B | v0.91 |
 | `<<ttfs_ms>>` | FILE-Q time-to-first-success baseline | v0.91 |
 | `<<peak_rss_50k>>` | FILE-I 50k tier dispatch run | v0.90 |
-| `<<supported_languages_count>>` | REFERENCE.md FILE-N table count | live |
+| `<<supported_languages_count>>` | `docs/reference/languages.md` FILE-N table count | live |
 | `<<frozen_surface_count>>` | ADR-0002 frozen-status row count | v0.84 (live) |
 | `<<host_count>>` | host-conformance corpus directory count | v0.91 |
 

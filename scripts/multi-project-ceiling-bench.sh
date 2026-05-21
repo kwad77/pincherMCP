@@ -3,7 +3,7 @@
 #
 # Measures the wall-clock cost of a single watcher poll cycle across
 # N indexed projects (synthetic). Output anchors the "recommended max
-# concurrent indexed projects" budget published in REFERENCE.md.
+# concurrent indexed projects" budget published in docs/reference/architecture.md.
 #
 # Each tier:
 #   1. Generates N small synthetic projects (50 files each — keeps

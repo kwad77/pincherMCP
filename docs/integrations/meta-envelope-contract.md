@@ -388,7 +388,7 @@ What is NOT frozen:
 
 - [`loop-leverage-layers.md`](loop-leverage-layers.md) — the
   three-layer leverage frame this contract enables
-- [`docs/REFERENCE.md`](../REFERENCE.md) — per-tool reference;
+- [`docs/reference/`](../reference/README.md) — per-tool reference;
   every tool's response shape is documented there
 - [`empty_reason.go`](../../internal/server/empty_reason.go) —
   source of truth for the `empty_reason` enum

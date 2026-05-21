@@ -18,19 +18,19 @@ import (
 // already-tight descriptions; trimming them further is below the
 // noise floor and would erode pedagogy for marginal savings.
 //
-// Full pedagogical content stays in docs/REFERENCE.md per-tool
+// Full pedagogical content stays in docs/reference/tools.md per-tool
 // sections (the #638 v0.40 docs split makes this lossless — agents
 // running with short descriptions can still fetch the full guidance
-// via `pincher_fetch` or by reading the REFERENCE page directly).
+// via `pincher_fetch` or by reading the reference docs directly).
 
 // shortToolDescriptions maps tool name → trimmed one-sentence form.
 // Only the heavy hitters from #1088 are listed; anything not in the
 // map keeps its original description even when the env opt-in fires.
 var shortToolDescriptions = map[string]string{
-	"trace":        "Find callers (inbound) or callees (outbound) of a symbol via callgraph BFS. Pass `name` or `id`; default kinds=CALLS; risk-labels CRITICAL/HIGH/MEDIUM by depth. See REFERENCE.md for full options.",
-	"search":       "FTS5 BM25 search for code by name or content (use before Grep/Read). Returns signature + query-aware snippet. Filter by kind/language/corpus. See REFERENCE.md for full query syntax.",
-	"neighborhood": "Returns same-file symbols (NOT graph adjacency — for that use `trace`). One round-trip vs N `symbol` calls or a whole-file Read. See REFERENCE.md.",
-	"query":        "pinchQL graph queries — Cypher-shaped subset (MATCH/WHERE/RETURN/LIMIT, single-hop joins, bounded BFS). Use for structural relationships. See REFERENCE.md for syntax + examples.",
+	"trace":        "Find callers (inbound) or callees (outbound) of a symbol via callgraph BFS. Pass `name` or `id`; default kinds=CALLS; risk-labels CRITICAL/HIGH/MEDIUM by depth. See docs/reference/tools.md for full options.",
+	"search":       "FTS5 BM25 search for code by name or content (use before Grep/Read). Returns signature + query-aware snippet. Filter by kind/language/corpus. See docs/reference/tools.md for full query syntax.",
+	"neighborhood": "Returns same-file symbols (NOT graph adjacency — for that use `trace`). One round-trip vs N `symbol` calls or a whole-file Read. See docs/reference/tools.md.",
+	"query":        "pinchQL graph queries — Cypher-shaped subset (MATCH/WHERE/RETURN/LIMIT, single-hop joins, bounded BFS). Use for structural relationships. See docs/reference/pinchql.md for syntax + examples.",
 	"changes":      "Maps `git diff` to affected symbols + BFS-traces impact + ranks `tests_to_run`. Scopes: unstaged/staged/all/base:<branch>. Use before final response after edits.",
 }
 

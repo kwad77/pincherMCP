@@ -26,11 +26,16 @@ import (
 func TestEnvVars_TutorialMentionsDocumentedInReference(t *testing.T) {
 	t.Parallel()
 
-	refBytes, err := os.ReadFile("../../docs/REFERENCE.md")
-	if err != nil {
-		t.Fatalf("read REFERENCE.md: %v", err)
+	// Env vars are split across the reference folder: process /
+	// data-dir vars live in cli.md, server-side knobs in http-api.md.
+	var ref string
+	for _, p := range []string{"../../docs/reference/cli.md", "../../docs/reference/http-api.md"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		ref += string(b)
 	}
-	ref := string(refBytes)
 
 	// Walk docs/tutorials/* and docs/deployment/* for any PINCHER_*
 	// env-var mention. We treat the user-facing docs surface as the
@@ -82,7 +87,7 @@ func TestEnvVars_TutorialMentionsDocumentedInReference(t *testing.T) {
 				where = append(where, f)
 			}
 			sort.Strings(where)
-			t.Errorf("env var %q is referenced in user-facing docs (%s) but not documented in docs/REFERENCE.md — add a row in the relevant env-var table or Data directory section, or drop the mention from the tutorial",
+			t.Errorf("env var %q is referenced in user-facing docs (%s) but not documented in docs/reference/{cli,http-api}.md — add a row in the relevant env-var table or Data directory section, or drop the mention from the tutorial",
 				envVar, strings.Join(where, ", "))
 		}
 	}

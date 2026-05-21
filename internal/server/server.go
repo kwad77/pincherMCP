@@ -3855,7 +3855,7 @@ func (s *Server) registerTools() {
 	// onboard fresh repos, (b) recover from binary-version drift surfaced
 	// in `_meta.binary_version_warning`, (c) close the in-session-edit
 	// race the watcher's 2s tick can't cover. HTTP route stays for backward
-	// compat. See docs/REFERENCE.md → "Indexing modes" for the full
+	// compat. See docs/reference/tools.md → "Indexing modes" for the full
 	// staleness model.
 	s.addTool(&mcp.Tool{
 		Name:        "index",

@@ -2,7 +2,7 @@
 
 About 10 minutes. By the end you'll have a local pincher install indexing one of your repositories and Claude Code reaching for pincher tools instead of `Read` / `Grep` / `Glob` for code navigation.
 
-This walkthrough assumes nothing about pincher's internals. For the long-form manual, see [`docs/REFERENCE.md`](../REFERENCE.md).
+This walkthrough assumes nothing about pincher's internals. For the long-form manual, see [`docs/reference/`](../reference/README.md).
 
 ## What you need
 
@@ -121,8 +121,8 @@ Savings persist in SQLite across restarts, reconnects, and binary upgrades.
 
 ## What to read next
 
-- **[REFERENCE.md → MCP tools](../REFERENCE.md#the-28-mcp-tools)** — every tool, every parameter, every `_meta` field
-- **[REFERENCE.md → CLI subcommands](../REFERENCE.md#cli-subcommands)** — `pincher doctor`, `pincher self-test`, `pincher rebuild-fts`, etc.
+- **[Reference → MCP tools](../reference/tools.md)** — every tool, every parameter, every `_meta` field
+- **[Reference → CLI subcommands](../reference/cli.md)** — `pincher doctor`, `pincher self-test`, `pincher rebuild-fts`, etc.
 - **[Tutorial: Cursor](cursor.md)** — same flow with Cursor's rules-file format
 - **[Tutorial: HTTP dashboard](http-dashboard.md)** — open the live dashboard for any browser-friendly client
 - **[Project roadmap](https://github.com/kwad77/pincher/issues/193)** — what's coming in v0.6.0 → v1.0

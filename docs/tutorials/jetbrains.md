@@ -8,7 +8,7 @@ JetBrains AI Assistant reads project-level rules from
 `.junie/guidelines.md`. `pincher init --target=jetbrains` writes
 the pincher policy block to that file.
 
-For the long-form manual see [`docs/REFERENCE.md`](../REFERENCE.md).
+For the long-form manual see [`docs/reference/`](../reference/README.md).
 
 ## What you need
 
@@ -117,7 +117,7 @@ pincher stats
 
 ## What to read next
 
-- [REFERENCE.md → MCP tools](../REFERENCE.md#the-28-mcp-tools) — every tool, every parameter
+- [Reference → MCP tools](../reference/tools.md) — every tool, every parameter
 - [Tutorial: Claude Code](claude-code.md) — same flow for the Claude Code CLI
 - [Tutorial: VS Code Copilot](vscode-copilot.md) — same flow for VS Code Copilot
 - [`docs/integrations/loop-leverage-layers.md`](../integrations/loop-leverage-layers.md) — the three-layer agent-leverage frame

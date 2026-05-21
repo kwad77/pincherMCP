@@ -1,6 +1,6 @@
 # Resource pressure — peak RSS by file count
 
-Per-tier peak resident set size measured against synthetic Go corpora. Anchors the **"minimum recommended RAM per indexed-file tier"** budget published in REFERENCE.md and gates regression at v0.90+ per FILE-I (#1528).
+Per-tier peak resident set size measured against synthetic Go corpora. Anchors the **"minimum recommended RAM per indexed-file tier"** budget published in `docs/reference/architecture.md` and gates regression at v0.90+ per FILE-I (#1528).
 
 ## What it measures
 
@@ -22,7 +22,7 @@ Output: JSON per run, uploaded as the `resource-pressure-<run_id>` artifact (90-
 
 | Release | Workflow `continue-on-error` | Effect |
 |---|---|---|
-| v0.85-v0.89 | `true` (advisory) | Numbers feed the REFERENCE.md budget rows. Regressions log `::warning::` but don't block. |
+| v0.85-v0.89 | `true` (advisory) | Numbers feed the `docs/reference/architecture.md` budget rows. Regressions log `::warning::` but don't block. |
 | v0.90+ | `false` (hard budget) per FILE-I | Peak RSS exceeding the published per-tier max blocks the release tag. |
 
 ## Why Linux-first
@@ -33,9 +33,9 @@ macOS support is scaffolded (the `time -l` parser exists) but not run in CI; mac
 
 Tracking Windows separately is filed as a v1.x task (would need pagefile + commit-charge instrumentation, not RSS).
 
-## Published budget shape (REFERENCE.md)
+## Published budget shape (reference docs)
 
-Once a few weeks of phase-1 numbers settle, the REFERENCE.md "Resource requirements" section grows a table:
+Once a few weeks of phase-1 numbers settle, the `docs/reference/architecture.md` "Resource requirements" section grows a table:
 
 ```
 | Indexed files | Recommended RAM | Peak RSS (CI baseline) |

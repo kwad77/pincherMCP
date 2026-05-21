@@ -62,7 +62,7 @@ The shape declared in [`docs/integrations/meta-envelope-contract.md`](../integra
 
 ### HTTP gateway routes (frozen)
 
-`GET /v1/openapi.json`, `POST /v1/<tool>`, `GET /v1/hook-stats`, `GET /v1/architecture/<aspect>`, `GET /v1/tool-payload-stats`, `GET /metrics` (Prometheus, when wired per FILE-G), `GET /v1/icons/<tool>` (when wired per #1079 if it lands), and any other public route declared in `docs/REFERENCE.md` under "HTTP REST gateway" or "Streamable HTTP" are frozen.
+`GET /v1/openapi.json`, `POST /v1/<tool>`, `GET /v1/hook-stats`, `GET /v1/architecture/<aspect>`, `GET /v1/tool-payload-stats`, `GET /metrics` (Prometheus, when wired per FILE-G), `GET /v1/icons/<tool>` (when wired per #1079 if it lands), and any other public route declared in `docs/reference/http-api.md` or "Streamable HTTP" are frozen.
 
 - Adding new routes in 1.x is non-breaking.
 - Changing the URL structure or response shape of an existing route requires a 2.0 release.
@@ -117,7 +117,7 @@ If #1333 (plugin surface for custom language extractors) ships in v0.88 per FILE
 
 The following are explicitly not part of the v1.0 surface contract — pincher can change them in any minor without a deprecation cycle:
 
-- **Internal extraction confidence values** (the 0.0 / 0.70 / 0.85 / 1.0 tiers per [`docs/REFERENCE.md`](../REFERENCE.md#language-support)). Promotion of a language from tier N to tier N+1 is a feature, not a breaking change.
+- **Internal extraction confidence values** (the 0.0 / 0.70 / 0.85 / 1.0 tiers per [`docs/reference/languages.md`](../reference/languages.md)). Promotion of a language from tier N to tier N+1 is a feature, not a breaking change.
 - **Internal blocklist of paths** (`internal/ast/blocklist.go`). Adding or removing entries is non-breaking.
 - **Doctor advisory message wording** — the advisory codes (`blast_radius_high`, `ghost_extraction_signature`, etc.) are part of the `_meta.warnings_v2` contract; the human-readable message strings are not.
 - **Slog field names + log levels** — observability output is best-effort, not a compatibility contract.

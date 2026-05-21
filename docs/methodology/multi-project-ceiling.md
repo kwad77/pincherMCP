@@ -1,6 +1,6 @@
 # Multi-project ceiling — watcher cost by indexed-project count
 
-Per-tier wall-clock cost of a single watcher poll cycle across N indexed projects. Anchors the **"recommended max concurrent indexed projects"** budget published in REFERENCE.md. Tracked by [#1529](https://github.com/kwad77/pincher/issues/1529) (FILE-J, v0.86 phase-1 advisory; v0.91 phase-2 hard budget per acceptance criterion).
+Per-tier wall-clock cost of a single watcher poll cycle across N indexed projects. Anchors the **"recommended max concurrent indexed projects"** budget published in `docs/reference/architecture.md`. Tracked by [#1529](https://github.com/kwad77/pincher/issues/1529) (FILE-J, v0.86 phase-1 advisory; v0.91 phase-2 hard budget per acceptance criterion).
 
 ## Why measure this
 
@@ -36,9 +36,9 @@ When/if FILE-J phase-2 promotes to a hard budget (v0.91), this proxy gets review
 | v0.86-v0.90 | `continue-on-error: true` | Advisory; numbers feed budget |
 | v0.91+ | `false` per FILE-J acceptance | Hard budget — `poll_cycle_ms_median` exceeding the published max blocks release |
 
-## Published budget shape (REFERENCE.md)
+## Published budget shape (reference docs)
 
-Once phase-1 numbers settle, REFERENCE.md grows a "Multi-project scaling" section:
+Once phase-1 numbers settle, `docs/reference/architecture.md` grows a "Multi-project scaling" section:
 
 ```
 | Indexed projects | Watcher poll cycle (CI baseline) | Auto-backoff threshold |
@@ -56,7 +56,7 @@ The auto-backoff column is FILE-J acceptance bullet #3 (deferred to v0.87 follow
 FILE-J has four acceptance bullets:
 
 1. ✅ Bench measuring per-tick wall-clock at 10/50/200 — this PR (10/50 in CI, 200 via dispatch).
-2. ✅ Published recommended max — placeholders in REFERENCE.md fill in over phase-1.
+2. ✅ Published recommended max — placeholders in `docs/reference/architecture.md` fill in over phase-1.
 3. ❌ Auto-backoff above threshold — runtime change in the watcher; deferred to v0.87 follow-up.
 4. ❌ Pairs with FILE-I — yes, but the actual cross-axis story (high N projects × high N files) is filed as a v0.90 follow-up.
 
